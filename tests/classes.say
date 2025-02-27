@@ -1,0 +1,55 @@
+say x = 1;
+
+class Super {
+    x = 100;
+    msg = "initial";
+
+    init(msg) {
+        this.msg = msg;
+    }
+
+    fn getMsg() {
+        return this.msg;
+    }
+
+    fn getSuperX() {
+        return this.x;
+    }
+}
+
+class TestClass : Super {
+    x; // hides Super.x
+    y;
+
+    init(x, y) {
+        super("changed");
+        this.x = x;
+        this.y = y;
+    }
+
+    fn getSum() {
+        // Outer scope variables get precedence over implicit this
+        return this.x + this.y + x + y;
+    }
+
+    fn getSumParams(x, y) {
+        // Parameters get precedence over implicit this
+        return this.x + this.y + x + y;
+    }
+
+    fn getX() {
+        return this.x;
+    }
+}
+
+say obj = TestClass(10, 20);
+print(obj.getX());
+print(obj.getSuperX());
+
+print(obj.x + obj.y);
+print(obj.getSum());
+print(obj.getSumParams(0, 0));
+obj.x = 100;
+print(obj.x);
+print(obj.getSumParams(0, 0));
+print(obj.getMsg());

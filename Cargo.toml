@@ -1,0 +1,15 @@
+[package]
+name = "clisay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.96"
+regex = "1.11.1"
+static_str_ops = "0.1.2"
+
+[dev-dependencies]
+trybuild = "1.0.103"
+
+[profile.release]
+debug = true
