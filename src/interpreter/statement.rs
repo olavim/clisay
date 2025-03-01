@@ -1,6 +1,6 @@
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
-use super::{class::Class, environment::Environment, expression::Expression, function::Function, resolver::SymbolId, value::Value, EvalResult, Evaluatable, RuntimeException};
+use super::{class::{Class, ClassDeclaration}, environment::Environment, expression::Expression, function::Function, resolver::SymbolId, value::Value, EvalResult, Evaluatable, RuntimeException};
 
 #[derive(Clone)]
 pub enum Statement {
@@ -11,7 +11,7 @@ pub enum Statement {
     Fn(SymbolId, Vec<SymbolId>, Box<Statement>),
     If(Expression, Box<Statement>, Option<Box<Statement>>),
     While(Expression, Box<Statement>),
-    Class(SymbolId, Rc<Class>)
+    Class(SymbolId, ClassDeclaration)
 }
 
 impl Evaluatable for Statement {
@@ -46,7 +46,7 @@ impl Evaluatable for Statement {
                 return Ok(None);
             },
             Statement::Fn(sid, params, body) => {
-                let func = Function::new(sid.name.clone(), params.clone(), body.clone());
+                let func = Function::new(sid.clone(), params.clone(), body.clone());
                 let closure = Rc::new(Environment::from(env));
                 env.insert(sid.symbol, Value::Function(closure, Rc::new(func)));
                 return Ok(None);
@@ -75,9 +75,43 @@ impl Evaluatable for Statement {
                 }
                 return Ok(None);
             },
-            Statement::Class(sid, class) => {
+            Statement::Class(sid, class_decl) => {
+                let mut symbols: HashMap<String, SymbolId> = HashMap::new();
+                let mut methods: HashMap<usize, Function> = HashMap::new();
+                let mut fields: Vec<usize> = Vec::new();
+
+                for field_sid in &class_decl.fields {
+                    symbols.insert(field_sid.name.clone(), field_sid.clone());
+                    fields.push(field_sid.symbol);
+                }
+                for method in &class_decl.methods {
+                    symbols.insert(method.sid.name.clone(), method.sid.clone());
+                    methods.insert(method.sid.symbol, method.clone());
+                }
+
+                let superclass = match &class_decl.superclass_sid {
+                    Some(superclass_sid) => match env.get(&superclass_sid.symbol) {
+                        Some(Value::Class(_, superclass)) => Some(superclass.clone()),
+                        _ => unreachable!()
+                    },
+                    None => None
+                };
+
+                if let Some(sid) = &class_decl.superclass_sid {
+                    symbols.insert(String::from("super"), sid.clone());
+                }
+
+                let class = Class {
+                    name: sid.name.clone(),
+                    superclass,
+                    init: class_decl.init.clone(),
+                    symbols,
+                    fields,
+                    methods
+                };
+
                 let closure = Rc::new(Environment::from(env));
-                env.insert(sid.symbol, Value::Class(closure, class.clone()));
+                env.insert(sid.symbol, Value::Class(closure, Rc::new(class)));
                 return Ok(None);
             }
         };

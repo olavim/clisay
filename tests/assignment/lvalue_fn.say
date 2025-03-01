@@ -1,0 +1,8 @@
+fn hello() {
+    return "hello";
+}
+fn world() {
+    return "world";
+}
+hello = world;
+print(hello()); // expect: world

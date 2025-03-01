@@ -1,0 +1,3 @@
+class A {}
+class B {}
+A = B; // [line 3] error: Invalid assignment: A refers to a type

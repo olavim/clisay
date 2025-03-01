@@ -1,0 +1,42 @@
+class Fib {
+    x = 10;
+
+    fn fib(n) {
+        if (n <= 1) {
+            return n;
+        }
+        return fib(n - 1) + fib(n - 2);
+    }
+}
+
+fn createFib() {
+    say res = Fib();
+    return res;
+}
+
+say obj = createFib();
+
+fn callAndPrint(f, n) {
+    print(f(n));
+}
+
+callAndPrint(obj.fib, 7); // expect: 13
+
+fn printObjX(obj) {
+    print(obj.x);
+}
+
+printObjX(obj); // expect: 10
+
+fn getCounter() {
+    say x = 0;
+    fn counter() {
+        x += 1;
+        return x;
+    }
+    return counter;
+}
+
+say counter = getCounter();
+print(counter()); // expect: 1
+print(counter()); // expect: 2

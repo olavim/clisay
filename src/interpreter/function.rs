@@ -4,14 +4,14 @@ use super::{callable::Callable, environment::Environment, expression::Expression
 
 #[derive(Clone)]
 pub struct Function {
-    pub name: String,
+    pub sid: SymbolId,
     pub params: Vec<SymbolId>,
     pub body: Box<Statement>
 }
 
 impl Function {
-    pub fn new(name: String, params: Vec<SymbolId>, body: Box<Statement>) -> Function {
-        return Function { name, params, body };
+    pub fn new(sid: SymbolId, params: Vec<SymbolId>, body: Box<Statement>) -> Function {
+        return Function { sid, params, body };
     }
 }
 
@@ -29,14 +29,14 @@ impl Callable for Function {
         match self.body.evaluate(env) {
             Ok(Some(value)) => return Ok(Some(value)),
             Ok(None) => return Ok(Some(Value::Void)),
-            Err(e) => return Err(RuntimeException::from(&self.name, expr, e))
+            Err(e) => return Err(RuntimeException::from(&self.sid.name, expr, e))
         };
     }
 }
 
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        return write!(f, "{}", self.name);
+        return write!(f, "{}", self.sid.name);
     }
 }
 
@@ -51,7 +51,7 @@ impl Callable for BuiltinFunction {
         return match &self {
             BuiltinFunction::Print(out) => {
                 let value = format!("{}", &args[0]);
-                println!("{}", value);
+                // println!("{}", value);
                 out.as_ref().borrow_mut().push(value);
                 Ok(Some(Value::Void))
             },

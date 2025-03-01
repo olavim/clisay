@@ -19,17 +19,19 @@ pub enum BinaryOperator {
     BitAnd,
     BitOr,
     BitXor,
+    Ternary,
     Assign(Option<Box<BinaryOperator>>)
 }
 
 impl BinaryOperator {
-    pub fn assignment(op: BinaryOperator) -> BinaryOperator {
+    pub fn assign(op: BinaryOperator) -> BinaryOperator {
         return BinaryOperator::Assign(Some(Box::new(op)));
     }
 
     pub fn precedence(&self) -> u8 {
         return match self {
             BinaryOperator::Assign(_) => 1,
+            BinaryOperator::Ternary => 2,
             BinaryOperator::LogicalOr => 3,
             BinaryOperator::LogicalAnd => 4,
 
@@ -84,6 +86,7 @@ impl fmt::Display for BinaryOperator {
             BinaryOperator::BitAnd => "&",
             BinaryOperator::BitOr => "|",
             BinaryOperator::BitXor => "^",
+            BinaryOperator::Ternary => "?:",
             BinaryOperator::Assign(None) => "=",
             BinaryOperator::Assign(Some(op)) => match **op {
                 BinaryOperator::Plus => "+=",

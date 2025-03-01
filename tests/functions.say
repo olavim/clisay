@@ -1,7 +1,3 @@
-//
-// Recursion
-//
-
 fn callAndPrint(f, n) {
     print(f(n));
 }
@@ -13,38 +9,4 @@ fn fib(n) {
     return fib(n - 1) + fib(n - 2);
 }
 
-callAndPrint(fib, 7);
-
-class Fib {
-    fn fib(n) {
-        if (n <= 1) {
-            return n;
-        }
-        return fib(n - 1) + fib(n - 2);
-    }
-}
-
-fn createFib() {
-    say res = Fib();
-    return res;
-}
-
-say obj = createFib();
-callAndPrint(obj.fib, 7);
-
-//
-// Closures
-//
-
-fn getCounter() {
-    say x = 0;
-    fn counter() {
-        x += 1;
-        return x;
-    }
-    return counter;
-}
-
-say counter = getCounter();
-print(counter());
-print(counter());
+callAndPrint(fib, 7); // expect: 13

@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use super::value::Value;
+use super::{resolver::SymbolId, value::Value};
 
 pub struct Environment {
     pub parent: Option<Rc<Environment>>,
@@ -20,19 +20,23 @@ impl Environment {
         self.locals.borrow_mut().insert(key, value);
     }
 
-    pub fn assign(&self, key: usize, value: Value) {
+    pub fn assign(&self, sid: &SymbolId, value: Value) -> Result<(), String> {
         let mut locals = self.locals.borrow_mut();
 
-        match locals.get(&key) {
+        match locals.get(&sid.symbol) {
+            Some(Value::BuiltinFunction(_, _)) => Err(format!("Invalid assignment: {} refers to a builtin function", sid.name)),
+            Some(Value::Class(_, _)) => Err(format!("Invalid assignment: {} refers to a type", sid.name)),
             Some(_) => {
-                locals.insert(key, value);
+                locals.insert(sid.symbol, value);
+                Ok(())
             },
             None => {
                 if let Some(env) = &self.parent {
-                    env.assign(key, value);
+                    env.assign(sid, value)?;
                 }
+                Ok(())
             }
-        };
+        }
     }
 
     pub fn get(&self, key: &usize) -> Option<Value> {

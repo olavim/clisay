@@ -3,7 +3,6 @@ use std::{cell::RefCell, fmt, rc::Rc};
 use environment::Environment;
 use expression::Expression;
 use function::BuiltinFunction;
-use statement::Statement;
 use value::Value;
 
 use super::parser::AST;
@@ -50,42 +49,20 @@ pub trait Evaluatable {
     fn evaluate(&self, env: &Rc<Environment>) -> EvalResult;
 }
 
-pub struct Interpreter {
-    current_env: Rc<Environment>,
-    out: Rc<RefCell<Vec<String>>>
-}
-
-impl Interpreter {
-    fn new() -> Self {
-        let globals = Environment::new();
-        let globals_ref = Rc::new(globals);
-        let out = Rc::new(RefCell::new(Vec::new()));
-        
-        globals_ref.insert(0, Value::BuiltinFunction(globals_ref.clone(), Rc::new(BuiltinFunction::Print(out.clone()))));
-        globals_ref.insert(1, Value::BuiltinFunction(globals_ref.clone(), Rc::new(BuiltinFunction::Time)));
-
-        Interpreter {
-            current_env: globals_ref.clone(),
-            out
-        }
-    }
-
-    fn evaluate(&mut self, stmt: &Statement) -> Result<Vec<String>, RuntimeException> {
-        stmt.evaluate(&self.current_env)?;
-        let out = self.out.borrow().clone();
-        return Ok(out);
-    }
-}
-
-pub fn evaluate(ast: &AST) -> Result<Vec<String>, String> {
-    let resolved_ast = match resolver::analyze(&ast) {
+pub fn run(ast: &AST) -> Result<Vec<String>, String> {
+    let resolved_ast = match resolver::resolve(&ast) {
         Ok(ast) => ast,
         Err(err) => return Err(format!("{}", err))
     };
 
-    let mut evaluator = Interpreter::new();
-    return match evaluator.evaluate(&resolved_ast.stmt) {
-        Ok(out) => Ok(out),
+    let out = Rc::new(RefCell::new(Vec::new()));
+    
+    let globals = Rc::new(Environment::new());
+    globals.insert(0, Value::BuiltinFunction(globals.clone(), Rc::new(BuiltinFunction::Print(out.clone()))));
+    globals.insert(1, Value::BuiltinFunction(globals.clone(), Rc::new(BuiltinFunction::Time)));
+
+    return match resolved_ast.stmt.evaluate(&globals) {
+        Ok(_) => Ok(out.borrow().clone()),
         Err(err) => Err(format!("{}", err))
     };
 }

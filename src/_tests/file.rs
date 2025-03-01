@@ -1,11 +1,31 @@
-use super::assert_file;
+use super::{test_file, test_folder};
 
 #[test]
 fn classes() {
-    assert_file("tests/classes.say", Ok(["10", "100", "30", "51", "30", "100", "120", "changed"]));
+    test_file("tests/classes.say");
 }
 
 #[test]
 fn functions() {
-    assert_file("tests/functions.say", Ok(["13", "13", "1", "2"]));
+    test_file("tests/functions.say");
+}
+
+#[test]
+fn closures() {
+    test_file("tests/closures.say");
+}
+
+#[test]
+fn statements() {
+    test_file("tests/statements.say");
+}
+
+#[test]
+fn assignments() {
+    test_folder("tests/assignment");
+}
+
+#[test]
+fn operators() {
+    test_folder("tests/operators");
 }

@@ -1,4 +1,4 @@
-say x = 1;
+say x = "outer x";
 
 class Super {
     x = 100;
@@ -13,6 +13,7 @@ class Super {
     }
 
     fn getSuperX() {
+        // Return Super.x, not TestClass.x
         return this.x;
     }
 }
@@ -28,12 +29,12 @@ class TestClass : Super {
     }
 
     fn getSum() {
-        // Outer scope variables get precedence over implicit this
+        // Member variables get precedence over outer scope variables
         return this.x + this.y + x + y;
     }
 
     fn getSumParams(x, y) {
-        // Parameters get precedence over implicit this
+        // Parameters get precedence over member variables
         return this.x + this.y + x + y;
     }
 
@@ -43,13 +44,16 @@ class TestClass : Super {
 }
 
 say obj = TestClass(10, 20);
-print(obj.getX());
-print(obj.getSuperX());
+print(obj.getX()); // expect: 10
+print(obj.getSuperX()); // expect: 100
 
-print(obj.x + obj.y);
-print(obj.getSum());
-print(obj.getSumParams(0, 0));
-obj.x = 100;
-print(obj.x);
-print(obj.getSumParams(0, 0));
-print(obj.getMsg());
+print(obj.x + obj.y); // expect: 30
+print(obj.getSum()); // expect: 60
+print(obj.getSumParams(0, 0)); // expect: 30
+
+obj.x = 50;
+print(obj.x); // expect: 50
+print(obj.getSuperX()); // expect: 100
+
+print(obj.getSumParams(0, 0)); // expect: 70
+print(obj.getMsg()); // expect: changed

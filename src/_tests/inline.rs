@@ -29,10 +29,3 @@ fn ops() {
     assert_inline("say a = 1; a ^= 2; print(a);", Ok(["3"]));
     assert_inline("say a = 3; a += a += 1; print(a);", Ok(["8"]));
 }
-
-#[test]
-fn funcs() {
-    assert_inline("fn echo(a) { return a; } print(echo(1)); print(echo(\"hello\"));", Ok(["1", "hello"]));
-    assert_inline("fn fib(n) { return n <= 1 ? n : fib(n - 1) + fib(n - 2); } print(fib(6));", Ok(["8"]));
-    assert_inline("say i = 0; while (i += 1) <= 3 { print(i); }", Ok(["1", "2", "3"]));
-}
