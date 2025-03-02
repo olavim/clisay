@@ -8,8 +8,7 @@ pub use ast::AST;
 pub use expression::ASTExpressionKind;
 pub use statement::ASTStatement;
 pub use expression::ASTExpression;
-pub use operator::BinaryOperator;
-pub use operator::UnaryOperator;
+pub use operator::Operator;
 pub use statement::StatementKind;
 use token_stream::TokenStream;
 

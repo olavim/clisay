@@ -7,7 +7,7 @@ use crate::lexer::{SourcePosition, TokenType};
 use crate::parser::ASTExpression;
 
 use super::token_stream::TokenStream;
-use super::{ASTExpressionKind, BinaryOperator, ParseResult};
+use super::{ASTExpressionKind, Operator, ParseResult};
 
 #[derive(Clone)]
 pub struct ASTVariableDeclaration {
@@ -256,7 +256,7 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
             let pos = pos.clone();
             let this = ASTExpression::new(ASTExpressionKind::This, pos.clone());
             let identifier = ASTExpression::new(ASTExpressionKind::MemberAccess(Box::new(this), field.name.clone()), pos.clone());
-            let expr = ASTExpressionKind::Binary(BinaryOperator::Assign(None), Box::new(identifier), Box::new(field.value.clone().unwrap()));
+            let expr = ASTExpressionKind::Binary(Operator::Assign(None), Box::new(identifier), Box::new(field.value.clone().unwrap()));
             let stmt = StatementKind::Expression(ASTExpression::new(expr, pos.clone()));
             init_stmts.push(ASTStatement::new(stmt, pos.clone()));
         }

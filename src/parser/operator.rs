@@ -1,7 +1,8 @@
 use std::fmt;
 
 #[derive(Clone)]
-pub enum BinaryOperator {
+pub enum Operator {
+    // Infix
     Plus,
     Minus,
     Multiply,
@@ -20,105 +21,116 @@ pub enum BinaryOperator {
     BitOr,
     BitXor,
     Ternary,
-    Assign(Option<Box<BinaryOperator>>)
+    Assign(Option<Box<Operator>>),
+
+    // Prefix
+    Negative,
+    LogicalNot,
+    BitNot,
+
+    // Postfix
+    MemberAccess,
+
+    // Ambiguous
+    Parenthesis
 }
 
-impl BinaryOperator {
-    pub fn assign(op: BinaryOperator) -> BinaryOperator {
-        return BinaryOperator::Assign(Some(Box::new(op)));
+impl Operator {
+    pub fn assign(op: Operator) -> Operator {
+        return Operator::Assign(Some(Box::new(op)));
     }
 
-    pub fn precedence(&self) -> u8 {
-        return match self {
-            BinaryOperator::Assign(_) => 1,
-            BinaryOperator::Ternary => 2,
-            BinaryOperator::LogicalOr => 3,
-            BinaryOperator::LogicalAnd => 4,
-
-            BinaryOperator::LogicalEqual => 5,
-            BinaryOperator::LogicalNotEqual => 5,
-
-            BinaryOperator::BitOr => 6,
-            BinaryOperator::BitXor => 7,
-            BinaryOperator::BitAnd => 8,
-
-            BinaryOperator::LessThan => 9,
-            BinaryOperator::LessThanEqual => 9,
-            BinaryOperator::GreaterThan => 9,
-            BinaryOperator::GreaterThanEqual => 9,
-
-            BinaryOperator::LeftShift => 10,
-            BinaryOperator::RightShift => 10,
-
-            BinaryOperator::Plus => 11,
-            BinaryOperator::Minus => 11,
-
-            BinaryOperator::Multiply => 12,
-            BinaryOperator::Divide => 12,
+    pub fn infix_precedence(&self) -> Option<u8> {
+        let bp = match self {
+            Operator::Assign(_) => 1,
+            Operator::Ternary => 2,
+            Operator::LogicalOr => 3,
+            Operator::LogicalAnd => 4,
+            Operator::LogicalEqual | Operator::LogicalNotEqual => 5,
+            Operator::BitOr => 6,
+            Operator::BitXor => 7,
+            Operator::BitAnd => 8,
+            Operator::LessThan | Operator::LessThanEqual |
+            Operator::GreaterThan | Operator::GreaterThanEqual => 9,
+            Operator::LeftShift | Operator::RightShift => 10,
+            Operator::Plus | Operator::Minus => 11,
+            Operator::Multiply | Operator::Divide => 12,
+            Operator::MemberAccess => 16,
+            _ => return None
         };
+        Some(bp)
+    }
+
+    pub fn prefix_precedence(&self) -> Option<u8> {
+        let bp = match self {
+            Operator::Negative | Operator::LogicalNot | Operator::BitNot => 13,
+            Operator::Parenthesis => 16,
+            _ => return None
+        };
+        Some(bp)
+    }
+
+    pub fn postfix_precedence(&self) -> Option<u8> {
+        let bp = match self {
+            Operator::Parenthesis => 14,
+            _ => return None
+        };
+        Some(bp)
     }
 
     pub fn is_left_associative(&self) -> bool {
         return match self {
-            BinaryOperator::Assign(_) => false,
+            Operator::Assign(_) => false,
+            Operator::Ternary => false,
+            Operator::Negative => false,
+            Operator::LogicalNot => false,
+            Operator::BitNot => false,
             _ => true
         };
     }
 }
 
-impl fmt::Display for BinaryOperator {
+impl fmt::Display for Operator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         return write!(f, "{}", match self {
-            BinaryOperator::Plus => "+",
-            BinaryOperator::Minus => "-",
-            BinaryOperator::Multiply => "*",
-            BinaryOperator::Divide => "/",
-            BinaryOperator::LeftShift => "<<",
-            BinaryOperator::RightShift => ">>",
-            BinaryOperator::LessThan => "<",
-            BinaryOperator::LessThanEqual => "<=",
-            BinaryOperator::GreaterThan => ">",
-            BinaryOperator::GreaterThanEqual => ">=",
-            BinaryOperator::LogicalEqual => "==",
-            BinaryOperator::LogicalNotEqual => "!=",
-            BinaryOperator::LogicalAnd => "&&",
-            BinaryOperator::LogicalOr => "||",
-            BinaryOperator::BitAnd => "&",
-            BinaryOperator::BitOr => "|",
-            BinaryOperator::BitXor => "^",
-            BinaryOperator::Ternary => "?:",
-            BinaryOperator::Assign(None) => "=",
-            BinaryOperator::Assign(Some(op)) => match **op {
-                BinaryOperator::Plus => "+=",
-                BinaryOperator::Minus => "-=",
-                BinaryOperator::LeftShift => "<<=",
-                BinaryOperator::RightShift => ">>=",
-                BinaryOperator::Multiply => "*=",
-                BinaryOperator::Divide => "/=",
-                BinaryOperator::BitAnd => "&=",
-                BinaryOperator::BitOr => "|=",
-                BinaryOperator::BitXor => "^=",
-                BinaryOperator::LogicalAnd => "&&=",
-                BinaryOperator::LogicalOr => "||=",
+            Operator::Plus => "+",
+            Operator::Minus => "-",
+            Operator::Multiply => "*",
+            Operator::Divide => "/",
+            Operator::LeftShift => "<<",
+            Operator::RightShift => ">>",
+            Operator::LessThan => "<",
+            Operator::LessThanEqual => "<=",
+            Operator::GreaterThan => ">",
+            Operator::GreaterThanEqual => ">=",
+            Operator::LogicalEqual => "==",
+            Operator::LogicalNotEqual => "!=",
+            Operator::LogicalAnd => "&&",
+            Operator::LogicalOr => "||",
+            Operator::BitAnd => "&",
+            Operator::BitOr => "|",
+            Operator::BitXor => "^",
+            Operator::Ternary => "?:",
+            Operator::Negative => "-",
+            Operator::LogicalNot => "!",
+            Operator::BitNot => "~",
+            Operator::Parenthesis => "()",
+            Operator::MemberAccess => ".",
+            Operator::Assign(None) => "=",
+            Operator::Assign(Some(op)) => match **op {
+                Operator::Plus => "+=",
+                Operator::Minus => "-=",
+                Operator::LeftShift => "<<=",
+                Operator::RightShift => ">>=",
+                Operator::Multiply => "*=",
+                Operator::Divide => "/=",
+                Operator::BitAnd => "&=",
+                Operator::BitOr => "|=",
+                Operator::BitXor => "^=",
+                Operator::LogicalAnd => "&&=",
+                Operator::LogicalOr => "||=",
                 _ => panic!("Invalid assignment operator")
             }
-        });
-    }
-}
-
-#[derive(Clone)]
-pub enum UnaryOperator {
-    Negative,
-    LogicalNot,
-    BitNot
-}
-
-impl fmt::Display for UnaryOperator {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        return write!(f, "{}", match self {
-            UnaryOperator::Negative => "-",
-            UnaryOperator::LogicalNot => "!",
-            UnaryOperator::BitNot => "~"
         });
     }
 }

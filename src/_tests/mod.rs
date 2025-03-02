@@ -57,7 +57,10 @@ pub fn test_file(file: &str) {
     if let Some(expected_error) = parse_expected_error(src.as_str()) {
         match result {
             Ok(_) => panic!("Expected error: {}", expected_error),
-            Err(err) => return assert_eq!(parse_error_message(err), expected_error, "{}", file)
+            Err(err) => {
+                println!("{}", err);
+                return assert_eq!(parse_error_message(err), expected_error, "{}", file);
+            }
         }
     }
 
@@ -81,6 +84,11 @@ pub fn assert_inline<const COUNT: usize>(src: &str, r: Result<[&str; COUNT], Str
 fn parse_error_message(err: Error) -> String {
     let error_regex = Regex::new(REGEX_ERROR_MESSAGE).unwrap();
     let err_msg = err.to_string();
+
+    if !error_regex.is_match(&err_msg) {
+        return err_msg;
+    }
+    
     let captures = error_regex.captures(&err_msg).unwrap();
     let message = captures.get(1).unwrap().as_str();
     let line = captures.get(3).unwrap().as_str().parse::<i8>().unwrap();

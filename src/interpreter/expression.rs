@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::{lexer::SourcePosition, parser::{BinaryOperator, UnaryOperator}};
+use crate::{lexer::SourcePosition, parser::Operator};
 
 use super::{callable::Callable, environment::Environment, resolver::SymbolId, value::Value, EvalResult, Evaluatable, RuntimeException};
 
@@ -19,8 +19,8 @@ impl Expression {
 #[derive(Clone)]
 pub enum ExpressionKind {
     Ternary(Box<Expression>, Box<Expression>, Box<Expression>),
-    Binary(BinaryOperator, Box<Expression>, Box<Expression>),
-    Unary(UnaryOperator, Box<Expression>),
+    Binary(Operator, Box<Expression>, Box<Expression>),
+    Unary(Operator, Box<Expression>),
     Call(Box<Expression>, Vec<Expression>),
     MemberAccess(Box<Expression>, String, Option<SymbolId>),
     Identifier(SymbolId),
@@ -42,7 +42,7 @@ impl Evaluatable for Expression {
                     val => Err(RuntimeException::new(format!("Expected boolean, got {}", val), left))
                 }
             },
-            ExpressionKind::Binary(BinaryOperator::Assign(_), left, right) => {
+            ExpressionKind::Binary(Operator::Assign(_), left, right) => {
                 let rval = right.evaluate(env)?.unwrap();
                 match &left.kind {
                     ExpressionKind::Identifier(sid) => match env.assign(sid, rval.clone()) {
@@ -67,27 +67,27 @@ impl Evaluatable for Expression {
                 let rval = right.evaluate(env)?.unwrap();    
                 let lval = left.evaluate(env)?.unwrap();
                 let result = match (op, lval.clone(), rval.clone()) {
-                    (BinaryOperator::Plus, Value::Number(l), Value::Number(r)) => Value::Number(l + r),
-                    (BinaryOperator::Minus, Value::Number(l), Value::Number(r)) => Value::Number(l - r),
-                    (BinaryOperator::Multiply, Value::Number(l), Value::Number(r)) => Value::Number(l * r),
-                    (BinaryOperator::Divide, Value::Number(l), Value::Number(r)) => Value::Number(l / r),
-                    (BinaryOperator::LessThan, Value::Number(l), Value::Number(r)) => Value::Boolean(l < r),
-                    (BinaryOperator::LessThanEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l <= r),
-                    (BinaryOperator::GreaterThan, Value::Number(l), Value::Number(r)) => Value::Boolean(l > r),
-                    (BinaryOperator::GreaterThanEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l >= r),
-                    (BinaryOperator::BitAnd, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) & (r as i64)) as f64),
-                    (BinaryOperator::BitOr, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) | (r as i64)) as f64),
-                    (BinaryOperator::BitXor, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) ^ (r as i64)) as f64),
-                    (BinaryOperator::LeftShift, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) << (r as i64)) as f64),
-                    (BinaryOperator::RightShift, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) >> (r as i64)) as f64),
-                    (BinaryOperator::LogicalAnd, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l && r),
-                    (BinaryOperator::LogicalOr, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l || r),
-                    (BinaryOperator::LogicalEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l == r),
-                    (BinaryOperator::LogicalEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l == r),
-                    (BinaryOperator::LogicalEqual, Value::String(l), Value::String(r)) => Value::Boolean(l == r),
-                    (BinaryOperator::LogicalNotEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l != r),
-                    (BinaryOperator::LogicalNotEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l != r),
-                    (BinaryOperator::LogicalNotEqual, Value::String(l), Value::String(r)) => Value::Boolean(l != r),
+                    (Operator::Plus, Value::Number(l), Value::Number(r)) => Value::Number(l + r),
+                    (Operator::Minus, Value::Number(l), Value::Number(r)) => Value::Number(l - r),
+                    (Operator::Multiply, Value::Number(l), Value::Number(r)) => Value::Number(l * r),
+                    (Operator::Divide, Value::Number(l), Value::Number(r)) => Value::Number(l / r),
+                    (Operator::LessThan, Value::Number(l), Value::Number(r)) => Value::Boolean(l < r),
+                    (Operator::LessThanEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l <= r),
+                    (Operator::GreaterThan, Value::Number(l), Value::Number(r)) => Value::Boolean(l > r),
+                    (Operator::GreaterThanEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l >= r),
+                    (Operator::BitAnd, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) & (r as i64)) as f64),
+                    (Operator::BitOr, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) | (r as i64)) as f64),
+                    (Operator::BitXor, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) ^ (r as i64)) as f64),
+                    (Operator::LeftShift, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) << (r as i64)) as f64),
+                    (Operator::RightShift, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) >> (r as i64)) as f64),
+                    (Operator::LogicalAnd, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l && r),
+                    (Operator::LogicalOr, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l || r),
+                    (Operator::LogicalEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l == r),
+                    (Operator::LogicalEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l == r),
+                    (Operator::LogicalEqual, Value::String(l), Value::String(r)) => Value::Boolean(l == r),
+                    (Operator::LogicalNotEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l != r),
+                    (Operator::LogicalNotEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l != r),
+                    (Operator::LogicalNotEqual, Value::String(l), Value::String(r)) => Value::Boolean(l != r),
                     _ => return Err(RuntimeException::new(format!("Invalid binary operation: {} {} {}", lval, op, rval), left))
                 };
                 return Ok(Some(result));
@@ -95,9 +95,9 @@ impl Evaluatable for Expression {
             ExpressionKind::Unary(op, expr) => {
                 let val = expr.evaluate(env)?.unwrap();
                 let result = match (op, val.clone()) {
-                    (UnaryOperator::Negative, Value::Number(n)) => Value::Number(-n),
-                    (UnaryOperator::LogicalNot, Value::Boolean(b)) => Value::Boolean(!b),
-                    (UnaryOperator::BitNot, Value::Number(n)) => Value::Number(!(n as i64) as f64),
+                    (Operator::Negative, Value::Number(n)) => Value::Number(-n),
+                    (Operator::LogicalNot, Value::Boolean(b)) => Value::Boolean(!b),
+                    (Operator::BitNot, Value::Number(n)) => Value::Number(!(n as i64) as f64),
                     _ => return Err(RuntimeException::new(format!("Invalid unary operation: {}{}", op, val), expr))
                 };
                 return Ok(Some(result));

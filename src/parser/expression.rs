@@ -4,13 +4,13 @@ use anyhow::bail;
 
 use crate::lexer::{SourcePosition, TokenType};
 
-use super::{token_stream::TokenStream, BinaryOperator, ParseResult, UnaryOperator};
+use super::{token_stream::TokenStream, Operator, ParseResult};
 
 #[derive(Clone)]
 pub enum ASTExpressionKind {
     Ternary(Box<ASTExpression>, Box<ASTExpression>, Box<ASTExpression>),
-    Binary(BinaryOperator, Box<ASTExpression>, Box<ASTExpression>),
-    Unary(UnaryOperator, Box<ASTExpression>),
+    Binary(Operator, Box<ASTExpression>, Box<ASTExpression>),
+    Unary(Operator, Box<ASTExpression>),
     Call(Box<ASTExpression>, Vec<ASTExpression>),
     MemberAccess(Box<ASTExpression>, String),
     Identifier(String),
@@ -67,44 +67,42 @@ impl ASTExpression {
     }
 }
 
-fn next_binary_operator(stream: &mut TokenStream, prev_op: Option<BinaryOperator>) -> ParseResult<BinaryOperator> {
+fn next_operator(stream: &mut TokenStream, prev_op: Option<Operator>) -> ParseResult<Operator> {
     let token = stream.next()?.clone();
     let res = match (prev_op, &token.kind) {
-        (None, TokenType::LessThan) => next_binary_operator(stream, Some(BinaryOperator::LessThan)),
-        (None, TokenType::GreaterThan) => next_binary_operator(stream, Some(BinaryOperator::GreaterThan)),
-        (None, TokenType::Plus) => next_binary_operator(stream, Some(BinaryOperator::Plus)),
-        (None, TokenType::Minus) => next_binary_operator(stream, Some(BinaryOperator::Minus)),
-        (None, TokenType::Multiply) => next_binary_operator(stream, Some(BinaryOperator::Multiply)),
-        (None, TokenType::Divide) => next_binary_operator(stream, Some(BinaryOperator::Divide)),
-        (None, TokenType::Amp) => next_binary_operator(stream, Some(BinaryOperator::BitAnd)),
-        (None, TokenType::Pipe) => next_binary_operator(stream, Some(BinaryOperator::BitOr)),
-        (None, TokenType::Hat) => next_binary_operator(stream, Some(BinaryOperator::BitXor)),
-        (None, TokenType::Equal) => next_binary_operator(stream, Some(BinaryOperator::Assign(None))),
-        (None, TokenType::Exclamation) => {
-            stream.expect(TokenType::Equal)?;
-            Ok(BinaryOperator::LogicalNotEqual)
-        },
-        (None, TokenType::Question) => Ok(BinaryOperator::Ternary),
+        (None, TokenType::LessThan) => next_operator(stream, Some(Operator::LessThan)),
+        (None, TokenType::GreaterThan) => next_operator(stream, Some(Operator::GreaterThan)),
+        (None, TokenType::Plus) => next_operator(stream, Some(Operator::Plus)),
+        (None, TokenType::Minus) => next_operator(stream, Some(Operator::Minus)),
+        (None, TokenType::Multiply) => next_operator(stream, Some(Operator::Multiply)),
+        (None, TokenType::Divide) => next_operator(stream, Some(Operator::Divide)),
+        (None, TokenType::Amp) => next_operator(stream, Some(Operator::BitAnd)),
+        (None, TokenType::Pipe) => next_operator(stream, Some(Operator::BitOr)),
+        (None, TokenType::Hat) => next_operator(stream, Some(Operator::BitXor)),
+        (None, TokenType::Equal) => next_operator(stream, Some(Operator::Assign(None))),
+        (None, TokenType::Exclamation) => next_operator(stream, Some(Operator::LogicalNot)),
+        (None, TokenType::Tilde) => Ok(Operator::BitNot),
+        (None, TokenType::Question) => Ok(Operator::Ternary),
+        (None, TokenType::LeftParenthesis) => Ok(Operator::Parenthesis),
+        (None, TokenType::Dot) => Ok(Operator::MemberAccess),
 
-        (Some(BinaryOperator::LessThan), TokenType::LessThan) => next_binary_operator(stream, Some(BinaryOperator::LeftShift)),
-        (Some(BinaryOperator::GreaterThan), TokenType::GreaterThan) => next_binary_operator(stream, Some(BinaryOperator::RightShift)),
-        (Some(BinaryOperator::BitAnd), TokenType::Amp) => next_binary_operator(stream, Some(BinaryOperator::LogicalAnd)),
-        (Some(BinaryOperator::BitOr), TokenType::Pipe) => next_binary_operator(stream, Some(BinaryOperator::LogicalOr)),
-        
-        (Some(BinaryOperator::LogicalOr), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::LogicalOr)),
-        (Some(BinaryOperator::LogicalAnd), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::LogicalAnd)),
-        (Some(BinaryOperator::Plus), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::Plus)),
-        (Some(BinaryOperator::Minus), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::Minus)),
-        (Some(BinaryOperator::Multiply), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::Multiply)),
-        (Some(BinaryOperator::Divide), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::Divide)),
-        (Some(BinaryOperator::BitAnd), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::BitAnd)),
-        (Some(BinaryOperator::BitOr), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::BitOr)),
-        (Some(BinaryOperator::BitXor), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::BitXor)),
-        (Some(BinaryOperator::LeftShift), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::LeftShift)),
-        (Some(BinaryOperator::RightShift), TokenType::Equal) => Ok(BinaryOperator::assign(BinaryOperator::RightShift)),
-        (Some(BinaryOperator::Assign(None)), TokenType::Equal) => Ok(BinaryOperator::LogicalEqual),
-        (Some(BinaryOperator::LessThan), TokenType::Equal) => Ok(BinaryOperator::LessThanEqual),
-        (Some(BinaryOperator::GreaterThan), TokenType::Equal) => Ok(BinaryOperator::GreaterThanEqual),
+        (Some(Operator::LessThan), TokenType::LessThan) => next_operator(stream, Some(Operator::LeftShift)),
+        (Some(Operator::GreaterThan), TokenType::GreaterThan) => next_operator(stream, Some(Operator::RightShift)),
+        (Some(Operator::BitAnd), TokenType::Amp) => next_operator(stream, Some(Operator::LogicalAnd)),
+        (Some(Operator::BitOr), TokenType::Pipe) => next_operator(stream, Some(Operator::LogicalOr)),
+        (Some(Operator::LogicalNot), TokenType::Equal) => Ok(Operator::LogicalNotEqual),
+
+        (Some(op @ (
+            Operator::LogicalOr | Operator::LogicalAnd |
+            Operator::Plus | Operator::Minus |
+            Operator::Multiply | Operator::Divide |
+            Operator::BitAnd | Operator::BitOr | Operator::BitXor |
+            Operator::LeftShift | Operator::RightShift
+        )), TokenType::Equal) => Ok(Operator::assign(op)),
+
+        (Some(Operator::Assign(None)), TokenType::Equal) => Ok(Operator::LogicalEqual),
+        (Some(Operator::LessThan), TokenType::Equal) => Ok(Operator::LessThanEqual),
+        (Some(Operator::GreaterThan), TokenType::Equal) => Ok(Operator::GreaterThanEqual),
         (Some(op), _) => {
             stream.back();
             Ok(op)
@@ -115,91 +113,110 @@ fn next_binary_operator(stream: &mut TokenStream, prev_op: Option<BinaryOperator
     return res;
 }
 
-fn peek_binary_operator(stream: &mut TokenStream, look_ahead: usize) -> ParseResult<BinaryOperator> {
+fn peek_operator(stream: &mut TokenStream, look_ahead: usize) -> ParseResult<Operator> {
     stream.save_position();
     if look_ahead == 1 {
         stream.next()?;
     }
-    let res = next_binary_operator(stream, None);
+    let res = next_operator(stream, None);
     stream.restore_position();
     return res;
 }
 
-// A half-baked Pratt parser that handles binary and ternary operators like a pratt parser,
-// but declines back to a recursive descent parser for unary and postfix operators.
-fn parse_expression(stream: &mut TokenStream, parent_precedence: u8) -> ParseResult<ASTExpression> {
-    let mut left = parse_unary_expression(stream)?;
-    let pos = left.pos.clone();
+// Pratt parser
+fn parse_expression(stream: &mut TokenStream, min_precedence: u8) -> ParseResult<ASTExpression> {
+    let mut left = match peek_operator(stream, 0) {
+        Ok(op) => match op.prefix_precedence() {
+            Some(_) => parse_prefix_expression(stream)?,
+            _ => bail!("Unexpected operator {}", op)
+        },
+        _ => parse_primary_expression(stream)?
+    };
 
-    while let Ok(op) = peek_binary_operator(stream, 0) {
-        if op.precedence() < parent_precedence || (op.is_left_associative() && op.precedence() == parent_precedence) {
-            break;
-        }
-        next_binary_operator(stream, None)?;
-
-        // Special handling for ternary operator
-        if let BinaryOperator::Ternary = op {
-            let then = parse_expression(stream, 0)?;
-            stream.expect(TokenType::Colon)?;
-            let otherwise = parse_expression(stream, 0)?;
-            let kind = ASTExpressionKind::Ternary(Box::from(left), Box::from(then), Box::from(otherwise));
-            left = ASTExpression::new(kind, pos.clone());
+    while let Ok(op) = peek_operator(stream, 0) {
+        if let Some(prec) = op.postfix_precedence() {
+            if prec < min_precedence || (op.is_left_associative() && prec == min_precedence) {
+                break;
+            }
+            left = parse_postfix_expression(stream, left)?;
             continue;
         }
 
-        let mut right = parse_expression(stream, op.precedence())?;
-
-        // Normalize compound assignment, for example convert (a += 1) to (a = a + 1)
-        if let BinaryOperator::Assign(Some(assign_op)) = &op {
-            let kind = ASTExpressionKind::Binary(assign_op.as_ref().clone(), Box::from(left.clone()), Box::from(right));
-            right = ASTExpression::new(kind, pos.clone());
+        if let Some(prec) = op.infix_precedence() {
+            if prec < min_precedence || (op.is_left_associative() && prec == min_precedence) {
+                break;
+            }
+            left = parse_infix_expression(stream, left)?;
+            continue;
         }
 
-        let kind = ASTExpressionKind::Binary(op, Box::from(left), Box::from(right));
-        left = ASTExpression::new(kind, pos.clone());
+        break;
     }
 
     return Ok(left);
 }
 
-fn parse_unary_expression(stream: &mut TokenStream) -> ParseResult<ASTExpression> {
-    let next = stream.peek(0)?.clone();
-    let pos = next.pos.clone();
+fn parse_infix_expression(stream: &mut TokenStream, expr: ASTExpression) -> ParseResult<ASTExpression> {
+    let pos = stream.peek(0)?.pos.clone();
+    let op = next_operator(stream, None)?;
 
-    let unary_op = match next.kind {
-        TokenType::Minus => UnaryOperator::Negative,
-        TokenType::Exclamation => UnaryOperator::LogicalNot,
-        TokenType::Tilde => UnaryOperator::BitNot,
-        _ => return parse_postfix_expression(stream)
+    let kind = match &op {
+        Operator::Assign(Some(assign_op)) => {
+            // Normalize compound assignment, for example convert (a += 1) to (a = a + 1)
+            let mut right = parse_expression(stream, op.infix_precedence().unwrap())?;
+            let kind = ASTExpressionKind::Binary(assign_op.as_ref().clone(), Box::from(expr.clone()), Box::from(right));
+            right = ASTExpression::new(kind, pos.clone());
+            ASTExpressionKind::Binary(op, Box::from(expr), Box::from(right))
+        },
+        Operator::MemberAccess => {
+            let member = stream.expect(TokenType::Identifier)?.lexeme.clone();
+            ASTExpressionKind::MemberAccess(Box::from(expr), member)
+        },
+        Operator::Ternary => {
+            let left = parse_expression(stream, 0)?;
+            stream.expect(TokenType::Colon)?;
+            let right = parse_expression(stream, 0)?;
+            ASTExpressionKind::Ternary(Box::from(expr), Box::from(left), Box::from(right))
+        },
+        _ => {
+            let right = parse_expression(stream, op.infix_precedence().unwrap())?;
+            ASTExpressionKind::Binary(op, Box::from(expr), Box::from(right))
+        }
     };
 
-    let kind = ASTExpressionKind::Unary(unary_op, Box::from(parse_unary_expression(stream)?));
+    return Ok(ASTExpression::new(kind, pos.clone()));
+}
+
+fn parse_prefix_expression(stream: &mut TokenStream) -> ParseResult<ASTExpression> {
+    let pos = stream.peek(0)?.pos.clone();
+    let op = next_operator(stream, None)?;
+    let kind = match &op {
+        Operator::Parenthesis => {
+            let expr = Box::from(parse_expression(stream, 0)?);
+            stream.expect(TokenType::RightParenthesis)?;
+            expr.kind
+        },
+        _ => {
+            let right = Box::from(parse_expression(stream, op.prefix_precedence().unwrap())?);
+            ASTExpressionKind::Unary(op, right)
+        }
+    };
     return Ok(ASTExpression::new(kind, pos));
 }
 
-fn parse_postfix_expression(stream: &mut TokenStream) -> ParseResult<ASTExpression> {
-    let mut expr = parse_primary_expression(stream)?;
-
-    loop {
-        expr = match stream.peek(0)?.kind {
-            TokenType::LeftParenthesis => parse_postfix_call_expression(stream, expr)?,
-            TokenType::Dot => parse_postfix_access_expression(stream, expr)?,
-            _ => break
-        }
-    }
-
-    return Ok(expr);
-}
-
-fn parse_postfix_call_expression(stream: &mut TokenStream, expr: ASTExpression) -> ParseResult<ASTExpression> {
+fn parse_postfix_expression(stream: &mut TokenStream, expr: ASTExpression) -> ParseResult<ASTExpression> {
     let pos = stream.peek(0)?.pos.clone();
-    let args = parse_call_args(stream)?;
-    return Ok(ASTExpression::new(ASTExpressionKind::Call(Box::from(expr), args), pos));
+    let op = next_operator(stream, None)?;
+    match op {
+        Operator::Parenthesis => {
+            let args = parse_call_args(stream)?;
+            Ok(ASTExpression::new(ASTExpressionKind::Call(Box::from(expr), args), pos))
+        },
+        _ => unreachable!()
+    }
 }
 
 fn parse_call_args(stream: &mut TokenStream) -> ParseResult<Vec<ASTExpression>> {
-    stream.expect(TokenType::LeftParenthesis)?;
-
     let mut args: Vec<ASTExpression> = Vec::new();
     while !matches!(&stream.peek_type(0)?, TokenType::RightParenthesis | TokenType::EOF) {
         args.push(parse_expression(stream, 0)?);
@@ -211,12 +228,6 @@ fn parse_call_args(stream: &mut TokenStream) -> ParseResult<Vec<ASTExpression>> 
 
     stream.expect(TokenType::RightParenthesis)?;
     return Ok(args);
-}
-
-fn parse_postfix_access_expression(stream: &mut TokenStream, expr: ASTExpression) -> ParseResult<ASTExpression> {
-    let pos = stream.expect(TokenType::Dot)?.pos.clone();
-    let member = stream.expect(TokenType::Identifier)?.lexeme.clone();
-    return Ok(ASTExpression::new(ASTExpressionKind::MemberAccess(Box::from(expr), member), pos));
 }
 
 fn parse_primary_expression(stream: &mut TokenStream) -> ParseResult<ASTExpression> {
