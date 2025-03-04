@@ -14,17 +14,26 @@ pub enum Value {
     Object(Rc<Object>)
 }
 
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        return write!(f, "{}", match self {
+impl Value {
+    pub fn stringify(&self) -> String {
+        return match self {
             Value::Void => String::from("<void>"),
             Value::Number(n) => n.to_string(),
             Value::String(s) => format!("{}", s),
             Value::Boolean(b) => b.to_string(),
             Value::Class(_, _) => String::from("<class>"),
-            Value::Function(_, _) => String::from("<function>"),
-            Value::BuiltinFunction(_, _) => String::from("<builtin function>"),
+            Value::Function(_, _) => String::from("<fn>"),
+            Value::BuiltinFunction(_, _) => String::from("<builtin fn>"),
             Value::Object(_) => String::from("<object>")
+        };
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        return write!(f, "{}", match self {
+            Value::String(s) => format!("\"{}\"", s),
+            _ => self.stringify()
         });
     }
 }

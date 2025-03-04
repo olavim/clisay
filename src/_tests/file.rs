@@ -2,7 +2,8 @@ use super::{test_file, test_folder};
 
 #[test]
 fn classes() {
-    test_file("tests/classes.say");
+    // test_file("tests/classes/field_hiding.say");
+    test_folder("tests/classes");
 }
 
 #[test]

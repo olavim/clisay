@@ -58,15 +58,15 @@ impl Resolver {
         return self.scope_stack.iter().rev().find_map(|s| s.get(name).cloned());
     }
 
-    fn get_class_symbol(&self, name: &str) -> Option<SymbolId> {
-        return self.scope_stack[..self.class_scope + 1].iter().rev().find_map(|s| s.get(name).cloned());
-    }
-
     fn ensure_symbol(&self, name: &str) -> AnalyzerResult<SymbolId> {
         return match self.get_symbol(name) {
             Some(value) => Ok(value),
             None => bail!("{} is not declared", name)
         };
+    }
+
+    fn get_class_symbol(&self, name: &str) -> Option<SymbolId> {
+        return self.scope_stack[..self.class_scope + 1].iter().rev().find_map(|s| s.get(name).cloned());
     }
 
     fn ensure_class_symbol(&self, name: &str) -> AnalyzerResult<SymbolId> {
@@ -147,7 +147,6 @@ impl Resolver {
             },
             StatementKind::Class(decl) => {
                 let class_sid = self.declare_symbol(&decl.name);
-                let super_sid = self.declare_symbol("super");
 
                 let superclass_sid = match &decl.superclass {
                     Some(name) => Some(self.ensure_symbol(name)?),
@@ -155,42 +154,55 @@ impl Resolver {
                 };
 
                 self.enter_scope();
+                let enclosing_class_scope = self.class_scope;
                 self.class_scope = self.scope_stack.len() - 1;
 
-                let mut methods: Vec<Function> = Vec::new();
+                let mut symbols: HashMap<String, SymbolId> = HashMap::new();
+                let mut methods: HashMap<usize, Function> = HashMap::new();
+                let mut fields: Vec<usize> = Vec::new();
 
-                let fields: Vec<SymbolId> = decl.fields.iter()
-                    .map(|field| self.declare_symbol(field))
-                    .collect();
+                if let Some(sid) = &superclass_sid {
+                    symbols.insert(String::from("super"), sid.clone());
+                    self.declare_symbol("super");
+                }
+
+                for field in &decl.fields {
+                    let sid = self.declare_symbol(&field);
+                    fields.push(sid.symbol);
+                    symbols.insert(sid.name.clone(), sid);
+                }
 
                 for method in &decl.methods {
                     let method_sid = self.declare_symbol(&method.name);
                     self.enter_scope();
                     self.declare_this();
+                    self.declare_symbol("super");
                     let resolved_params = method.params.iter().map(|param| self.declare_symbol(param)).collect();
                     let stmt = Box::new(self.resolve_stmt(&method.body)?);
                     self.exit_scope();
 
-                    methods.push(Function::new(method_sid, resolved_params, stmt));
+                    methods.insert(method_sid.symbol, Function::new(method_sid.clone(), resolved_params, stmt));
+                    symbols.insert(method.name.clone(), method_sid);
                 }
 
                 self.enter_scope();
                 let init_params = decl.init.params.iter().map(|p| self.declare_symbol(p)).collect();
                 self.declare_this();
                 let init_body = Box::new(self.resolve_stmt(&decl.init.body)?);
-                let init_fn = Function::new(self.declare_symbol("init"), init_params, init_body);
+                let init_fn = Function::new(self.declare_symbol(&decl.init.name), init_params, init_body);
                 self.exit_scope();
 
                 self.exit_scope();
 
                 let class = ClassDeclaration {
-                    super_sid,
                     superclass_sid,
                     init: init_fn,
+                    symbols,
                     methods,
                     fields
                 };
 
+                self.class_scope = enclosing_class_scope;
                 Ok(Statement::Class(class_sid, class))
             }
         };
@@ -234,7 +246,7 @@ impl Resolver {
                 Ok(_) => ExpressionKind::This,
                 _ => bail!("this can only be used in a class context")
             },
-            ASTExpressionKind::Super(_) => match self.ensure_symbol("super") {
+            ASTExpressionKind::Super => match self.ensure_symbol("super") {
                 Ok(_) => ExpressionKind::Super,
                 _ => bail!("super can only be used in a class context")
             },

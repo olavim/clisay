@@ -18,7 +18,7 @@ impl Function {
 impl Callable for Function {
     fn call(&self, env: &Rc<Environment>, args: Vec<Value>, expr: &Expression) -> EvalResult {
         if self.params.len() != args.len() {
-            let msg = format!("Expected {} arguments, got {}", self.params.len(), args.len());
+            let msg = format!("{} expects {} arguments, but got {}", self.sid.name, self.params.len(), args.len());
             return Err(RuntimeException::new(msg, expr));
         }
 
@@ -50,7 +50,7 @@ impl Callable for BuiltinFunction {
     fn call(&self, _env: &Rc<Environment>, args: Vec<Value>, _expr: &Expression) -> EvalResult {
         return match &self {
             BuiltinFunction::Print(out) => {
-                let value = format!("{}", &args[0]);
+                let value = format!("{}", &args[0].stringify());
                 // println!("{}", value);
                 out.as_ref().borrow_mut().push(value);
                 Ok(Some(Value::Void))

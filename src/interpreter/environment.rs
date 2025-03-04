@@ -32,7 +32,7 @@ impl Environment {
             },
             None => {
                 if let Some(env) = &self.parent {
-                    env.assign(sid, value)?;
+                    return env.assign(sid, value);
                 }
                 Ok(())
             }

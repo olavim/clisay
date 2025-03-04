@@ -20,8 +20,18 @@ impl Object {
         self.0.get_method(symbol)
     }
 
-    pub fn assign(&self, symbol: &usize, value: Value) {
-        let _ = self.1.borrow_mut().insert(*symbol, value);
+    pub fn assign(&self, sid: &SymbolId, value: Value) -> Result<(), String> {
+        if self.0.get_method(&sid.symbol).is_some() {
+            return Err(format!("Cannot assign to instance method '{}'", sid.name));
+        }
+
+        return match self.1.borrow_mut().get_mut(&sid.symbol) {
+            Some(field) => {
+                *field = value;
+                Ok(())
+            },
+            None => Err(format!("Instance does not contain field '{}'", sid.name))
+        }
     }
 
     pub fn insert_symbol(&self, symbol: &usize, value: Value) {

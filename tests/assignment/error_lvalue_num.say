@@ -1,1 +1,1 @@
-1 = 2; // [line 1] error: Invalid assignment
+1 = 2; // error: Invalid assignment

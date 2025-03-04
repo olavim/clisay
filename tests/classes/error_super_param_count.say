@@ -1,0 +1,21 @@
+class A { init(arg) {} }
+class B : A {}
+B(); // error: A.init expects 1 arguments, but got 0
+
+// @split
+
+class A { init(arg) {} }
+class B : A { init(arg) {} }
+B(1); // error: A.init expects 1 arguments, but got 0
+
+// @split
+
+class A { init(arg) {} }
+class B : A { init(arg) { super(arg, 2); } }
+B(1); // error: A.init expects 1 arguments, but got 2
+
+// @split
+
+class A { init(arg) {} }
+class B : A { init(arg) { super(arg); } }
+B(); // error: B.init expects 1 arguments, but got 0

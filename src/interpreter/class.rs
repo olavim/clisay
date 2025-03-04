@@ -4,11 +4,11 @@ use super::{callable::Callable, environment::Environment, expression::Expression
 
 #[derive(Clone)]
 pub struct ClassDeclaration {
-    pub super_sid: SymbolId,
     pub superclass_sid: Option<SymbolId>,
     pub init: Function,
-    pub fields: Vec<SymbolId>,
-    pub methods: Vec<Function>
+    pub symbols: HashMap<String, SymbolId>,
+    pub methods: HashMap<usize, Function>,
+    pub fields: Vec<usize>,
 }
 
 #[derive(Clone)]

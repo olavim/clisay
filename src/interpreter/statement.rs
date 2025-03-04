@@ -76,19 +76,6 @@ impl Evaluatable for Statement {
                 return Ok(None);
             },
             Statement::Class(sid, class_decl) => {
-                let mut symbols: HashMap<String, SymbolId> = HashMap::new();
-                let mut methods: HashMap<usize, Function> = HashMap::new();
-                let mut fields: Vec<usize> = Vec::new();
-
-                for field_sid in &class_decl.fields {
-                    symbols.insert(field_sid.name.clone(), field_sid.clone());
-                    fields.push(field_sid.symbol);
-                }
-                for method in &class_decl.methods {
-                    symbols.insert(method.sid.name.clone(), method.sid.clone());
-                    methods.insert(method.sid.symbol, method.clone());
-                }
-
                 let superclass = match &class_decl.superclass_sid {
                     Some(superclass_sid) => match env.get(&superclass_sid.symbol) {
                         Some(Value::Class(_, superclass)) => Some(superclass.clone()),
@@ -97,17 +84,13 @@ impl Evaluatable for Statement {
                     None => None
                 };
 
-                if let Some(sid) = &class_decl.superclass_sid {
-                    symbols.insert(String::from("super"), sid.clone());
-                }
-
                 let class = Class {
                     name: sid.name.clone(),
                     superclass,
                     init: class_decl.init.clone(),
-                    symbols,
-                    fields,
-                    methods
+                    symbols: class_decl.symbols.clone(),
+                    fields: class_decl.fields.clone(),
+                    methods: class_decl.methods.clone()
                 };
 
                 let closure = Rc::new(Environment::from(env));

@@ -1,0 +1,57 @@
+1 / true; // error: Operator '/' cannot be applied to operands '1' and 'true'
+
+// @split
+
+true / "str"; // error: Operator '/' cannot be applied to operands 'true' and '"str"'
+
+// @split
+
+1 / "str"; // error: Operator '/' cannot be applied to operands '1' and '"str"'
+
+// @split
+
+fn func() {}
+func / 1; // error: Operator '/' cannot be applied to operands '<fn>' and '1'
+
+// @split
+
+fn func() {}
+func / "str"; // error: Operator '/' cannot be applied to operands '<fn>' and '"str"'
+
+// @split
+
+fn func() {}
+func / true; // error: Operator '/' cannot be applied to operands '<fn>' and 'true'
+
+// @split
+
+fn func1() {}
+fn func2() {}
+func1 / func2; // error: Operator '/' cannot be applied to operands '<fn>' and '<fn>'
+
+// @split
+
+class A {}
+A / 1; // error: Operator '/' cannot be applied to operands '<class>' and '1'
+
+// @split
+
+class A {}
+A / "str"; // error: Operator '/' cannot be applied to operands '<class>' and '"str"'
+
+// @split
+
+class A {}
+A / true; // error: Operator '/' cannot be applied to operands '<class>' and 'true'
+
+// @split
+
+class A {}
+fn func() {}
+A / func; // error: Operator '/' cannot be applied to operands '<class>' and '<fn>'
+
+// @split
+
+class A {}
+class B {}
+A / B; // error: Operator '/' cannot be applied to operands '<class>' and '<class>'

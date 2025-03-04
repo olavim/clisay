@@ -1,0 +1,13 @@
+class B {
+    me = "B";
+    fn getMe() { return this.me; }
+}
+
+class A {
+    me = "A";
+    fn getMe() { return this.me; }
+}
+
+say objA = A();
+say objB = B();
+objA.getMe = objB.getMe; // error: Cannot assign to instance method 'getMe'

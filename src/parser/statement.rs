@@ -69,11 +69,11 @@ impl ASTStatement {
 }
 
 fn parse_compound_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
-    let pos = stream.peek(0)?.pos.clone();
-    let in_block = stream.next_if(TokenType::LeftCurlyBracket)?.is_some();
+    let pos = stream.peek(0).pos.clone();
+    let in_block = stream.next_if(TokenType::LeftCurlyBracket).is_some();
     let mut statements: Vec<ASTStatement> = Vec::new();
 
-    while !matches!(&stream.peek(0)?.kind, TokenType::RightCurlyBracket | TokenType::EOF) {
+    while !matches!(&stream.peek(0).kind, TokenType::RightCurlyBracket | TokenType::EOF) {
         statements.push(parse_statement(stream)?);
     }
 
@@ -85,7 +85,7 @@ fn parse_compound_statement(stream: &mut TokenStream) -> ParseResult<ASTStatemen
 }
 
 fn parse_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
-    let statement = match stream.peek(0)?.kind {
+    let statement = match stream.peek(0).kind {
         TokenType::Return => parse_return_statement(stream)?,
         TokenType::Say => parse_say_statement(stream)?,
         TokenType::Fn => parse_fn_statement(stream)?,
@@ -101,8 +101,7 @@ fn parse_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
 fn parse_return_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
     let pos = stream.expect(TokenType::Return)?.pos.clone();
 
-    if let Ok(TokenType::Semicolon) = stream.peek_type(0) {
-        stream.next()?;
+    if let Some(_) = stream.next_if(TokenType::Semicolon) {
         return Ok(ASTStatement::new(StatementKind::Return(None), pos));
     }
 
@@ -116,8 +115,7 @@ fn parse_say_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
     let name = stream.expect(TokenType::Identifier)?.lexeme.clone();
 
     let mut value: Option<ASTExpression> = None;
-    if let Ok(TokenType::Equal) = stream.peek_type(0) {
-        stream.expect(TokenType::Equal)?;
+    if let Some(_) = stream.next_if(TokenType::Equal) {
         value = Some(ASTExpression::parse(stream)?);
     }
 
@@ -140,14 +138,14 @@ fn parse_callable_params(stream: &mut TokenStream) -> ParseResult<Vec<String>> {
     let mut seen_params: HashSet<String> = HashSet::new();
     let mut params = Vec::new();
 
-    while let Ok(TokenType::Identifier) = stream.peek_type(0) {
-        let name = String::from(stream.next()?.lexeme.clone());
+    while stream.match_next(TokenType::Identifier) {
+        let name = String::from(stream.next().lexeme.clone());
         if seen_params.contains(&name) {
             bail!("Duplicate parameter declaration: {}", name);
         }
         seen_params.insert(name.clone());
         params.push(name.clone());
-        stream.next_if(TokenType::Comma)?;
+        stream.next_if(TokenType::Comma);
     }
 
     stream.expect(TokenType::RightParenthesis)?;
@@ -164,9 +162,9 @@ fn parse_callable_decl_body(stream: &mut TokenStream) -> ParseResult<ASTStatemen
 fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
     let pos = stream.expect(TokenType::Class)?.pos.clone();
     let name = stream.expect(TokenType::Identifier)?.lexeme.clone();
-    let super_class = match stream.peek_type(0)? {
+    let superclass = match stream.peek(0).kind {
         TokenType::Colon => {
-            stream.next()?;
+            stream.next();
             Some(stream.expect(TokenType::Identifier)?.lexeme.clone())
         },
         _ => None
@@ -183,16 +181,15 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
     let mut init_parameters: Vec<String> = Vec::new();
     let mut init_body: Option<ASTStatement> = None;
 
-    while let Ok(token) = stream.peek(0) {
+    while !stream.match_next(TokenType::RightCurlyBracket) {
+        let token = stream.peek(0);
         let pos = token.pos.clone();
 
         match token.kind {
-            TokenType::RightCurlyBracket => break,
             TokenType::Identifier => {
-                let name = stream.next()?.lexeme.clone();
+                let name = stream.next().lexeme.clone();
                 let mut value: Option<ASTExpression> = None;
-                if let Ok(TokenType::Equal) = stream.peek_type(0) {
-                    stream.expect(TokenType::Equal)?;
+                if let Some(_) = stream.next_if(TokenType::Equal) {
                     value = Some(ASTExpression::parse(stream)?);
                 }
                 stream.expect(TokenType::Semicolon)?;
@@ -215,8 +212,8 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
                 init_parameters = parse_callable_params(stream)?;
                 stream.expect(TokenType::LeftCurlyBracket)?;
         
-                if let Ok(TokenType::Super) = stream.peek_type(0) {
-                    let pos = stream.next()?.pos.clone();
+                if let Some(token) = stream.next_if(TokenType::Super) {
+                    let pos = token.pos.clone();
                     let args = parse_call_args(stream)?;
                     let expr = ASTExpression::new(ASTExpressionKind::SuperCall(args), pos.clone());
                     stream.expect(TokenType::Semicolon)?;
@@ -227,17 +224,13 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
                 stream.expect(TokenType::RightCurlyBracket)?;
             },
             TokenType::Fn => {
-                match parse_fn_statement(stream)?.kind {
-                    StatementKind::Fn(fn_decl) => {
-                        if members.contains(&fn_decl.name) {
-                            bail!("Duplicate member declaration: {}", name);
-                        }
-    
-                        members.insert(fn_decl.name.clone());
-                        methods.push(fn_decl)
-                    },
-                    _ => bail!("Expected function declaration at {}", pos.clone())
+                let StatementKind::Fn(fn_decl) = parse_fn_statement(stream)?.kind else { unreachable!() };
+                if members.contains(&fn_decl.name) {
+                    bail!("Duplicate member declaration: {}", name);
                 }
+
+                members.insert(fn_decl.name.clone());
+                methods.push(fn_decl)
             },
             _ => bail!("Unexpected token {} at {}", token, pos.clone())
         };
@@ -249,6 +242,9 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
 
     if let Some(supercall) = &init_supercall {
         init_stmts.push(supercall.clone());
+    } else if superclass.is_some() {
+        let expr = ASTExpression::new(ASTExpressionKind::SuperCall(Vec::new()), pos.clone());
+        init_stmts.push(ASTStatement::new(StatementKind::Expression(expr), pos.clone()));
     }
 
     for field in &fields {
@@ -267,14 +263,14 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
     }
 
     let init = ASTFunctionDeclaration {
-        name: String::from("init"),
+        name: format!("{}.init", name),
         params: init_parameters,
         body: Box::new(ASTStatement::new(StatementKind::Compound(init_stmts), pos.clone()))
     };
 
     let class_decl = ASTClassDeclaration { 
         name, 
-        superclass: super_class, 
+        superclass, 
         init, 
         fields: fields.iter().map(|field| field.name.clone()).collect(), 
         methods 
@@ -286,12 +282,11 @@ fn parse_call_args(stream: &mut TokenStream) -> ParseResult<Vec<ASTExpression>> 
     stream.expect(TokenType::LeftParenthesis)?;
 
     let mut args: Vec<ASTExpression> = Vec::new();
-    while !matches!(&stream.peek_type(0)?, TokenType::RightParenthesis | TokenType::EOF) {
-        args.push(ASTExpression::parse(stream)?);
-
-        if *stream.peek_type(0)? != TokenType::RightParenthesis {
+    while !stream.match_next(TokenType::RightParenthesis) {
+        if args.len() > 0 {
             stream.expect(TokenType::Comma)?;
         }
+        args.push(ASTExpression::parse(stream)?);
     }
 
     stream.expect(TokenType::RightParenthesis)?;
@@ -302,11 +297,8 @@ fn parse_if_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
     let pos = stream.expect(TokenType::If)?.pos.clone();
     let condition = ASTExpression::parse(stream)?;
     let then = Box::from(parse_compound_statement(stream)?);
-    let otherwise = match stream.peek_type(0) {
-        Ok(TokenType::Else) => {
-            stream.next()?;
-            Some(Box::from(parse_compound_statement(stream)?))
-        },
+    let otherwise = match stream.next_if(TokenType::Else) {
+        Some(_) => Some(Box::from(parse_compound_statement(stream)?)),
         _ => None
     };
 

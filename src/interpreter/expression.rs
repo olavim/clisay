@@ -39,7 +39,7 @@ impl Evaluatable for Expression {
                 match cond.evaluate(env)?.unwrap() {
                     Value::Boolean(true) => left.evaluate(env),
                     Value::Boolean(false) => right.evaluate(env),
-                    val => Err(RuntimeException::new(format!("Expected boolean, got {}", val), left))
+                    val => Err(RuntimeException::new(format!("Expected boolean, got {}", val), self))
                 }
             },
             ExpressionKind::Binary(Operator::Assign(_), left, right) => {
@@ -52,13 +52,15 @@ impl Evaluatable for Expression {
                     ExpressionKind::MemberAccess(obj_expr, member, sid) => match obj_expr.evaluate(env)?.unwrap() {
                         Value::Object(obj_ref) => {
                             let Some(sid) = obj_ref.resolve_symbol(member, sid) else {
-                                return Err(RuntimeException::new(format!("{} has no member {}", obj_ref.0.name, member), obj_expr))
+                                return Err(RuntimeException::new(format!("{} has no member {}", obj_ref.0.name, member), self))
                             };
 
-                            obj_ref.assign(&sid.symbol, rval.clone());
+                            if let Err(err) = obj_ref.assign(&sid, rval.clone()) {
+                                return Err(RuntimeException::new(err, self));
+                            }
                             return Ok(Some(rval));
                         },
-                        value => return Err(RuntimeException::new(format!("{} is not an object", value), obj_expr))
+                        value => return Err(RuntimeException::new(format!("{} is not an object", value), self))
                     },
                     _ => return Err(RuntimeException::new("Invalid assignment", left))
                 }
@@ -88,7 +90,7 @@ impl Evaluatable for Expression {
                     (Operator::LogicalNotEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l != r),
                     (Operator::LogicalNotEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l != r),
                     (Operator::LogicalNotEqual, Value::String(l), Value::String(r)) => Value::Boolean(l != r),
-                    _ => return Err(RuntimeException::new(format!("Invalid binary operation: {} {} {}", lval, op, rval), left))
+                    _ => return Err(RuntimeException::new(format!("Operator '{}' cannot be applied to operands '{}' and '{}'", op, lval, rval), self))
                 };
                 return Ok(Some(result));
             },
@@ -98,33 +100,57 @@ impl Evaluatable for Expression {
                     (Operator::Negative, Value::Number(n)) => Value::Number(-n),
                     (Operator::LogicalNot, Value::Boolean(b)) => Value::Boolean(!b),
                     (Operator::BitNot, Value::Number(n)) => Value::Number(!(n as i64) as f64),
-                    _ => return Err(RuntimeException::new(format!("Invalid unary operation: {}{}", op, val), expr))
+                    _ => return Err(RuntimeException::new(format!("Invalid unary operation: {}{}", op, val), self))
                 };
                 return Ok(Some(result));
             },
             ExpressionKind::Call(expr, args) => eval_call(env, expr, args),
-            ExpressionKind::MemberAccess(expr, member, sid) => {
-                let value = expr.evaluate(env)?.unwrap();
-                let obj = match value.clone() {
-                    Value::Object(obj_ref) => obj_ref,
-                    _ => return Err(RuntimeException::new(format!("{} is not an object", value), expr))
-                };
-                let sid = match obj.resolve_symbol(member, sid) {
-                    Some(symbol) => symbol,
-                    None => return Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), expr))
-                };
-                
-                if let Some(val) = obj.get_field(&sid.symbol) {
-                    return Ok(Some(val.clone()));
+            ExpressionKind::MemberAccess(expr, member, sid) => match &expr.kind {
+                ExpressionKind::Super => {
+                    let Some(Value::Object(obj)) = env.get(&0) else {
+                        unreachable!("super used outside of class");
+                    };
+                    let superclass = obj.0.superclass.clone().unwrap();
+                    let sid = match superclass.get_symbol(member) {
+                        Some(sid) => sid,
+                        None => return Err(RuntimeException::new(format!("{} has no member {}", superclass.name, member), expr))
+                    };
+                    
+                    if let Some(val) = obj.get_field(&sid.symbol) {
+                        return Ok(Some(val.clone()));
+                    }
+    
+                    if let Some(method) = obj.get_method(&sid.symbol) {
+                        let closure = Rc::new(Environment::from(env));
+                        closure.insert(0, Value::Object(obj.clone()));
+                        return Ok(Some(Value::Function(closure, Rc::new(method.clone()))));
+                    }
+    
+                    unreachable!("{} has no member {}", obj.0.name.clone(), member);
+                },
+                _ => {
+                    let value = expr.evaluate(env)?.unwrap();
+                    let obj = match value.clone() {
+                        Value::Object(obj_ref) => obj_ref,
+                        _ => return Err(RuntimeException::new(format!("{} is not an object", value), expr))
+                    };
+                    let sid = match obj.resolve_symbol(member, sid) {
+                        Some(symbol) => symbol,
+                        None => return Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), self))
+                    };
+                    
+                    if let Some(val) = obj.get_field(&sid.symbol) {
+                        return Ok(Some(val.clone()));
+                    }
+    
+                    if let Some(method) = obj.get_method(&sid.symbol) {
+                        let closure = Rc::new(Environment::from(env));
+                        closure.insert(0, Value::Object(obj.clone()));
+                        return Ok(Some(Value::Function(closure, Rc::new(method.clone()))));
+                    }
+    
+                    Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), expr))
                 }
-
-                if let Some(method) = obj.get_method(&sid.symbol) {
-                    let closure = Rc::new(Environment::from(env));
-                    closure.insert(0, Value::Object(obj.clone()));
-                    return Ok(Some(Value::Function(closure, Rc::new(method.clone()))));
-                }
-
-                Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), expr))
             },
             ExpressionKind::Identifier(sid) => match env.get(&sid.symbol) {
                 Some(value) => Ok(Some(value.clone())),
@@ -154,10 +180,7 @@ impl Evaluatable for Expression {
                 Some(value) => Ok(Some(value.clone())),
                 _ => Err(RuntimeException::new("this does not refer to an object", self))
             },
-            ExpressionKind::Super => match env.get(&0) {
-                Some(value) => Ok(Some(value.clone())),
-                _ => Err(RuntimeException::new("this does not refer to an object", self))
-            },
+            ExpressionKind::Super => Err(RuntimeException::new("use of 'super' is not valid in this context", self)),
             ExpressionKind::SuperCall(args) => {
                 let Some(Value::Object(obj)) = env.get(&0) else {
                     unreachable!("super() called outside of class init method");
