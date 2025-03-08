@@ -58,8 +58,8 @@ pub fn run(ast: &AST) -> Result<Vec<String>, String> {
     let out = Rc::new(RefCell::new(Vec::new()));
     
     let globals = Rc::new(Environment::new());
-    globals.insert(0, Value::BuiltinFunction(globals.clone(), Rc::new(BuiltinFunction::Print(out.clone()))));
-    globals.insert(1, Value::BuiltinFunction(globals.clone(), Rc::new(BuiltinFunction::Time)));
+    globals.insert(1, Value::BuiltinFunction(globals.clone(), Rc::new(BuiltinFunction::Print(out.clone()))));
+    globals.insert(2, Value::BuiltinFunction(globals.clone(), Rc::new(BuiltinFunction::Time)));
 
     return match resolved_ast.stmt.evaluate(&globals) {
         Ok(_) => Ok(out.borrow().clone()),

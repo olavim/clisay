@@ -22,11 +22,12 @@ impl Callable for Function {
             return Err(RuntimeException::new(msg, expr));
         }
 
+        let closure = Rc::new(Environment::from(env));
         for (param, arg) in self.params.iter().zip(args) {
-            env.insert(param.symbol, arg.clone());
+            closure.insert(param.symbol, arg.clone());
         }
 
-        match self.body.evaluate(env) {
+        match self.body.evaluate(&closure) {
             Ok(Some(value)) => return Ok(Some(value)),
             Ok(None) => return Ok(Some(Value::Void)),
             Err(e) => return Err(RuntimeException::from(&self.sid.name, expr, e))
@@ -51,7 +52,7 @@ impl Callable for BuiltinFunction {
         return match &self {
             BuiltinFunction::Print(out) => {
                 let value = format!("{}", &args[0].stringify());
-                // println!("{}", value);
+                println!("{}", value);
                 out.as_ref().borrow_mut().push(value);
                 Ok(Some(Value::Void))
             },

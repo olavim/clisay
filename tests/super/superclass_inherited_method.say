@@ -1,0 +1,16 @@
+class A {
+    fn print() {
+        return "A";
+    }
+}
+
+class B : A {}
+
+class C : B {
+    fn printParent() {
+        return super.print();
+    }
+}
+
+say obj = C();
+print(obj.printParent()); // expect: A

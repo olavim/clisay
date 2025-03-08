@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use crate::{lexer::SourcePosition, parser::Operator};
 
-use super::{callable::Callable, environment::Environment, resolver::SymbolId, value::Value, EvalResult, Evaluatable, RuntimeException};
+use super::{callable::Callable, environment::Environment, object::Object, resolver::SymbolId, value::Value, EvalResult, Evaluatable, RuntimeException};
 
 #[derive(Clone)]
 pub struct Expression {
@@ -22,9 +22,9 @@ pub enum ExpressionKind {
     Binary(Operator, Box<Expression>, Box<Expression>),
     Unary(Operator, Box<Expression>),
     Call(Box<Expression>, Vec<Expression>),
-    MemberAccess(Box<Expression>, String, Option<SymbolId>),
+    MemberAccess(Box<Expression>, String),
     Identifier(SymbolId),
-    This,
+    This(SymbolId),
     Super,
     SuperCall(Vec<Expression>),
     Number(f64),
@@ -49,18 +49,19 @@ impl Evaluatable for Expression {
                         Ok(_) => return Ok(Some(rval)),
                         Err(err) => return Err(RuntimeException::new(err, self))
                     },
-                    ExpressionKind::MemberAccess(obj_expr, member, sid) => match obj_expr.evaluate(env)?.unwrap() {
-                        Value::Object(obj_ref) => {
-                            let Some(sid) = obj_ref.resolve_symbol(member, sid) else {
-                                return Err(RuntimeException::new(format!("{} has no member {}", obj_ref.0.name, member), self))
-                            };
+                    ExpressionKind::MemberAccess(obj_expr, member) => {
+                        let value = obj_expr.evaluate(env)?.unwrap();
+                        let Value::Object(obj, class) = value else {
+                            return Err(RuntimeException::new(format!("{} is not an object", value), self));
+                        };
 
-                            if let Err(err) = obj_ref.assign(&sid, rval.clone()) {
-                                return Err(RuntimeException::new(err, self));
-                            }
-                            return Ok(Some(rval));
-                        },
-                        value => return Err(RuntimeException::new(format!("{} is not an object", value), self))
+                        let member_symbol = class.get_symbol(member).unwrap();
+
+                        if let Err(err) = obj.assign(member_symbol, member, rval.clone()) {
+                            return Err(RuntimeException::new(err, self));
+                        }
+
+                        return Ok(Some(rval));
                     },
                     _ => return Err(RuntimeException::new("Invalid assignment", left))
                 }
@@ -105,92 +106,42 @@ impl Evaluatable for Expression {
                 return Ok(Some(result));
             },
             ExpressionKind::Call(expr, args) => eval_call(env, expr, args),
-            ExpressionKind::MemberAccess(expr, member, sid) => match &expr.kind {
-                ExpressionKind::Super => {
-                    let Some(Value::Object(obj)) = env.get(&0) else {
-                        unreachable!("super used outside of class");
-                    };
-                    let superclass = obj.0.superclass.clone().unwrap();
-                    let sid = match superclass.get_symbol(member) {
-                        Some(sid) => sid,
-                        None => return Err(RuntimeException::new(format!("{} has no member {}", superclass.name, member), expr))
-                    };
-                    
-                    if let Some(val) = obj.get_field(&sid.symbol) {
-                        return Ok(Some(val.clone()));
-                    }
-    
-                    if let Some(method) = obj.get_method(&sid.symbol) {
-                        let closure = Rc::new(Environment::from(env));
-                        closure.insert(0, Value::Object(obj.clone()));
-                        return Ok(Some(Value::Function(closure, Rc::new(method.clone()))));
-                    }
-    
-                    unreachable!("{} has no member {}", obj.0.name.clone(), member);
-                },
-                _ => {
-                    let value = expr.evaluate(env)?.unwrap();
-                    let obj = match value.clone() {
-                        Value::Object(obj_ref) => obj_ref,
-                        _ => return Err(RuntimeException::new(format!("{} is not an object", value), expr))
-                    };
-                    let sid = match obj.resolve_symbol(member, sid) {
-                        Some(symbol) => symbol,
-                        None => return Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), self))
-                    };
-                    
-                    if let Some(val) = obj.get_field(&sid.symbol) {
-                        return Ok(Some(val.clone()));
-                    }
-    
-                    if let Some(method) = obj.get_method(&sid.symbol) {
-                        let closure = Rc::new(Environment::from(env));
-                        closure.insert(0, Value::Object(obj.clone()));
-                        return Ok(Some(Value::Function(closure, Rc::new(method.clone()))));
-                    }
-    
-                    Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), expr))
+            ExpressionKind::MemberAccess(expr, member) => {
+                let value = expr.evaluate(env)?.unwrap();
+                let Value::Object(obj, class) = &value else {
+                    return Err(RuntimeException::new(format!("{} is not an object", value), expr))
+                };
+
+                let symbol = match class.get_symbol(member) {
+                    Some(symbol) => symbol,
+                    None => return Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), self))
+                };
+                
+                if let Some(val) = obj.get_field(&symbol) {
+                    return Ok(Some(val.clone()));
                 }
-            },
-            ExpressionKind::Identifier(sid) => match env.get(&sid.symbol) {
-                Some(value) => Ok(Some(value.clone())),
-                None => match env.get(&0) {
-                    Some(Value::Object(obj)) => {
-                        let sid = match obj.resolve_symbol(&sid.name, &Some(sid.clone())) {
-                            Some(sid) => sid,
-                            None => return Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, sid.name), self))
-                        };
 
-                        if let Some(val) = obj.get_field(&sid.symbol) {
-                            return Ok(Some(val.clone()));
-                        }
-
-                        if let Some(method) = obj.get_method(&sid.symbol) {
-                            let closure = Rc::new(Environment::from(env));
-                            closure.insert(0, Value::Object(obj.clone()));
-                            return Ok(Some(Value::Function(closure, Rc::new(method.clone()))));
-                        }
-
-                        return Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, sid.name), self));
-                    },
-                    _ => Err(RuntimeException::new(format!("{} is not defined", sid.name), self))
+                if let Some(method) = Object::get_method(obj, &symbol) {
+                    return Ok(Some(method));
                 }
+
+                Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), expr))
             },
-            ExpressionKind::This => match env.get(&0) {
-                Some(value) => Ok(Some(value.clone())),
+            ExpressionKind::Identifier(sid) => Ok(Some(env.get(&sid))),
+            ExpressionKind::This(class_sid) => match (env.get_this(), env.get(class_sid)) {
+                (Value::Object(obj, _), Value::Class(_, class)) => Ok(Some(Value::Object(obj, class))),
                 _ => Err(RuntimeException::new("this does not refer to an object", self))
             },
-            ExpressionKind::Super => Err(RuntimeException::new("use of 'super' is not valid in this context", self)),
+            ExpressionKind::Super => match env.get_this() {
+                Value::Object(obj, class) => Ok(Some(Value::Object(obj, class.superclass.clone().unwrap()))),
+                _ => unreachable!("super used outside of class")
+            },
             ExpressionKind::SuperCall(args) => {
-                let Some(Value::Object(obj)) = env.get(&0) else {
+                let Value::Object(obj, class) = env.get_this() else {
                     unreachable!("super() called outside of class init method");
                 };
 
-                let Some(superclass_sid) = obj.resolve_symbol("super", &None) else {
-                    return Err(RuntimeException::new("Cannot call super: no parent class", self));
-                };
-
-                let Some(Value::Class(superclass_env, superclass)) = env.get(&superclass_sid.symbol) else {
+                let Some(superclass) = &class.superclass else {
                     unreachable!("super does not refer to a class");
                 };
 
@@ -199,8 +150,8 @@ impl Evaluatable for Expression {
                     arg_values.push(arg.evaluate(env)?.unwrap());
                 }
 
-                let closure = Rc::new(Environment::from(&superclass_env));
-                closure.insert(0, Value::Object(obj.clone()));
+                let closure = Rc::new(Environment::from(&env));
+                closure.insert(0, Value::Object(obj.clone(), superclass.clone()));
                 superclass.init.call(&closure, arg_values, self)
             },
             ExpressionKind::Number(n) => Ok(Some(Value::Number(*n))),
@@ -223,20 +174,12 @@ fn eval_call(env: &Rc<Environment>, expr: &Expression, args: &Vec<Expression>) -
     }
 
     match lval {
-        Value::Function(env_ref, func) => {
-            let closure = Rc::new(Environment::from(&env_ref));
-            return func.call(&closure, arg_values, expr);
-        },
+        Value::Function(env_ref, func) => func.call(&env_ref, arg_values, expr),
         Value::BuiltinFunction(env_ref, func) => {
             let closure = Rc::new(Environment::from(&env_ref));
             return func.call(&closure, arg_values, expr);
         },
-        Value::Class(env_ref, class) => {
-            let closure = Rc::new(Environment::from(&env_ref));
-            return class.call(&closure, arg_values, expr);
-        },
-        _ => {}
+        Value::Class(env_ref, class) => class.call(&env_ref, arg_values, expr),
+        _ => return Err(RuntimeException::new(format!("{} is not callable", lval), expr))
     }
-
-    return Err(RuntimeException::new(format!("{} is not callable", lval), expr));
 }

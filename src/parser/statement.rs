@@ -42,6 +42,7 @@ pub struct ASTClassDeclaration {
 
 #[derive(Clone)]
 pub enum StatementKind {
+    Block(Box<ASTStatement>),
     Compound(Vec<ASTStatement>),
     Expression(ASTExpression),
     Return(Option<ASTExpression>),
@@ -68,22 +69,6 @@ impl ASTStatement {
     }
 }
 
-fn parse_compound_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
-    let pos = stream.peek(0).pos.clone();
-    let in_block = stream.next_if(TokenType::LeftCurlyBracket).is_some();
-    let mut statements: Vec<ASTStatement> = Vec::new();
-
-    while !matches!(&stream.peek(0).kind, TokenType::RightCurlyBracket | TokenType::EOF) {
-        statements.push(parse_statement(stream)?);
-    }
-
-    if in_block {
-        stream.expect(TokenType::RightCurlyBracket)?;
-    }
-
-    return Ok(ASTStatement::new(StatementKind::Compound(statements), pos));
-}
-
 fn parse_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
     let statement = match stream.peek(0).kind {
         TokenType::Return => parse_return_statement(stream)?,
@@ -92,10 +77,30 @@ fn parse_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
         TokenType::If => parse_if_statement(stream)?,
         TokenType::While => parse_while_statement(stream)?,
         TokenType::Class => parse_class_statement(stream)?,
+        TokenType::LeftCurlyBracket => parse_block_statement(stream)?,
         _ => parse_expression_statement(stream)?
     };
 
     return Ok(statement);
+}
+
+fn parse_block_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
+    let pos = stream.peek(0).pos.clone();
+    let curlies = stream.next_if(TokenType::LeftCurlyBracket).is_some();
+    let stmt = parse_compound_statement(stream)?;
+    if curlies {
+        stream.expect(TokenType::RightCurlyBracket)?;
+    }
+    return Ok(ASTStatement::new(StatementKind::Block(Box::new(stmt)), pos));
+}
+
+fn parse_compound_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
+    let pos = stream.peek(0).pos.clone();
+    let mut statements: Vec<ASTStatement> = Vec::new();
+    while !matches!(&stream.peek(0).kind, TokenType::RightCurlyBracket | TokenType::EOF) {
+        statements.push(parse_statement(stream)?);
+    }
+    return Ok(ASTStatement::new(StatementKind::Compound(statements), pos));
 }
 
 fn parse_return_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
@@ -127,7 +132,7 @@ fn parse_fn_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
     let pos = stream.expect(TokenType::Fn)?.pos.clone();
     let name = stream.expect(TokenType::Identifier)?.lexeme.clone();
     let parameters = parse_callable_params(stream)?;
-    let body = Box::from(parse_callable_decl_body(stream)?);
+    let body = Box::new(parse_callable_decl_body(stream)?);
     let decl = ASTFunctionDeclaration { name, params: parameters, body };
     return Ok(ASTStatement::new(StatementKind::Fn(decl), pos));
 }
@@ -296,9 +301,9 @@ fn parse_call_args(stream: &mut TokenStream) -> ParseResult<Vec<ASTExpression>> 
 fn parse_if_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
     let pos = stream.expect(TokenType::If)?.pos.clone();
     let condition = ASTExpression::parse(stream)?;
-    let then = Box::from(parse_compound_statement(stream)?);
+    let then = Box::new(parse_block_statement(stream)?);
     let otherwise = match stream.next_if(TokenType::Else) {
-        Some(_) => Some(Box::from(parse_compound_statement(stream)?)),
+        Some(_) => Some(Box::new(parse_block_statement(stream)?)),
         _ => None
     };
 
@@ -308,7 +313,7 @@ fn parse_if_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
 fn parse_while_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
     let pos = stream.expect(TokenType::While)?.pos.clone();
     let condition = ASTExpression::parse(stream)?;
-    let body = Box::from(parse_compound_statement(stream)?);
+    let body = Box::new(parse_block_statement(stream)?);
     return Ok(ASTStatement::new(StatementKind::While(condition, body), pos));
 }
 

@@ -7,8 +7,10 @@ class A {
 
 class B : A {
     x = "B";
+    fn getSuperX() {
+        return super.getX();
+    }
 }
 
 say obj = B();
-print(obj.x); // expect: B
-print(obj.getX()); // expect: A
+print(obj.getSuperX()); // expect: A

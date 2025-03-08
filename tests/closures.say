@@ -40,3 +40,10 @@ fn getCounter() {
 say counter = getCounter();
 print(counter()); // expect: 1
 print(counter()); // expect: 2
+
+say x = 10;
+fn printX() {
+    print(x);
+}
+say x = 20;
+printX(); // expect: 10

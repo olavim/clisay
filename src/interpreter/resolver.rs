@@ -18,6 +18,7 @@ use super::statement::Statement;
 #[derive(Clone)]
 pub struct SymbolId {
     pub symbol: usize,
+    pub depth: u32,
     pub name: String
 }
 
@@ -31,15 +32,17 @@ pub struct ResolvedAST {
 struct Resolver {
     symbols: usize,
     scope_stack: Vec<Scope>,
-    class_scope: usize
+    current_class_sid: Option<SymbolId>,
+    class_symbol_offsets: HashMap<usize, usize>
 }
 
 impl Resolver {
     fn new() -> Resolver {
         let mut analyzer = Resolver { 
-            symbols: 0,
-            class_scope: 0,
-            scope_stack: vec![Scope::new()]
+            symbols: 1,
+            scope_stack: vec![Scope::new()],
+            current_class_sid: None,
+            class_symbol_offsets: HashMap::new()
         };
         analyzer.declare_symbol("print");
         analyzer.declare_symbol("time");
@@ -54,37 +57,26 @@ impl Resolver {
         self.scope_stack.pop();
     }
 
-    fn get_symbol(&self, name: &str) -> Option<SymbolId> {
-        return self.scope_stack.iter().rev().find_map(|s| s.get(name).cloned());
-    }
-
     fn ensure_symbol(&self, name: &str) -> AnalyzerResult<SymbolId> {
-        return match self.get_symbol(name) {
-            Some(value) => Ok(value),
-            None => bail!("{} is not declared", name)
-        };
-    }
-
-    fn get_class_symbol(&self, name: &str) -> Option<SymbolId> {
-        return self.scope_stack[..self.class_scope + 1].iter().rev().find_map(|s| s.get(name).cloned());
-    }
-
-    fn ensure_class_symbol(&self, name: &str) -> AnalyzerResult<SymbolId> {
-        return match self.get_class_symbol(name) {
+        let symbol = self.scope_stack.iter().rev().find_map(|s| s.get(name).cloned());
+        return match symbol {
             Some(value) => Ok(value),
             None => bail!("{} is not declared", name)
         };
     }
 
     fn declare_symbol(&mut self, name: &str) -> SymbolId {
-        let symbol_id = SymbolId { symbol: self.symbols, name: name.to_string() };
+        let depth = self.scope_stack.len() as u32 - 1;
+        let symbol = self.scope_stack.last().unwrap().len() + 1;
+        let symbol_id = SymbolId { symbol, name: name.to_string(), depth };
         self.scope_stack.last_mut().unwrap().insert(symbol_id.name.clone(), symbol_id.clone());
         self.symbols += 1;
         return symbol_id;
     }
 
     fn declare_this(&mut self) -> SymbolId {
-        let symbol_id = SymbolId { symbol: 0, name: String::from("this") };
+        let depth = self.scope_stack.len() as u32 - 1;
+        let symbol_id = SymbolId { symbol: 0, name: String::from("this"), depth };
         self.scope_stack.last_mut().unwrap().insert(symbol_id.name.clone(), symbol_id.clone());
         self.symbols += 1;
         return symbol_id;
@@ -96,6 +88,7 @@ impl Resolver {
 
     fn resolve_stmt(&mut self, stmt: &ASTStatement) -> AnalyzerResult<Statement> {
         return match &stmt.kind {
+            StatementKind::Block(stmt) => self.resolve_block_stmt(stmt),
             StatementKind::Compound(statements) => self.resolve_compound_stmt(statements),
             StatementKind::Expression(expression) => Ok(Statement::Expression(self.resolve_expr(expression)?)),
             StatementKind::Return(expression) => match expression {
@@ -126,15 +119,15 @@ impl Resolver {
                     resolved_params.push(self.declare_symbol(&param));
                 }
 
-                let body = Box::from(self.resolve_stmt(&declaration.body)?);
+                let body = Box::new(self.resolve_stmt(&declaration.body)?);
                 self.exit_scope();
                 Ok(Statement::Fn(sid, resolved_params, body))
             },
             StatementKind::If(condition, then, otherwise) => {
                 let cond = self.resolve_expr(&condition)?;
-                let then = Box::from(self.resolve_stmt(&then)?);
+                let then = Box::new(self.resolve_stmt(&then)?);
                 let otherwise = if let Some(otherwise) = otherwise {
-                    Some(Box::from(self.resolve_stmt(&otherwise)?))
+                    Some(Box::new(self.resolve_stmt(&otherwise)?))
                 } else {
                     None
                 };
@@ -143,7 +136,7 @@ impl Resolver {
             StatementKind::While(condition, body) => {
                 let cond = self.resolve_expr(&condition)?;
                 let body = self.resolve_stmt(&body)?;
-                Ok(Statement::While(cond, Box::from(body)))
+                Ok(Statement::While(cond, Box::new(body)))
             },
             StatementKind::Class(decl) => {
                 let class_sid = self.declare_symbol(&decl.name);
@@ -153,46 +146,58 @@ impl Resolver {
                     None => None
                 };
 
-                self.enter_scope();
-                let enclosing_class_scope = self.class_scope;
-                self.class_scope = self.scope_stack.len() - 1;
+                let symbol_offset = match &superclass_sid {
+                    Some(sid) => *self.class_symbol_offsets.get(&sid.symbol).unwrap(),
+                    None => 0
+                };
 
-                let mut symbols: HashMap<String, SymbolId> = HashMap::new();
+                self.enter_scope();
+
+                let enclosing_class_sid = self.current_class_sid.clone();
+                self.current_class_sid = Some(class_sid.clone());
+
+                let mut symbols: HashMap<String, usize> = HashMap::new();
                 let mut methods: HashMap<usize, Function> = HashMap::new();
                 let mut fields: Vec<usize> = Vec::new();
 
                 if let Some(sid) = &superclass_sid {
-                    symbols.insert(String::from("super"), sid.clone());
+                    symbols.insert(String::from("super"), sid.symbol);
                     self.declare_symbol("super");
-                }
-
-                for field in &decl.fields {
-                    let sid = self.declare_symbol(&field);
-                    fields.push(sid.symbol);
-                    symbols.insert(sid.name.clone(), sid);
                 }
 
                 for method in &decl.methods {
-                    let method_sid = self.declare_symbol(&method.name);
                     self.enter_scope();
                     self.declare_this();
-                    self.declare_symbol("super");
                     let resolved_params = method.params.iter().map(|param| self.declare_symbol(param)).collect();
                     let stmt = Box::new(self.resolve_stmt(&method.body)?);
                     self.exit_scope();
 
-                    methods.insert(method_sid.symbol, Function::new(method_sid.clone(), resolved_params, stmt));
-                    symbols.insert(method.name.clone(), method_sid);
+                    let method_sid = self.declare_symbol(&method.name);
+                    let method_symbol = method_sid.symbol + symbol_offset;
+                    methods.insert(method_symbol, Function::new(method_sid.clone(), resolved_params, stmt));
+                    symbols.insert(method.name.clone(), method_symbol);
+                }
+
+                for field in &decl.fields {
+                    let field_sid = self.declare_symbol(&field);
+                    let field_symbol = field_sid.symbol + symbol_offset;
+                    fields.push(field_symbol);
+                    symbols.insert(field_sid.name.clone(), field_symbol);
                 }
 
                 self.enter_scope();
-                let init_params = decl.init.params.iter().map(|p| self.declare_symbol(p)).collect();
                 self.declare_this();
+                self.enter_scope();
+                let init_params = decl.init.params.iter().map(|p| self.declare_symbol(p)).collect();
                 let init_body = Box::new(self.resolve_stmt(&decl.init.body)?);
                 let init_fn = Function::new(self.declare_symbol(&decl.init.name), init_params, init_body);
                 self.exit_scope();
+                self.exit_scope();
 
                 self.exit_scope();
+
+                self.class_symbol_offsets.insert(class_sid.symbol, symbol_offset + symbols.len());
+                self.current_class_sid = enclosing_class_sid;
 
                 let class = ClassDeclaration {
                     superclass_sid,
@@ -202,19 +207,23 @@ impl Resolver {
                     fields
                 };
 
-                self.class_scope = enclosing_class_scope;
                 Ok(Statement::Class(class_sid, class))
             }
         };
     }
 
-    fn resolve_compound_stmt(&mut self, statements: &Vec<ASTStatement>) -> AnalyzerResult<Statement> {
+    fn resolve_block_stmt(&mut self, stmt: &ASTStatement) -> AnalyzerResult<Statement> {
         self.enter_scope();
+        let sem_stmt = self.resolve_stmt(stmt)?;
+        self.exit_scope();
+        return Ok(Statement::Block(Box::new(sem_stmt)));
+    }
+
+    fn resolve_compound_stmt(&mut self, statements: &Vec<ASTStatement>) -> AnalyzerResult<Statement> {
         let mut sem_statements = Vec::new();
         for statement in statements {
             sem_statements.push(self.resolve_stmt(statement)?);
         }
-        self.exit_scope();
         return Ok(Statement::Compound(sem_statements));
     }
 
@@ -243,12 +252,12 @@ impl Resolver {
                 ExpressionKind::Call(lval, args)
             },
             ASTExpressionKind::This => match self.ensure_symbol("this") {
-                Ok(_) => ExpressionKind::This,
-                _ => bail!("this can only be used in a class context")
+                Ok(_) => ExpressionKind::This(self.current_class_sid.clone().unwrap()),
+                _ => bail!("'this' can only be used in a class context")
             },
             ASTExpressionKind::Super => match self.ensure_symbol("super") {
                 Ok(_) => ExpressionKind::Super,
-                _ => bail!("super can only be used in a class context")
+                _ => bail!("'super' can only be used in a class context")
             },
             ASTExpressionKind::SuperCall(args) => match self.ensure_symbol("super") {
                 Ok(_) => {
@@ -257,19 +266,24 @@ impl Resolver {
                         .collect::<Result<Vec<Expression>, anyhow::Error>>()?;
                     ExpressionKind::SuperCall(args)
                 },
-                _ => bail!("super can only be used in a class context")
+                _ => bail!("'super' can only be used in a class context")
             },
-            ASTExpressionKind::Identifier(name) => ExpressionKind::Identifier(self.ensure_symbol(&name)?),
+            ASTExpressionKind::Identifier(name) => match self.ensure_symbol(&name) {
+                Ok(sid) => ExpressionKind::Identifier(sid),
+                _ => match self.ensure_symbol("this") {
+                    Ok(_) => {
+                        let this_expr = Expression::new(ExpressionKind::This(self.current_class_sid.clone().unwrap()), pos.clone());
+                        ExpressionKind::MemberAccess(Box::new(this_expr), name.clone())
+                    },
+                    _ => bail!("{} is not declared", name)
+                }
+            }
             ASTExpressionKind::Number(val) => ExpressionKind::Number(*val),
             ASTExpressionKind::String(val) => ExpressionKind::String(val.clone()),
             ASTExpressionKind::Boolean(val) => ExpressionKind::Boolean(*val),
             ASTExpressionKind::MemberAccess(expr, member) => {
                 let value = Box::new(self.resolve_expr(&expr)?);
-                let member_sid = match expr.kind {
-                    ASTExpressionKind::This => Some(self.ensure_class_symbol(&member)?),
-                    _ => None
-                };
-                ExpressionKind::MemberAccess(value, member.clone(), member_sid)
+                ExpressionKind::MemberAccess(value, member.clone())
             }
         };
 

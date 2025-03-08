@@ -2,8 +2,12 @@ use super::{test_file, test_folder};
 
 #[test]
 fn classes() {
-    // test_file("tests/classes/field_hiding.say");
     test_folder("tests/classes");
+}
+
+#[test]
+fn super_kw() {
+    test_folder("tests/super");
 }
 
 #[test]
@@ -30,3 +34,8 @@ fn assignments() {
 fn operators() {
     test_folder("tests/operators");
 }
+
+// #[test]
+// fn perf() {
+//     test_file("tests/perf.say");
+// }

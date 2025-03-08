@@ -6,7 +6,7 @@ use super::{callable::Callable, environment::Environment, expression::Expression
 pub struct ClassDeclaration {
     pub superclass_sid: Option<SymbolId>,
     pub init: Function,
-    pub symbols: HashMap<String, SymbolId>,
+    pub symbols: HashMap<String, usize>,
     pub methods: HashMap<usize, Function>,
     pub fields: Vec<usize>,
 }
@@ -16,25 +16,16 @@ pub struct Class {
     pub name: String,
     pub superclass: Option<Rc<Class>>,
     pub init: Function,
-    pub symbols: HashMap<String, SymbolId>,
+    pub symbols: HashMap<String, usize>,
     pub methods: HashMap<usize, Function>,
-    pub fields: Vec<usize>
+    pub fields: Vec<usize>,
+    pub env: Rc<Environment>
 }
 
-impl Class {
-    pub fn get_method(&self, symbol: &usize) -> Option<&Function> {
-        match self.methods.get(symbol) {
-            Some(method) => return Some(method),
-            None => match &self.superclass {
-                Some(superclass) => superclass.get_method(symbol),
-                None => None
-            }
-        }
-    }
-    
-    pub fn get_symbol(&self, member: &String) -> Option<&SymbolId> {
+impl Class {    
+    pub fn get_symbol(&self, member: &String) -> Option<&usize> {
         match self.symbols.get(member) {
-            Some(sid) => return Some(sid),
+            Some(symbol) => return Some(symbol),
             None => match &self.superclass {
                 Some(superclass) => superclass.get_symbol(member),
                 None => None
@@ -55,11 +46,12 @@ impl Callable for Rc<Class> {
             current_class = class.superclass.as_ref();
         }
 
+        let value = Value::Object(instance.clone(), self.clone());
         let closure = Rc::new(Environment::from(env));
-        closure.insert(0, Value::Object(instance.clone()));
+        closure.insert(0, value.clone());
 
         self.init.call(&closure, args, expr)?;
 
-        return Ok(Some(Value::Object(instance)));
+        return Ok(Some(value));
     }
 }

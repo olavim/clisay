@@ -1,45 +1,84 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use super::{resolver::SymbolId, value::Value};
 
 pub struct Environment {
     pub parent: Option<Rc<Environment>>,
-    pub locals: RefCell<HashMap<usize, Value>>
+    pub locals: RefCell<Vec<Value>>,
+    depth: u32
 }
 
 impl Environment {
     pub fn new() -> Environment {
-        return Environment { parent: None, locals: RefCell::new(HashMap::new()) };
+        let mut locals = Vec::with_capacity(10);
+        locals.push(Value::Void);
+        return Environment { parent: None, locals: RefCell::new(locals), depth: 0 };
     }
 
     pub fn from(parent: &Rc<Environment>) -> Environment {
-        return Environment { parent: Some(parent.clone()), locals: RefCell::new(HashMap::new()) };
+        let mut locals = Vec::with_capacity(10);
+        locals.push(Value::Void);
+        return Environment { parent: Some(parent.clone()), locals: RefCell::new(locals), depth: parent.depth + 1 };
     }
 
     pub fn insert(&self, key: usize, value: Value) {
-        self.locals.borrow_mut().insert(key, value);
+        if key >= self.locals.borrow().len() {
+            self.locals.borrow_mut().resize(key + 1, Value::Void);
+        }
+        self.locals.borrow_mut()[key] = value;
     }
 
     pub fn assign(&self, sid: &SymbolId, value: Value) -> Result<(), String> {
-        let mut locals = self.locals.borrow_mut();
+        let mut obj = self;
+        for _ in 0..(self.depth - sid.depth) {
+            obj = obj.parent.as_ref().unwrap();
+        }
 
-        match locals.get(&sid.symbol) {
-            Some(Value::BuiltinFunction(_, _)) => Err(format!("Invalid assignment: {} refers to a builtin function", sid.name)),
-            Some(Value::Class(_, _)) => Err(format!("Invalid assignment: {} refers to a type", sid.name)),
-            Some(_) => {
-                locals.insert(sid.symbol, value);
-                Ok(())
-            },
-            None => {
-                if let Some(env) = &self.parent {
-                    return env.assign(sid, value);
-                }
+        let mut locals = obj.locals.borrow_mut();
+
+        match locals[sid.symbol] {
+            Value::BuiltinFunction(_, _) => Err(format!("Invalid assignment: {} refers to a builtin function", sid.name)),
+            Value::Class(_, _) => Err(format!("Invalid assignment: {} refers to a type", sid.name)),
+            _ => {
+                locals[sid.symbol] = value;
                 Ok(())
             }
         }
     }
 
-    pub fn get(&self, key: &usize) -> Option<Value> {
-        return self.locals.borrow().get(key).cloned().or_else(|| self.parent.as_ref().and_then(|parent| parent.as_ref().get(key)));
+    pub fn get(&self, sid: &SymbolId) -> Value {
+        // let depth = self.get_depth(sid);
+        // println!("{}, {}: {}", sid.name, sid.depth, depth);
+
+        let mut obj = self;
+        for _ in 0..(self.depth - sid.depth) {
+            obj = obj.parent.as_ref().unwrap();
+        }
+
+        return obj.locals.borrow()[sid.symbol].clone();
     }
+
+    pub fn get_this(&self) -> Value {
+        let mut obj = self;
+        while let Value::Void = &obj.locals.borrow()[0] {
+            if let Some(parent) = &obj.parent {
+                obj = parent.as_ref();
+            } else {
+                return Value::Void;
+            }
+        }
+
+        return obj.locals.borrow()[0].clone();
+    }
+
+    // fn get_depth(&self, sid: &SymbolId) -> u32 {
+    //     if self.locals.borrow().contains_key(&sid.symbol) {
+    //         return self.depth;
+    //     }
+
+    //     return match &self.parent {
+    //         Some(parent) => parent.get_depth(sid),
+    //         None => 999
+    //     };
+    // }
 }

@@ -1,9 +1,10 @@
-use std::{collections::HashMap, rc::Rc};
+use std::rc::Rc;
 
 use super::{class::{Class, ClassDeclaration}, environment::Environment, expression::Expression, function::Function, resolver::SymbolId, value::Value, EvalResult, Evaluatable, RuntimeException};
 
 #[derive(Clone)]
 pub enum Statement {
+    Block(Box<Statement>),
     Compound(Vec<Statement>),
     Expression(Expression),
     Return(Option<Expression>),
@@ -17,6 +18,10 @@ pub enum Statement {
 impl Evaluatable for Statement {
     fn evaluate(&self, env: &Rc<Environment>) -> EvalResult {
         return match self {
+            Statement::Block(statement) => {
+                let closure = Rc::new(Environment::from(env));
+                return Ok(statement.evaluate(&closure)?);
+            },
             Statement::Compound(statements) => {
                 let mut result = None;
                 for statement in statements {
@@ -47,8 +52,7 @@ impl Evaluatable for Statement {
             },
             Statement::Fn(sid, params, body) => {
                 let func = Function::new(sid.clone(), params.clone(), body.clone());
-                let closure = Rc::new(Environment::from(env));
-                env.insert(sid.symbol, Value::Function(closure, Rc::new(func)));
+                env.insert(sid.symbol, Value::Function(env.clone(), Rc::new(func)));
                 return Ok(None);
             },
             Statement::If(expr, then, otherwise) => {
@@ -77,8 +81,8 @@ impl Evaluatable for Statement {
             },
             Statement::Class(sid, class_decl) => {
                 let superclass = match &class_decl.superclass_sid {
-                    Some(superclass_sid) => match env.get(&superclass_sid.symbol) {
-                        Some(Value::Class(_, superclass)) => Some(superclass.clone()),
+                    Some(superclass_sid) => match env.get(superclass_sid) {
+                        Value::Class(_, superclass) => Some(superclass.clone()),
                         _ => unreachable!()
                     },
                     None => None
@@ -90,7 +94,8 @@ impl Evaluatable for Statement {
                     init: class_decl.init.clone(),
                     symbols: class_decl.symbols.clone(),
                     fields: class_decl.fields.clone(),
-                    methods: class_decl.methods.clone()
+                    methods: class_decl.methods.clone(),
+                    env: env.clone()
                 };
 
                 let closure = Rc::new(Environment::from(env));

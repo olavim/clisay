@@ -94,23 +94,23 @@ fn parse_infix_expression(stream: &mut TokenStream, op: Operator, expr: ASTExpre
         Operator::Assign(Some(assign_op)) => {
             // Normalize compound assignment, for example convert (a += 1) to (a = a + 1)
             let mut right = parse_expression(stream, op.infix_precedence().unwrap())?;
-            let kind = ASTExpressionKind::Binary(assign_op.as_ref().clone(), Box::from(expr.clone()), Box::from(right));
+            let kind = ASTExpressionKind::Binary(assign_op.as_ref().clone(), Box::new(expr.clone()), Box::new(right));
             right = ASTExpression::new(kind, pos.clone());
-            ASTExpressionKind::Binary(op, Box::from(expr), Box::from(right))
+            ASTExpressionKind::Binary(op, Box::new(expr), Box::new(right))
         },
         Operator::MemberAccess => {
             let member = stream.expect(TokenType::Identifier)?.lexeme.clone();
-            ASTExpressionKind::MemberAccess(Box::from(expr), member)
+            ASTExpressionKind::MemberAccess(Box::new(expr), member)
         },
         Operator::Ternary => {
             let left = parse_expression(stream, 0)?;
             stream.expect(TokenType::Colon)?;
             let right = parse_expression(stream, 0)?;
-            ASTExpressionKind::Ternary(Box::from(expr), Box::from(left), Box::from(right))
+            ASTExpressionKind::Ternary(Box::new(expr), Box::new(left), Box::new(right))
         },
         _ => {
             let right = parse_expression(stream, op.infix_precedence().unwrap())?;
-            ASTExpressionKind::Binary(op, Box::from(expr), Box::from(right))
+            ASTExpressionKind::Binary(op, Box::new(expr), Box::new(right))
         }
     };
 
@@ -121,12 +121,12 @@ fn parse_prefix_expression(stream: &mut TokenStream, op: Operator) -> ParseResul
     let pos = stream.peek(0).pos.clone();
     let kind = match &op {
         Operator::Group => {
-            let expr = Box::from(parse_expression(stream, 0)?);
+            let expr = Box::new(parse_expression(stream, 0)?);
             stream.expect(TokenType::RightParenthesis)?;
             expr.kind
         },
         _ => {
-            let right = Box::from(parse_expression(stream, op.prefix_precedence().unwrap())?);
+            let right = Box::new(parse_expression(stream, op.prefix_precedence().unwrap())?);
             ASTExpressionKind::Unary(op, right)
         }
     };
@@ -138,7 +138,7 @@ fn parse_postfix_expression(stream: &mut TokenStream, op: Operator, expr: ASTExp
     match op {
         Operator::Call => {
             let args = parse_call_args(stream)?;
-            Ok(ASTExpression::new(ASTExpressionKind::Call(Box::from(expr), args), pos))
+            Ok(ASTExpression::new(ASTExpressionKind::Call(Box::new(expr), args), pos))
         },
         _ => unreachable!()
     }

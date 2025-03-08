@@ -1,0 +1,13 @@
+class A {
+    x = "A";
+}
+
+class B : A {
+    x = "B";
+    fn getSuperX() {
+        return super.x;
+    }
+}
+
+say obj = B();
+print(obj.getSuperX()); // expect: A

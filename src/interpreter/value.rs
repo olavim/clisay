@@ -11,7 +11,7 @@ pub enum Value {
     Class(Rc<Environment>, Rc<Class>),
     Function(Rc<Environment>, Rc<Function>),
     BuiltinFunction(Rc<Environment>, Rc<BuiltinFunction>),
-    Object(Rc<Object>)
+    Object(Rc<Object>, Rc<Class>)
 }
 
 impl Value {
@@ -24,7 +24,7 @@ impl Value {
             Value::Class(_, _) => String::from("<class>"),
             Value::Function(_, _) => String::from("<fn>"),
             Value::BuiltinFunction(_, _) => String::from("<builtin fn>"),
-            Value::Object(_) => String::from("<object>")
+            Value::Object(_, _) => String::from("<object>")
         };
     }
 }
