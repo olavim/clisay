@@ -1,31 +1,34 @@
 use std::{cell::RefCell, rc::Rc};
 
+use smallvec::SmallVec;
+
 use super::{resolver::SymbolId, value::Value};
 
 pub struct Environment {
     pub parent: Option<Rc<Environment>>,
-    pub locals: RefCell<Vec<Value>>,
+    pub locals: RefCell<SmallVec<[Value; 3]>>,
     depth: u32
 }
 
 impl Environment {
     pub fn new() -> Environment {
-        let mut locals = Vec::with_capacity(10);
+        let mut locals = SmallVec::new();
         locals.push(Value::Void);
         return Environment { parent: None, locals: RefCell::new(locals), depth: 0 };
     }
 
     pub fn from(parent: &Rc<Environment>) -> Environment {
-        let mut locals = Vec::with_capacity(10);
+        let mut locals = SmallVec::new();
         locals.push(Value::Void);
         return Environment { parent: Some(parent.clone()), locals: RefCell::new(locals), depth: parent.depth + 1 };
     }
 
     pub fn insert(&self, key: usize, value: Value) {
-        if key >= self.locals.borrow().len() {
-            self.locals.borrow_mut().resize(key + 1, Value::Void);
+        let mut locals = self.locals.borrow_mut();
+        if key >= locals.len() {
+            locals.resize(key + 1, Value::Void);
         }
-        self.locals.borrow_mut()[key] = value;
+        locals[key] = value;
     }
 
     pub fn assign(&self, sid: &SymbolId, value: Value) -> Result<(), String> {

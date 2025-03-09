@@ -6,6 +6,6 @@ fn fib(n) {
 }
 
 say start = time();
-say res = fib(35);
+say res = fib(39);
 say end = time();
 print(end - start);

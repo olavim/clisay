@@ -23,7 +23,7 @@ pub struct Class {
 }
 
 impl Class {    
-    pub fn get_symbol(&self, member: &String) -> Option<&usize> {
+    pub fn get_symbol(&self, member: &str) -> Option<&usize> {
         match self.symbols.get(member) {
             Some(symbol) => return Some(symbol),
             None => match &self.superclass {
@@ -46,7 +46,7 @@ impl Callable for Rc<Class> {
             current_class = class.superclass.as_ref();
         }
 
-        let value = Value::Object(instance.clone(), self.clone());
+        let value = Value::Object(instance, 0);
         let closure = Rc::new(Environment::from(env));
         closure.insert(0, value.clone());
 

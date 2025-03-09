@@ -32,7 +32,6 @@ pub struct ResolvedAST {
 struct Resolver {
     symbols: usize,
     scope_stack: Vec<Scope>,
-    current_class_sid: Option<SymbolId>,
     class_symbol_offsets: HashMap<usize, usize>
 }
 
@@ -41,7 +40,6 @@ impl Resolver {
         let mut analyzer = Resolver { 
             symbols: 1,
             scope_stack: vec![Scope::new()],
-            current_class_sid: None,
             class_symbol_offsets: HashMap::new()
         };
         analyzer.declare_symbol("print");
@@ -153,9 +151,6 @@ impl Resolver {
 
                 self.enter_scope();
 
-                let enclosing_class_sid = self.current_class_sid.clone();
-                self.current_class_sid = Some(class_sid.clone());
-
                 let mut symbols: HashMap<String, usize> = HashMap::new();
                 let mut methods: HashMap<usize, Function> = HashMap::new();
                 let mut fields: Vec<usize> = Vec::new();
@@ -197,7 +192,6 @@ impl Resolver {
                 self.exit_scope();
 
                 self.class_symbol_offsets.insert(class_sid.symbol, symbol_offset + symbols.len());
-                self.current_class_sid = enclosing_class_sid;
 
                 let class = ClassDeclaration {
                     superclass_sid,
@@ -252,7 +246,7 @@ impl Resolver {
                 ExpressionKind::Call(lval, args)
             },
             ASTExpressionKind::This => match self.ensure_symbol("this") {
-                Ok(_) => ExpressionKind::This(self.current_class_sid.clone().unwrap()),
+                Ok(_) => ExpressionKind::This,
                 _ => bail!("'this' can only be used in a class context")
             },
             ASTExpressionKind::Super => match self.ensure_symbol("super") {
@@ -272,7 +266,7 @@ impl Resolver {
                 Ok(sid) => ExpressionKind::Identifier(sid),
                 _ => match self.ensure_symbol("this") {
                     Ok(_) => {
-                        let this_expr = Expression::new(ExpressionKind::This(self.current_class_sid.clone().unwrap()), pos.clone());
+                        let this_expr = Expression::new(ExpressionKind::This, pos.clone());
                         ExpressionKind::MemberAccess(Box::new(this_expr), name.clone())
                     },
                     _ => bail!("{} is not declared", name)

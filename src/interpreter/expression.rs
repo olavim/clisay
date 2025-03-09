@@ -24,7 +24,7 @@ pub enum ExpressionKind {
     Call(Box<Expression>, Vec<Expression>),
     MemberAccess(Box<Expression>, String),
     Identifier(SymbolId),
-    This(SymbolId),
+    This,
     Super,
     SuperCall(Vec<Expression>),
     Number(f64),
@@ -35,130 +35,142 @@ pub enum ExpressionKind {
 impl Evaluatable for Expression {
     fn evaluate(&self, env: &Rc<Environment>) -> EvalResult {
         return match &self.kind {
-            ExpressionKind::Ternary(cond, left, right) => {
-                match cond.evaluate(env)?.unwrap() {
-                    Value::Boolean(true) => left.evaluate(env),
-                    Value::Boolean(false) => right.evaluate(env),
-                    val => Err(RuntimeException::new(format!("Expected boolean, got {}", val), self))
-                }
-            },
-            ExpressionKind::Binary(Operator::Assign(_), left, right) => {
-                let rval = right.evaluate(env)?.unwrap();
-                match &left.kind {
-                    ExpressionKind::Identifier(sid) => match env.assign(sid, rval.clone()) {
-                        Ok(_) => return Ok(Some(rval)),
-                        Err(err) => return Err(RuntimeException::new(err, self))
-                    },
-                    ExpressionKind::MemberAccess(obj_expr, member) => {
-                        let value = obj_expr.evaluate(env)?.unwrap();
-                        let Value::Object(obj, class) = value else {
-                            return Err(RuntimeException::new(format!("{} is not an object", value), self));
-                        };
-
-                        let member_symbol = class.get_symbol(member).unwrap();
-
-                        if let Err(err) = obj.assign(member_symbol, member, rval.clone()) {
-                            return Err(RuntimeException::new(err, self));
-                        }
-
-                        return Ok(Some(rval));
-                    },
-                    _ => return Err(RuntimeException::new("Invalid assignment", left))
-                }
-            },
-            ExpressionKind::Binary(op, left, right) => {
-                let rval = right.evaluate(env)?.unwrap();    
-                let lval = left.evaluate(env)?.unwrap();
-                let result = match (op, lval.clone(), rval.clone()) {
-                    (Operator::Plus, Value::Number(l), Value::Number(r)) => Value::Number(l + r),
-                    (Operator::Minus, Value::Number(l), Value::Number(r)) => Value::Number(l - r),
-                    (Operator::Multiply, Value::Number(l), Value::Number(r)) => Value::Number(l * r),
-                    (Operator::Divide, Value::Number(l), Value::Number(r)) => Value::Number(l / r),
-                    (Operator::LessThan, Value::Number(l), Value::Number(r)) => Value::Boolean(l < r),
-                    (Operator::LessThanEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l <= r),
-                    (Operator::GreaterThan, Value::Number(l), Value::Number(r)) => Value::Boolean(l > r),
-                    (Operator::GreaterThanEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l >= r),
-                    (Operator::BitAnd, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) & (r as i64)) as f64),
-                    (Operator::BitOr, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) | (r as i64)) as f64),
-                    (Operator::BitXor, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) ^ (r as i64)) as f64),
-                    (Operator::LeftShift, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) << (r as i64)) as f64),
-                    (Operator::RightShift, Value::Number(l), Value::Number(r)) => Value::Number(((l as i64) >> (r as i64)) as f64),
-                    (Operator::LogicalAnd, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l && r),
-                    (Operator::LogicalOr, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l || r),
-                    (Operator::LogicalEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l == r),
-                    (Operator::LogicalEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l == r),
-                    (Operator::LogicalEqual, Value::String(l), Value::String(r)) => Value::Boolean(l == r),
-                    (Operator::LogicalNotEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l != r),
-                    (Operator::LogicalNotEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l != r),
-                    (Operator::LogicalNotEqual, Value::String(l), Value::String(r)) => Value::Boolean(l != r),
-                    _ => return Err(RuntimeException::new(format!("Operator '{}' cannot be applied to operands '{}' and '{}'", op, lval, rval), self))
-                };
-                return Ok(Some(result));
-            },
-            ExpressionKind::Unary(op, expr) => {
-                let val = expr.evaluate(env)?.unwrap();
-                let result = match (op, val.clone()) {
-                    (Operator::Negative, Value::Number(n)) => Value::Number(-n),
-                    (Operator::LogicalNot, Value::Boolean(b)) => Value::Boolean(!b),
-                    (Operator::BitNot, Value::Number(n)) => Value::Number(!(n as i64) as f64),
-                    _ => return Err(RuntimeException::new(format!("Invalid unary operation: {}{}", op, val), self))
-                };
-                return Ok(Some(result));
-            },
+            ExpressionKind::Ternary(cond, left, right) => eval_ternary(env, cond, left, right),
+            ExpressionKind::Binary(Operator::Assign(_), left, right) => eval_assignment(env, left, right),
+            ExpressionKind::Binary(op, left, right) => eval_binary(env, op, left, right),
+            ExpressionKind::Unary(op, expr) => eval_unary(env, op, expr),
             ExpressionKind::Call(expr, args) => eval_call(env, expr, args),
-            ExpressionKind::MemberAccess(expr, member) => {
-                let value = expr.evaluate(env)?.unwrap();
-                let Value::Object(obj, class) = &value else {
-                    return Err(RuntimeException::new(format!("{} is not an object", value), expr))
-                };
-
-                let symbol = match class.get_symbol(member) {
-                    Some(symbol) => symbol,
-                    None => return Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), self))
-                };
-                
-                if let Some(val) = obj.get_field(&symbol) {
-                    return Ok(Some(val.clone()));
-                }
-
-                if let Some(method) = Object::get_method(obj, &symbol) {
-                    return Ok(Some(method));
-                }
-
-                Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), expr))
-            },
+            ExpressionKind::MemberAccess(expr, member) => eval_member_access(env, expr, member),
             ExpressionKind::Identifier(sid) => Ok(Some(env.get(&sid))),
-            ExpressionKind::This(class_sid) => match (env.get_this(), env.get(class_sid)) {
-                (Value::Object(obj, _), Value::Class(_, class)) => Ok(Some(Value::Object(obj, class))),
-                _ => Err(RuntimeException::new("this does not refer to an object", self))
-            },
-            ExpressionKind::Super => match env.get_this() {
-                Value::Object(obj, class) => Ok(Some(Value::Object(obj, class.superclass.clone().unwrap()))),
-                _ => unreachable!("super used outside of class")
-            },
-            ExpressionKind::SuperCall(args) => {
-                let Value::Object(obj, class) = env.get_this() else {
-                    unreachable!("super() called outside of class init method");
-                };
-
-                let Some(superclass) = &class.superclass else {
-                    unreachable!("super does not refer to a class");
-                };
-
-                let mut arg_values = Vec::new();
-                for arg in args {
-                    arg_values.push(arg.evaluate(env)?.unwrap());
-                }
-
-                let closure = Rc::new(Environment::from(&env));
-                closure.insert(0, Value::Object(obj.clone(), superclass.clone()));
-                superclass.init.call(&closure, arg_values, self)
-            },
+            ExpressionKind::This => eval_this(env),
+            ExpressionKind::Super => eval_super(env, self),
+            ExpressionKind::SuperCall(args) => eval_supercall(env, args, self),
             ExpressionKind::Number(n) => Ok(Some(Value::Number(*n))),
             ExpressionKind::String(s) => Ok(Some(Value::String(s.clone()))),
             ExpressionKind::Boolean(b) => Ok(Some(Value::Boolean(*b)))
         };
     }
+}
+
+fn eval_ternary(env: &Rc<Environment>, cond: &Expression, left: &Expression, right: &Expression) -> EvalResult {
+    match cond.evaluate(env)?.unwrap() {
+        Value::Boolean(true) => left.evaluate(env),
+        Value::Boolean(false) => right.evaluate(env),
+        val => Err(RuntimeException::new(format!("Expected boolean, got {}", val), cond))
+    }
+}
+
+fn eval_binary(env: &Rc<Environment>, op: &Operator, left: &Expression, right: &Expression) -> EvalResult {
+    let rval = &right.evaluate(env)?.unwrap();    
+    let lval = &left.evaluate(env)?.unwrap();
+    let result = match (op, lval, rval) {
+        (Operator::Plus, Value::Number(l), Value::Number(r)) => Value::Number(l + r),
+        (Operator::Minus, Value::Number(l), Value::Number(r)) => Value::Number(l - r),
+        (Operator::Multiply, Value::Number(l), Value::Number(r)) => Value::Number(l * r),
+        (Operator::Divide, Value::Number(l), Value::Number(r)) => Value::Number(l / r),
+        (Operator::LessThan, Value::Number(l), Value::Number(r)) => Value::Boolean(l < r),
+        (Operator::LessThanEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l <= r),
+        (Operator::GreaterThan, Value::Number(l), Value::Number(r)) => Value::Boolean(l > r),
+        (Operator::GreaterThanEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l >= r),
+        (Operator::BitAnd, Value::Number(l), Value::Number(r)) => Value::Number(((*l as i64) & (*r as i64)) as f64),
+        (Operator::BitOr, Value::Number(l), Value::Number(r)) => Value::Number(((*l as i64) | (*r as i64)) as f64),
+        (Operator::BitXor, Value::Number(l), Value::Number(r)) => Value::Number(((*l as i64) ^ (*r as i64)) as f64),
+        (Operator::LeftShift, Value::Number(l), Value::Number(r)) => Value::Number(((*l as i64) << (*r as i64)) as f64),
+        (Operator::RightShift, Value::Number(l), Value::Number(r)) => Value::Number(((*l as i64) >> (*r as i64)) as f64),
+        (Operator::LogicalAnd, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(*l && *r),
+        (Operator::LogicalOr, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(*l || *r),
+        (Operator::LogicalEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l == r),
+        (Operator::LogicalEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l == r),
+        (Operator::LogicalEqual, Value::String(l), Value::String(r)) => Value::Boolean(l == r),
+        (Operator::LogicalNotEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l != r),
+        (Operator::LogicalNotEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l != r),
+        (Operator::LogicalNotEqual, Value::String(l), Value::String(r)) => Value::Boolean(l != r),
+        _ => return Err(RuntimeException::new(format!("Operator '{}' cannot be applied to operands '{}' and '{}'", op, lval, rval), left))
+    };
+    return Ok(Some(result));
+}
+
+fn eval_assignment(env: &Rc<Environment>, left: &Expression, right: &Expression) -> EvalResult {
+    let rval = right.evaluate(env)?.unwrap();
+    match &left.kind {
+        ExpressionKind::Identifier(sid) => match env.assign(sid, rval.clone()) {
+            Ok(_) => return Ok(Some(rval)),
+            Err(err) => return Err(RuntimeException::new(err, left))
+        },
+        ExpressionKind::MemberAccess(obj_expr, member) => {
+            let value = &obj_expr.evaluate(env)?.unwrap();
+            let Value::Object(obj, class_depth) = value else {
+                return Err(RuntimeException::new(format!("{} is not an object", value), left));
+            };
+
+            let class = obj.get_class(*class_depth);
+            let member_symbol = class.get_symbol(member).unwrap();
+
+            if let Err(err) = obj.assign(member_symbol, member, rval.clone()) {
+                return Err(RuntimeException::new(err, left));
+            }
+
+            return Ok(Some(rval));
+        },
+        _ => return Err(RuntimeException::new("Invalid assignment", left))
+    }
+}
+
+fn eval_unary(env: &Rc<Environment>, op: &Operator, expr: &Expression) -> EvalResult {
+    let val = &expr.evaluate(env)?.unwrap();
+    let result = match (op, val) {
+        (Operator::Negative, Value::Number(n)) => Value::Number(-(*n)),
+        (Operator::LogicalNot, Value::Boolean(b)) => Value::Boolean(!(*b)),
+        (Operator::BitNot, Value::Number(n)) => Value::Number(!(*n as i64) as f64),
+        _ => return Err(RuntimeException::new(format!("Invalid unary operation: {}{}", op, val), expr))
+    };
+    return Ok(Some(result));
+}
+
+fn eval_member_access(env: &Rc<Environment>, expr: &Expression, member: &str) -> EvalResult {
+    let value = &expr.evaluate(env)?.unwrap();
+    let Value::Object(obj, class_depth) = value else {
+        return Err(RuntimeException::new(format!("{} is not an object", value), expr));
+    };
+
+    let class = obj.get_class(*class_depth);
+    let symbol = class.get_symbol(member).unwrap();
+    if let Some(val) = obj.get_field(&symbol) {
+        return Ok(Some(val));
+    }
+
+    if let Some(method) = Object::get_method(obj, &symbol) {
+        return Ok(Some(method));
+    }
+
+    return Err(RuntimeException::new(format!("{} has no member {}", obj.0.name, member), expr));
+}
+
+fn eval_this(env: &Rc<Environment>) -> EvalResult {
+    return Ok(Some(env.get_this()));
+}
+
+fn eval_super(env: &Rc<Environment>, expr: &Expression) -> EvalResult {
+    return match env.get_this() {
+        Value::Object(obj, class_depth) => Ok(Some(Value::Object(obj, class_depth + 1))),
+        _ => Err(RuntimeException::new("super used outside of class", expr))
+    };
+}
+
+fn eval_supercall(env: &Rc<Environment>, args: &Vec<Expression>, expr: &Expression) -> EvalResult {
+    let Value::Object(obj, class_depth) = env.get_this() else {
+        return Err(RuntimeException::new("super() called outside of class init method", expr));
+    };
+
+    let superclass = obj.get_class(class_depth + 1);
+    let mut arg_values = Vec::with_capacity(args.len());
+    for arg in args {
+        arg_values.push(arg.evaluate(env)?.unwrap());
+    }
+
+    let closure = Rc::new(Environment::from(&env));
+    closure.insert(0, Value::Object(obj.clone(), class_depth + 1));
+    return superclass.init.call(&closure, arg_values, expr);
 }
 
 fn eval_call(env: &Rc<Environment>, expr: &Expression, args: &Vec<Expression>) -> EvalResult {
@@ -168,7 +180,7 @@ fn eval_call(env: &Rc<Environment>, expr: &Expression, args: &Vec<Expression>) -
         Err(err) => return Err(err)
     };
 
-    let mut arg_values = Vec::new();
+    let mut arg_values = Vec::with_capacity(args.len());
     for arg in args {
         arg_values.push(arg.evaluate(env)?.unwrap());
     }

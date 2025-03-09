@@ -33,7 +33,7 @@ fn find_at<'a>(regex: &str, input: &'a str, pos: usize) -> Option<usize> {
     };
 }
 
-fn next_token(input: &String, input_index: usize) -> Result<Token, anyhow::Error> {
+fn next_token(input: &str, input_index: usize) -> Result<Token, anyhow::Error> {
     if input_index >= input.len() {
         return Ok(Token::new(TokenType::EOF, ""));
     }

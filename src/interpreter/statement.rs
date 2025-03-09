@@ -47,7 +47,7 @@ impl Evaluatable for Statement {
                     Some(expr) => expr.evaluate(env)?.unwrap(),
                     None => Value::Void
                 };
-                env.insert(sid.symbol, value.clone());
+                env.insert(sid.symbol, value);
                 return Ok(None);
             },
             Statement::Fn(sid, params, body) => {
@@ -82,7 +82,7 @@ impl Evaluatable for Statement {
             Statement::Class(sid, class_decl) => {
                 let superclass = match &class_decl.superclass_sid {
                     Some(superclass_sid) => match env.get(superclass_sid) {
-                        Value::Class(_, superclass) => Some(superclass.clone()),
+                        Value::Class(_, superclass) => Some(superclass),
                         _ => unreachable!()
                     },
                     None => None

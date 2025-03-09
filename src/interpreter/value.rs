@@ -11,7 +11,7 @@ pub enum Value {
     Class(Rc<Environment>, Rc<Class>),
     Function(Rc<Environment>, Rc<Function>),
     BuiltinFunction(Rc<Environment>, Rc<BuiltinFunction>),
-    Object(Rc<Object>, Rc<Class>)
+    Object(Rc<Object>, usize)
 }
 
 impl Value {
