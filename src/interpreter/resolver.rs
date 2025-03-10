@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use anyhow::bail;
 
@@ -119,7 +120,7 @@ impl Resolver {
 
                 let body = Box::new(self.resolve_stmt(&declaration.body)?);
                 self.exit_scope();
-                Ok(Statement::Fn(sid, resolved_params, body))
+                Ok(Statement::Fn(Rc::new(Function::new(sid, resolved_params, body))))
             },
             StatementKind::If(condition, then, otherwise) => {
                 let cond = self.resolve_expr(&condition)?;
@@ -152,7 +153,7 @@ impl Resolver {
                 self.enter_scope();
 
                 let mut symbols: HashMap<String, usize> = HashMap::new();
-                let mut methods: HashMap<usize, Function> = HashMap::new();
+                let mut methods: HashMap<usize, Rc<Function>> = HashMap::new();
                 let mut fields: Vec<usize> = Vec::new();
 
                 if let Some(sid) = &superclass_sid {
@@ -169,7 +170,7 @@ impl Resolver {
 
                     let method_sid = self.declare_symbol(&method.name);
                     let method_symbol = method_sid.symbol + symbol_offset;
-                    methods.insert(method_symbol, Function::new(method_sid.clone(), resolved_params, stmt));
+                    methods.insert(method_symbol, Rc::new(Function::new(method_sid.clone(), resolved_params, stmt)));
                     symbols.insert(method.name.clone(), method_symbol);
                 }
 
@@ -195,7 +196,7 @@ impl Resolver {
 
                 let class = ClassDeclaration {
                     superclass_sid,
-                    init: init_fn,
+                    init: Rc::new(init_fn),
                     symbols,
                     methods,
                     fields
@@ -275,6 +276,7 @@ impl Resolver {
             ASTExpressionKind::Number(val) => ExpressionKind::Number(*val),
             ASTExpressionKind::String(val) => ExpressionKind::String(val.clone()),
             ASTExpressionKind::Boolean(val) => ExpressionKind::Boolean(*val),
+            ASTExpressionKind::Null => ExpressionKind::Null,
             ASTExpressionKind::MemberAccess(expr, member) => {
                 let value = Box::new(self.resolve_expr(&expr)?);
                 ExpressionKind::MemberAccess(value, member.clone())

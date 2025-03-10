@@ -28,10 +28,9 @@ impl Callable for Function {
             closure.insert(param.symbol, value);
         }
 
-        match self.body.evaluate(&closure) {
-            Ok(Some(value)) => return Ok(Some(value)),
-            Ok(None) => return Ok(Some(Value::Void)),
-            Err(e) => return Err(RuntimeException::from(&self.sid.name, expr, e))
+        match self.body.evaluate(&closure)? {
+            Some(value) => return Ok(Some(value)),
+            None => return Ok(Some(Value::Void))
         };
     }
 }

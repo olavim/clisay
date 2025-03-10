@@ -95,6 +95,7 @@ tokens! {
 
     True => "true",
     False => "false",
+    Null => "null",
 
     LeftCurlyBracket => "{",
     RightCurlyBracket => "}",

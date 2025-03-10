@@ -1,0 +1,79 @@
+print("stretch tree of depth:");
+
+class Tree {
+  item;
+  depth;
+  left;
+  right;
+
+  init(item, depth) {
+    this.item = item;
+    this.depth = depth;
+
+    if (depth > 0) {
+      say item2 = item + item;
+      depth = depth - 1;
+      this.left = Tree(item2 - 1, depth);
+      this.right = Tree(item2, depth);
+    } else {
+      this.left = null;
+      this.right = null;
+    }
+  }
+
+  fn check() {
+    if (this.left == null) {
+      return this.item;
+    }
+
+    return this.item + this.left.check() - this.right.check();
+  }
+}
+
+say minDepth = 4;
+say maxDepth = 16;
+say stretchDepth = maxDepth + 1;
+
+say start = time();
+
+print("stretch tree of depth:");
+print(stretchDepth);
+print("check:");
+print(Tree(0, stretchDepth).check());
+
+say longLivedTree = Tree(0, maxDepth);
+
+// iterations = 2 ** maxDepth
+say iterations = 1;
+say d = 0;
+while d < maxDepth {
+  iterations = iterations * 2;
+  d = d + 1;
+}
+
+say depth = minDepth;
+while depth < stretchDepth {
+  say check = 0;
+  say i = 1;
+  while i <= iterations {
+    check = check + Tree(i, depth).check() + Tree(-i, depth).check();
+    i = i + 1;
+  }
+
+  print("num trees:");
+  print(iterations * 2);
+  print("depth:");
+  print(depth);
+  print("check:");
+  print(check);
+
+  iterations = iterations / 4;
+  depth = depth + 2;
+}
+
+print("long lived tree of depth:");
+print(maxDepth);
+print("check:");
+print(longLivedTree.check());
+print("elapsed:");
+print(time() - start);

@@ -19,7 +19,8 @@ pub enum ASTExpressionKind {
     SuperCall(Vec<ASTExpression>),
     Number(f64),
     String(String),
-    Boolean(bool)
+    Boolean(bool),
+    Null
 }
 
 impl fmt::Display for ASTExpressionKind {
@@ -46,7 +47,8 @@ impl fmt::Display for ASTExpressionKind {
             ASTExpressionKind::This => String::from("this"),
             ASTExpressionKind::Number(num) => num.to_string(),
             ASTExpressionKind::String(s) => format!("\"{}\"", s),
-            ASTExpressionKind::Boolean(b) => b.to_string()
+            ASTExpressionKind::Boolean(b) => b.to_string(),
+            ASTExpressionKind::Null => String::from("null")
         });
     }
 }
@@ -172,6 +174,10 @@ fn parse_atom(stream: &mut TokenStream) -> ParseResult<ASTExpression> {
         TokenType::NumericLiteral => {
             let kind = ASTExpressionKind::Number(stream.next().lexeme.parse().unwrap());
             ASTExpression::new(kind, pos)
+        },
+        TokenType::Null => {
+            stream.next();
+            ASTExpression::new(ASTExpressionKind::Null, pos)
         },
         TokenType::True => {
             stream.next();

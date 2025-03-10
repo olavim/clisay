@@ -8,9 +8,9 @@ impl Object {
     pub fn get_method(obj: &Rc<Object>, symbol: &usize) -> Option<Value> {
         match obj.get_class_method(symbol) {
             Some((method, class, class_depth)) => {
-                let mut closure = Environment::from(&class.env);
+                let closure = Environment::from(&class.env);
                 closure.insert(0, Value::Object(obj.clone(), class_depth));
-                Some(Value::Function(Rc::new(closure), Rc::new(method.clone())))
+                Some(Value::Function(Rc::new(closure), method.clone()))
             },
             None => None
         }
@@ -28,11 +28,11 @@ impl Object {
         self.1.borrow().get(symbol).cloned()
     }
 
-    fn get_class_method(&self, symbol: &usize) -> Option<(&Function, &Rc<Class>, usize)> {
+    fn get_class_method(&self, symbol: &usize) -> Option<(&Rc<Function>, &Rc<Class>, usize)> {
         let mut depth = 0;
         let mut current_class = Some(&self.0);
         while let Some(class) = current_class {
-            match class.methods.get(symbol) {
+            match class.decl.methods.get(symbol) {
                 Some(method) => return Some((method, class, depth)),
                 None => current_class = class.superclass.as_ref()
             }

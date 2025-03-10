@@ -29,7 +29,8 @@ pub enum ExpressionKind {
     SuperCall(Vec<Expression>),
     Number(f64),
     String(String),
-    Boolean(bool)
+    Boolean(bool),
+    Null
 }
 
 impl Evaluatable for Expression {
@@ -47,7 +48,8 @@ impl Evaluatable for Expression {
             ExpressionKind::SuperCall(args) => eval_supercall(env, args, self),
             ExpressionKind::Number(n) => Ok(Some(Value::Number(*n))),
             ExpressionKind::String(s) => Ok(Some(Value::String(s.clone()))),
-            ExpressionKind::Boolean(b) => Ok(Some(Value::Boolean(*b)))
+            ExpressionKind::Boolean(b) => Ok(Some(Value::Boolean(*b))),
+            ExpressionKind::Null => Ok(Some(Value::Void))
         };
     }
 }
@@ -82,9 +84,15 @@ fn eval_binary(env: &Rc<Environment>, op: &Operator, left: &Expression, right: &
         (Operator::LogicalEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l == r),
         (Operator::LogicalEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l == r),
         (Operator::LogicalEqual, Value::String(l), Value::String(r)) => Value::Boolean(l == r),
+        (Operator::LogicalEqual, Value::Void, Value::Void) => Value::Boolean(true),
+        (Operator::LogicalEqual, Value::Void, _) => Value::Boolean(false),
+        (Operator::LogicalEqual, _, Value::Void) => Value::Boolean(false),
         (Operator::LogicalNotEqual, Value::Boolean(l), Value::Boolean(r)) => Value::Boolean(l != r),
         (Operator::LogicalNotEqual, Value::Number(l), Value::Number(r)) => Value::Boolean(l != r),
         (Operator::LogicalNotEqual, Value::String(l), Value::String(r)) => Value::Boolean(l != r),
+        (Operator::LogicalNotEqual, Value::Void, Value::Void) => Value::Boolean(false),
+        (Operator::LogicalNotEqual, Value::Void, _) => Value::Boolean(true),
+        (Operator::LogicalNotEqual, _, Value::Void) => Value::Boolean(true),
         _ => return Err(RuntimeException::new(format!("Operator '{}' cannot be applied to operands '{}' and '{}'", op, lval, rval), left))
     };
     return Ok(Some(result));
@@ -165,7 +173,7 @@ fn eval_supercall(env: &Rc<Environment>, args: &Vec<Expression>, expr: &Expressi
     let superclass = obj.get_class(class_depth + 1);
     let closure = Rc::new(Environment::from(&env));
     closure.insert(0, Value::Object(obj.clone(), class_depth + 1));
-    return superclass.init.call(env, &closure, args, expr);
+    return superclass.decl.init.call(env, &closure, args, expr);
 }
 
 fn eval_call(env: &Rc<Environment>, expr: &Expression, args: &Vec<Expression>) -> EvalResult {

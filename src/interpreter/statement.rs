@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 use super::{class::{Class, ClassDeclaration}, environment::Environment, expression::Expression, function::Function, resolver::SymbolId, value::Value, EvalResult, Evaluatable, RuntimeException};
 
@@ -9,7 +9,7 @@ pub enum Statement {
     Expression(Expression),
     Return(Option<Expression>),
     Say(SymbolId, Option<Expression>),
-    Fn(SymbolId, Vec<SymbolId>, Box<Statement>),
+    Fn(Rc<Function>),
     If(Expression, Box<Statement>, Option<Box<Statement>>),
     While(Expression, Box<Statement>),
     Class(SymbolId, ClassDeclaration)
@@ -50,9 +50,8 @@ impl Evaluatable for Statement {
                 env.insert(sid.symbol, value);
                 return Ok(None);
             },
-            Statement::Fn(sid, params, body) => {
-                let func = Function::new(sid.clone(), params.clone(), body.clone());
-                env.insert(sid.symbol, Value::Function(env.clone(), Rc::new(func)));
+            Statement::Fn(func) => {
+                env.insert(func.sid.symbol, Value::Function(env.clone(), func.clone()));
                 return Ok(None);
             },
             Statement::If(expr, then, otherwise) => {
@@ -91,10 +90,7 @@ impl Evaluatable for Statement {
                 let class = Class {
                     name: sid.name.clone(),
                     superclass,
-                    init: class_decl.init.clone(),
-                    symbols: class_decl.symbols.clone(),
-                    fields: class_decl.fields.clone(),
-                    methods: class_decl.methods.clone(),
+                    decl: Rc::new(class_decl.clone()),
                     env: env.clone()
                 };
 

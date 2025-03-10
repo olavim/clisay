@@ -5,9 +5,9 @@ use super::{callable::Callable, environment::Environment, expression::Expression
 #[derive(Clone)]
 pub struct ClassDeclaration {
     pub superclass_sid: Option<SymbolId>,
-    pub init: Function,
+    pub init: Rc<Function>,
     pub symbols: HashMap<String, usize>,
-    pub methods: HashMap<usize, Function>,
+    pub methods: HashMap<usize, Rc<Function>>,
     pub fields: Vec<usize>,
 }
 
@@ -15,16 +15,13 @@ pub struct ClassDeclaration {
 pub struct Class {
     pub name: String,
     pub superclass: Option<Rc<Class>>,
-    pub init: Function,
-    pub symbols: HashMap<String, usize>,
-    pub methods: HashMap<usize, Function>,
-    pub fields: Vec<usize>,
+    pub decl: Rc<ClassDeclaration>,
     pub env: Rc<Environment>
 }
 
 impl Class {    
     pub fn get_symbol(&self, member: &str) -> Option<&usize> {
-        match self.symbols.get(member) {
+        match self.decl.symbols.get(member) {
             Some(symbol) => return Some(symbol),
             None => match &self.superclass {
                 Some(superclass) => superclass.get_symbol(member),
@@ -40,7 +37,7 @@ impl Callable for Rc<Class> {
 
         let mut current_class = Some(&instance.0);
         while let Some(class) = &current_class {
-            for symbol in &class.fields {
+            for symbol in &class.decl.fields {
                 instance.insert_symbol(symbol, Value::Void);
             }
             current_class = class.superclass.as_ref();
@@ -50,7 +47,7 @@ impl Callable for Rc<Class> {
         let closure = Rc::new(Environment::from(closure_env));
         closure.insert(0, value.clone());
 
-        self.init.call(env, &closure, args, expr)?;
+        self.decl.init.call(env, &closure, args, expr)?;
 
         return Ok(Some(value));
     }

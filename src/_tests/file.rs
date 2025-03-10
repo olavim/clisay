@@ -35,7 +35,8 @@ fn operators() {
     test_folder("tests/operators");
 }
 
-// #[test]
-// fn perf() {
-//     test_file("tests/perf.say");
-// }
+#[test]
+fn perf() {
+    // test_file("tests/perf.say");
+    test_file("tests/bin.say");
+}
