@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
-use super::{environment::Environment, expression::Expression, value::Value, EvalResult};
+use super::{environment::Environment, expression::Expression, EvalResult};
 
 pub trait Callable {
-    fn call(&self, env: &Rc<Environment>, args: Vec<Value>, expr: &Expression) -> EvalResult;
+    fn call(&self, env: &Rc<Environment>, closure_env: &Rc<Environment>, args: &Vec<Expression>, expr: &Expression) -> EvalResult;
 }

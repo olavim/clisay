@@ -5,8 +5,8 @@ use smallvec::SmallVec;
 use super::{resolver::SymbolId, value::Value};
 
 pub struct Environment {
-    pub parent: Option<Rc<Environment>>,
-    pub locals: RefCell<SmallVec<[Value; 3]>>,
+    parent: Option<Rc<Environment>>,
+    locals: RefCell<SmallVec<[Value; 3]>>,
     depth: u32
 }
 

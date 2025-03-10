@@ -163,35 +163,21 @@ fn eval_supercall(env: &Rc<Environment>, args: &Vec<Expression>, expr: &Expressi
     };
 
     let superclass = obj.get_class(class_depth + 1);
-    let mut arg_values = Vec::with_capacity(args.len());
-    for arg in args {
-        arg_values.push(arg.evaluate(env)?.unwrap());
-    }
-
     let closure = Rc::new(Environment::from(&env));
     closure.insert(0, Value::Object(obj.clone(), class_depth + 1));
-    return superclass.init.call(&closure, arg_values, expr);
+    return superclass.init.call(env, &closure, args, expr);
 }
 
 fn eval_call(env: &Rc<Environment>, expr: &Expression, args: &Vec<Expression>) -> EvalResult {
-    let lval = match expr.evaluate(env) {
-        Ok(Some(val)) => val,
-        Ok(None) => return Err(RuntimeException::new("Cannot call <>", expr)),
-        Err(err) => return Err(err)
+    let lval = match expr.evaluate(env)? {
+        Some(val) => val,
+        None => return Err(RuntimeException::new("Cannot call <>", expr))
     };
 
-    let mut arg_values = Vec::with_capacity(args.len());
-    for arg in args {
-        arg_values.push(arg.evaluate(env)?.unwrap());
-    }
-
-    match lval {
-        Value::Function(env_ref, func) => func.call(&env_ref, arg_values, expr),
-        Value::BuiltinFunction(env_ref, func) => {
-            let closure = Rc::new(Environment::from(&env_ref));
-            return func.call(&closure, arg_values, expr);
-        },
-        Value::Class(env_ref, class) => class.call(&env_ref, arg_values, expr),
+    match &lval {
+        Value::Function(env_ref, func) => func.call(env, env_ref, args, expr),
+        Value::BuiltinFunction(env_ref, func) => func.call(env, env_ref, args, expr),
+        Value::Class(env_ref, class) => class.call(env, env_ref, args, expr),
         _ => return Err(RuntimeException::new(format!("{} is not callable", lval), expr))
     }
 }

@@ -16,15 +16,16 @@ impl Function {
 }
 
 impl Callable for Function {
-    fn call(&self, env: &Rc<Environment>, args: Vec<Value>, expr: &Expression) -> EvalResult {
+    fn call(&self, env: &Rc<Environment>, closure_env: &Rc<Environment>, args: &Vec<Expression>, expr: &Expression) -> EvalResult {
         if self.params.len() != args.len() {
             let msg = format!("{} expects {} arguments, but got {}", self.sid.name, self.params.len(), args.len());
             return Err(RuntimeException::new(msg, expr));
         }
 
-        let closure = Rc::new(Environment::from(env));
+        let closure = Rc::new(Environment::from(closure_env));
         for (param, arg) in self.params.iter().zip(args) {
-            closure.insert(param.symbol, arg.clone());
+            let value = arg.evaluate(env)?.unwrap();
+            closure.insert(param.symbol, value);
         }
 
         match self.body.evaluate(&closure) {
@@ -48,12 +49,13 @@ pub enum BuiltinFunction {
 }
 
 impl Callable for BuiltinFunction {
-    fn call(&self, _env: &Rc<Environment>, args: Vec<Value>, _expr: &Expression) -> EvalResult {
+    fn call(&self, env: &Rc<Environment>, _closure_env: &Rc<Environment>, args: &Vec<Expression>, _expr: &Expression) -> EvalResult {
         return match &self {
             BuiltinFunction::Print(out) => {
-                let value = format!("{}", &args[0].stringify());
-                println!("{}", value);
-                out.as_ref().borrow_mut().push(value);
+                let value = args[0].evaluate(env)?.unwrap();
+                let value_str = format!("{}", value.stringify());
+                println!("{}", value_str);
+                out.as_ref().borrow_mut().push(value_str);
                 Ok(Some(Value::Void))
             },
             BuiltinFunction::Time => {

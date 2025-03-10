@@ -35,7 +35,7 @@ impl Class {
 }
 
 impl Callable for Rc<Class> {
-    fn call(&self, env: &Rc<Environment>, args: Vec<Value>, expr: &Expression) -> EvalResult {
+    fn call(&self, env: &Rc<Environment>, closure_env: &Rc<Environment>, args: &Vec<Expression>, expr: &Expression) -> EvalResult {
         let instance = Rc::new(Object(self.clone(), RefCell::new(HashMap::new())));
 
         let mut current_class = Some(&instance.0);
@@ -47,10 +47,10 @@ impl Callable for Rc<Class> {
         }
 
         let value = Value::Object(instance, 0);
-        let closure = Rc::new(Environment::from(env));
+        let closure = Rc::new(Environment::from(closure_env));
         closure.insert(0, value.clone());
 
-        self.init.call(&closure, args, expr)?;
+        self.init.call(env, &closure, args, expr)?;
 
         return Ok(Some(value));
     }
