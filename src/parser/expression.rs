@@ -2,9 +2,9 @@ use std::fmt;
 
 use anyhow::bail;
 
-use crate::lexer::{SourcePosition, TokenType};
+use crate::lexer::{SourcePosition, TokenStream, TokenType};
 
-use super::{token_stream::TokenStream, Operator, ParseResult};
+use super::{Operator, ParseResult};
 
 #[derive(Clone)]
 pub enum ASTExpressionKind {

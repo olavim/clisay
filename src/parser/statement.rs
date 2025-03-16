@@ -3,10 +3,9 @@ use std::fmt;
 
 use anyhow::bail;
 
-use crate::lexer::{SourcePosition, TokenType};
+use crate::lexer::{SourcePosition, TokenStream, TokenType};
 use crate::parser::ASTExpression;
 
-use super::token_stream::TokenStream;
 use super::{ASTExpressionKind, Operator, ParseResult};
 
 #[derive(Clone)]

@@ -1,10 +1,12 @@
 mod token;
+mod token_stream;
 
 use std::fmt;
 
 use anyhow::bail;
 use regex::Regex;
 pub use token::{Token, TokenType};
+pub use token_stream::TokenStream;
 
 const REGEX_STRING: &str = r#""([^"\\]|\\.)*""#;
 const REGEX_NUMERIC: &str = r"(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?";

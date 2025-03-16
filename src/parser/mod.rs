@@ -1,4 +1,3 @@
-mod token_stream;
 mod operator;
 mod ast;
 mod statement;
@@ -10,7 +9,8 @@ pub use statement::ASTStatement;
 pub use expression::ASTExpression;
 pub use operator::Operator;
 pub use statement::StatementKind;
-use token_stream::TokenStream;
+
+use crate::lexer::TokenStream;
 
 use super::lexer::Token;
 

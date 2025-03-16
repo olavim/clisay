@@ -1,16 +1,12 @@
 use std::fmt;
 
-use anyhow::bail;
-
 use crate::lexer::{TokenStream, TokenType};
-
-use super::ParseResult;
 
 #[derive(Clone)]
 pub enum Operator {
     // Infix
-    Plus,
-    Minus,
+    Add,
+    Subtract,
     Multiply,
     Divide,
     LeftShift,
@@ -30,7 +26,7 @@ pub enum Operator {
     Assign(Option<Box<Operator>>),
 
     // Prefix
-    Negative,
+    Negate,
     LogicalNot,
     BitNot,
     Group,
@@ -54,7 +50,7 @@ impl Operator {
     pub fn parse_prefix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
             TokenType::LeftParenthesis => Operator::Group,
-            TokenType::Minus => Operator::Negative,
+            TokenType::Minus => Operator::Negate,
             TokenType::Exclamation => Operator::LogicalNot,
             TokenType::Tilde => Operator::BitNot,
             _ => return None
@@ -74,7 +70,7 @@ impl Operator {
     /// ## Arguments
     /// * `stream` - The token stream to parse
     /// * `min_precedence` - The minimum precedence of the operator to parse
-    pub fn parse_infix(stream: &mut TokenStream, min_precedence: u8) -> ParseResult<Option<Operator>> {
+    pub fn parse_infix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let mut current_op: Option<Operator> = None;
         let mut peek = 0;
 
@@ -82,8 +78,8 @@ impl Operator {
             current_op = match (&current_op, &stream.peek(peek).kind) {
                 (None, TokenType::LessThan) => Some(Operator::LessThan),
                 (None, TokenType::GreaterThan) => Some(Operator::GreaterThan),
-                (None, TokenType::Plus) => Some(Operator::Plus),
-                (None, TokenType::Minus) => Some(Operator::Minus),
+                (None, TokenType::Plus) => Some(Operator::Add),
+                (None, TokenType::Minus) => Some(Operator::Subtract),
                 (None, TokenType::Multiply) => Some(Operator::Multiply),
                 (None, TokenType::Divide) => Some(Operator::Divide),
                 (None, TokenType::Amp) => Some(Operator::BitAnd),
@@ -102,7 +98,7 @@ impl Operator {
         
                 (Some(assign_op @ (
                     Operator::LogicalOr | Operator::LogicalAnd |
-                    Operator::Plus | Operator::Minus |
+                    Operator::Add | Operator::Subtract |
                     Operator::Multiply | Operator::Divide |
                     Operator::BitAnd | Operator::BitOr | Operator::BitXor |
                     Operator::LeftShift | Operator::RightShift
@@ -112,18 +108,17 @@ impl Operator {
                 (Some(Operator::LessThan), TokenType::Equal) => Some(Operator::LessThanEqual),
                 (Some(Operator::GreaterThan), TokenType::Equal) => Some(Operator::GreaterThanEqual),
                 (Some(op), _) if op.infix_precedence().is_some() => break op,
-                (Some(op), _) => bail!("Unexpected operator {}", op),
-                (_, token_kind) => bail!("Unexpected token {}", token_kind)
+                (_, _) => return None
             };
             peek += 1;
         };
     
         if op.has_lower_infix_precedence(min_precedence) {
-            return Ok(None);
+            return None;
         }
     
         stream.advance(peek);
-        return Ok(Some(op.clone()));
+        return Some(op.clone());
     }
     
     /// Parses a postfix operator on top of the token stream.
@@ -174,7 +169,7 @@ impl Operator {
             Operator::LessThan | Operator::LessThanEqual |
             Operator::GreaterThan | Operator::GreaterThanEqual => 9,
             Operator::LeftShift | Operator::RightShift => 10,
-            Operator::Plus | Operator::Minus => 11,
+            Operator::Add | Operator::Subtract => 11,
             Operator::Multiply | Operator::Divide => 12,
             Operator::MemberAccess => 16,
             _ => return None
@@ -184,7 +179,7 @@ impl Operator {
 
     pub fn prefix_precedence(&self) -> Option<u8> {
         let bp = match self {
-            Operator::Negative | Operator::LogicalNot | Operator::BitNot => 13,
+            Operator::Negate | Operator::LogicalNot | Operator::BitNot => 13,
             Operator::Group => 16,
             _ => return None
         };
@@ -203,7 +198,7 @@ impl Operator {
         return match self {
             Operator::Assign(_) => false,
             Operator::Ternary => false,
-            Operator::Negative => false,
+            Operator::Negate => false,
             Operator::LogicalNot => false,
             Operator::BitNot => false,
             Operator::Group => false,
@@ -215,8 +210,8 @@ impl Operator {
 impl fmt::Display for Operator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         return write!(f, "{}", match self {
-            Operator::Plus => "+",
-            Operator::Minus => "-",
+            Operator::Add => "+",
+            Operator::Subtract => "-",
             Operator::Multiply => "*",
             Operator::Divide => "/",
             Operator::LeftShift => "<<",
@@ -233,7 +228,7 @@ impl fmt::Display for Operator {
             Operator::BitOr => "|",
             Operator::BitXor => "^",
             Operator::Ternary => "?:",
-            Operator::Negative => "-",
+            Operator::Negate => "-",
             Operator::LogicalNot => "!",
             Operator::BitNot => "~",
             Operator::Group => "<group>",
@@ -241,8 +236,8 @@ impl fmt::Display for Operator {
             Operator::MemberAccess => ".",
             Operator::Assign(None) => "=",
             Operator::Assign(Some(op)) => match **op {
-                Operator::Plus => "+=",
-                Operator::Minus => "-=",
+                Operator::Add => "+=",
+                Operator::Subtract => "-=",
                 Operator::LeftShift => "<<=",
                 Operator::RightShift => ">>=",
                 Operator::Multiply => "*=",
