@@ -124,7 +124,7 @@ fn parse_prefix_expression(stream: &mut TokenStream, op: Operator) -> ParseResul
     let kind = match &op {
         Operator::Group => {
             let expr = Box::new(parse_expression(stream, 0)?);
-            stream.expect(TokenType::RightParenthesis)?;
+            stream.expect(TokenType::RightParen)?;
             expr.kind
         },
         _ => {
@@ -149,14 +149,14 @@ fn parse_postfix_expression(stream: &mut TokenStream, op: Operator, expr: ASTExp
 fn parse_call_args(stream: &mut TokenStream) -> ParseResult<Vec<ASTExpression>> {
     let mut args: Vec<ASTExpression> = Vec::new();
     
-    while !stream.match_next(TokenType::RightParenthesis) {
+    while !stream.match_next(TokenType::RightParen) {
         if args.len() > 0 {
             stream.expect(TokenType::Comma)?;
         }
         args.push(parse_expression(stream, 0)?);
     }
 
-    stream.expect(TokenType::RightParenthesis)?;
+    stream.expect(TokenType::RightParen)?;
     return Ok(args);
 }
 

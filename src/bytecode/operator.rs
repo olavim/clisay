@@ -2,6 +2,8 @@ use std::fmt;
 
 use crate::lexer::{TokenStream, TokenType};
 
+use super::OpCode;
+
 #[derive(Clone)]
 pub enum Operator {
     // Infix
@@ -23,6 +25,7 @@ pub enum Operator {
     BitOr,
     BitXor,
     Ternary,
+    MemberAccess,
     Assign(Option<Box<Operator>>),
 
     // Prefix
@@ -32,11 +35,28 @@ pub enum Operator {
     Group,
 
     // Postfix
-    MemberAccess,
     Call
 }
 
 impl Operator {
+    pub fn from_opcode(op: OpCode) -> Operator {
+        return match op {
+            OpCode::Add => Operator::Add,
+            OpCode::Subtract => Operator::Subtract,
+            OpCode::Multiply => Operator::Multiply,
+            OpCode::Divide => Operator::Divide,
+            OpCode::Negate => Operator::Negate,
+            OpCode::Equal => Operator::LogicalEqual,
+            OpCode::NotEqual => Operator::LogicalNotEqual,
+            OpCode::LessThan => Operator::LessThan,
+            OpCode::LessThanEqual => Operator::LessThanEqual,
+            OpCode::GreaterThan => Operator::GreaterThan,
+            OpCode::GreaterThanEqual => Operator::GreaterThanEqual,
+            OpCode::Not => Operator::LogicalNot,
+            _ => panic!("Invalid opcode")
+        };
+    }
+
     pub fn assign(op: Operator) -> Operator {
         return Operator::Assign(Some(Box::new(op)));
     }
@@ -49,7 +69,7 @@ impl Operator {
     /// * `min_precedence` - The minimum precedence of the operator to parse
     pub fn parse_prefix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
-            TokenType::LeftParenthesis => Operator::Group,
+            TokenType::LeftParen => Operator::Group,
             TokenType::Minus => Operator::Negate,
             TokenType::Exclamation => Operator::LogicalNot,
             TokenType::Tilde => Operator::BitNot,
@@ -129,7 +149,7 @@ impl Operator {
     /// * `min_precedence` - The minimum precedence of the operator to parse
     pub fn parse_postfix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
-            TokenType::LeftParenthesis => Operator::Call,
+            TokenType::LeftParen => Operator::Call,
             _ => return None
         };
     

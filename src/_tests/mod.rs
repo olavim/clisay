@@ -1,7 +1,7 @@
 mod inline;
 mod file;
 
-use std::panic;
+use std::{backtrace::Backtrace, panic};
 
 use anyhow::Error;
 use regex::Regex;
@@ -19,6 +19,8 @@ pub fn test_folder(folder: &str) {
     let default_panic = std::panic::take_hook();
     panic::set_hook(Box::new(|_| {
         // do nothing
+        let backtrace = Backtrace::capture();
+        println!("{}", backtrace);
     }));
 
     for entry in std::fs::read_dir(folder).unwrap() {
@@ -30,11 +32,11 @@ pub fn test_folder(folder: &str) {
             let status = match panic::catch_unwind(|| test_file(&path_str)) {
                 Ok(_) => "\x1b[92mok\x1b[0m",
                 Err(err) => {
-                    let msg = match err.downcast_ref::<String>() {
-                        Some(msg) => msg.clone(),
-                        None => err.downcast_ref::<&str>().unwrap().to_string()
+                    if let Some(msg) = err.downcast_ref::<String>() {
+                        errors.push(msg.clone());
+                    } else if let Some(msg) = err.downcast_ref::<&str>() {
+                        errors.push(msg.to_string());
                     };
-                    errors.push(msg);
                     "\x1b[91mfail\x1b[0m"
                 }
             };

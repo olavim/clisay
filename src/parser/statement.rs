@@ -76,7 +76,7 @@ fn parse_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
         TokenType::If => parse_if_statement(stream)?,
         TokenType::While => parse_while_statement(stream)?,
         TokenType::Class => parse_class_statement(stream)?,
-        TokenType::LeftCurlyBracket => parse_block_statement(stream)?,
+        TokenType::LeftBrace => parse_block_statement(stream)?,
         _ => parse_expression_statement(stream)?
     };
 
@@ -85,10 +85,10 @@ fn parse_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
 
 fn parse_block_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
     let pos = stream.peek(0).pos.clone();
-    let curlies = stream.next_if(TokenType::LeftCurlyBracket).is_some();
+    let curlies = stream.next_if(TokenType::LeftBrace).is_some();
     let stmt = parse_compound_statement(stream)?;
     if curlies {
-        stream.expect(TokenType::RightCurlyBracket)?;
+        stream.expect(TokenType::RightBrace)?;
     }
     return Ok(ASTStatement::new(StatementKind::Block(Box::new(stmt)), pos));
 }
@@ -96,7 +96,7 @@ fn parse_block_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
 fn parse_compound_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
     let pos = stream.peek(0).pos.clone();
     let mut statements: Vec<ASTStatement> = Vec::new();
-    while !matches!(&stream.peek(0).kind, TokenType::RightCurlyBracket | TokenType::EOF) {
+    while !matches!(&stream.peek(0).kind, TokenType::RightBrace | TokenType::EOF) {
         statements.push(parse_statement(stream)?);
     }
     return Ok(ASTStatement::new(StatementKind::Compound(statements), pos));
@@ -137,7 +137,7 @@ fn parse_fn_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
 }
 
 fn parse_callable_params(stream: &mut TokenStream) -> ParseResult<Vec<String>> {
-    stream.expect(TokenType::LeftParenthesis)?;
+    stream.expect(TokenType::LeftParen)?;
 
     let mut seen_params: HashSet<String> = HashSet::new();
     let mut params = Vec::new();
@@ -152,14 +152,14 @@ fn parse_callable_params(stream: &mut TokenStream) -> ParseResult<Vec<String>> {
         stream.next_if(TokenType::Comma);
     }
 
-    stream.expect(TokenType::RightParenthesis)?;
+    stream.expect(TokenType::RightParen)?;
     return Ok(params);
 }
 
 fn parse_callable_decl_body(stream: &mut TokenStream) -> ParseResult<ASTStatement> {
-    stream.expect(TokenType::LeftCurlyBracket)?;
+    stream.expect(TokenType::LeftBrace)?;
     let body = parse_compound_statement(stream)?;
-    stream.expect(TokenType::RightCurlyBracket)?;
+    stream.expect(TokenType::RightBrace)?;
     return Ok(body);
 }
 
@@ -174,7 +174,7 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
         _ => None
     };
 
-    stream.expect(TokenType::LeftCurlyBracket)?;
+    stream.expect(TokenType::LeftBrace)?;
 
     let mut members: HashSet<String> = HashSet::new();
     let mut fields: Vec<ASTVariableDeclaration> = Vec::new();
@@ -185,7 +185,7 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
     let mut init_parameters: Vec<String> = Vec::new();
     let mut init_body: Option<ASTStatement> = None;
 
-    while !stream.match_next(TokenType::RightCurlyBracket) {
+    while !stream.match_next(TokenType::RightBrace) {
         let token = stream.peek(0);
         let pos = token.pos.clone();
 
@@ -214,7 +214,7 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
 
                 stream.expect(TokenType::Init)?;
                 init_parameters = parse_callable_params(stream)?;
-                stream.expect(TokenType::LeftCurlyBracket)?;
+                stream.expect(TokenType::LeftBrace)?;
         
                 if let Some(token) = stream.next_if(TokenType::Super) {
                     let pos = token.pos.clone();
@@ -225,7 +225,7 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
                 }
         
                 init_body = Some(parse_compound_statement(stream)?);
-                stream.expect(TokenType::RightCurlyBracket)?;
+                stream.expect(TokenType::RightBrace)?;
             },
             TokenType::Fn => {
                 let StatementKind::Fn(fn_decl) = parse_fn_statement(stream)?.kind else { unreachable!() };
@@ -240,7 +240,7 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
         };
     }
 
-    stream.expect(TokenType::RightCurlyBracket)?;
+    stream.expect(TokenType::RightBrace)?;
 
     let mut init_stmts: Vec<ASTStatement> = Vec::new();
 
@@ -283,17 +283,17 @@ fn parse_class_statement(stream: &mut TokenStream) -> ParseResult<ASTStatement> 
 }
 
 fn parse_call_args(stream: &mut TokenStream) -> ParseResult<Vec<ASTExpression>> {
-    stream.expect(TokenType::LeftParenthesis)?;
+    stream.expect(TokenType::LeftParen)?;
 
     let mut args: Vec<ASTExpression> = Vec::new();
-    while !stream.match_next(TokenType::RightParenthesis) {
+    while !stream.match_next(TokenType::RightParen) {
         if args.len() > 0 {
             stream.expect(TokenType::Comma)?;
         }
         args.push(ASTExpression::parse(stream)?);
     }
 
-    stream.expect(TokenType::RightParenthesis)?;
+    stream.expect(TokenType::RightParen)?;
     return Ok(args);
 }
 

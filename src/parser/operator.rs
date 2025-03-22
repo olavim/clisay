@@ -53,7 +53,7 @@ impl Operator {
     /// * `min_precedence` - The minimum precedence of the operator to parse
     pub fn parse_prefix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
-            TokenType::LeftParenthesis => Operator::Group,
+            TokenType::LeftParen => Operator::Group,
             TokenType::Minus => Operator::Negative,
             TokenType::Exclamation => Operator::LogicalNot,
             TokenType::Tilde => Operator::BitNot,
@@ -134,7 +134,7 @@ impl Operator {
     /// * `min_precedence` - The minimum precedence of the operator to parse
     pub fn parse_postfix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
-            TokenType::LeftParenthesis => Operator::Call,
+            TokenType::LeftParen => Operator::Call,
             _ => return None
         };
     

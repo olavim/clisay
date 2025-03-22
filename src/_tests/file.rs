@@ -36,6 +36,12 @@ fn operators() {
 }
 
 #[test]
+fn gc() {
+    // test_folder("tests/gc");
+    test_file("tests/gc/string_collection.say");
+}
+
+#[test]
 fn perf() {
     // test_file("tests/perf.say");
     test_file("tests/bin.say");

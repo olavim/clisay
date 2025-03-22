@@ -4,7 +4,7 @@ use super::SourcePosition;
 
 macro_rules! tokens {
     ($($token:ident => $lexeme:literal),*) => {
-        #[derive(Clone, PartialEq)]
+        #[derive(Clone, Copy, PartialEq)]
         pub enum TokenType {
             Identifier,
             NumericLiteral, StringLiteral,
@@ -97,10 +97,10 @@ tokens! {
     False => "false",
     Null => "null",
 
-    LeftCurlyBracket => "{",
-    RightCurlyBracket => "}",
-    LeftParenthesis => "(",
-    RightParenthesis => ")",
+    LeftBrace => "{",
+    RightBrace => "}",
+    LeftParen => "(",
+    RightParen => ")",
     Question => "?",
     Exclamation => "!",
     Semicolon => ";",

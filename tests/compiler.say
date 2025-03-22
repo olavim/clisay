@@ -1,12 +1,13 @@
-fn fib(n) {
-    if n <= 1 {
+fn getCounter() {
+    say n = 0;
+    fn counter() {
+        n += 1;
         return n;
     }
-    return fib(n - 1) + fib(n - 2);
+    return counter;
 }
-fn elapsed(start, value) {
-    print(value);
-    print(clock() - start);
-}
-elapsed(clock(), fib(39));
-// elapsed(clock(), 1);
+
+say counter = getCounter();
+print(counter()); // 1
+print(counter()); // 2
+print(counter()); // 3

@@ -17,10 +17,14 @@ fn main() {
 
 #[test]
 fn test_compiler() {
-    let file = "tests/compiler.say";
+    let file = "tests/perf.say";
     let src = std::fs::read_to_string(file).unwrap();
     match run(file, &src) {
         Ok(_) => (),
-        Err(err) => println!("{}", err.to_string())
+        Err(err) => {
+            eprintln!("{}", err.to_string());
+            eprintln!("{}", err.backtrace());
+            panic!();
+        }
     }
 }

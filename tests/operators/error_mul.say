@@ -1,57 +1,57 @@
-1 * true; // error: Operator '*' cannot be applied to operands '1' and 'true'
+1 * true; // error: Operator '*' cannot be applied to operands number and boolean
 
 // @split
 
-true * "str"; // error: Operator '*' cannot be applied to operands 'true' and '"str"'
+true * "str"; // error: Operator '*' cannot be applied to operands boolean and string
 
 // @split
 
-1 * "str"; // error: Operator '*' cannot be applied to operands '1' and '"str"'
-
-// @split
-
-fn func() {}
-func * 1; // error: Operator '*' cannot be applied to operands '<fn>' and '1'
+1 * "str"; // error: Operator '*' cannot be applied to operands number and string
 
 // @split
 
 fn func() {}
-func * "str"; // error: Operator '*' cannot be applied to operands '<fn>' and '"str"'
+func * 1; // error: Operator '*' cannot be applied to operands function and number
 
 // @split
 
 fn func() {}
-func * true; // error: Operator '*' cannot be applied to operands '<fn>' and 'true'
+func * "str"; // error: Operator '*' cannot be applied to operands function and string
+
+// @split
+
+fn func() {}
+func * true; // error: Operator '*' cannot be applied to operands function and boolean
 
 // @split
 
 fn func1() {}
 fn func2() {}
-func1 * func2; // error: Operator '*' cannot be applied to operands '<fn>' and '<fn>'
+func1 * func2; // error: Operator '*' cannot be applied to operands function and function
 
 // @split
 
 class A {}
-A * 1; // error: Operator '*' cannot be applied to operands '<class>' and '1'
+A * 1; // error: Operator '*' cannot be applied to operands class and number
 
 // @split
 
 class A {}
-A * "str"; // error: Operator '*' cannot be applied to operands '<class>' and '"str"'
+A * "str"; // error: Operator '*' cannot be applied to operands class and string
 
 // @split
 
 class A {}
-A * true; // error: Operator '*' cannot be applied to operands '<class>' and 'true'
+A * true; // error: Operator '*' cannot be applied to operands class and boolean
 
 // @split
 
 class A {}
 fn func() {}
-A * func; // error: Operator '*' cannot be applied to operands '<class>' and '<fn>'
+A * func; // error: Operator '*' cannot be applied to operands class and function
 
 // @split
 
 class A {}
 class B {}
-A * B; // error: Operator '*' cannot be applied to operands '<class>' and '<class>'
+A * B; // error: Operator '*' cannot be applied to operands class and class

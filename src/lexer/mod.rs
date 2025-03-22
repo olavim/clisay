@@ -24,7 +24,7 @@ pub struct SourcePosition {
 
 impl fmt::Display for SourcePosition {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        return write!(f, "line {}, column {}", self.line, self.column);
+        return write!(f, "{}:{}", self.file, self.line);
     }
 }
 

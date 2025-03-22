@@ -1,32 +1,38 @@
 mod vm;
 mod gc;
 mod operator;
+mod parser;
 mod compiler;
 
 use core::fmt;
-use std::any::Any;
+use std::{any::Any, mem};
 use anyhow::bail;
 
 use compiler::Compiler;
-use gc::{GcObj, GcRef};
+use gc::{GcTraceable, GcRef};
 use operator::Operator;
 
 pub use gc::Gc;
+pub use parser::Parser;
 pub use vm::Vm;
+
+use crate::lexer::SourcePosition;
 
 #[derive(Clone)]
 pub struct BytecodeChunk {
-    code: Vec<u8>,
-    constants: Vec<Value>
+    code: Vec<OpCode>,
+    constants: Vec<Value>,
+    code_pos: Vec<SourcePosition>
 }
 
 impl BytecodeChunk {
     fn new() -> BytecodeChunk {
-        return BytecodeChunk { code: Vec::new(), constants: Vec::new() };
+        return BytecodeChunk { code: Vec::new(), constants: Vec::new(), code_pos: Vec::new() };
     }
 
-    fn write_byte(&mut self, byte: impl Into<u8>) {
-        self.code.push(byte.into());
+    fn write(&mut self, op: OpCode, pos: &SourcePosition) {
+        self.code.push(op);
+        self.code_pos.push(pos.clone());
     }
 
     fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
@@ -37,37 +43,111 @@ impl BytecodeChunk {
         self.constants.push(value);
         Ok((self.constants.len() - 1) as u8)
     }
+}
 
-    fn init_jump(&mut self, byte: impl Into<u8>) -> usize {
-        self.write_byte(byte);
-        self.write_byte(0);
-        self.write_byte(0);
-        return self.code.len() - 3;
-    }
+impl GcTraceable for BytecodeChunk {
+    fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result {
+        let mut i = 0;
+        while i < self.code.len() {
+            let op = self.code[i];
+            i += 1;
 
-    fn patch_jump(&mut self, jump_ref: usize) -> Result<(), anyhow::Error> {
-        if self.code.len() > u16::MAX as usize {
-            bail!("Jump too large");
+            write!(f, "{i}: ")?;
+
+            match op {
+                OpCode::Return => write!(f, "RET")?,
+                OpCode::Pop => write!(f, "POP")?,
+                OpCode::Call(arg_count) => write!(f, "CALL {arg_count}")?,
+                OpCode::Jump(lpos, rpos) => write!(f, "JUMP <{}>", (lpos as u16) << 8 | (rpos as u16))?,
+                OpCode::JumpIfFalse(lpos, rpos) => write!(f, "JUMP_F <{}>", (lpos as u16) << 8 | (rpos as u16))?,
+                OpCode::CloseUpvalue(idx) => write!(f, "CLOSE_UPVALUE <{}>", idx)?,
+                OpCode::GetGlobal(const_idx) => {
+                    write!(f, "GET_GLOBAL ")?;
+                    self.constants[const_idx as usize].fmt(f, gc)?
+                }
+                OpCode::SetGlobal(const_idx) => {
+                    write!(f, "SET_GLOBAL ")?;
+                    self.constants[const_idx as usize].fmt(f, gc)?
+                },
+                OpCode::PushConstant(const_idx) => {
+                    write!(f, "CONST ")?;
+                    self.constants[const_idx as usize].fmt(f, gc)?
+                }
+                OpCode::PushNull => write!(f, "NULL")?,
+                OpCode::PushTrue => write!(f, "TRUE")?,
+                OpCode::PushFalse => write!(f, "FALSE")?,
+                OpCode::Add => write!(f, "ADD")?,
+                OpCode::Subtract => write!(f, "SUB")?,
+                OpCode::Multiply => write!(f, "MUL")?,
+                OpCode::Divide => write!(f, "DIV")?,
+                OpCode::Negate => write!(f, "NEG")?,
+                OpCode::Equal => write!(f, "EQ")?,
+                OpCode::NotEqual => write!(f, "NEQ")?,
+                OpCode::LessThan => write!(f, "LT")?,
+                OpCode::LessThanEqual => write!(f, "LTE")?,
+                OpCode::GreaterThan => write!(f, "GT")?,
+                OpCode::GreaterThanEqual => write!(f, "GTE")?,
+                OpCode::Not => write!(f, "NOT")?,
+                OpCode::PushClosure(idx) => {
+                    let function = &self.constants[idx as usize];
+
+                    if let Value::Function(gc_ref) = function {
+                        let function = gc.get(gc_ref);
+                        function.fmt(f, gc)?;
+                    }
+                },
+                OpCode::GetLocal(loc_idx) => write!(f, "GET_LOCAL <{}>", loc_idx)?,
+                OpCode::SetLocal(loc_idx) => write!(f, "SET_LOCAL <{}>", loc_idx)?,
+                OpCode::GetUpvalue(loc_idx) => write!(f, "GET_UPVAL <{}>", loc_idx)?,
+                OpCode::SetUpvalue(loc_idx) => write!(f, "GET_UPVAL <{}>", loc_idx)?
+            }
+
+            write!(f, "\n")?;
         }
-
-        let pos = self.code.len() as u16;
-        self.code[jump_ref + 1] = (pos >> 8) as u8;
-        self.code[jump_ref + 2] = pos as u8;
         Ok(())
     }
+
+    fn mark_refs(&self, gc: &mut Gc) {
+        for constant in &self.constants {
+            constant.mark_refs(gc);
+        }
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<BytecodeChunk>()
+            + self.code.capacity() * mem::size_of::<OpCode>()
+            + self.constants.capacity() * mem::size_of::<Value>()
+            + self.code_pos.capacity() * mem::size_of::<SourcePosition>()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        return self;
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
-struct NativeFunction {
+pub struct NativeFunction {
     name: GcRef<String>,
     arity: u8,
-    function: fn(vm: &Vm, &[Value]) -> Value
+    function: fn(vm: &mut Vm)
 }
 
-impl GcObj for NativeFunction {
+impl GcTraceable for NativeFunction {
     fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result {
         return write!(f, "<native fn {}>", gc.get(&self.name));
     }
 
+    fn mark_refs(&self, gc: &mut Gc) {
+        gc.mark_object(&self.name);
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<NativeFunction>()
+    }
+
     fn as_any(&self) -> &dyn Any {
         return self;
     }
@@ -77,18 +157,32 @@ impl GcObj for NativeFunction {
     }
 }
 
-struct Function {
+#[derive(Clone, Copy)]
+struct FnUpvalue {
+    is_local: bool,
+    location: u8
+}
+
+pub struct Function {
     name: GcRef<String>,
     arity: u8,
     ip_start: usize,
-    upvalue_count: u8
+    upvalues: Vec<FnUpvalue>
 }
 
-impl GcObj for Function {
+impl GcTraceable for Function {
     fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result {
         return write!(f, "<fn {}>", gc.get(&self.name));
     }
 
+    fn mark_refs(&self, gc: &mut Gc) {
+        gc.mark_object(&self.name);
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<Function>() + self.upvalues.capacity() * mem::size_of::<FnUpvalue>()
+    }
+
     fn as_any(&self) -> &dyn Any {
         return self;
     }
@@ -98,15 +192,32 @@ impl GcObj for Function {
     }
 }
 
-struct Closure {
-    name: GcRef<String>,
+pub struct Closure {
     function: GcRef<Function>,
     upvalues: Vec<GcRef<Upvalue>>
 }
 
-impl GcObj for Closure {
+impl Closure {
+    fn new(function: GcRef<Function>) -> Closure {
+        return Closure { function, upvalues: Vec::new() };
+    }
+}
+
+impl GcTraceable for Closure {
     fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result {
-        return write!(f, "<closure {}>", gc.get(&self.name));
+        return write!(f, "<closure {}>", gc.get(&gc.get(&self.function).name));
+    }
+
+    fn mark_refs(&self, gc: &mut Gc) {
+        gc.mark_object(&self.function);
+
+        for upvalue in &self.upvalues {
+            gc.mark_object(upvalue);
+        }
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<Closure>() + self.upvalues.capacity() * mem::size_of::<GcRef<Upvalue>>()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -123,9 +234,19 @@ struct Upvalue {
     closed: Option<Value>
 }
 
-impl GcObj for Upvalue {
+impl GcTraceable for Upvalue {
     fn fmt(&self, f: &mut fmt::Formatter, _gc: &Gc) -> fmt::Result {
         return write!(f, "<up {}>", self.location);
+    }
+
+    fn mark_refs(&self, gc: &mut Gc) {
+        if let Some(value) = &self.closed {
+            value.mark_refs(gc);
+        }
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<Upvalue>()
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -138,7 +259,7 @@ impl GcObj for Upvalue {
 }
 
 #[derive(Clone, Copy)]
-enum Value {
+pub enum Value {
     Null,
     Number(f64),
     Boolean(bool),
@@ -148,7 +269,7 @@ enum Value {
     NativeFunction(GcRef<NativeFunction>)
 }
 
-impl GcObj for Value {
+impl GcTraceable for Value {
     fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result {
         return match self {
             Value::Null => write!(f, "null"),
@@ -161,6 +282,20 @@ impl GcObj for Value {
             Value::Closure(gc_ref) => gc.get(gc_ref).fmt(f, gc),
             Value::NativeFunction(gc_ref) => gc.get(gc_ref).fmt(f, gc)
         };
+    }
+
+    fn mark_refs(&self, gc: &mut Gc) {
+        match self {
+            Value::String(gc_ref) => gc.mark_object(gc_ref),
+            Value::Function(gc_ref) => gc.mark_object(gc_ref),
+            Value::Closure(gc_ref) => gc.mark_object(gc_ref),
+            Value::NativeFunction(gc_ref) => gc.mark_object(gc_ref),
+            _ => {}
+        }
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<Value>()
     }
     
     fn as_any(&self) -> &dyn Any {
@@ -196,87 +331,61 @@ impl PartialOrd for Value {
     }
 }
 
-#[derive(Clone, Copy)]
-#[repr(u8)]
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            Value::Null => "null",
+            Value::Number(_) => "number",
+            Value::Boolean(_) => "boolean",
+            Value::String(_) => "string",
+            Value::Function(_) => "function",
+            Value::Closure(_) => "function",
+            Value::NativeFunction(_) => "function"
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
 enum OpCode {
-    Return = 0,
-    Pop = 1,
-    Call = 2,
-    Jump = 3,
-    JumpIfFalse = 4,
-    CloseUpvalue = 5,
+    Return,
+    Pop,
+    Call(u8),
+    Jump(u8, u8),
+    JumpIfFalse(u8, u8),
+    CloseUpvalue(u8),
 
-    PushConstant = 10,
-    PushNull = 11,
-    PushTrue = 12,
-    PushFalse = 13,
-    PushClosure = 14,
+    PushConstant(u8),
+    PushNull,
+    PushTrue,
+    PushFalse,
+    PushClosure(u8),
 
-    GetGlobal = 20,
-    SetGlobal = 21,
-    GetLocal = 22,
-    SetLocal = 23,
-    GetUpvalue = 24,
-    SetUpvalue = 25,
+    GetGlobal(u8),
+    SetGlobal(u8),
+    GetLocal(u8),
+    SetLocal(u8),
+    GetUpvalue(u8),
+    SetUpvalue(u8),
 
     // Arithmetic
-    Add = 100,
-    Subtract = 101,
-    Multiply = 102,
-    Divide = 103,
-    Negate = 104,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Negate,
 
     // Logical
-    Equal = 120,
-    NotEqual = 121,
-    LessThan = 122,
-    LessThanEqual = 123,
-    GreaterThan = 124,
-    GreaterThanEqual = 125,
-    Not = 126
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanEqual,
+    GreaterThan,
+    GreaterThanEqual,
+    Not
 }
 
 impl OpCode {
-    fn from_byte(byte: u8) -> OpCode {
-        return match byte {
-            0 => OpCode::Return,
-            1 => OpCode::Pop,
-            2 => OpCode::Call,
-            3 => OpCode::Jump,
-            4 => OpCode::JumpIfFalse,
-            5 => OpCode::CloseUpvalue,
-
-            10 => OpCode::PushConstant,
-            11 => OpCode::PushNull,
-            12 => OpCode::PushTrue,
-            13 => OpCode::PushFalse,
-            14 => OpCode::PushClosure,
-
-            20 => OpCode::GetGlobal,
-            21 => OpCode::SetGlobal,
-            22 => OpCode::GetLocal,
-            23 => OpCode::SetLocal,
-            24 => OpCode::GetUpvalue,
-            25 => OpCode::SetUpvalue,
-
-            100 => OpCode::Add,
-            101 => OpCode::Subtract,
-            102 => OpCode::Multiply,
-            103 => OpCode::Divide,
-            104 => OpCode::Negate,
-            
-            120 => OpCode::Equal,
-            121 => OpCode::NotEqual,
-            122 => OpCode::LessThan,
-            123 => OpCode::LessThanEqual,
-            124 => OpCode::GreaterThan,
-            125 => OpCode::GreaterThanEqual,
-            126 => OpCode::Not,
-            _ => unreachable!()
-        };
-    }
-
-    fn from_operator(op: Operator) -> OpCode {
+    fn from_operator(op: &Operator) -> OpCode {
         return match op {
             // Infix
             Operator::Add => OpCode::Add,
@@ -293,55 +402,7 @@ impl OpCode {
 
             // Prefix
             Operator::Negate => OpCode::Negate,
-
-            // Postfix
-            Operator::Call => OpCode::Call,
             _ => unreachable!()
         };
-    }
-}
-
-impl Into<u8> for OpCode {
-    fn into(self) -> u8 {
-        return self as u8;
-    }
-}
-
-impl fmt::Display for OpCode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        return write!(f, "{:#04x} {}", *self as u8, match self {
-            OpCode::Return => "RET",
-            OpCode::Pop => "POP",
-            OpCode::Call => "CALL",
-            OpCode::Jump => "JUMP",
-            OpCode::JumpIfFalse => "JUMP_IF_FALSE",
-            OpCode::CloseUpvalue => "CLOSE_UPVALUE",
-
-            OpCode::PushConstant => "PUSH_CONST",
-            OpCode::PushNull => "PUSH_NULL",
-            OpCode::PushTrue => "PUSH_TRUE",
-            OpCode::PushFalse => "PUSH_FALSE",
-            OpCode::PushClosure => "PUSH_CLOSURE",
-
-            OpCode::GetGlobal => "GET_GLOBAL",
-            OpCode::SetGlobal => "SET_GLOBAL",
-            OpCode::GetLocal => "GET_LOCAL",
-            OpCode::SetLocal => "SET_LOCAL",
-            OpCode::GetUpvalue => "GET_UPVALUE",
-            OpCode::SetUpvalue => "SET_UPVALUE",
-
-            OpCode::Add => "ADD",
-            OpCode::Subtract => "SUB",
-            OpCode::Multiply => "MUL",
-            OpCode::Divide => "DIV",
-            OpCode::Negate => "NEG",
-            OpCode::Equal => "EQ",
-            OpCode::NotEqual => "NEQ",
-            OpCode::LessThan => "LT",
-            OpCode::LessThanEqual => "LTE",
-            OpCode::GreaterThan => "GT",
-            OpCode::GreaterThanEqual => "GTE",
-            OpCode::Not => "NOT"
-        });
     }
 }

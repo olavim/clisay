@@ -1,8 +1,6 @@
-use anyhow::anyhow;
-
 mod lexer;
-mod parser;
-mod interpreter;
+// mod parser;
+// mod interpreter;
 mod bytecode;
 
 // pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
@@ -15,9 +13,7 @@ mod bytecode;
 // }
 
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
-    let mut vm = bytecode::Vm::new();
-    vm.run(file_name, src)?;
-    Ok(vec![])
+    bytecode::Vm::run(file_name, src)
 }
 
 #[cfg(test)]
