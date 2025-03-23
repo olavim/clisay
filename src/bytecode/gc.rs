@@ -1,7 +1,7 @@
 use std::{any::Any, collections::HashMap, fmt, hash, marker::PhantomData, mem};
 
 pub trait GcTraceable {
-    fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result;
+    fn fmt(&self, gc: &Gc) -> String;
     fn mark_refs(&self, gc: &mut Gc);
     fn size(&self) -> usize;
     fn as_any(&self) -> &dyn Any;
@@ -9,8 +9,8 @@ pub trait GcTraceable {
 }
 
 impl GcTraceable for String {
-    fn fmt(&self, f: &mut fmt::Formatter, _gc: &Gc) -> fmt::Result {
-        write!(f, "\"{self}\"")
+    fn fmt(&self, _gc: &Gc) -> String {
+        format!("\"{}\"", self)
     }
 
     fn mark_refs(&self, _gc: &mut Gc) {}
@@ -25,23 +25,6 @@ impl GcTraceable for String {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
-    }
-}
-
-pub struct GcObjFormatter<'a, T: GcTraceable> {
-    value: &'a T,
-    gc: &'a Gc
-}
-
-impl<'a, T: GcTraceable> GcObjFormatter<'a, T> {
-    pub fn new(value: &'a T, gc: &'a Gc) -> GcObjFormatter<'a, T> {
-        return GcObjFormatter { value, gc };
-    }
-}
-
-impl<'a, T: GcTraceable> fmt::Display for GcObjFormatter<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.value.fmt(f, self.gc)
     }
 }
 
@@ -140,25 +123,40 @@ impl Gc {
     }
 
     pub fn collect(&mut self) {
+        self.mark_reachable();
+        self.sweep_strings();
+        self.sweep_objects();
+    }
+
+    fn mark_reachable(&mut self) {
         while let Some(idx) = self.reachable_refs.pop() {
             let gc_obj = self.refs[idx].take();
             gc_obj.as_ref().unwrap().data.mark_refs(self);
             self.refs[idx] = gc_obj;
         }
+    }
 
+    fn sweep_strings(&mut self) {
         self.strings.retain(|_, gc_ref| self.refs[gc_ref.index].as_ref().unwrap().marked);
+    }
 
+    fn sweep_objects(&mut self) {
         for i in 0..self.refs.len() {
             if let Some(gc_obj) = self.refs[i].as_mut() {
                 if gc_obj.marked {
                     gc_obj.marked = false;
                 } else {
-                    self.bytes_allocated -= gc_obj.data.size();
-                    self.refs[i].take();
-                    self.freed_slots.push(i);
+                    self.free(i);
                 }
             }
         }
+    }
+
+    fn free(&mut self, idx: usize) {
+        self.bytes_allocated -= self.refs[idx].as_ref().unwrap().data.size();
+        self.refs[idx].take();
+        self.freed_slots.push(idx);
+        // println!("gc:free: {}", obj.unwrap().data.fmt(self));
     }
 
     pub fn should_collect(&self) -> bool {

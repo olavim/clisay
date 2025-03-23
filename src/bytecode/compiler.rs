@@ -114,6 +114,7 @@ impl<'a> Compiler<'a> {
             bail!("Variable '{}' already declared in this scope", self.gc.get(&name));
         }
 
+        self.chunk.add_constant(Value::String(name.clone()))?;
         self.locals.push(Local { name, depth: self.scope_depth, is_captured: false });
         Ok((self.locals.len() - 1) as u8)
     }
@@ -185,7 +186,7 @@ impl<'a> Compiler<'a> {
 
     fn statement(&mut self, stmt_id: &ASTId<Stmt>) -> Result<(), anyhow::Error> {
         match self.ast.get(stmt_id) {
-            Stmt::Block(stmts) => self.block(stmts)?,
+            Stmt::Block(stmts) => self.block(stmt_id, stmts)?,
             Stmt::Return(expr) => {
                 if let Some(expr) = expr {
                     self.expression(expr)?;
@@ -223,12 +224,12 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn block(&mut self, stmts: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
+    fn block(&mut self, stmt: &ASTId<Stmt>, stmts: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
         self.enter_scope();
         for stmt in stmts {
             self.statement(stmt)?;
         }
-        self.exit_scope(stmts.last().unwrap());
+        self.exit_scope(stmt);
         Ok(())
     }
 

@@ -1,0 +1,28 @@
+say bytesStart = gcHeapSize();
+
+{
+    say x = "hel" + "lo";
+    gcCollect();
+    print(gcHeapSize() - bytesStart); // expect: 29
+    print(x); // expect: hello
+}
+
+gcCollect();
+print(gcHeapSize() - bytesStart); // expect: 0
+
+{
+    fn f(x) {
+        fn inner() {
+            print(x);
+        }
+        return inner;
+    }
+    say fooSayer = f("foo");
+    say barSayer = f("bar");
+    gcCollect();
+    fooSayer(); // expect: foo
+    barSayer(); // expect: bar
+}
+
+gcCollect();
+print(gcHeapSize() - bytesStart); // expect: 0

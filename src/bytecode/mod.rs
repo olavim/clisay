@@ -46,65 +46,71 @@ impl BytecodeChunk {
 }
 
 impl GcTraceable for BytecodeChunk {
-    fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result {
+    fn fmt(&self, gc: &Gc) -> String {
+        let mut string = String::new();
+
+        macro_rules! push_fmt {
+            ($($t:tt)*) => {{
+                string.push_str(&format!($($t)*));
+            }};
+        }
+
         let mut i = 0;
         while i < self.code.len() {
             let op = self.code[i];
             i += 1;
 
-            write!(f, "{i}: ")?;
+            push_fmt!("{i}: ");
 
             match op {
-                OpCode::Return => write!(f, "RET")?,
-                OpCode::Pop => write!(f, "POP")?,
-                OpCode::Call(arg_count) => write!(f, "CALL {arg_count}")?,
-                OpCode::Jump(lpos, rpos) => write!(f, "JUMP <{}>", (lpos as u16) << 8 | (rpos as u16))?,
-                OpCode::JumpIfFalse(lpos, rpos) => write!(f, "JUMP_F <{}>", (lpos as u16) << 8 | (rpos as u16))?,
-                OpCode::CloseUpvalue(idx) => write!(f, "CLOSE_UPVALUE <{}>", idx)?,
+                OpCode::Return => push_fmt!("RET"),
+                OpCode::Pop => push_fmt!("POP"),
+                OpCode::Call(arg_count) => push_fmt!("CALL {arg_count}"),
+                OpCode::Jump(lpos, rpos) => push_fmt!("JUMP <{}>", (lpos as u16) << 8 | (rpos as u16)),
+                OpCode::JumpIfFalse(lpos, rpos) => push_fmt!("JUMP_F <{}>", (lpos as u16) << 8 | (rpos as u16)),
+                OpCode::CloseUpvalue(idx) => push_fmt!("CLOSE_UPVALUE <{}>", idx),
                 OpCode::GetGlobal(const_idx) => {
-                    write!(f, "GET_GLOBAL ")?;
-                    self.constants[const_idx as usize].fmt(f, gc)?
+                    push_fmt!("GET_GLOBAL {}", self.constants[const_idx as usize].fmt(gc));
                 }
                 OpCode::SetGlobal(const_idx) => {
-                    write!(f, "SET_GLOBAL ")?;
-                    self.constants[const_idx as usize].fmt(f, gc)?
+                    push_fmt!("SET_GLOBAL {}", self.constants[const_idx as usize].fmt(gc));
                 },
                 OpCode::PushConstant(const_idx) => {
-                    write!(f, "CONST ")?;
-                    self.constants[const_idx as usize].fmt(f, gc)?
+                    push_fmt!("CONST {}", self.constants[const_idx as usize].fmt(gc));
                 }
-                OpCode::PushNull => write!(f, "NULL")?,
-                OpCode::PushTrue => write!(f, "TRUE")?,
-                OpCode::PushFalse => write!(f, "FALSE")?,
-                OpCode::Add => write!(f, "ADD")?,
-                OpCode::Subtract => write!(f, "SUB")?,
-                OpCode::Multiply => write!(f, "MUL")?,
-                OpCode::Divide => write!(f, "DIV")?,
-                OpCode::Negate => write!(f, "NEG")?,
-                OpCode::Equal => write!(f, "EQ")?,
-                OpCode::NotEqual => write!(f, "NEQ")?,
-                OpCode::LessThan => write!(f, "LT")?,
-                OpCode::LessThanEqual => write!(f, "LTE")?,
-                OpCode::GreaterThan => write!(f, "GT")?,
-                OpCode::GreaterThanEqual => write!(f, "GTE")?,
-                OpCode::Not => write!(f, "NOT")?,
+                OpCode::PushNull => push_fmt!("NULL"),
+                OpCode::PushTrue => push_fmt!("TRUE"),
+                OpCode::PushFalse => push_fmt!("FALSE"),
+                OpCode::Add => push_fmt!("ADD"),
+                OpCode::Subtract => push_fmt!("SUB"),
+                OpCode::Multiply => push_fmt!("MUL"),
+                OpCode::Divide => push_fmt!("DIV"),
+                OpCode::Negate => push_fmt!("NEG"),
+                OpCode::Equal => push_fmt!("EQ"),
+                OpCode::NotEqual => push_fmt!("NEQ"),
+                OpCode::LessThan => push_fmt!("LT"),
+                OpCode::LessThanEqual => push_fmt!("LTE"),
+                OpCode::GreaterThan => push_fmt!("GT"),
+                OpCode::GreaterThanEqual => push_fmt!("GTE"),
+                OpCode::Not => push_fmt!("NOT"),
                 OpCode::PushClosure(idx) => {
                     let function = &self.constants[idx as usize];
 
                     if let Value::Function(gc_ref) = function {
                         let function = gc.get(gc_ref);
-                        function.fmt(f, gc)?;
+                        push_fmt!("{}", function.fmt(gc));
                     }
                 },
-                OpCode::GetLocal(loc_idx) => write!(f, "GET_LOCAL <{}>", loc_idx)?,
-                OpCode::SetLocal(loc_idx) => write!(f, "SET_LOCAL <{}>", loc_idx)?,
-                OpCode::GetUpvalue(loc_idx) => write!(f, "GET_UPVAL <{}>", loc_idx)?,
-                OpCode::SetUpvalue(loc_idx) => write!(f, "GET_UPVAL <{}>", loc_idx)?
+                OpCode::GetLocal(loc_idx) => push_fmt!("GET_LOCAL <{}>", loc_idx),
+                OpCode::SetLocal(loc_idx) => push_fmt!("SET_LOCAL <{}>", loc_idx),
+                OpCode::GetUpvalue(loc_idx) => push_fmt!("GET_UPVAL <{}>", loc_idx),
+                OpCode::SetUpvalue(loc_idx) => push_fmt!("GET_UPVAL <{}>", loc_idx)
             }
 
-            write!(f, "\n")?;
+            push_fmt!("\n");
         }
-        Ok(())
+        
+        string
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
@@ -136,8 +142,8 @@ pub struct NativeFunction {
 }
 
 impl GcTraceable for NativeFunction {
-    fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result {
-        return write!(f, "<native fn {}>", gc.get(&self.name));
+    fn fmt(&self, gc: &Gc) -> String {
+        format!("<native fn {}>", gc.get(&self.name))
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
@@ -171,8 +177,8 @@ pub struct Function {
 }
 
 impl GcTraceable for Function {
-    fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result {
-        return write!(f, "<fn {}>", gc.get(&self.name));
+    fn fmt(&self, gc: &Gc) -> String {
+        format!("<fn {}>", gc.get(&self.name))
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
@@ -204,8 +210,8 @@ impl Closure {
 }
 
 impl GcTraceable for Closure {
-    fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result {
-        return write!(f, "<closure {}>", gc.get(&gc.get(&self.function).name));
+    fn fmt(&self, gc: &Gc) -> String {
+        format!("<closure {}>", gc.get(&gc.get(&self.function).name))
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
@@ -235,8 +241,8 @@ struct Upvalue {
 }
 
 impl GcTraceable for Upvalue {
-    fn fmt(&self, f: &mut fmt::Formatter, _gc: &Gc) -> fmt::Result {
-        return write!(f, "<up {}>", self.location);
+    fn fmt(&self, _gc: &Gc) -> String {
+        format!("<up {}>", self.location)
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
@@ -270,18 +276,18 @@ pub enum Value {
 }
 
 impl GcTraceable for Value {
-    fn fmt(&self, f: &mut fmt::Formatter, gc: &Gc) -> fmt::Result {
-        return match self {
-            Value::Null => write!(f, "null"),
-            Value::Number(num) => write!(f, "{num}"),
-            Value::Boolean(b) => write!(f, "{b}"),
+    fn fmt(&self, gc: &Gc) -> String {
+        match self {
+            Value::Null => format!("null"),
+            Value::Number(num) => format!("{num}"),
+            Value::Boolean(b) => format!("{b}"),
 
             // GcRef types
-            Value::String(gc_ref) => gc.get(gc_ref).fmt(f, gc),
-            Value::Function(gc_ref) => gc.get(gc_ref).fmt(f, gc),
-            Value::Closure(gc_ref) => gc.get(gc_ref).fmt(f, gc),
-            Value::NativeFunction(gc_ref) => gc.get(gc_ref).fmt(f, gc)
-        };
+            Value::String(gc_ref) => gc.get(gc_ref).fmt(gc),
+            Value::Function(gc_ref) => gc.get(gc_ref).fmt(gc),
+            Value::Closure(gc_ref) => gc.get(gc_ref).fmt(gc),
+            Value::NativeFunction(gc_ref) => gc.get(gc_ref).fmt(gc)
+        }
     }
 
     fn mark_refs(&self, gc: &mut Gc) {

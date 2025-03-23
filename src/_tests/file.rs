@@ -1,6 +1,11 @@
 use super::{test_file, test_folder};
 
 #[test]
+fn parser() {
+    test_folder("tests/parser");
+}
+
+#[test]
 fn classes() {
     test_folder("tests/classes");
 }
@@ -12,12 +17,12 @@ fn super_kw() {
 
 #[test]
 fn functions() {
-    test_file("tests/functions.say");
+    test_folder("tests/functions");
 }
 
 #[test]
 fn closures() {
-    test_file("tests/closures.say");
+    test_folder("tests/closures");
 }
 
 #[test]
@@ -37,8 +42,7 @@ fn operators() {
 
 #[test]
 fn gc() {
-    // test_folder("tests/gc");
-    test_file("tests/gc/string_collection.say");
+    test_folder("tests/gc");
 }
 
 #[test]

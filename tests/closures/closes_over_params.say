@@ -1,0 +1,10 @@
+fn outer(x) {
+    fn inner() {
+        print(x);
+    }
+    return inner;
+}
+say fooSayer = outer("foo");
+say barSayer = outer("bar");
+fooSayer(); // expect: foo
+barSayer(); // expect: bar

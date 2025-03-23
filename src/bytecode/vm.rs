@@ -1,7 +1,7 @@
 use anyhow::bail;
 use nohash_hasher::IntMap;
 
-use crate::{bytecode::{gc::GcObjFormatter, operator::Operator, Closure, Function, OpCode, Parser, Upvalue}, lexer::{tokenize, TokenStream}};
+use crate::{bytecode::{operator::Operator, Closure, Function, OpCode, Parser, Upvalue}, lexer::{tokenize, TokenStream}};
 
 use super::{gc::{GcRef, GcTraceable}, BytecodeChunk, Compiler, Gc, NativeFunction, Value};
 
@@ -34,7 +34,7 @@ impl<'out> Vm<'out> {
         let chunk = Compiler::compile(&ast, &mut gc)?;
 
         println!("=== Bytecode ===");
-        print!("{}", GcObjFormatter::new(&chunk, &gc));
+        print!("{}", chunk.fmt(&gc));
         println!("================");
 
         let mut out = Vec::new();
@@ -131,7 +131,6 @@ impl<'out> Vm<'out> {
     }
 
     fn start_gc(&mut self) {
-        println!("=== GC START ===");
         self.chunk.mark_refs(&mut self.gc);
 
         for (name, value) in &self.globals {
@@ -148,7 +147,6 @@ impl<'out> Vm<'out> {
         }
 
         self.gc.collect();
-        println!("==== GC END ====");
     }
 
     fn current_stack_start(&self) -> usize {
@@ -199,7 +197,7 @@ impl<'out> Vm<'out> {
                 upvalue.closed = Some(self.stack[upvalue.location as usize]);
 
                 if split_idx == 0 {
-                    split_idx = i + 1;
+                    split_idx = i;
                 }
             }
         }
@@ -416,7 +414,7 @@ impl<'out> Vm<'out> {
             }
 
             // for i in 0..self.stack_top {
-            //     print!("{} ", GcObjFormatter::new(&self.stack[i], &self.gc));
+            //     print!("{} ", self.stack[i].fmt(&self.gc));
             // }
             // println!();
         }

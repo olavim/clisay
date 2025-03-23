@@ -1,4 +1,3 @@
-gcCollect();
 say bytesStart = gcHeapSize();
 "1" + "2";
 gcCollect();
