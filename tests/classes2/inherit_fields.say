@@ -1,0 +1,15 @@
+class A {
+    a;
+}
+
+class B : A {
+    b;
+}
+
+say obj = B();
+print(obj.a); // expect: null
+print(obj.b); // expect: null
+obj.a = "a";
+obj.b = "b";
+print(obj.a); // expect: a
+print(obj.b); // expect: b

@@ -4,7 +4,7 @@ use crate::lexer::{TokenStream, TokenType};
 
 use super::OpCode;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Operator {
     // Infix
     Add,

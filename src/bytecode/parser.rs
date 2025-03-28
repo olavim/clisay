@@ -1,10 +1,12 @@
 use std::{any::Any, marker::PhantomData};
 
 use anyhow::bail;
+use nohash_hasher::IntSet;
 
 use crate::lexer::{SourcePosition, TokenStream, TokenType};
 
-use super::{gc::GcRef, operator::Operator, Gc};
+use super::gc::{Gc, GcRef};
+use super::operator::Operator;
 
 pub enum Literal {
     Null,
@@ -15,6 +17,7 @@ pub enum Literal {
 
 pub trait ASTKind {
     fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 pub enum Expr {
@@ -23,27 +26,56 @@ pub enum Expr {
     Unary(Operator, ASTId<Expr>),
     Binary(Operator, ASTId<Expr>, ASTId<Expr>),
     Ternary(ASTId<Expr>, ASTId<Expr>, ASTId<Expr>),
-    Call(ASTId<Expr>, Vec<ASTId<Expr>>)
+    Call(ASTId<Expr>, Vec<ASTId<Expr>>),
+    This,
+    Super
 }
 
 impl ASTKind for Expr {
     fn as_any(&self) -> &dyn Any {
         self
     }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+pub struct FieldInit {
+    pub name: GcRef<String>,
+    pub value: Option<ASTId<Expr>>
+}
+
+pub struct FnDecl {
+    pub name: GcRef<String>,
+    pub params: Vec<GcRef<String>>,
+    pub body: ASTId<Stmt>
+}
+
+pub struct ClassDecl {
+    pub name: GcRef<String>,
+    pub superclass: Option<GcRef<String>>,
+    pub init: ASTId<Stmt>,
+    pub fields: IntSet<GcRef<String>>,
+    pub methods: Vec<ASTId<Stmt>>
 }
 
 pub enum Stmt {
     Block(Vec<ASTId<Stmt>>),
     Expression(ASTId<Expr>),
     Return(Option<ASTId<Expr>>),
-    Say(GcRef<String>, Option<ASTId<Expr>>),
-    Fn(GcRef<String>, Vec<GcRef<String>>, ASTId<Stmt>),
+    Say(FieldInit),
+    Fn(Box<FnDecl>),
+    Class(Box<ClassDecl>),
     If(ASTId<Expr>, ASTId<Stmt>, Option<ASTId<Stmt>>),
     While(ASTId<Expr>, ASTId<Stmt>)
 }
 
 impl ASTKind for Stmt {
     fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 }
@@ -79,6 +111,10 @@ pub struct AST {
 impl AST {
     pub fn get<T: 'static>(&self, id: &ASTId<T>) -> &T {
         self.nodes[id.id].value.as_any().downcast_ref::<T>().unwrap()
+    }
+
+    pub fn get_mut<T: 'static>(&mut self, id: &ASTId<T>) -> &mut T {
+        self.nodes[id.id].value.as_any_mut().downcast_mut::<T>().unwrap()
     }
 
     pub fn pos<T: 'static>(&self, id: &ASTId<T>) -> &SourcePosition {
@@ -127,24 +163,25 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
         ast.add_stmt(Stmt::Block(stmts), pos);
 
-        return Ok(ast);
+        Ok(ast)
     }
 
     fn parse_identifier(&mut self) -> Result<GcRef<String>, anyhow::Error> {
         let token = self.tokens.expect(TokenType::Identifier)?;
-        return Ok(self.gc.intern(token.lexeme.clone()));
+        Ok(self.gc.intern(token.lexeme.clone()))
     }
 
     fn parse_stmt(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
-        return match self.tokens.peek(0).kind {
+        match self.tokens.peek(0).kind {
             TokenType::Say => self.parse_say(),
             TokenType::Fn => self.parse_fn(),
+            TokenType::Class => self.parse_class(),
             TokenType::If => self.parse_if(),
             TokenType::While => self.parse_while(),
             TokenType::Return => self.parse_return(),
             TokenType::LeftBrace => self.parse_block(),
             _ => self.parse_expr_stmt()
-        };
+        }
     }
 
     fn parse_say(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
@@ -158,13 +195,47 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         self.tokens.expect(TokenType::Semicolon)?;
-        return Ok(self.ast.add_stmt(Stmt::Say(name, expr), pos));
+        let field_init = FieldInit { name, value: expr };
+        Ok(self.ast.add_stmt(Stmt::Say(field_init), pos))
     }
 
     fn parse_fn(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Fn)?.pos.clone();
         let name = self.parse_identifier()?;
+        let params = self.parse_params()?;
+        let body = self.parse_block()?;
+        let fn_decl = Box::new(FnDecl { name, params, body });
+        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
+    }
 
+    fn parse_init(&mut self, has_superclass: bool) -> Result<ASTId<Stmt>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::Init)?.pos.clone();
+        let name = self.gc.intern("init");
+        let params = self.parse_params()?;
+
+        self.tokens.expect(TokenType::LeftBrace)?;
+
+        // Ensure initializer calls super() if there is a superclass
+        let mut stmts = if has_superclass {
+            // Parse super() call if it exists, or add a virtual zero-arity super() call
+            match (self.tokens.peek(0).kind, self.tokens.peek(1).kind) {
+                (TokenType::Super, TokenType::LeftParen) => vec![self.parse_stmt()?],
+                _ => vec![self.virtual_super_call(pos.clone())?]
+            }
+        } else {
+            Vec::new()
+        };
+
+        stmts.extend(self.parse_stmts()?);
+        
+        self.tokens.expect(TokenType::RightBrace)?;
+
+        let body = self.ast.add_stmt(Stmt::Block(stmts), pos.clone());
+        let fn_decl = Box::new(FnDecl { name, params, body });
+        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
+    }
+
+    fn parse_params(&mut self) -> Result<Vec<GcRef<String>>, anyhow::Error> {
         self.tokens.expect(TokenType::LeftParen)?;
 
         let mut params: Vec<GcRef<String>> = Vec::new();
@@ -177,9 +248,83 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         self.tokens.expect(TokenType::RightParen)?;
 
-        let body = self.parse_block()?;
+        Ok(params)
+    }
 
-        return Ok(self.ast.add_stmt(Stmt::Fn(name, params, body), pos));
+    fn virtual_super_call(&mut self, pos: SourcePosition) -> Result<ASTId<Stmt>, anyhow::Error> {
+        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
+        let expr = self.ast.add_expr(Expr::Call(super_expr, Vec::new()), pos.clone());
+        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos.clone()))
+    }
+
+    fn parse_class(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::Class)?.pos.clone();
+        let name = self.parse_identifier()?;
+        let superclass = match self.tokens.next_if(TokenType::Colon) {
+            Some(_) => Some(self.parse_identifier()?),
+            None => None
+        };
+
+        self.tokens.expect(TokenType::LeftBrace)?;
+
+        let mut fields: IntSet<GcRef<String>> = IntSet::default();
+        let mut field_stmts: Vec<ASTId<Stmt>> = Vec::new();
+        let mut method_stmts: Vec<ASTId<Stmt>> = Vec::new();
+        let mut init = None;
+
+        while !self.tokens.match_next(TokenType::RightBrace) {
+            if self.tokens.match_next(TokenType::Init) {
+                init = Some(self.parse_init(superclass.is_some())?);
+            } else if self.tokens.match_next(TokenType::Fn) {
+                method_stmts.push(self.parse_fn()?);
+            } else {
+                let name = self.parse_identifier()?;
+                let value = if let Some(_) = self.tokens.next_if(TokenType::Equal) {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                self.tokens.expect(TokenType::Semicolon)?;
+                fields.insert(name);
+
+                if let Some(value) = value {
+                    let id = self.ast.add_expr(Expr::Identifier(name), pos.clone());
+                    let assign = self.ast.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
+                    field_stmts.push(self.ast.add_stmt(Stmt::Expression(assign), pos.clone()));
+                }
+            }
+        }
+        self.tokens.expect(TokenType::RightBrace)?;
+
+        let init = match init {
+            Some(stmt_id) => stmt_id,
+            None => {
+                // Virtual initializer
+                let stmts = if superclass.is_some() {
+                    vec![self.virtual_super_call(pos.clone())?]
+                } else {
+                    Vec::new()
+                };
+
+                let body = self.ast.add_stmt(Stmt::Block(stmts), pos.clone());
+                let fn_decl = Box::new(FnDecl { name, params: Vec::new(), body });
+                self.ast.add_stmt(Stmt::Fn(fn_decl), pos.clone())
+            }
+        };
+
+        let Stmt::Fn(fn_decl) = self.ast.get(&init) else { unreachable!() };
+        let Stmt::Block(body) = self.ast.get_mut(&fn_decl.body.clone()) else { unreachable!() };
+        body.splice(0..0, field_stmts.iter().cloned());
+
+        let class_decl = Box::new(ClassDecl {
+            name,
+            superclass,
+            init,
+            fields,
+            methods: method_stmts
+        });
+
+        Ok(self.ast.add_stmt(Stmt::Class(class_decl), pos))
     }
 
     fn parse_if(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
@@ -198,7 +343,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             None => None
         };
 
-        return Ok(self.ast.add_stmt(Stmt::If(condition, then, otherwise), pos));
+        Ok(self.ast.add_stmt(Stmt::If(condition, then, otherwise), pos))
     }
 
     fn parse_while(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
@@ -208,7 +353,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             true => self.parse_block()?,
             false => self.parse_expr_stmt()?
         };
-        return Ok(self.ast.add_stmt(Stmt::While(condition, body), pos));
+        Ok(self.ast.add_stmt(Stmt::While(condition, body), pos))
     }
 
     fn parse_return(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
@@ -218,30 +363,33 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             false => Some(self.parse_expr()?)
         };
         self.tokens.expect(TokenType::Semicolon)?;
-        return Ok(self.ast.add_stmt(Stmt::Return(expr), pos));
+        Ok(self.ast.add_stmt(Stmt::Return(expr), pos))
     }
 
     fn parse_block(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
-        
+        let stmts = self.parse_stmts()?;
+        self.tokens.expect(TokenType::RightBrace)?;
+        Ok(self.ast.add_stmt(Stmt::Block(stmts), pos))
+    }
+
+    fn parse_stmts(&mut self) -> Result<Vec<ASTId<Stmt>>, anyhow::Error> {
         let mut stmts: Vec<ASTId<Stmt>> = Vec::new();
         while !self.tokens.match_next(TokenType::RightBrace) {
             stmts.push(self.parse_stmt()?);
         }
-
-        self.tokens.expect(TokenType::RightBrace)?;
-        return Ok(self.ast.add_stmt(Stmt::Block(stmts), pos));
+        Ok(stmts)
     }
 
     fn parse_expr_stmt(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let expr = self.parse_expr()?;
         self.tokens.expect(TokenType::Semicolon)?;
-        return Ok(self.ast.add_stmt(Stmt::Expression(expr), pos));
+        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
     }
 
     fn parse_expr(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
-        return self.parse_expr_precedence(0);
+        self.parse_expr_precedence(0)
     }
 
     fn parse_expr_precedence(&mut self, min_precedence: u8) -> Result<ASTId<Expr>, anyhow::Error> {
@@ -260,7 +408,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             }
         }
     
-        return Ok(left);
+        Ok(left)
     }
 
     fn parse_expr_infix(&mut self, op: Operator, expr: ASTId<Expr>) -> Result<ASTId<Expr>, anyhow::Error> {
@@ -290,7 +438,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             }
         };
     
-        return Ok(self.ast.add_expr(kind, pos.clone()));
+        Ok(self.ast.add_expr(kind, pos.clone()))
     }
 
     fn parse_expr_prefix(&mut self, op: Operator) -> Result<ASTId<Expr>, anyhow::Error> {
@@ -306,26 +454,30 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 Expr::Unary(op, right)
             }
         };
-        return Ok(self.ast.add_expr(kind, pos));
+        Ok(self.ast.add_expr(kind, pos))
     }
 
     fn parse_expr_postfix(&mut self, op: Operator, expr: ASTId<Expr>) -> Result<ASTId<Expr>, anyhow::Error> {
         let pos = self.ast.pos(&expr).clone();
         match op {
             Operator::Call => {
-                let mut args: Vec<ASTId<Expr>> = Vec::new();
-                while !self.tokens.match_next(TokenType::RightParen) {
-                    if args.len() > 0 {
-                        self.tokens.expect(TokenType::Comma)?;
-                    }
-                    args.push(self.parse_expr()?);
-                }
-        
-                self.tokens.expect(TokenType::RightParen)?;
+                let args = self.parse_args()?;
                 Ok(self.ast.add_expr(Expr::Call(expr, args), pos))
             },
             _ => unreachable!()
         }
+    }
+
+    fn parse_args(&mut self) -> Result<Vec<ASTId<Expr>>, anyhow::Error> {
+        let mut args: Vec<ASTId<Expr>> = Vec::new();
+        while !self.tokens.match_next(TokenType::RightParen) {
+            if args.len() > 0 {
+                self.tokens.expect(TokenType::Comma)?;
+            }
+            args.push(self.parse_expr()?);
+        }
+        self.tokens.expect(TokenType::RightParen)?;
+        Ok(args)
     }
 
     fn parse_expr_atom(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
@@ -342,17 +494,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Null => Expr::Literal(Literal::Null),
             TokenType::True => Expr::Literal(Literal::Boolean(true)),
             TokenType::False => Expr::Literal(Literal::Boolean(false)),
-            // TokenType::This => {
-            //     ExprKind::This
-            // },
-            // TokenType::Super => {
-            //     ExprKind::Super
-            // },
+            TokenType::This => Expr::This,
+            TokenType::Super => Expr::Super,
             TokenType::Identifier => Expr::Identifier(self.gc.intern(token.lexeme.clone())),
             _ => bail!("Unexpected token {} at {}", token, token.pos)
         };
     
-        return Ok(self.ast.add_expr(kind, pos));
+        Ok(self.ast.add_expr(kind, pos))
     }
     
 }

@@ -1,0 +1,34 @@
+class A {
+    init() {
+        print("A");
+    }
+}
+
+class B : A { }
+
+class C : B {
+    init() {
+        print("C");
+    }
+}
+
+// expect: A
+// expect: C
+C();
+
+// @split
+
+class A {
+    init(msg) {
+        print(msg);
+    }
+}
+
+class B : A {
+    init() {
+        super("B");
+    }
+}
+
+// expect: B
+B();

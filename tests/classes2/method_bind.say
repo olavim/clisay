@@ -1,0 +1,14 @@
+class A {
+    a = "a";
+    fn get() {
+        return this.a;
+    }
+}
+
+say obj = A();
+print(obj.a); // expect: a
+print(obj.get()); // expect: a
+say get = obj.get;
+print(get()); // expect: a
+obj.a = "b";
+print(get()); // expect: b

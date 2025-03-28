@@ -1,0 +1,24 @@
+class A {
+    fn a() {
+        print("a");
+    }
+
+    fn current() {
+        print("a");
+    }
+}
+
+class B : A {
+    fn b() {
+        print("b");
+    }
+
+    fn current() {
+        print("b");
+    }
+}
+
+say obj = B();
+obj.a(); // expect: a
+obj.b(); // expect: b
+obj.current(); // expect: b

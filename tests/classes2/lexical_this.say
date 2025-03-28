@@ -1,0 +1,20 @@
+class A {
+    x;
+
+    fn a() {
+        print(this.x);
+    }
+}
+
+class B : A {
+    x;
+
+    fn b() {
+        print(this.x);
+    }
+}
+
+say obj = B();
+obj.x = "b";
+obj.a(); // expect: null
+obj.b(); // expect: b

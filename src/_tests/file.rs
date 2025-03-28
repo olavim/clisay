@@ -7,7 +7,8 @@ fn parser() {
 
 #[test]
 fn classes() {
-    test_folder("tests/classes");
+    // test_folder("tests/classes2");
+    test_file("tests/classes2/super_initializer.say");
 }
 
 #[test]

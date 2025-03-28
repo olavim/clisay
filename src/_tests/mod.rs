@@ -8,6 +8,7 @@ use regex::Regex;
 
 use crate::run;
 
+const REGEX_SKIP: &str = r"^\s*//.*//[ ]*error[ ]*:";
 const REGEX_EXPECTED_ERROR: &str = r"//[ ]*error[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
 const REGEX_EXPECTED_OUT: &str = r"//[ ]*expect[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
 const REGEX_ERROR_MESSAGE: &str = r"(.*)(\s*at .*:(\d+))+";
@@ -56,7 +57,14 @@ pub fn test_folder(folder: &str) {
 }
 
 pub fn test_file(file: &str) {
+    let skip_regex = Regex::new(REGEX_SKIP).unwrap();
     let src = std::fs::read_to_string(file).unwrap();
+    let src = Regex::new(r"\r\n|\r|\n").unwrap()
+        .split(&src)
+        .filter(|&l| !skip_regex.is_match(l))
+        .collect::<Vec<&str>>()
+        .join("\n");
+
     let split_regex = Regex::new(r"// @split(\r\n|\r|\n)").unwrap();
     let sections = split_regex.split(&src).collect::<Vec<&str>>();
 

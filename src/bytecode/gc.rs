@@ -1,4 +1,7 @@
-use std::{any::Any, collections::HashMap, fmt, hash, marker::PhantomData, mem};
+use std::any::Any;
+use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::{hash, mem};
 
 pub trait GcTraceable {
     fn fmt(&self, gc: &Gc) -> String;

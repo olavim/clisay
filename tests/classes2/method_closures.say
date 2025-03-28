@@ -1,0 +1,15 @@
+class A {
+    fn getCounter() {
+        say n = 0;
+        fn inc() {
+            n += 1;
+            return n;
+        }
+        return inc;
+    }
+}
+
+say obj = A();
+say counter = obj.getCounter();
+print(counter()); // expect: 1
+print(counter()); // expect: 2

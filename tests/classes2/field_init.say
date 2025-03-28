@@ -1,0 +1,12 @@
+class A {
+    a;
+    b = 1;
+    c = true;
+    d = "hello";
+}
+
+say obj = A();
+print(obj.a); // expect: null
+print(obj.b); // expect: 1
+print(obj.c); // expect: true
+print(obj.d); // expect: hello

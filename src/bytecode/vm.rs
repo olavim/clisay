@@ -1,9 +1,15 @@
 use anyhow::bail;
 use nohash_hasher::IntMap;
 
-use crate::{bytecode::{operator::Operator, Closure, Function, OpCode, Parser, Upvalue}, lexer::{tokenize, TokenStream}};
+use crate::bytecode::objects::{BoundMethod, Instance};
+use crate::lexer::{tokenize, TokenStream};
 
-use super::{gc::{GcRef, GcTraceable}, BytecodeChunk, Compiler, Gc, NativeFunction, Value};
+use super::operator::Operator;
+use super::parser::Parser;
+use super::OpCode;
+use super::gc::{Gc, GcRef, GcTraceable};
+use super::objects::{BytecodeChunk, Class, ClassMember, Closure, Function, NativeFunction, Upvalue, Value};
+use super::compiler::Compiler;
 
 pub struct CallFrame {
     return_ip: usize,
@@ -51,7 +57,7 @@ impl<'out> Vm<'out> {
         };
 
         vm.define_native("print", 1, |vm| {
-            let value_str = match vm.stack[vm.stack_top - 1] {
+            let value_str = match vm.get(vm.stack_top - 1) {
                 Value::Null => String::from("null"),
                 Value::Number(num) => num.to_string(),
                 Value::Boolean(b) => b.to_string(),
@@ -62,8 +68,17 @@ impl<'out> Vm<'out> {
                 Value::Closure(gc_ref) => match vm.gc.get(&gc_ref) {
                     Closure { function, .. } => format!("<closure {}>", vm.gc.get(&vm.gc.get(function).name))
                 },
+                Value::BoundMethod(gc_ref) => match vm.gc.get(&gc_ref) {
+                    BoundMethod { closure, .. } => format!("<bound method {}>", vm.gc.get(&vm.gc.get(&vm.gc.get(closure).function).name))
+                },
                 Value::NativeFunction(gc_ref) => match vm.gc.get(&gc_ref) {
                     NativeFunction { name, .. } => format!("<native fn {}>", vm.gc.get(name))
+                },
+                Value::Class(gc_ref) => match vm.gc.get(&gc_ref) {
+                    Class { name, .. } => format!("<class {}>", vm.gc.get(name))
+                },
+                Value::Instance(gc_ref) => match vm.gc.get(&gc_ref) {
+                    Instance { class, .. } => format!("<instance {}>", vm.gc.get(&vm.gc.get(class).name))
                 }
             };
             vm.out.push(value_str.clone());
@@ -143,7 +158,7 @@ impl<'out> Vm<'out> {
         }
 
         for i in 0..self.stack_top {
-            self.stack[i].mark_refs(&mut self.gc);
+            self.get(i).mark_refs(&mut self.gc);
         }
 
         self.gc.collect();
@@ -161,7 +176,7 @@ impl<'out> Vm<'out> {
     }
 
     fn get_closure(&self, frame: &CallFrame) -> &Closure {
-        let Value::Closure(closure_ref) = self.stack[frame.stack_start] else {
+        let Value::Closure(closure_ref) = self.get(frame.stack_start) else {
             unreachable!()
         };
         self.gc.get(&closure_ref)
@@ -192,9 +207,11 @@ impl<'out> Vm<'out> {
     fn close_upvalues(&mut self, stack_start: u8) {
         let mut split_idx = 0;
         for i in 0..self.open_upvalues.len() {
-            let upvalue = self.gc.get_mut(&self.open_upvalues[i]);
-            if upvalue.location >= stack_start {
-                upvalue.closed = Some(self.stack[upvalue.location as usize]);
+            let location = self.gc.get(&self.open_upvalues[i]).location;
+            if location >= stack_start {
+                let value = self.get(location);
+                let upvalue = self.gc.get_mut(&self.open_upvalues[i]);
+                upvalue.closed = Some(value);
 
                 if split_idx == 0 {
                     split_idx = i;
@@ -206,25 +223,98 @@ impl<'out> Vm<'out> {
     }
 
     #[inline]
+    fn get(&self, idx: impl Into<usize>) -> Value {
+        let idx = idx.into();
+        if idx >= self.stack_top {
+            unreachable!("Stack underflow")
+        }
+        self.stack[idx]
+    }
+
+    #[inline]
+    fn peek(&self) -> Value {
+        self.get(self.stack_top - 1)
+    }
+
+    #[inline]
+    fn set(&mut self, idx: impl Into<usize>, value: Value) {
+        let idx = idx.into();
+        if idx > self.stack_top {
+            unreachable!("Stack underflow")
+        }
+        self.stack[idx] = value;
+    }
+
+    #[inline]
     fn pop(&mut self) {
         self.stack_top -= 1;
     }
 
     #[inline]
     fn pop_get(&mut self) -> Value {
-        self.stack_top -= 1;
-        self.stack[self.stack_top]
+        let value = self.peek();
+        self.pop();
+        value
     }
 
     #[inline]
     fn push(&mut self, value: Value) {
-        self.stack[self.stack_top] = value;
+        if self.stack_top >= self.stack.len() {
+            panic!("Stack overflow")
+        }
+        self.set(self.stack_top, value);
         self.stack_top += 1;
     }
 
     #[inline]
     fn truncate(&mut self, after: usize) {
+        for i in after..self.stack_top {
+            self.set(i, Value::Null);
+        }
         self.stack_top = after;
+    }
+
+    fn create_closure(&mut self, function: &GcRef<Function>) -> GcRef<Closure> {
+        let mut closure = Closure::new(*function);
+        let upvalue_count = self.gc.get(function).upvalues.len();
+
+        for i in 0..upvalue_count {
+            let fn_upval = &self.gc.get(function).upvalues[i];
+            let upvalue = if fn_upval.is_local {
+                self.capture_upvalue(fn_upval.location)
+            } else {
+                let closure = self.current_closure();
+                closure.upvalues[fn_upval.location as usize]
+            };
+
+            closure.upvalues.push(upvalue);
+        }
+
+        self.alloc(closure)
+    }
+
+    fn get_property(&mut self, instance_ref: &GcRef<Instance>, prop: &GcRef<String>) -> Option<Value> {
+        let instance = self.gc.get(instance_ref);
+        let class = self.gc.get(&instance.class);
+
+        match class.resolve(prop) {
+            Some(ClassMember::Field(id)) |
+            Some(ClassMember::Method(id)) => Some(self.get_property_by_id(instance_ref, id)),
+            None => None
+        }
+    }
+
+    fn get_property_by_id(&mut self, instance_ref: &GcRef<Instance>, id: u8) -> Value {
+        let instance = self.gc.get(instance_ref);
+
+        match instance.get(id, &self.gc) {
+            Value::Function(func_ref) => {
+                let closure = self.create_closure(&func_ref);
+                let method = self.alloc(BoundMethod { closure, instance: *instance_ref });
+                Value::BoundMethod(method)
+            },
+            value => value
+        }
     }
 
     fn interpret(&mut self) -> Result<(), anyhow::Error> {
@@ -259,7 +349,7 @@ impl<'out> Vm<'out> {
                 },
                 OpCode::Call(arg_count) => {
                     let arg_count = arg_count as usize;
-                    let function = self.stack[self.stack_top - arg_count - 1];
+                    let function = self.get(self.stack_top - arg_count - 1);
 
                     match &function {
                         Value::NativeFunction(gc_ref) => {
@@ -275,6 +365,45 @@ impl<'out> Vm<'out> {
                             self.frames.push(CallFrame {
                                 return_ip: self.ip, 
                                 stack_start: self.stack_top - arg_count - 1
+                            });
+                            self.ip = function.ip_start;
+                        },
+                        Value::BoundMethod(gc_ref) => {
+                            let stack_start = self.stack_top - arg_count - 1;
+                            let instance = self.gc.get(gc_ref).instance;
+                            self.set(stack_start, Value::Instance(instance));
+
+                            self.frames.push(CallFrame {
+                                return_ip: self.ip, 
+                                stack_start
+                            });
+
+                            let closure = self.gc.get(gc_ref).closure;
+                            let function = self.gc.get(&closure).function;
+                            self.ip = self.gc.get(&function).ip_start;
+                        },
+                        Value::Class(class_ref) => {
+                            let init_str = self.gc.intern("init");
+                            let init_id = self.gc.get(class_ref).resolve_id(&init_str).unwrap();
+                            let init_ref = self.gc.get(class_ref).get_method(init_id).unwrap();
+                            
+                            let closure = self.create_closure(&init_ref);
+                            self.push(Value::Closure(closure));
+
+                            let mut instance = Instance::new(*class_ref);
+                            let class = self.gc.get(class_ref);
+                            for field in &class.fields {
+                                instance.values.insert(*field, Value::Null);
+                            }
+
+                            let stack_start = self.stack_top - arg_count - 1;
+                            let instance = self.alloc(instance);
+                            self.set(stack_start, Value::Instance(instance));
+
+                            let function = self.gc.get(&init_ref);
+                            self.frames.push(CallFrame {
+                                return_ip: self.ip, 
+                                stack_start
                             });
                             self.ip = function.ip_start;
                         },
@@ -297,27 +426,16 @@ impl<'out> Vm<'out> {
                 OpCode::PushFalse => self.push(Value::Boolean(false)),
                 OpCode::PushClosure(const_idx) => {
                     let value = self.chunk.constants[const_idx as usize];
-                    if let Value::Function(fn_ref) = value {
-                        let mut closure = Closure::new(fn_ref);
-                        let upvalue_count = self.gc.get(&fn_ref).upvalues.len();
-
-                        for i in 0..upvalue_count {
-                            let fn_upval = &self.gc.get(&fn_ref).upvalues[i];
-                            let upvalue = if fn_upval.is_local {
-                                self.capture_upvalue(fn_upval.location)
-                            } else {
-                                let closure = self.current_closure();
-                                closure.upvalues[fn_upval.location as usize]
-                            };
-    
-                            closure.upvalues.push(upvalue);
-                        }
-
-                        let closure = self.alloc(closure);
-                        self.push(Value::Closure(closure));
-                    } else {
+                    let Value::Function(fn_ref) = value else {
                         bail!("Invalid closure")
-                    }
+                    };
+
+                    let closure = self.create_closure(&fn_ref);
+                    self.push(Value::Closure(closure));
+                },
+                OpCode::PushClass(const_idx) => {
+                    let value = self.chunk.constants[const_idx as usize];
+                    self.push(value);
                 },
                 OpCode::GetGlobal(const_idx) => {
                     let constant = &self.chunk.constants[const_idx as usize];
@@ -339,12 +457,12 @@ impl<'out> Vm<'out> {
                 },
                 OpCode::GetLocal(idx) => {
                     let local_idx = idx as usize + self.current_stack_start();
-                    let value = self.stack[local_idx];
+                    let value = self.get(local_idx);
                     self.push(value);
                 },
                 OpCode::SetLocal(idx) => {
                     let local_idx = idx as usize + self.current_stack_start();
-                    self.stack[local_idx] = self.stack[self.stack_top - 1];
+                    self.set(local_idx, self.peek());
                 },
                 OpCode::GetUpvalue(idx) => {
                     let upvalue = self.current_closure().upvalues[idx as usize];
@@ -352,17 +470,74 @@ impl<'out> Vm<'out> {
                     if let Some(value) = upvalue.closed {
                         self.push(value);
                     } else {
-                        let value = self.stack[upvalue.location as usize];
+                        let value = self.get(upvalue.location);
                         self.push(value);
                     }
                 },
                 OpCode::SetUpvalue(idx) => {
                     let upvalue = self.current_closure().upvalues[idx as usize];
                     if let Some(_) = self.gc.get(&upvalue).closed {
-                        self.gc.get_mut(&upvalue).closed = Some(self.pop_get());
+                        self.gc.get_mut(&upvalue).closed = Some(self.peek());
                     } else {
-                        self.stack[self.gc.get(&upvalue).location as usize] = self.pop_get();
+                        self.set(self.gc.get(&upvalue).location, self.peek());
                     }
+                },
+                OpCode::GetProperty(const_idx) => {
+                    let Value::Instance(instance_ref) = self.pop_get() else {
+                        bail!("Invalid property access")
+                    };
+
+                    let Value::String(prop) = self.chunk.constants[const_idx as usize] else {
+                        bail!("Invalid property access")
+                    };
+
+                    if let Some(value) = self.get_property(&instance_ref, &prop) {
+                        self.push(value.clone());
+                    } else {
+                        bail!("Property not found")
+                    }
+                },
+                OpCode::SetProperty(const_idx) => {
+                    let Value::Instance(instance_ref) = self.pop_get() else {
+                        bail!("Invalid property access")
+                    };
+
+                    let Value::String(prop) = self.chunk.constants[const_idx as usize] else {
+                        bail!("Invalid property access")
+                    };
+
+                    let value = self.peek();
+                    let class_ref = self.gc.get(&instance_ref).class;
+                    let class = self.gc.get(&class_ref);
+                    match class.resolve(&prop) {
+                        Some(ClassMember::Field(id)) => {
+                            let instance = self.gc.get_mut(&instance_ref);
+                            instance.values.insert(id, value.clone());
+                        },
+                        Some(ClassMember::Method(_)) => {
+                            bail!("Cannot set method")
+                        },
+                        None => {
+                            bail!("No such property")
+                        }
+                    }
+                },
+                OpCode::GetThisProperty(member_id) => {
+                    let Value::Instance(instance_ref) = self.pop_get() else {
+                        bail!("Invalid property access")
+                    };
+
+                    let value = self.get_property_by_id(&instance_ref, member_id);
+                    self.push(value);
+                },
+                OpCode::SetThisProperty(member_id) => {
+                    let Value::Instance(instance_ref) = self.pop_get() else {
+                        bail!("Invalid property access")
+                    };
+
+                    let value = self.peek();
+                    let instance = self.gc.get_mut(&instance_ref);
+                    instance.set(member_id, value);
                 },
                 OpCode::Add |
                 OpCode::Subtract |
@@ -414,7 +589,7 @@ impl<'out> Vm<'out> {
             }
 
             // for i in 0..self.stack_top {
-            //     print!("{} ", self.stack[i].fmt(&self.gc));
+            //     print!("{} ", self.get(i).fmt(&self.gc));
             // }
             // println!();
         }

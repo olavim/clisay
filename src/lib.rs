@@ -13,7 +13,7 @@ mod bytecode;
 // }
 
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
-    bytecode::Vm::run(file_name, src)
+    bytecode::run(file_name, src)
 }
 
 #[cfg(test)]
