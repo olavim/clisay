@@ -31,8 +31,8 @@ enum OpCode {
     SetUpvalue(u8),
     GetProperty(u8),
     SetProperty(u8),
-    GetThisProperty(u8),
-    SetThisProperty(u8),
+    GetPropertyId(u8),
+    SetPropertyId(u8),
 
     // Arithmetic
     Add,

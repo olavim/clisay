@@ -66,7 +66,9 @@ impl<'a> Compiler<'a> {
         };
 
         let stmt_id = compiler.ast.get_root();
+        compiler.enter_function();
         compiler.statement(&stmt_id)?;
+        compiler.exit_function(&stmt_id);
         Ok(chunk)
     }
 
@@ -117,6 +119,12 @@ impl<'a> Compiler<'a> {
     }
 
     fn enter_function(&mut self) {
+        self.fn_frames.push(FnFrame {
+            upvalues: Vec::new(),
+            local_offset: if self.locals.is_empty() { 0 } else { self.locals.len() as u8 - 1 },
+            class_frame: self.class_frames.last().map(|_| self.class_frames.len() as u8 - 1)
+        });
+
         self.scope_depth += 1;
     }
 
@@ -352,16 +360,9 @@ impl<'a> Compiler<'a> {
             bail!("Function declaration outside of function");
         }
 
-        self.fn_frames.push(FnFrame {
-            upvalues: Vec::new(),
-            local_offset: self.locals.len() as u8 - 1,
-            class_frame: self.class_frames.last().map(|_| self.class_frames.len() as u8 - 1)
-        });
-
-        let jump_ref = self.emit_jump(OpCode::Jump(0, 0), stmt);
-
         self.enter_function();
 
+        let jump_ref = self.emit_jump(OpCode::Jump(0, 0), stmt);
         let ip_start = self.chunk.code.len();
         let arity = decl.params.len() as u8;
 
@@ -518,7 +519,7 @@ impl<'a> Compiler<'a> {
                     Some(ClassMember::Method(id)) => id,
                     None => bail!("Class '{}' has no member '{}'", self.gc.get(&self.current_class().name), self.gc.get(&member))
                 };
-                self.emit(OpCode::GetThisProperty(id), expr);
+                self.emit(OpCode::GetPropertyId(id), expr);
                 Ok(())
             },
             _ => {
@@ -544,7 +545,7 @@ impl<'a> Compiler<'a> {
                     Some(ClassMember::Method(id)) => id,
                     None => bail!("Class '{}' has no member '{}'", self.gc.get(&self.current_class().name), self.gc.get(&member))
                 };
-                self.emit(OpCode::SetThisProperty(id), expr);
+                self.emit(OpCode::SetPropertyId(id), expr);
                 Ok(())
             },
             _ => {
@@ -569,7 +570,7 @@ impl<'a> Compiler<'a> {
                     .unwrap();
 
                 self.emit(OpCode::GetLocal(0), expr);
-                self.emit(OpCode::GetThisProperty(member_id), expr);
+                self.emit(OpCode::GetPropertyId(member_id), expr);
             },
             _ => { self.expression(expr)? }
         };

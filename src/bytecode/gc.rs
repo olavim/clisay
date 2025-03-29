@@ -167,12 +167,20 @@ impl Gc {
     }
 
     pub fn get<T: GcTraceable + 'static>(&self, gc_ref: &GcRef<T>) -> &T {
-        let gc_obj = self.refs[gc_ref.index].as_ref().unwrap().data.as_ref();
-        return gc_obj.as_any().downcast_ref().unwrap();
+        unsafe {
+            let gc_obj = self.refs[gc_ref.index].as_ref().unwrap_unchecked().data.as_ref()
+                as *const dyn GcTraceable
+                as *const T;
+            return &*gc_obj;
+        }
     }
 
     pub fn get_mut<T: GcTraceable + 'static>(&mut self, gc_ref: &GcRef<T>) -> &mut T {
-        let gc_obj = self.refs[gc_ref.index].as_mut().unwrap().data.as_mut();
-        return gc_obj.as_any_mut().downcast_mut().unwrap();
+        unsafe {
+            let gc_obj = self.refs[gc_ref.index].as_mut().unwrap_unchecked().data.as_mut()
+                as *mut dyn GcTraceable
+                as *mut T;
+            return &mut *gc_obj;
+        }
     }
 }

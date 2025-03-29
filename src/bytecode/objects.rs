@@ -100,11 +100,11 @@ impl GcTraceable for BytecodeChunk {
                 OpCode::SetProperty(const_idx) => {
                     push_fmt!("SET_PROP <{}>", self.constants[const_idx as usize].fmt(gc))
                 },
-                OpCode::GetThisProperty(member_id) => {
-                    push_fmt!("GET_THIS_PROP <{}>", member_id)
+                OpCode::GetPropertyId(member_id) => {
+                    push_fmt!("GET_PROP_ID <{}>", member_id)
                 },
-                OpCode::SetThisProperty(member_id) => {
-                    push_fmt!("SET_THIS_PROP <{}>", member_id)
+                OpCode::SetPropertyId(member_id) => {
+                    push_fmt!("SET_PROP_ID <{}>", member_id)
                 },
                 OpCode::GetGlobal(const_idx) => {
                     push_fmt!("GET_GLOBAL {}", self.constants[const_idx as usize].fmt(gc));
@@ -448,6 +448,36 @@ impl GcTraceable for Upvalue {
         self
     }
 }
+
+// pub struct Value64(u64);
+
+// impl Value64 {
+//     /**
+//      * 0x7FF8000000000000 is the QNaN representation of a 64-bit float.
+//      * A value represents a number if its QNaN bits are not set.
+//      * 
+//      * We also reserve an additional bit to differentiate between NaNs and
+//      * other value types in Clisay, like booleans and objects.
+//      * 
+//      * If these bits are set, the value does not represent a 64-bit float.
+//      */
+//     const NAN_MASK: u64 = 0x7FFC000000000000;
+//     const NULL: u64 = 0b01;
+//     const TRUE: u64 = 0b10;
+//     const FALSE: u64 = 0b11;
+
+//     /** Object type values contain a 32-bit pointer value */
+//     const OBJECT: u64 = 0x7FFC000000000000;
+//     const PTR_MASK: u64 = 0xFFFFFFFF0;
+
+//     pub fn is_number(&self) -> bool {
+//         (self.0 & Self::NAN_MASK) != Self::NAN_MASK
+//     }
+
+//     pub fn is_bool(&self) -> bool {
+//         (self.0 & Self::BOOL_MASK) != 0
+//     }
+// }
 
 #[derive(Clone, Copy)]
 pub enum Value {
