@@ -79,7 +79,7 @@ impl Gc {
 
     fn mark_reachable(&mut self) {
         while let Some(obj) = self.reachable_refs.pop() {
-            unsafe { (*obj.as_traceable()).mark_refs(self); }
+            obj.mark_refs(self);
         }
     }
 
@@ -101,9 +101,7 @@ impl Gc {
     }
 
     fn free(&mut self, idx: usize) {
-        let obj = self.refs[idx].as_traceable();
-        self.bytes_allocated -= unsafe { (*obj).size() };
-        let _ = unsafe { Box::from_raw(obj) };
+        self.bytes_allocated -= self.refs[idx].free();
         self.refs.swap_remove(idx);
         // println!("gc:free: {}", obj.unwrap().data.fmt(self));
     }

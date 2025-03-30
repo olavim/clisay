@@ -3,7 +3,7 @@ say bytesStart = gcHeapSize();
 {
     say x = "hel" + "lo";
     gcCollect();
-    print(gcHeapSize() - bytesStart); // expect: 29
+    print(gcHeapSize() - bytesStart); // expect: 37
     print(x); // expect: hello
 }
 

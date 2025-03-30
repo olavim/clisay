@@ -1,3 +1,3 @@
 say bytesStart = gcHeapSize();
 "1" + "2"; // "1" and "2" are interned during compilation. Only "12" is created at runtime.
-print(gcHeapSize() - bytesStart - 2); // expect: 24
+print(gcHeapSize() - bytesStart - 2); // expect: 32

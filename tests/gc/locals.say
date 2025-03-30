@@ -1,0 +1,3 @@
+say a = 10;
+gcCollect();
+print(a); // expect: 10

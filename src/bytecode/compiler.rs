@@ -459,15 +459,6 @@ impl<'a> Compiler<'a> {
         self.emit(OpCode::GetLocal(0), expr);
         Ok(())
     }
-
-    fn super_kw(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
-        if self.class_frames.is_empty() {
-            bail!("Cannot use 'super' outside of a class method");
-        }
-
-        self.emit(OpCode::GetLocal(0), expr);
-        Ok(())
-    }
     
     fn unary_expression(&mut self, op: &Operator, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         self.expression(expr)?;

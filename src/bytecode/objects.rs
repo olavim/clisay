@@ -17,6 +17,7 @@ pub enum ObjectKind {
     Upvalue
 }
 
+#[repr(C)]
 pub struct ObjectHeader {
     pub kind: ObjectKind,
     pub marked: bool
@@ -28,6 +29,7 @@ impl ObjectHeader {
     }
 }
 
+#[repr(C)]
 pub union Object {
     pub header: *mut ObjectHeader,
 
@@ -46,17 +48,39 @@ impl Object {
         unsafe { (*self.header).kind }
     }
 
-    pub fn as_traceable(&self) -> *mut dyn GcTraceable {
-        match self.kind() {
-            ObjectKind::String => unsafe { self.string },
-            ObjectKind::Function => unsafe { self.function },
-            ObjectKind::NativeFunction => unsafe { self.native_function },
-            ObjectKind::BoundMethod => unsafe { self.bound_method },
-            ObjectKind::Closure => unsafe { self.closure },
-            ObjectKind::Class => unsafe { self.class },
-            ObjectKind::Instance => unsafe { self.instance },
-            ObjectKind::Upvalue => unsafe { self.upvalue }
+    pub fn free(&self) -> usize {
+        macro_rules! free_object {
+            ($ptr:expr) => {{
+                let size = unsafe { (*$ptr).size() };
+                let _ = unsafe { Box::from_raw($ptr) };
+                size
+            }};
         }
+
+        match self.kind() {
+            ObjectKind::String => free_object!(self.string),
+            ObjectKind::Function => free_object!(self.function),
+            ObjectKind::NativeFunction => free_object!(self.native_function),
+            ObjectKind::BoundMethod => free_object!(self.bound_method),
+            ObjectKind::Closure => free_object!(self.closure),
+            ObjectKind::Class => free_object!(self.class),
+            ObjectKind::Instance => free_object!(self.instance),
+            ObjectKind::Upvalue => free_object!(self.upvalue)
+        }
+    }
+
+    pub fn mark_refs(&self, gc: &mut Gc) {
+        let trace: &dyn GcTraceable = match self.kind() {
+            ObjectKind::String => unsafe { &*self.string },
+            ObjectKind::Function => unsafe { &*self.function },
+            ObjectKind::NativeFunction => unsafe { &*self.native_function },
+            ObjectKind::BoundMethod => unsafe { &*self.bound_method },
+            ObjectKind::Closure => unsafe { &*self.closure },
+            ObjectKind::Class => unsafe { &*self.class },
+            ObjectKind::Instance => unsafe { &*self.instance },
+            ObjectKind::Upvalue => unsafe { &*self.upvalue }
+        };
+        trace.mark_refs(gc);
     }
 }
 
@@ -80,6 +104,7 @@ impl_from_for_object!(class, ObjClass);
 impl_from_for_object!(instance, ObjInstance);
 impl_from_for_object!(upvalue, ObjUpvalue);
 
+#[repr(C)]
 pub struct ObjString {
     pub header: ObjectHeader,
     pub value: String
@@ -112,6 +137,7 @@ pub struct UpvalueLocation {
     pub location: u8
 }
 
+#[repr(C)]
 pub struct ObjFn {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
@@ -146,6 +172,7 @@ impl GcTraceable for ObjFn {
     }
 }
 
+#[repr(C)]
 pub struct ObjNativeFn {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
@@ -178,6 +205,7 @@ impl GcTraceable for ObjNativeFn {
     }
 }
 
+#[repr(C)]
 pub struct ObjClosure {
     pub header: ObjectHeader,
     pub function: *mut ObjFn,
@@ -212,6 +240,7 @@ impl GcTraceable for ObjClosure {
     }
 }
 
+#[repr(C)]
 pub struct ObjBoundMethod {
     pub header: ObjectHeader,
     pub instance: *mut ObjInstance,
@@ -253,6 +282,7 @@ pub enum ClassMember {
     Method(MemberId)
 }
 
+#[repr(C)]
 pub struct ObjClass {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
@@ -338,6 +368,7 @@ impl GcTraceable for ObjClass {
     }
 }
 
+#[repr(C)]
 pub struct ObjInstance {
     pub header: ObjectHeader,
     pub class: *mut ObjClass,
@@ -387,6 +418,7 @@ impl GcTraceable for ObjInstance {
     }
 }
 
+#[repr(C)]
 pub struct ObjUpvalue {
     pub header: ObjectHeader,
     pub location: u8,
