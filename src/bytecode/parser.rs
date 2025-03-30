@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::{any::Any, marker::PhantomData};
 
 use anyhow::bail;
@@ -5,14 +6,15 @@ use nohash_hasher::IntSet;
 
 use crate::lexer::{SourcePosition, TokenStream, TokenType};
 
-use super::gc::{Gc, GcRef};
+use super::gc::Gc;
+use super::objects::ObjString;
 use super::operator::Operator;
 
 pub enum Literal {
     Null,
     Boolean(bool),
     Number(f64),
-    String(GcRef<String>)
+    String(*mut ObjString)
 }
 
 pub trait ASTKind {
@@ -22,7 +24,7 @@ pub trait ASTKind {
 
 pub enum Expr {
     Literal(Literal),
-    Identifier(GcRef<String>),
+    Identifier(*mut ObjString),
     Unary(Operator, ASTId<Expr>),
     Binary(Operator, ASTId<Expr>, ASTId<Expr>),
     Ternary(ASTId<Expr>, ASTId<Expr>, ASTId<Expr>),
@@ -42,21 +44,21 @@ impl ASTKind for Expr {
 }
 
 pub struct FieldInit {
-    pub name: GcRef<String>,
+    pub name: *mut ObjString,
     pub value: Option<ASTId<Expr>>
 }
 
 pub struct FnDecl {
-    pub name: GcRef<String>,
-    pub params: Vec<GcRef<String>>,
+    pub name: *mut ObjString,
+    pub params: Vec<*mut ObjString>,
     pub body: ASTId<Stmt>
 }
 
 pub struct ClassDecl {
-    pub name: GcRef<String>,
-    pub superclass: Option<GcRef<String>>,
+    pub name: *mut ObjString,
+    pub superclass: Option<*mut ObjString>,
     pub init: ASTId<Stmt>,
-    pub fields: IntSet<GcRef<String>>,
+    pub fields: HashSet<*mut ObjString>,
     pub methods: Vec<ASTId<Stmt>>
 }
 
@@ -166,7 +168,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(ast)
     }
 
-    fn parse_identifier(&mut self) -> Result<GcRef<String>, anyhow::Error> {
+    fn parse_identifier(&mut self) -> Result<*mut ObjString, anyhow::Error> {
         let token = self.tokens.expect(TokenType::Identifier)?;
         Ok(self.gc.intern(token.lexeme.clone()))
     }
@@ -235,10 +237,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    fn parse_params(&mut self) -> Result<Vec<GcRef<String>>, anyhow::Error> {
+    fn parse_params(&mut self) -> Result<Vec<*mut ObjString>, anyhow::Error> {
         self.tokens.expect(TokenType::LeftParen)?;
 
-        let mut params: Vec<GcRef<String>> = Vec::new();
+        let mut params: Vec<*mut ObjString> = Vec::new();
         while !self.tokens.match_next(TokenType::RightParen) {
             if params.len() > 0 {
                 self.tokens.expect(TokenType::Comma)?;
@@ -267,7 +269,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         self.tokens.expect(TokenType::LeftBrace)?;
 
-        let mut fields: IntSet<GcRef<String>> = IntSet::default();
+        let mut fields: HashSet<*mut ObjString> = HashSet::default();
         let mut field_stmts: Vec<ASTId<Stmt>> = Vec::new();
         let mut method_stmts: Vec<ASTId<Stmt>> = Vec::new();
         let mut init = None;

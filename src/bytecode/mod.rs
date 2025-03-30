@@ -1,3 +1,4 @@
+mod chunk;
 mod vm;
 mod gc;
 mod operator;

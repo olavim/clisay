@@ -1,19 +1,21 @@
+use std::collections::HashMap;
 use std::ops::Range;
 
 use anyhow::anyhow;
 use anyhow::bail;
-use nohash_hasher::IntMap;
 
-use super::gc::{Gc, GcRef};
-use super::objects::Class;
+use super::chunk::BytecodeChunk;
+use super::gc::Gc;
+use super::objects::ObjClass;
 use super::objects::ClassMember;
-use super::objects::{BytecodeChunk, Function, UpvalueLocation, Value};
+use super::objects::ObjString;
+use super::objects::{ObjFn, UpvalueLocation, Value};
 use super::operator::Operator;
 use super::parser::{ASTId, ClassDecl, Expr, FieldInit, FnDecl, Literal, Stmt, AST};
 use super::OpCode;
 
 struct Local {
-    name: GcRef<String>,
+    name: *mut ObjString,
     depth: u8,
     is_captured: bool
 }
@@ -33,8 +35,8 @@ enum FnType {
 }
 
 struct ClassFrame {
-    class: Class,
-    superclass: Option<GcRef<Class>>
+    class: ObjClass,
+    superclass: Option<*mut ObjClass>
 }
 
 pub struct Compiler<'a> {
@@ -46,7 +48,7 @@ pub struct Compiler<'a> {
     fn_frames: Vec<FnFrame>,
     class_frames: Vec<ClassFrame>,
     fn_type: FnType,
-    classes: IntMap<GcRef<String>, u8>
+    classes: HashMap<*mut ObjString, u8>
 }
 
 impl<'a> Compiler<'a> {
@@ -62,7 +64,7 @@ impl<'a> Compiler<'a> {
             fn_frames: Vec::new(),
             class_frames: Vec::new(),
             fn_type: FnType::None,
-            classes: IntMap::default()
+            classes: HashMap::default()
         };
 
         let stmt_id = compiler.ast.get_root();
@@ -146,29 +148,29 @@ impl<'a> Compiler<'a> {
     }
 
     #[inline]
-    fn current_class(&self) -> &Class {
+    fn current_class(&self) -> &ObjClass {
         &self.class_frames[self.class_frames.len() - 1].class
     }
 
     #[inline]
-    fn current_class_mut(&mut self) -> &mut Class {
+    fn current_class_mut(&mut self) -> &mut ObjClass {
         let last = self.class_frames.len() - 1;
         &mut self.class_frames[last].class
     }
 
     #[inline]
-    fn current_superclass(&self) -> Option<&Class> {
+    fn current_superclass(&self) -> Option<*mut ObjClass> {
         let frame = &self.class_frames[self.class_frames.len() - 1];
-        frame.superclass.map(|gc_ref| self.gc.get(&gc_ref))
+        frame.superclass
     }
 
-    fn declare_local(&mut self, name: GcRef<String>) -> Result<u8, anyhow::Error> {
+    fn declare_local(&mut self, name: *mut ObjString) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
         }
 
         if self.locals.iter().rev().any(|local| local.depth == self.scope_depth && local.name == name) {
-            bail!("Variable '{}' already declared in this scope", self.gc.get(&name));
+            bail!("Variable '{}' already declared in this scope", unsafe { &(*name).value });
         }
 
         self.chunk.add_constant(Value::String(name.clone()))?;
@@ -176,7 +178,7 @@ impl<'a> Compiler<'a> {
         Ok((self.locals.len() - 1) as u8)
     }
 
-    fn resolve_local(&self, name: &GcRef<String>) -> Option<u8> {
+    fn resolve_local(&self, name: *mut ObjString) -> Option<u8> {
         let local_offset = match self.fn_frames.last() {
             Some(frame) => frame.local_offset,
             None => 0
@@ -185,10 +187,10 @@ impl<'a> Compiler<'a> {
         return self.resolve_local_in_range(name, local_offset..self.locals.len() as u8);
     }
 
-    fn resolve_local_in_range(&self, name: &GcRef<String>, range: Range<u8>) -> Option<u8> {
+    fn resolve_local_in_range(&self, name: *mut ObjString, range: Range<u8>) -> Option<u8> {
         for i in range.clone().rev() {
             let local = &self.locals[i as usize];
-            if local.name == *name {
+            if local.name == name {
                 return Some((i - range.start) as u8);
             }
         }
@@ -196,7 +198,7 @@ impl<'a> Compiler<'a> {
         None
     }
 
-    fn resolve_upvalue(&mut self, name: &GcRef<String>, max_class_frame: Option<u8>) -> Result<Option<u8>, anyhow::Error> {
+    fn resolve_upvalue(&mut self, name: *mut ObjString, max_class_frame: Option<u8>) -> Result<Option<u8>, anyhow::Error> {
         if self.fn_frames.is_empty() {
             return Ok(None);
         }
@@ -204,7 +206,7 @@ impl<'a> Compiler<'a> {
         self.resolve_frame_upvalue(name, self.fn_frames.len() - 1, max_class_frame)
     }
 
-    fn resolve_frame_upvalue(&mut self, name: &GcRef<String>, frame_idx: usize, max_class_frame: Option<u8>) -> Result<Option<u8>, anyhow::Error> {
+    fn resolve_frame_upvalue(&mut self, name: *mut ObjString, frame_idx: usize, max_class_frame: Option<u8>) -> Result<Option<u8>, anyhow::Error> {
         let class_frame = self.fn_frames[frame_idx].class_frame;
 
         if max_class_frame.is_some() && class_frame.is_some() && class_frame.unwrap() < max_class_frame.unwrap() {
@@ -234,7 +236,7 @@ impl<'a> Compiler<'a> {
         Ok(None)
     }
 
-    fn resolve_member_class(&self, name: &GcRef<String>) -> Option<u8> {
+    fn resolve_member_class(&self, name: *mut ObjString) -> Option<u8> {
         for i in (0..self.class_frames.len()).rev() {
             let class = &self.class_frames[i].class;
             if class.resolve(name).is_some() {
@@ -376,12 +378,7 @@ impl<'a> Compiler<'a> {
         self.patch_jump(jump_ref)?;
 
         let frame = self.fn_frames.pop().unwrap();
-        let func = self.gc.alloc(Function {
-            name: decl.name,
-            arity,
-            ip_start,
-            upvalues: frame.upvalues
-        });
+        let func = self.gc.alloc(ObjFn::new(decl.name, arity, ip_start, frame.upvalues));
 
         self.chunk.add_constant(Value::Function(func))
     }
@@ -390,10 +387,10 @@ impl<'a> Compiler<'a> {
         self.declare_local(decl.name)?;
         self.enter_scope();
 
-        let superclass = match &decl.superclass {
+        let superclass = match decl.superclass {
             Some(name) => {
-                let const_idx = self.classes.get(name)
-                    .ok_or(anyhow!("Class '{}' not declared", self.gc.get(&name)))?;
+                let const_idx = self.classes.get(&name)
+                    .ok_or(anyhow!("Class '{}' not declared", unsafe { &(*name).value }))?;
                 let Value::Class(gc_ref) = self.chunk.constants[*const_idx as usize] else { unreachable!(); };
                 Some(gc_ref)
             },
@@ -401,7 +398,7 @@ impl<'a> Compiler<'a> {
         };
 
         self.class_frames.push(ClassFrame {
-            class: Class::new(decl.name, superclass.map(|gc_ref| self.gc.get(&gc_ref))),
+            class: ObjClass::new(decl.name, superclass.map(|gc_ref| unsafe { &*gc_ref })),
             superclass
         });
 
@@ -446,7 +443,7 @@ impl<'a> Compiler<'a> {
             Expr::Ternary(_cond, _then, _otherwise) => unimplemented!(),
             Expr::Call(expr, args) => self.call_expression(expr, args)?,
             Expr::Literal(lit) => self.literal(expr, lit)?,
-            Expr::Identifier(name) => self.identifier(expr, name, false)?,
+            Expr::Identifier(name) => self.identifier(expr, *name, false)?,
             Expr::This => self.this(expr)?,
             Expr::Super => bail!("Invalid use of 'super'")
         };
@@ -483,7 +480,7 @@ impl<'a> Compiler<'a> {
             match self.ast.get(left) {
                 Expr::Identifier(name) => {
                     self.expression(right)?;
-                    self.identifier(left, name, true)?;
+                    self.identifier(left, *name, true)?;
                     return Ok(());
                 },
                 Expr::Binary(Operator::MemberAccess, obj, member) => {
@@ -514,10 +511,10 @@ impl<'a> Compiler<'a> {
 
         match self.ast.get(expr) {
             Expr::This => {
-                let id = match self.current_class().resolve(member) {
+                let id = match self.current_class().resolve(*member) {
                     Some(ClassMember::Field(id)) => id,
                     Some(ClassMember::Method(id)) => id,
-                    None => bail!("Class '{}' has no member '{}'", self.gc.get(&self.current_class().name), self.gc.get(&member))
+                    None => bail!("Class '{}' has no member '{}'", unsafe { &(*self.current_class().name).value }, unsafe { &(**member).value })
                 };
                 self.emit(OpCode::GetPropertyId(id), expr);
                 Ok(())
@@ -540,10 +537,10 @@ impl<'a> Compiler<'a> {
 
         match self.ast.get(expr) {
             Expr::This => {
-                let id = match self.current_class().resolve(member) {
+                let id = match self.current_class().resolve(*member) {
                     Some(ClassMember::Field(id)) => id,
                     Some(ClassMember::Method(id)) => id,
-                    None => bail!("Class '{}' has no member '{}'", self.gc.get(&self.current_class().name), self.gc.get(&member))
+                    None => bail!("Class '{}' has no member '{}'", unsafe { &(*self.current_class().name).value }, unsafe { &(**member).value })
                 };
                 self.emit(OpCode::SetPropertyId(id), expr);
                 Ok(())
@@ -565,8 +562,9 @@ impl<'a> Compiler<'a> {
 
                 let init_str = self.gc.intern("init");
                 let member_id = self.current_superclass()
+                    .map(|class| unsafe { &*class })
                     .ok_or(anyhow!("Cannot use 'super' outside of child class context"))?
-                    .resolve_id(&init_str)
+                    .resolve_id(init_str)
                     .unwrap();
 
                 self.emit(OpCode::GetLocal(0), expr);
@@ -600,7 +598,7 @@ impl<'a> Compiler<'a> {
         return Ok(());
     }
     
-    fn identifier(&mut self, expr: &ASTId<Expr>, name: &GcRef<String>, assign: bool) -> Result<(), anyhow::Error> {
+    fn identifier(&mut self, expr: &ASTId<Expr>, name: *mut ObjString, assign: bool) -> Result<(), anyhow::Error> {
         let class_frame_idx = self.resolve_member_class(name);
 
         let (get_op, set_op) = if let Some(local_idx) = self.resolve_local(name) {
@@ -609,10 +607,10 @@ impl<'a> Compiler<'a> {
             (OpCode::GetUpvalue(upvalue_idx), OpCode::SetUpvalue(upvalue_idx))
         } else if class_frame_idx.is_some() {
             self.emit(OpCode::GetLocal(0), expr);
-            let const_idx = self.chunk.add_constant(Value::String(*name))?;
+            let const_idx = self.chunk.add_constant(Value::String(name))?;
             (OpCode::GetProperty(const_idx), OpCode::SetProperty(const_idx))
         } else {
-            let const_idx = self.chunk.add_constant(Value::String(*name))?;
+            let const_idx = self.chunk.add_constant(Value::String(name))?;
             (OpCode::GetGlobal(const_idx), OpCode::SetGlobal(const_idx))
         };
 

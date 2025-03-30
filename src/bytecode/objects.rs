@@ -1,172 +1,108 @@
-use std::{any::Any, fmt, mem};
+use std::{fmt, mem};
 
-use anyhow::bail;
 use nohash_hasher::{IntMap, IntSet};
 
-use crate::lexer::SourcePosition;
-
-use super::gc::{Gc, GcRef, GcTraceable};
+use super::gc::{Gc, GcTraceable};
 use super::vm::Vm;
-use super::OpCode;
 
-#[derive(Clone)]
-pub struct BytecodeChunk {
-    pub code: Vec<OpCode>,
-    pub constants: Vec<Value>,
-    pub code_pos: Vec<SourcePosition>
+#[derive(Clone, Copy)]
+pub enum ObjectKind {
+    String,
+    Function,
+    NativeFunction,
+    BoundMethod,
+    Closure,
+    Class,
+    Instance,
+    Upvalue
 }
 
-impl BytecodeChunk {
-    pub fn new() -> BytecodeChunk {
-        return BytecodeChunk { code: Vec::new(), constants: Vec::new(), code_pos: Vec::new() };
-    }
+pub struct ObjectHeader {
+    pub kind: ObjectKind,
+    pub marked: bool
+}
 
-    pub fn write(&mut self, op: OpCode, pos: &SourcePosition) {
-        self.code.push(op);
-        self.code_pos.push(pos.clone());
-    }
-
-    pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
-        if self.constants.len() >= u8::MAX as usize {
-            bail!("Too many constants");
-        }
-
-        self.constants.push(value);
-        Ok((self.constants.len() - 1) as u8)
+impl ObjectHeader {
+    pub fn new(kind: ObjectKind) -> ObjectHeader {
+        ObjectHeader { kind, marked: false }
     }
 }
 
-impl GcTraceable for BytecodeChunk {
-    fn fmt(&self, gc: &Gc) -> String {
-        let mut string = String::new();
+pub union Object {
+    pub header: *mut ObjectHeader,
 
-        macro_rules! push_fmt {
-            ($($t:tt)*) => {{
-                string.push_str(&format!($($t)*));
-            }};
+    pub string: *mut ObjString,
+    pub function: *mut ObjFn,
+    pub native_function: *mut ObjNativeFn,
+    pub bound_method: *mut ObjBoundMethod,
+    pub closure: *mut ObjClosure,
+    pub class: *mut ObjClass,
+    pub instance: *mut ObjInstance,
+    pub upvalue: *mut ObjUpvalue
+}
+
+impl Object {
+    pub fn kind(&self) -> ObjectKind {
+        unsafe { (*self.header).kind }
+    }
+
+    pub fn as_traceable(&self) -> *mut dyn GcTraceable {
+        match self.kind() {
+            ObjectKind::String => unsafe { self.string },
+            ObjectKind::Function => unsafe { self.function },
+            ObjectKind::NativeFunction => unsafe { self.native_function },
+            ObjectKind::BoundMethod => unsafe { self.bound_method },
+            ObjectKind::Closure => unsafe { self.closure },
+            ObjectKind::Class => unsafe { self.class },
+            ObjectKind::Instance => unsafe { self.instance },
+            ObjectKind::Upvalue => unsafe { self.upvalue }
         }
+    }
+}
 
-        let mut i = 0;
-        while i < self.code.len() {
-            let op = self.code[i];
-            i += 1;
-
-            push_fmt!("{i}: ");
-
-            match op {
-                OpCode::Return => push_fmt!("RET"),
-                OpCode::Pop => push_fmt!("POP"),
-                OpCode::Call(arg_count) => push_fmt!("CALL {arg_count}"),
-                OpCode::Jump(lpos, rpos) => push_fmt!("JUMP <{}>", (lpos as u16) << 8 | (rpos as u16)),
-                OpCode::JumpIfFalse(lpos, rpos) => push_fmt!("JUMP_F <{}>", (lpos as u16) << 8 | (rpos as u16)),
-                OpCode::CloseUpvalue(idx) => push_fmt!("CLOSE_UPVALUE <{}>", idx),
-                OpCode::PushNull => push_fmt!("NULL"),
-                OpCode::PushTrue => push_fmt!("TRUE"),
-                OpCode::PushFalse => push_fmt!("FALSE"),
-                OpCode::PushConstant(const_idx) => {
-                    push_fmt!("CONST {}", self.constants[const_idx as usize].fmt(gc));
-                },
-                OpCode::PushClosure(idx) => {
-                    if let Value::Function(gc_ref) = &self.constants[idx as usize] {
-                        let function = gc.get(gc_ref);
-                        push_fmt!("CLOSURE {}", function.fmt(gc));
-                    }
-                },
-                OpCode::PushClass(idx) => {
-                    if let Value::Class(gc_ref) = &self.constants[idx as usize] {
-                        let class = gc.get(gc_ref);
-                        push_fmt!("CLASS {}", class.fmt(gc));
-                    }
-                },
-                OpCode::Add => push_fmt!("ADD"),
-                OpCode::Subtract => push_fmt!("SUB"),
-                OpCode::Multiply => push_fmt!("MUL"),
-                OpCode::Divide => push_fmt!("DIV"),
-                OpCode::Negate => push_fmt!("NEG"),
-                OpCode::Equal => push_fmt!("EQ"),
-                OpCode::NotEqual => push_fmt!("NEQ"),
-                OpCode::LessThan => push_fmt!("LT"),
-                OpCode::LessThanEqual => push_fmt!("LTE"),
-                OpCode::GreaterThan => push_fmt!("GT"),
-                OpCode::GreaterThanEqual => push_fmt!("GTE"),
-                OpCode::Not => push_fmt!("NOT"),
-                OpCode::GetLocal(loc_idx) => push_fmt!("GET_LOCAL <{}>", loc_idx),
-                OpCode::SetLocal(loc_idx) => push_fmt!("SET_LOCAL <{}>", loc_idx),
-                OpCode::GetUpvalue(loc_idx) => push_fmt!("GET_UPVAL <{}>", loc_idx),
-                OpCode::SetUpvalue(loc_idx) => push_fmt!("SET_UPVAL <{}>", loc_idx),
-                OpCode::GetProperty(const_idx) => {
-                    push_fmt!("GET_PROP <{}>", self.constants[const_idx as usize].fmt(gc))
-                },
-                OpCode::SetProperty(const_idx) => {
-                    push_fmt!("SET_PROP <{}>", self.constants[const_idx as usize].fmt(gc))
-                },
-                OpCode::GetPropertyId(member_id) => {
-                    push_fmt!("GET_PROP_ID <{}>", member_id)
-                },
-                OpCode::SetPropertyId(member_id) => {
-                    push_fmt!("SET_PROP_ID <{}>", member_id)
-                },
-                OpCode::GetGlobal(const_idx) => {
-                    push_fmt!("GET_GLOBAL {}", self.constants[const_idx as usize].fmt(gc));
-                },
-                OpCode::SetGlobal(const_idx) => {
-                    push_fmt!("SET_GLOBAL {}", self.constants[const_idx as usize].fmt(gc));
-                }
+macro_rules! impl_from_for_object {
+    ($name:ident, $class:tt) => {
+        impl From<*mut $class> for Object {
+            fn from($name: *mut $class) -> Self {
+                Object { $name }
             }
-
-            push_fmt!("\n");
         }
-        
-        string
-    }
+    };
+}
 
-    fn mark_refs(&self, gc: &mut Gc) {
-        for constant in &self.constants {
-            constant.mark_refs(gc);
+impl_from_for_object!(header, ObjectHeader);
+impl_from_for_object!(string, ObjString);
+impl_from_for_object!(function, ObjFn);
+impl_from_for_object!(native_function, ObjNativeFn);
+impl_from_for_object!(bound_method, ObjBoundMethod);
+impl_from_for_object!(closure, ObjClosure);
+impl_from_for_object!(class, ObjClass);
+impl_from_for_object!(instance, ObjInstance);
+impl_from_for_object!(upvalue, ObjUpvalue);
+
+pub struct ObjString {
+    pub header: ObjectHeader,
+    pub value: String
+}
+
+impl ObjString {
+    pub fn new(value: String) -> ObjString {
+        ObjString {
+            header: ObjectHeader::new(ObjectKind::String),
+            value
         }
-    }
-
-    fn size(&self) -> usize {
-        mem::size_of::<BytecodeChunk>()
-            + self.code.capacity() * mem::size_of::<OpCode>()
-            + self.constants.capacity() * mem::size_of::<Value>()
-            + self.code_pos.capacity() * mem::size_of::<SourcePosition>()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        return self;
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }
 
-pub struct NativeFunction {
-    pub name: GcRef<String>,
-    pub arity: u8,
-    pub function: fn(vm: &mut Vm)
-}
-
-impl GcTraceable for NativeFunction {
-    fn fmt(&self, gc: &Gc) -> String {
-        format!("<native fn {}>", gc.get(&self.name))
+impl GcTraceable for ObjString {
+    fn fmt(&self, _gc: &Gc) -> String {
+        format!("{}", self.value)
     }
 
-    fn mark_refs(&self, gc: &mut Gc) {
-        gc.mark_object(&self.name);
-    }
+    fn mark_refs(&self, _gc: &mut Gc) { }
 
     fn size(&self) -> usize {
-        mem::size_of::<NativeFunction>()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        return self;
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
+        mem::size_of::<ObjString>() + self.value.capacity()
     }
 }
 
@@ -176,97 +112,136 @@ pub struct UpvalueLocation {
     pub location: u8
 }
 
-pub struct Function {
-    pub name: GcRef<String>,
+pub struct ObjFn {
+    pub header: ObjectHeader,
+    pub name: *mut ObjString,
     pub arity: u8,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>
 }
 
-impl GcTraceable for Function {
-    fn fmt(&self, gc: &Gc) -> String {
-        format!("<fn {}>", gc.get(&self.name))
+impl ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>) -> ObjFn {
+        ObjFn {
+            header: ObjectHeader::new(ObjectKind::Function),
+            name,
+            arity,
+            ip_start,
+            upvalues
+        }
+    }
+}
+
+impl GcTraceable for ObjFn {
+    fn fmt(&self, _gc: &Gc) -> String {
+        format!("<fn {}>", unsafe { &(*self.name).value })
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
-        gc.mark_object(&self.name);
+        gc.mark_object(self.name);
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<Function>() + self.upvalues.capacity() * mem::size_of::<UpvalueLocation>()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        return self;
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
+        mem::size_of::<ObjFn>() + self.upvalues.capacity() * mem::size_of::<UpvalueLocation>()
     }
 }
 
-pub struct Closure {
-    pub function: GcRef<Function>,
-    pub upvalues: Vec<GcRef<Upvalue>>
+pub struct ObjNativeFn {
+    pub header: ObjectHeader,
+    pub name: *mut ObjString,
+    pub arity: u8,
+    pub function: fn(vm: &mut Vm)
 }
 
-impl Closure {
-    pub fn new(function: GcRef<Function>) -> Closure {
-        return Closure { function, upvalues: Vec::new() };
+impl ObjNativeFn {
+    pub fn new(name: *mut ObjString, arity: u8, function: fn(vm: &mut Vm)) -> ObjNativeFn {
+        ObjNativeFn {
+            header: ObjectHeader::new(ObjectKind::NativeFunction),
+            name,
+            arity,
+            function
+        }
     }
 }
 
-impl GcTraceable for Closure {
-    fn fmt(&self, gc: &Gc) -> String {
-        format!("<closure {}>", gc.get(&gc.get(&self.function).name))
+impl GcTraceable for ObjNativeFn {
+    fn fmt(&self, _gc: &Gc) -> String {
+        format!("<native fn {}>", unsafe { &(*self.name).value })
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
-        gc.mark_object(&self.function);
+        gc.mark_object(self.name);
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<ObjNativeFn>()
+    }
+}
+
+pub struct ObjClosure {
+    pub header: ObjectHeader,
+    pub function: *mut ObjFn,
+    pub upvalues: Vec<*mut ObjUpvalue>
+}
+
+impl ObjClosure {
+    pub fn new(function: *mut ObjFn) -> ObjClosure {
+        return ObjClosure {
+            header: ObjectHeader::new(ObjectKind::Closure),
+            function, 
+            upvalues: Vec::new() 
+        };
+    }
+}
+
+impl GcTraceable for ObjClosure {
+    fn fmt(&self, _gc: &Gc) -> String {
+        format!("<closure {}>", unsafe { &(*(*self.function).name).value } )
+    }
+
+    fn mark_refs(&self, gc: &mut Gc) {
+        gc.mark_object(self.function);
 
         for upvalue in &self.upvalues {
-            gc.mark_object(upvalue);
+            gc.mark_object(*upvalue);
         }
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<Closure>() + self.upvalues.capacity() * mem::size_of::<GcRef<Upvalue>>()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        return self;
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
+        mem::size_of::<ObjClosure>() + self.upvalues.capacity() * mem::size_of::<*mut ObjUpvalue>()
     }
 }
 
-pub struct BoundMethod {
-    pub instance: GcRef<Instance>,
-    pub closure: GcRef<Closure>
+pub struct ObjBoundMethod {
+    pub header: ObjectHeader,
+    pub instance: *mut ObjInstance,
+    pub closure: *mut ObjClosure
 }
 
-impl GcTraceable for BoundMethod {
-    fn fmt(&self, gc: &Gc) -> String {
-        format!("<bound method {}>", gc.get(&gc.get(&gc.get(&self.closure).function).name))
+impl ObjBoundMethod {
+    pub fn new(instance: *mut ObjInstance, closure: *mut ObjClosure) -> ObjBoundMethod {
+        ObjBoundMethod {
+            header: ObjectHeader::new(ObjectKind::BoundMethod),
+            instance,
+            closure
+        }
+    }
+}
+
+impl GcTraceable for ObjBoundMethod {
+    fn fmt(&self, _gc: &Gc) -> String {
+        let closure = unsafe { &*self.closure };
+        let function = unsafe { &*closure.function };
+        format!("<bound method {}>", unsafe { &(*function.name).value } )
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
-        gc.mark_object(&self.instance);
-        gc.mark_object(&self.closure);
+        gc.mark_object(self.instance);
+        gc.mark_object(self.closure);
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<BoundMethod>()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        return self;
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
+        mem::size_of::<ObjBoundMethod>()
     }
 }
 
@@ -278,17 +253,19 @@ pub enum ClassMember {
     Method(MemberId)
 }
 
-pub struct Class {
-    pub name: GcRef<String>,
-    members: IntMap<GcRef<String>, ClassMember>,
+pub struct ObjClass {
+    pub header: ObjectHeader,
+    pub name: *mut ObjString,
+    members: IntMap<usize, ClassMember>,
     pub fields: IntSet<MemberId>,
-    methods: IntMap<MemberId, GcRef<Function>>,
+    methods: IntMap<MemberId, *mut ObjFn>,
     next_member_id: MemberId
 }
 
-impl Class {
-    pub fn new(name: GcRef<String>, superclass: Option<&Class>) -> Class {
-        let mut class = Class {
+impl ObjClass {
+    pub fn new(name: *mut ObjString, superclass: Option<&ObjClass>) -> ObjClass {
+        let mut class = ObjClass {
+            header: ObjectHeader::new(ObjectKind::Class),
             name,
             members: IntMap::default(),
             fields: IntSet::default(),
@@ -303,7 +280,7 @@ impl Class {
         class
     }
 
-    fn inherit(&mut self, superclass: &Class) {
+    fn inherit(&mut self, superclass: &ObjClass) {
         self.next_member_id = superclass.next_member_id;
         self.members = superclass.members.clone();
         self.fields = superclass.fields.clone();
@@ -311,79 +288,76 @@ impl Class {
         self.methods.remove(&0);
     }
 
-    pub fn declare_field(&mut self, name: GcRef<String>) {
-        self.members.insert(name, ClassMember::Field(self.next_member_id));
+    pub fn declare_field(&mut self, name: *mut ObjString) {
+        self.members.insert(name as usize, ClassMember::Field(self.next_member_id));
         self.fields.insert(self.next_member_id);
         self.next_member_id += 1;
     }
 
-    pub fn declare_method(&mut self, name: GcRef<String>) {
-        self.members.insert(name, ClassMember::Method(self.next_member_id));
+    pub fn declare_method(&mut self, name: *mut ObjString) {
+        self.members.insert(name as usize, ClassMember::Method(self.next_member_id));
         self.next_member_id += 1;
     }
 
-    pub fn define_method(&mut self, name: GcRef<String>, method: GcRef<Function>) {
-        let ClassMember::Method(id) = self.resolve(&name).unwrap() else {
+    pub fn define_method(&mut self, name: *mut ObjString, method: *mut ObjFn) {
+        let ClassMember::Method(id) = self.resolve(name).unwrap() else {
             unreachable!("Cannot define field as method");
         };
         self.methods.insert(id, method);
     }
 
-    pub fn resolve(&self, name: &GcRef<String>) -> Option<ClassMember> {
-        self.members.get(name).copied()
+    pub fn resolve(&self, name: *mut ObjString) -> Option<ClassMember> {
+        self.members.get(&(name as usize)).copied()
     }
 
-    pub fn resolve_id(&self, name: &GcRef<String>) -> Option<MemberId> {
-        match self.members.get(name) {
+    pub fn resolve_id(&self, name: *mut ObjString) -> Option<MemberId> {
+        match self.members.get(&(name as usize)) {
             Some(ClassMember::Field(id)) |
             Some(ClassMember::Method(id)) => Some(*id),
             None => None
         }
     }
 
-    pub fn get_method(&self, id: MemberId) -> Option<GcRef<Function>> {
+    pub fn get_method(&self, id: MemberId) -> Option<*mut ObjFn> {
         self.methods.get(&id).copied()
     }
 }
 
-impl GcTraceable for Class {
-    fn fmt(&self, gc: &Gc) -> String {
-        format!("<class {}>", gc.get(&self.name))
+impl GcTraceable for ObjClass {
+    fn fmt(&self, _gc: &Gc) -> String {
+        format!("<class {}>", unsafe { &(*self.name).value })
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
-        gc.mark_object(&self.name);
+        gc.mark_object(self.name);
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<Class>()
-            + self.members.capacity() * (mem::size_of::<GcRef<String>>() + mem::size_of::<ClassMember>())
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        return self;
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
+        mem::size_of::<ObjClass>()
+            + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<ClassMember>())
     }
 }
 
-pub struct Instance {
-    pub class: GcRef<Class>,
+pub struct ObjInstance {
+    pub header: ObjectHeader,
+    pub class: *mut ObjClass,
     pub values: IntMap<MemberId, Value>
 }
 
-impl Instance {
-    pub fn new(class: GcRef<Class>) -> Instance {
-        Instance { class, values: IntMap::default() }
+impl ObjInstance {
+    pub fn new(class: *mut ObjClass) -> ObjInstance {
+        ObjInstance {
+            header: ObjectHeader::new(ObjectKind::Instance),
+            class,
+            values: IntMap::default()
+        }
     }
 
-    pub fn get(&self, id: MemberId, gc: &Gc) -> Value {
+    pub fn get(&self, id: MemberId, _gc: &Gc) -> Value {
         match self.values.get(&id) {
             Some(value) => *value,
             None => {
-                let class = gc.get(&self.class);
+                let class = unsafe { &*self.class };
                 let func = class.get_method(id).unwrap();
                 Value::Function(func)
             }
@@ -395,37 +369,45 @@ impl Instance {
     }
 }
 
-impl GcTraceable for Instance {
+impl GcTraceable for ObjInstance {
     fn fmt(&self, gc: &Gc) -> String {
-        format!("<instance {}>", gc.get(&self.class).fmt(gc))
+        let class = unsafe { &*self.class };
+        format!("<instance {}>", class.fmt(gc))
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
-        gc.mark_object(&self.class);
+        gc.mark_object(self.class);
         for (_, value) in &self.values {
             value.mark_refs(gc);
         }
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<Class>() + self.values.capacity() * mem::size_of::<(GcRef<String>, Value)>()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        return self;
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
+        mem::size_of::<ObjClass>() + self.values.capacity() * mem::size_of::<(MemberId, Value)>()
     }
 }
 
-pub struct Upvalue {
+pub struct ObjUpvalue {
+    pub header: ObjectHeader,
     pub location: u8,
     pub closed: Option<Value>
 }
 
-impl GcTraceable for Upvalue {
+impl ObjUpvalue {
+    pub fn new(location: u8) -> ObjUpvalue {
+        ObjUpvalue {
+            header: ObjectHeader::new(ObjectKind::Upvalue),
+            location,
+            closed: None
+        }
+    }
+
+    pub fn close(&mut self, value: Value) {
+        self.closed = Some(value);
+    }
+}
+
+impl GcTraceable for ObjUpvalue {
     fn fmt(&self, _gc: &Gc) -> String {
         format!("<up {}>", self.location)
     }
@@ -437,18 +419,12 @@ impl GcTraceable for Upvalue {
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<Upvalue>()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        return self;
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
+        mem::size_of::<ObjUpvalue>()
     }
 }
 
+// /** NaN boxed value */
+// #[derive(Clone, Copy, Eq, PartialEq)]
 // pub struct Value64(u64);
 
 // impl Value64 {
@@ -459,23 +435,58 @@ impl GcTraceable for Upvalue {
 //      * We also reserve an additional bit to differentiate between NaNs and
 //      * other value types in Clisay, like booleans and objects.
 //      * 
-//      * If these bits are set, the value does not represent a 64-bit float.
+//      * If these bits are set, the value does not represent an f64.
 //      */
 //     const NAN_MASK: u64 = 0x7FFC000000000000;
-//     const NULL: u64 = 0b01;
-//     const TRUE: u64 = 0b10;
-//     const FALSE: u64 = 0b11;
+//     const SIGN: u64 = 0x8000000000000000;
 
-//     /** Object type values contain a 32-bit pointer value */
-//     const OBJECT: u64 = 0x7FFC000000000000;
-//     const PTR_MASK: u64 = 0xFFFFFFFF0;
+//     /**
+//      * The sign and QNaN bits are set for object values. 
+//      * This takes 14 bits, leaving room for a 50-bit pointer.
+//      * 
+//      * Technically 64-bit architectures have 64-bit pointers, but in practice
+//      * common architectures only use the first 48 bits.
+//      */
+//     const OBJECT_MASK: u64 = Self::SIGN | Self::NAN_MASK;
 
-//     pub fn is_number(&self) -> bool {
+//     pub const NULL: Self = Self(Self::NAN_MASK | 0b01);
+//     pub const TRUE: Self = Self(Self::NAN_MASK | 0b10);
+//     pub const FALSE: Self = Self(Self::NAN_MASK | 0b11);
+
+//     pub fn is_number(self) -> bool {
 //         (self.0 & Self::NAN_MASK) != Self::NAN_MASK
 //     }
 
-//     pub fn is_bool(&self) -> bool {
-//         (self.0 & Self::BOOL_MASK) != 0
+//     pub fn is_bool(self) -> bool {
+//         Self(self.0 | 0b01) == Self::TRUE
+//     }
+
+//     pub fn is_null(self) -> bool {
+//         self == Self::NULL
+//     }
+
+//     pub fn is_object(self) -> bool {
+//         (self.0 & Self::OBJECT_MASK) == Self::OBJECT_MASK
+//     }
+
+//     pub fn as_number(self) -> f64 {
+//         f64::from_bits(self.0)
+//     }
+
+//     pub fn as_bool(self) -> bool {
+//         self == Self::TRUE
+//     }
+// }
+
+// impl From<f64> for Value64 {
+//     fn from(value: f64) -> Self {
+//         Self(value.to_bits())
+//     }
+// }
+
+// impl From<bool> for Value64 {
+//     fn from(value: bool) -> Self {
+//         if value { Self::TRUE } else { Self::FALSE }
 //     }
 // }
 
@@ -484,35 +495,35 @@ pub enum Value {
     Null,
     Number(f64),
     Boolean(bool),
-    String(GcRef<String>),
-    Function(GcRef<Function>),
-    Closure(GcRef<Closure>),
-    BoundMethod(GcRef<BoundMethod>),
-    Class(GcRef<Class>),
-    Instance(GcRef<Instance>),
-    NativeFunction(GcRef<NativeFunction>)
+    String(*mut ObjString),
+    Function(*mut ObjFn),
+    Closure(*mut ObjClosure),
+    BoundMethod(*mut ObjBoundMethod),
+    Class(*mut ObjClass),
+    Instance(*mut ObjInstance),
+    NativeFunction(*mut ObjNativeFn)
 }
 
 impl GcTraceable for Value {
     fn fmt(&self, gc: &Gc) -> String {
-        match self {
+        match *self {
             Value::Null => format!("null"),
             Value::Number(num) => format!("{num}"),
             Value::Boolean(b) => format!("{b}"),
 
             // GcRef types
-            Value::String(gc_ref) => gc.get(gc_ref).fmt(gc),
-            Value::Function(gc_ref) => gc.get(gc_ref).fmt(gc),
-            Value::Closure(gc_ref) => gc.get(gc_ref).fmt(gc),
-            Value::BoundMethod(gc_ref) => gc.get(gc_ref).fmt(gc),
-            Value::NativeFunction(gc_ref) => gc.get(gc_ref).fmt(gc),
-            Value::Class(gc_ref) => gc.get(gc_ref).fmt(gc),
-            Value::Instance(gc_ref) => gc.get(gc_ref).fmt(gc)
+            Value::String(gc_ref) => unsafe { &*gc_ref }.fmt(gc),
+            Value::Function(gc_ref) => unsafe { &*gc_ref }.fmt(gc),
+            Value::Closure(gc_ref) => unsafe { &*gc_ref }.fmt(gc),
+            Value::BoundMethod(gc_ref) => unsafe { &*gc_ref }.fmt(gc),
+            Value::NativeFunction(gc_ref) => unsafe { &*gc_ref }.fmt(gc),
+            Value::Class(gc_ref) => unsafe { &*gc_ref }.fmt(gc),
+            Value::Instance(gc_ref) => unsafe { &*gc_ref }.fmt(gc)
         }
     }
 
     fn mark_refs(&self, gc: &mut Gc) {
-        match self {
+        match *self {
             Value::Null |
             Value::Number(_) |
             Value::Boolean(_) => {},
@@ -528,14 +539,6 @@ impl GcTraceable for Value {
 
     fn size(&self) -> usize {
         mem::size_of::<Value>()
-    }
-    
-    fn as_any(&self) -> &dyn Any {
-        unreachable!();
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        unreachable!();
     }
 }
 

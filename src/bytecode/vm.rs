@@ -1,13 +1,15 @@
-use anyhow::bail;
-use nohash_hasher::IntMap;
+use std::collections::HashMap;
 
-use crate::bytecode::objects::{BoundMethod, Instance};
+use anyhow::bail;
+
+use crate::bytecode::objects::{ObjBoundMethod, ObjInstance};
 use crate::lexer::{tokenize, TokenStream};
 
+use super::chunk::BytecodeChunk;
 use super::parser::Parser;
 use super::OpCode;
-use super::gc::{Gc, GcRef, GcTraceable};
-use super::objects::{BytecodeChunk, Class, ClassMember, Closure, Function, NativeFunction, Upvalue, Value};
+use super::gc::{Gc, GcTraceable};
+use super::objects::{ClassMember, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, Value};
 use super::compiler::Compiler;
 
 const MAX_STACK: usize = 16384;
@@ -21,11 +23,11 @@ pub struct Vm<'out> {
     gc: Gc,
     ip: *const OpCode,
     chunk: BytecodeChunk,
-    globals: IntMap<GcRef<String>, Value>,
+    globals: HashMap<*mut ObjString, Value>,
     stack: [Value; 16384],
     stack_top: *mut Value,
     frames: Vec<CallFrame>,
-    open_upvalues: Vec<GcRef<Upvalue>>,
+    open_upvalues: Vec<*mut ObjUpvalue>,
     out: &'out mut Vec<String>
 }
 
@@ -49,7 +51,7 @@ impl<'out> Vm<'out> {
             gc,
             ip: chunk.code.as_ptr(),
             chunk,
-            globals: IntMap::default(),
+            globals: HashMap::default(),
             stack: [Value::Null; MAX_STACK],
             stack_top: std::ptr::null_mut(),
             frames: Vec::new(),
@@ -68,24 +70,24 @@ impl<'out> Vm<'out> {
                 Value::Null => String::from("null"),
                 Value::Number(num) => num.to_string(),
                 Value::Boolean(b) => b.to_string(),
-                Value::String(gc_ref) => vm.gc.get(&gc_ref).clone(),
-                Value::Function(gc_ref) => match vm.gc.get(&gc_ref) {
-                    Function { name, .. } => format!("<fn {}>", vm.gc.get(name))
+                Value::String(gc_ref) => unsafe { &*gc_ref }.value.clone(),
+                Value::Function(gc_ref) => match unsafe { &*gc_ref } {
+                    ObjFn { name, .. } => format!("<fn {}>", unsafe { &(**name) }.value),
                 },
-                Value::Closure(gc_ref) => match vm.gc.get(&gc_ref) {
-                    Closure { function, .. } => format!("<closure {}>", vm.gc.get(&vm.gc.get(function).name))
+                Value::Closure(gc_ref) => match unsafe { &*gc_ref } {
+                    ObjClosure { function, .. } => format!("<closure {}>", unsafe { &*(**function).name }.value)
                 },
-                Value::BoundMethod(gc_ref) => match vm.gc.get(&gc_ref) {
-                    BoundMethod { closure, .. } => format!("<bound method {}>", vm.gc.get(&vm.gc.get(&vm.gc.get(closure).function).name))
+                Value::BoundMethod(gc_ref) => match unsafe { &*gc_ref } {
+                    ObjBoundMethod { closure, .. } => format!("<bound method {}>", unsafe { &*(*(**closure).function).name }.value)
                 },
-                Value::NativeFunction(gc_ref) => match vm.gc.get(&gc_ref) {
-                    NativeFunction { name, .. } => format!("<native fn {}>", vm.gc.get(name))
+                Value::NativeFunction(gc_ref) => match unsafe { &*gc_ref } {
+                    ObjNativeFn { name, .. } => format!("<native fn {}>", unsafe { &**name }.value)
                 },
-                Value::Class(gc_ref) => match vm.gc.get(&gc_ref) {
-                    Class { name, .. } => format!("<class {}>", vm.gc.get(name))
+                Value::Class(gc_ref) => match unsafe { &*gc_ref } {
+                    ObjClass { name, .. } => format!("<class {}>", unsafe { &**name }.value)
                 },
-                Value::Instance(gc_ref) => match vm.gc.get(&gc_ref) {
-                    Instance { class, .. } => format!("<instance {}>", vm.gc.get(&vm.gc.get(class).name))
+                Value::Instance(gc_ref) => match unsafe { &*gc_ref } {
+                    ObjInstance { class, .. } => format!("<instance {}>", unsafe { &*(**class).name }.value)
                 }
             };
             vm.out.push(value_str.clone());
@@ -114,9 +116,8 @@ impl<'out> Vm<'out> {
     fn error(&self, message: impl Into<String>) -> Result<(), anyhow::Error> {
         let trace = self.frames[1..].iter().rev()
             .map(|frame| {
-                let function = self.get_closure(&frame).function;
-                let function = self.gc.get(&function);
-                let name = self.gc.get(&function.name);
+                let function = unsafe { &*self.get_closure(&frame).function };
+                let name = unsafe { &(*function.name).value };
                 let pos = unsafe { 
                     let idx = frame.return_ip.offset_from(self.chunk.code.as_ptr());
                     &self.chunk.code_pos[idx as usize]
@@ -133,7 +134,7 @@ impl<'out> Vm<'out> {
         bail!(format!("{}\nat {}\n{}", message.into(), pos, trace))
     }
 
-    fn intern(&mut self, name: impl Into<String>) -> GcRef<String> {
+    fn intern(&mut self, name: impl Into<String>) -> *mut ObjString {
         if self.gc.should_collect() {
             self.start_gc();
         }
@@ -141,7 +142,9 @@ impl<'out> Vm<'out> {
         self.gc.intern(name)
     }
 
-    fn alloc<T: GcTraceable + 'static>(&mut self, obj: T) -> GcRef<T> {
+    fn alloc<T: GcTraceable>(&mut self, obj: T) -> *mut T
+        where *mut T: Into<Object>
+    {
         if self.gc.should_collect() {
             self.start_gc();
         }
@@ -151,12 +154,7 @@ impl<'out> Vm<'out> {
 
     fn define_native(&mut self, name: impl Into<String>, arity: u8, function: fn(&mut Vm)) {
         let name_ref = self.gc.intern(name.into());
-        let native = NativeFunction {
-            name: name_ref,
-            arity,
-            function
-        };
-
+        let native = ObjNativeFn::new(name_ref, arity, function);
         let value = Value::NativeFunction(self.gc.alloc(native));
         self.globals.insert(name_ref, value);
     }
@@ -164,12 +162,12 @@ impl<'out> Vm<'out> {
     fn start_gc(&mut self) {
         self.chunk.mark_refs(&mut self.gc);
 
-        for (name, value) in &self.globals {
+        for (&name, value) in &self.globals {
             self.gc.mark_object(name);
             value.mark_refs(&mut self.gc);
         }
 
-        for upvalue in &self.open_upvalues {
+        for &upvalue in &self.open_upvalues {
             self.gc.mark_object(upvalue);
         }
 
@@ -191,25 +189,25 @@ impl<'out> Vm<'out> {
         }
     }
 
-    fn current_closure(&self) -> &Closure {
+    fn current_closure(&self) -> &ObjClosure {
         self.get_closure(&self.frames[self.frames.len() - 1])
     }
 
-    fn get_closure(&self, frame: &CallFrame) -> &Closure {
+    fn get_closure(&self, frame: &CallFrame) -> &ObjClosure {
         let value = unsafe { *frame.stack_start };
         let Value::Closure(closure_ref) = value else {
             unreachable!()
         };
-        self.gc.get(&closure_ref)
+        unsafe { &*closure_ref }
     }
 
-    fn capture_upvalue(&mut self, location: u8) -> GcRef<Upvalue> {
+    fn capture_upvalue(&mut self, location: u8) -> *mut ObjUpvalue {
         let mut i = 0;
         while i < self.open_upvalues.len() {
-            let upvalue_ref = &self.open_upvalues[i];
-            let upvalue = self.gc.get(upvalue_ref);
+            let upvalue_ref = self.open_upvalues[i];
+            let upvalue = unsafe { &*upvalue_ref };
             if upvalue.location == location {
-                return *upvalue_ref;
+                return upvalue_ref;
             }
 
             if upvalue.location > location {
@@ -221,7 +219,7 @@ impl<'out> Vm<'out> {
 
         let current_offset = unsafe { self.current_stack_start().offset_from(self.stack.as_ptr()) };
         let stack_location = current_offset as u8 + location;
-        let upvalue = self.alloc(Upvalue { location: stack_location, closed: None });
+        let upvalue = self.alloc(ObjUpvalue::new(stack_location));
         self.open_upvalues.insert(i, upvalue);
         upvalue
     }
@@ -229,12 +227,12 @@ impl<'out> Vm<'out> {
     fn close_upvalues(&mut self, after: *const Value) {
         let offset = unsafe { after.offset_from(self.stack.as_ptr()) };
         let mut split_idx = 0;
+
         for i in 0..self.open_upvalues.len() {
-            let location = self.gc.get(&self.open_upvalues[i]).location;
-            if location >= offset as u8 {
-                let value = self.get(location);
-                let upvalue = self.gc.get_mut(&self.open_upvalues[i]);
-                upvalue.closed = Some(value);
+            let upvalue = unsafe { &mut *self.open_upvalues[i] };
+
+            if upvalue.location >= offset as u8 {
+                upvalue.close(self.get(upvalue.location));
 
                 if split_idx == 0 {
                     split_idx = i;
@@ -289,12 +287,12 @@ impl<'out> Vm<'out> {
         self.stack_top = unsafe { self.stack_top.sub(count) };
     }
 
-    fn create_closure(&mut self, function: &GcRef<Function>) -> GcRef<Closure> {
-        let mut closure = Closure::new(*function);
-        let upvalue_count = self.gc.get(function).upvalues.len();
+    fn create_closure(&mut self, function: *mut ObjFn) -> *mut ObjClosure {
+        let mut closure = ObjClosure::new(function);
+        let upvalue_count = unsafe { (*function).upvalues.len() };
 
         for i in 0..upvalue_count {
-            let fn_upval = &self.gc.get(function).upvalues[i];
+            let fn_upval = unsafe { &(*function).upvalues[i] };
             let upvalue = if fn_upval.is_local {
                 self.capture_upvalue(fn_upval.location)
             } else {
@@ -308,9 +306,9 @@ impl<'out> Vm<'out> {
         self.alloc(closure)
     }
 
-    fn get_property(&mut self, instance_ref: &GcRef<Instance>, prop: &GcRef<String>) -> Option<Value> {
-        let instance = self.gc.get(instance_ref);
-        let class = self.gc.get(&instance.class);
+    fn get_property(&mut self, instance_ref: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
+        let instance = unsafe { &*instance_ref };
+        let class = unsafe { &*instance.class };
 
         match class.resolve(prop) {
             Some(ClassMember::Field(id)) |
@@ -319,21 +317,20 @@ impl<'out> Vm<'out> {
         }
     }
 
-    fn get_property_by_id(&mut self, instance_ref: &GcRef<Instance>, id: u8) -> Value {
-        let instance = self.gc.get(instance_ref);
-
-        match instance.get(id, &self.gc) {
+    fn get_property_by_id(&mut self, instance_ref: *mut ObjInstance, id: u8) -> Value {
+        let value = unsafe { (*instance_ref).get(id, &self.gc) };
+        match value {
             Value::Function(func_ref) => {
-                let closure = self.create_closure(&func_ref);
-                let method = self.alloc(BoundMethod { closure, instance: *instance_ref });
+                let closure = self.create_closure(func_ref);
+                let method = self.alloc(ObjBoundMethod::new(instance_ref, closure));
                 Value::BoundMethod(method)
             },
             value => value
         }
     }
 
-    fn call_native(&mut self, arg_count: usize, gc_ref: &GcRef<NativeFunction>) -> Result<(), anyhow::Error> {
-        let func = self.gc.get(gc_ref).function;
+    fn call_native(&mut self, arg_count: usize, gc_ref: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
+        let func = unsafe { &(*gc_ref).function };
         func(self);
         let result = self.peek(0);
         self.truncate(arg_count + 2);
@@ -341,20 +338,19 @@ impl<'out> Vm<'out> {
         Ok(())
     }
 
-    fn call_closure(&mut self, arg_count: usize, gc_ref: &GcRef<Closure>) -> Result<(), anyhow::Error> {
-        let closure = self.gc.get(gc_ref);
-        let function = self.gc.get(&closure.function);
+    fn call_closure(&mut self, arg_count: usize, gc_ref: *mut ObjClosure) -> Result<(), anyhow::Error> {
         self.frames.push(CallFrame {
             return_ip: self.ip, 
             stack_start: unsafe { self.stack_top.sub(arg_count + 1) }
         });
+        let closure = unsafe { &*gc_ref };
+        let function = unsafe { &*closure.function };
         self.ip = unsafe { self.chunk.code.as_ptr().offset(function.ip_start as isize) };
         Ok(())
     }
 
-    fn call_bound_method(&mut self, arg_count: usize, gc_ref: &GcRef<BoundMethod>) -> Result<(), anyhow::Error> {
-        let instance = self.gc.get(gc_ref).instance;
-
+    fn call_bound_method(&mut self, arg_count: usize, gc_ref: *mut ObjBoundMethod) -> Result<(), anyhow::Error> {
+        let instance = unsafe { (*gc_ref).instance };
         let stack_start = unsafe { self.stack_top.sub(arg_count + 1) };
         unsafe {
             *stack_start = Value::Instance(instance);
@@ -365,22 +361,20 @@ impl<'out> Vm<'out> {
             stack_start
         });
 
-        let closure = self.gc.get(gc_ref).closure;
-        let function = self.gc.get(&closure).function;
-        self.ip = unsafe { self.chunk.code.as_ptr().offset(self.gc.get(&function).ip_start as isize) };
+        let function = unsafe { &*(*(*gc_ref).closure).function };
+        self.ip = unsafe { self.chunk.code.as_ptr().offset(function.ip_start as isize) };
         Ok(())
     }
 
-    fn call_class(&mut self, arg_count: usize, class_ref: &GcRef<Class>) -> Result<(), anyhow::Error> {
-        let init_str = self.gc.intern("init");
-        let init_id = self.gc.get(class_ref).resolve_id(&init_str).unwrap();
-        let init_ref = self.gc.get(class_ref).get_method(init_id).unwrap();
+    fn call_class(&mut self, arg_count: usize, class_ref: *mut ObjClass) -> Result<(), anyhow::Error> {
+        let class = unsafe { &*class_ref };
+        let init_id = class.resolve_id(self.gc.intern("init")).unwrap();
+        let init_ref = class.get_method(init_id).unwrap();
         
-        let closure = self.create_closure(&init_ref);
+        let closure = self.create_closure(init_ref);
         self.push(Value::Closure(closure));
 
-        let mut instance = Instance::new(*class_ref);
-        let class = self.gc.get(class_ref);
+        let mut instance = ObjInstance::new(class_ref);
         for field in &class.fields {
             instance.values.insert(*field, Value::Null);
         }
@@ -391,12 +385,12 @@ impl<'out> Vm<'out> {
             *stack_start = Value::Instance(instance);
         };
 
-        let function = self.gc.get(&init_ref);
         self.frames.push(CallFrame {
             return_ip: self.ip, 
             stack_start
         });
-        self.ip = unsafe { self.chunk.code.as_ptr().offset(function.ip_start as isize) };
+        let init = unsafe { &*init_ref };
+        self.ip = unsafe { self.chunk.code.as_ptr().offset(init.ip_start as isize) };
         Ok(())
     }
 
@@ -485,8 +479,7 @@ impl<'out> Vm<'out> {
 
     fn op_call(&mut self, arg_count: u8) -> Result<(), anyhow::Error> {
         let arg_count = arg_count as usize;
-        let function = self.peek(arg_count);
-        Ok(match &function {
+        Ok(match self.peek(arg_count) {
             Value::NativeFunction(gc_ref) => self.call_native(arg_count, gc_ref)?,
             Value::Closure(gc_ref) => self.call_closure(arg_count, gc_ref)?,
             Value::BoundMethod(gc_ref) => self.call_bound_method(arg_count, gc_ref)?,
@@ -529,7 +522,7 @@ impl<'out> Vm<'out> {
         let Value::Function(fn_ref) = value else {
             bail!("Invalid closure")
         };
-        let closure = self.create_closure(&fn_ref);
+        let closure = self.create_closure(fn_ref);
         self.push(Value::Closure(closure));
         Ok(())
     }
@@ -574,7 +567,7 @@ impl<'out> Vm<'out> {
 
     fn op_get_upvalue(&mut self, idx: u8) {
         let upvalue = self.current_closure().upvalues[idx as usize];
-        let upvalue = self.gc.get(&upvalue);
+        let upvalue = unsafe { &*upvalue };
         if let Some(value) = upvalue.closed {
             self.push(value);
         } else {
@@ -585,10 +578,11 @@ impl<'out> Vm<'out> {
 
     fn op_set_upvalue(&mut self, idx: u8) {
         let upvalue = self.current_closure().upvalues[idx as usize];
-        if let Some(_) = self.gc.get(&upvalue).closed {
-            self.gc.get_mut(&upvalue).closed = Some(self.peek(0));
+        let upvalue = unsafe { &mut *upvalue };
+        if let Some(_) = upvalue.closed {
+            upvalue.close(self.peek(0));
         } else {
-            self.set(self.gc.get(&upvalue).location, self.peek(0));
+            self.set(upvalue.location, self.peek(0));
         }
     }
 
@@ -600,7 +594,7 @@ impl<'out> Vm<'out> {
             bail!("Invalid property access")
         };
 
-        if let Some(value) = self.get_property(&instance_ref, &prop) {
+        if let Some(value) = self.get_property(instance_ref, prop) {
             self.push(value.clone());
             Ok(())
         } else {
@@ -615,12 +609,11 @@ impl<'out> Vm<'out> {
         let Value::String(prop) = self.chunk.constants[const_idx as usize] else {
             bail!("Invalid property access")
         };
-        let class_ref = self.gc.get(&instance_ref).class;
-        let class = self.gc.get(&class_ref);
-        match class.resolve(&prop) {
+        let instance = unsafe { &mut *instance_ref };
+        let class = unsafe { &*instance.class };
+        match class.resolve(prop) {
             Some(ClassMember::Field(id)) => {
                 let value = self.peek(0);
-                let instance = self.gc.get_mut(&instance_ref);
                 instance.values.insert(id, value);
                 Ok(())
             },
@@ -637,7 +630,7 @@ impl<'out> Vm<'out> {
         let Value::Instance(instance_ref) = self.pop_get() else {
             bail!("Invalid property access")
         };
-        let value = self.get_property_by_id(&instance_ref, member_id);
+        let value = self.get_property_by_id(instance_ref, member_id);
         self.push(value);
         Ok(())
     }
@@ -647,7 +640,7 @@ impl<'out> Vm<'out> {
             bail!("Invalid property access")
         };
         let value = self.peek(0);
-        let instance = self.gc.get_mut(&instance_ref);
+        let instance = unsafe { &mut *instance_ref };
         instance.set(member_id, value);
         Ok(())
     }
@@ -656,7 +649,9 @@ impl<'out> Vm<'out> {
         let result = match (self.pop_get(), self.pop_get()) {
             (Value::Number(b), Value::Number(a)) => Value::Number(a + b),
             (Value::String(b), Value::String(a)) => {
-                let s = [self.gc.get(&a).as_str(), self.gc.get(&b).as_str()].concat();
+                let sa = unsafe { &*a }.value.as_str();
+                let sb = unsafe { &*b }.value.as_str();
+                let s = [sa, sb].concat();
                 Value::String(self.intern(s))
             },
             (b, a) => {
