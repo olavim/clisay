@@ -409,14 +409,19 @@ pub struct ObjInstance {
 
 impl ObjInstance {
     pub fn new(class: *mut ObjClass) -> ObjInstance {
+        let mut values = IntMap::default();
+        for field in unsafe { &(*class).fields } {
+            values.insert(*field, Value::NULL);
+        }
+        
         ObjInstance {
             header: ObjectHeader::new(ObjectKind::Instance),
             class,
-            values: IntMap::default()
+            values
         }
     }
 
-    pub fn get(&self, id: MemberId, _gc: &Gc) -> Value {
+    pub fn get(&self, id: MemberId) -> Value {
         match self.values.get(&id) {
             Some(value) => *value,
             None => {

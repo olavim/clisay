@@ -57,9 +57,9 @@ impl<'out> Vm<'out> {
         let ast = Parser::parse(&mut gc, &mut TokenStream::new(&tokens))?;
         let chunk = Compiler::compile(&ast, &mut gc)?;
 
-        println!("=== Bytecode ===");
-        print!("{}", chunk.fmt());
-        println!("================");
+        // println!("=== Bytecode ===");
+        // print!("{}", chunk.fmt());
+        // println!("================");
 
         let mut out = Vec::new();
         let mut vm = Vm {
@@ -182,8 +182,8 @@ impl<'out> Vm<'out> {
     }
 
     #[inline]
-    fn current_closure(&self) -> &ObjClosure {
-        self.get_closure(&self.frame)
+    fn get_upvalue(&self, idx: usize) -> *mut ObjUpvalue {
+        self.get_closure(&self.frame).upvalues[idx]
     }
 
     fn get_closure(&self, frame: &CallFrame) -> &ObjClosure {
@@ -205,10 +205,12 @@ impl<'out> Vm<'out> {
 
     fn close_upvalues(&mut self, after: *const Value) {
         for idx in (0..self.open_upvalues.len()).rev() {
-            let upvalue = *unsafe { self.open_upvalues.get_unchecked(idx) };
-            if after <= unsafe { (*upvalue).location } {
-                unsafe { (*upvalue).close() };
-                self.open_upvalues.swap_remove(idx);
+            unsafe {
+                let upvalue = *self.open_upvalues.get_unchecked(idx);
+                if after <= (*upvalue).location {
+                    (*upvalue).close();
+                    self.open_upvalues.swap_remove(idx);
+                }
             }
         }
     }
@@ -244,6 +246,15 @@ impl<'out> Vm<'out> {
         }
     }
 
+    #[inline]
+    fn set(&mut self, offset: usize, value: Value) -> *mut Value {
+        unsafe {
+            let ptr = self.stack_top.sub(offset);
+            *ptr = value;
+            ptr
+        }
+    }
+
     fn create_closure(&mut self, function: *mut ObjFn) -> *mut ObjClosure {
         let mut closure = ObjClosure::new(function);
         let upvalue_count = unsafe { (*function).upvalues.len() };
@@ -253,8 +264,7 @@ impl<'out> Vm<'out> {
             let upvalue = if fn_upval.is_local {
                 self.capture_upvalue(unsafe { self.frame.stack_start.add(fn_upval.location as usize) })
             } else {
-                let closure = self.current_closure();
-                closure.upvalues[fn_upval.location as usize]
+                self.get_upvalue(fn_upval.location as usize)
             };
 
             closure.upvalues.push(upvalue);
@@ -275,7 +285,7 @@ impl<'out> Vm<'out> {
     }
 
     fn get_property_by_id(&mut self, instance_ref: *mut ObjInstance, id: u8) -> Value {
-        let value = unsafe { (*instance_ref).get(id, &self.gc) };
+        let value = unsafe { (*instance_ref).get(id) };
         match value.kind() {
             ValueKind::Object(ObjectKind::Function) => {
                 let closure = self.create_closure(unsafe { value.as_object().function });
@@ -318,8 +328,7 @@ impl<'out> Vm<'out> {
 
     fn call_bound_method(&mut self, arg_count: usize, ptr: *mut ObjBoundMethod) -> Result<(), anyhow::Error> {
         let instance = unsafe { (*ptr).instance };
-        let stack_start = unsafe { self.stack_top.sub(arg_count + 1) };
-        unsafe { *stack_start = Value::from(instance); };
+        let stack_start = self.set(arg_count + 1, Value::from(instance));
         self.push_frame(self.ip, stack_start);
 
         let function = unsafe { &*(*(*ptr).closure).function };
@@ -335,14 +344,8 @@ impl<'out> Vm<'out> {
         let closure = self.create_closure(init_ref);
         self.push(Value::from(closure));
 
-        let mut instance = ObjInstance::new(ptr);
-        for field in &class.fields {
-            instance.values.insert(*field, Value::NULL);
-        }
-
-        let instance = self.alloc(instance);
-        let stack_start = unsafe { self.stack_top.sub(arg_count + 1) };
-        unsafe { *stack_start = Value::from(instance); }
+        let instance = self.alloc(ObjInstance::new(ptr));
+        let stack_start = self.set(arg_count + 1, Value::from(instance));
         self.push_frame(self.ip, stack_start);
 
         let init = unsafe { &*init_ref };
@@ -407,17 +410,11 @@ impl<'out> Vm<'out> {
                 OpCode::BitXor => self.op_bit_xor()?,
                 OpCode::BitNot => self.op_bit_not()?
             }
-
-            // for i in 0..self.stack_top {
-            //     print!("{} ", self.get(i).fmt(&self.gc));
-            // }
-            // println!();
         }
     }
     
     fn op_return(&mut self) -> bool {
         let value = self.pop_get();
-
         let frame = match self.frames.pop() {
             Some(frame) => frame,
             None => return false
@@ -527,26 +524,22 @@ impl<'out> Vm<'out> {
     }
 
     fn op_get_upvalue(&mut self, idx: u8) {
-        let upvalue = self.current_closure().upvalues[idx as usize];
+        let upvalue = self.get_upvalue(idx as usize);
         self.push(unsafe { *(*upvalue).location });
     }
 
     fn op_set_upvalue(&mut self, idx: u8) {
-        let upvalue = self.current_closure().upvalues[idx as usize];
+        let upvalue = self.get_upvalue(idx as usize);
         unsafe { *(*upvalue).location = self.peek(0) };
     }
 
     fn op_get_property(&mut self, const_idx: u8) -> Result<(), anyhow::Error> {
         let value = self.pop_get();
-        if !value.is_object() {
+        if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
 
         let object = value.as_object();
-        if object.kind() != ObjectKind::Instance {
-            return self.error(format!("Invalid property access: {}", value.fmt()));
-        }
-
         let instance_ref = unsafe { object.instance };
         let prop = unsafe { self.chunk.constants[const_idx as usize].as_object().string };
 
@@ -560,15 +553,11 @@ impl<'out> Vm<'out> {
 
     fn op_set_property(&mut self, const_idx: u8) -> Result<(), anyhow::Error> {
         let value = self.pop_get();
-        if !value.is_object() {
+        if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
 
         let object = value.as_object();
-        if object.kind() != ObjectKind::Instance {
-            return self.error(format!("Invalid property access: {}", value.fmt()));
-        }
-
         let instance_ref = unsafe { object.instance };
         let prop = unsafe { self.chunk.constants[const_idx as usize].as_object().string };
 
@@ -580,26 +569,18 @@ impl<'out> Vm<'out> {
                 instance.values.insert(id, value);
                 Ok(())
             },
-            Some(ClassMember::Method(_)) => {
-                bail!("Cannot set method")
-            },
-            None => {
-                bail!("No such property")
-            }
+            Some(ClassMember::Method(_)) => bail!("Cannot set method"),
+            None => bail!("No such property")
         }
     }
 
     fn op_get_property_by_id(&mut self, member_id: u8) -> Result<(), anyhow::Error> {
         let value = self.pop_get();
-        if !value.is_object() {
+        if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
 
         let object = value.as_object();
-        if object.kind() != ObjectKind::Instance {
-            return self.error(format!("Invalid property access: {}", value.fmt()));
-        }
-
         let instance_ref = unsafe { object.instance };
         let value = self.get_property_by_id(instance_ref, member_id);
         self.push(value);
@@ -608,15 +589,11 @@ impl<'out> Vm<'out> {
 
     fn op_set_property_by_id(&mut self, member_id: u8) -> Result<(), anyhow::Error> {
         let value = self.pop_get();
-        if !value.is_object() {
+        if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
 
         let object = value.as_object();
-        if object.kind() != ObjectKind::Instance {
-            return self.error(format!("Invalid property access: {}", value.fmt()));
-        }
-
         let instance_ref = unsafe { object.instance };
         let value = self.peek(0);
         let instance = unsafe { &mut *instance_ref };
