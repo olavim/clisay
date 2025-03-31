@@ -18,8 +18,7 @@ const REGEX_WHITESPACE: &str = r"[^\S\r\n]+";
 #[derive(Clone)]
 pub struct SourcePosition {
     pub file: String,
-    pub line: usize,
-    pub column: usize
+    pub line: usize
 }
 
 impl fmt::Display for SourcePosition {
@@ -78,17 +77,14 @@ pub fn tokenize(file_name: String, input: String) -> Result<Vec<Token>, anyhow::
     let mut tokens: Vec<Token> = Vec::new();
     let mut input_index = 0;
     let mut line = 1;
-    let mut column = 1;
 
     while tokens.last().map_or(true, |t| t.kind != TokenType::EOF) {
         let mut token = next_token(&input, input_index)?;
-        token.pos = SourcePosition { file: file_name.clone(), line, column };
+        token.pos = SourcePosition { file: file_name.clone(), line };
         input_index += token.lexeme.len();
-        column += token.lexeme.len();
 
         if token.kind == TokenType::Newline {
             line += 1;
-            column = 1;
         }
         
         if !matches!(token.kind, TokenType::Whitespace | TokenType::Comment | TokenType::Newline) {

@@ -45,8 +45,6 @@ pub fn test_folder(folder: &str) {
         }
     }
 
-    panic::set_hook(default_panic);
-
     if !errors.is_empty() {
         println!("\nfailures:");
         for err in &errors {
@@ -54,6 +52,8 @@ pub fn test_folder(folder: &str) {
         }
         panic!("{} out of {} tests failed", errors.len(), test_count);
     }
+
+    panic::set_hook(default_panic);
 }
 
 pub fn test_file(file: &str) {

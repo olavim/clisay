@@ -4,5 +4,4 @@ fn hello() {
 fn world() {
     return "world";
 }
-hello = world;
-print(hello()); // expect: world
+hello = world; // error: Invalid assignment: 'hello' is immutable

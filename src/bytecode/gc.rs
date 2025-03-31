@@ -1,20 +1,21 @@
-use std::collections::HashMap;
 use std::mem;
+
+use fnv::FnvHashMap;
 
 use super::objects::{ObjString, Object};
 
 pub trait GcTraceable {
-    fn fmt(&self, gc: &Gc) -> String;
-    fn mark_refs(&self, gc: &mut Gc);
+    fn fmt(&self) -> String;
+    fn mark(&self, gc: &mut Gc);
     fn size(&self) -> usize;
 }
 
 impl GcTraceable for String {
-    fn fmt(&self, _gc: &Gc) -> String {
+    fn fmt(&self) -> String {
         format!("\"{}\"", self)
     }
 
-    fn mark_refs(&self, _gc: &mut Gc) {}
+    fn mark(&self, _gc: &mut Gc) {}
 
     fn size(&self) -> usize {
         mem::size_of::<String>() + self.capacity()
@@ -23,7 +24,7 @@ impl GcTraceable for String {
 
 pub struct Gc {
     refs: Vec<Object>,
-    strings: HashMap<String, *mut ObjString>,
+    strings: FnvHashMap<String, *mut ObjString>,
     reachable_refs: Vec<Object>,
     pub bytes_allocated: usize,
     next_gc: usize
@@ -31,9 +32,9 @@ pub struct Gc {
 
 impl Gc {
     pub fn new() -> Gc {
-        Gc { 
+        Gc {
             refs: Vec::new(),
-            strings: HashMap::new(),
+            strings: FnvHashMap::default(),
             reachable_refs: Vec::new(),
             bytes_allocated: 0,
             next_gc: 1024 * 1024
@@ -79,7 +80,7 @@ impl Gc {
 
     fn mark_reachable(&mut self) {
         while let Some(obj) = self.reachable_refs.pop() {
-            obj.mark_refs(self);
+            obj.mark(self);
         }
     }
 
@@ -109,22 +110,4 @@ impl Gc {
     pub fn should_collect(&self) -> bool {
         self.bytes_allocated > self.next_gc
     }
-
-    // pub fn get<T: GcTraceable + 'static>(&self, gc_ref: &GcRef<T>) -> &T {
-    //     unsafe {
-    //         let gc_obj = self.refs[gc_ref.index].as_ref().unwrap_unchecked().data.as_ref()
-    //             as *const dyn GcTraceable
-    //             as *const T;
-    //         return &*gc_obj;
-    //     }
-    // }
-
-    // pub fn get_mut<T: GcTraceable + 'static>(&mut self, gc_ref: &GcRef<T>) -> &mut T {
-    //     unsafe {
-    //         let gc_obj = self.refs[gc_ref.index].as_mut().unwrap_unchecked().data.as_mut()
-    //             as *mut dyn GcTraceable
-    //             as *mut T;
-    //         return &mut *gc_obj;
-    //     }
-    // }
 }

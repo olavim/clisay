@@ -3,6 +3,7 @@ mod vm;
 mod gc;
 mod operator;
 mod objects;
+mod value;
 mod parser;
 mod compiler;
 
@@ -41,6 +42,12 @@ enum OpCode {
     Multiply,
     Divide,
     Negate,
+    LeftShift,
+    RightShift,
+    BitAnd,
+    BitOr,
+    BitXor,
+    BitNot,
 
     // Logical
     Equal,
@@ -49,7 +56,9 @@ enum OpCode {
     LessThanEqual,
     GreaterThan,
     GreaterThanEqual,
-    Not
+    Not,
+    And,
+    Or
 }
 
 impl OpCode {
@@ -66,11 +75,25 @@ impl OpCode {
             Operator::LessThanEqual => OpCode::LessThanEqual,
             Operator::GreaterThan => OpCode::GreaterThan,
             Operator::GreaterThanEqual => OpCode::GreaterThanEqual,
-            Operator::LogicalNot => OpCode::Not,
+            Operator::BitAnd => OpCode::BitAnd,
+            Operator::BitOr => OpCode::BitOr,
+            Operator::BitXor => OpCode::BitXor,
+            Operator::LeftShift => OpCode::LeftShift,
+            Operator::RightShift => OpCode::RightShift,
+            Operator::LogicalAnd => OpCode::And,
+            Operator::LogicalOr => OpCode::Or,
+            Operator::Ternary => unreachable!(),
+            Operator::MemberAccess => unreachable!(),
+            Operator::Assign(_) => unreachable!(),
 
             // Prefix
             Operator::Negate => OpCode::Negate,
-            _ => unreachable!()
+            Operator::LogicalNot => OpCode::Not,
+            Operator::BitNot => OpCode::BitNot,
+            Operator::Group => unreachable!(),
+
+            // Postfix
+            Operator::Call => unreachable!()
         };
     }
 }

@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::{any::Any, marker::PhantomData};
 
 use anyhow::bail;
-use nohash_hasher::IntSet;
 
 use crate::lexer::{SourcePosition, TokenStream, TokenType};
 

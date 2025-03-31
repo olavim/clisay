@@ -1,32 +1,47 @@
-use std::collections::HashMap;
+use std::mem;
 
 use anyhow::bail;
+use arrayvec::ArrayVec;
+use fnv::FnvHashMap;
 
 use crate::bytecode::objects::{ObjBoundMethod, ObjInstance};
+use crate::bytecode::value::ValueKind;
 use crate::lexer::{tokenize, TokenStream};
 
 use super::chunk::BytecodeChunk;
 use super::parser::Parser;
+use super::value::Value;
 use super::OpCode;
 use super::gc::{Gc, GcTraceable};
-use super::objects::{ClassMember, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, Value};
+use super::objects::{ClassMember, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
 use super::compiler::Compiler;
 
 const MAX_STACK: usize = 16384;
+const MAX_FRAMES: usize = 256;
 
 pub struct CallFrame {
     return_ip: *const OpCode,
     stack_start: *mut Value
 }
 
+impl CallFrame {
+    pub fn default() -> Self {
+        CallFrame {
+            return_ip: std::ptr::null(),
+            stack_start: std::ptr::null_mut()
+        }
+    }
+}
+
 pub struct Vm<'out> {
     gc: Gc,
     ip: *const OpCode,
     chunk: BytecodeChunk,
-    globals: HashMap<*mut ObjString, Value>,
+    globals: FnvHashMap<*mut ObjString, Value>,
     stack: [Value; 16384],
     stack_top: *mut Value,
-    frames: Vec<CallFrame>,
+    frames: ArrayVec<CallFrame, MAX_FRAMES>,
+    frame: CallFrame,
     open_upvalues: Vec<*mut ObjUpvalue>,
     out: &'out mut Vec<String>
 }
@@ -43,7 +58,7 @@ impl<'out> Vm<'out> {
         let chunk = Compiler::compile(&ast, &mut gc)?;
 
         println!("=== Bytecode ===");
-        print!("{}", chunk.fmt(&gc));
+        print!("{}", chunk.fmt());
         println!("================");
 
         let mut out = Vec::new();
@@ -51,62 +66,46 @@ impl<'out> Vm<'out> {
             gc,
             ip: chunk.code.as_ptr(),
             chunk,
-            globals: HashMap::default(),
-            stack: [Value::Null; MAX_STACK],
+            globals: FnvHashMap::default(),
+            stack: [Value::NULL; MAX_STACK],
             stack_top: std::ptr::null_mut(),
-            frames: Vec::new(),
+            frames: ArrayVec::new(),
+            frame: CallFrame::default(),
             open_upvalues: Vec::new(),
             out: &mut out
         };
 
         vm.stack_top = vm.stack.as_mut_ptr();
-        vm.frames.push(CallFrame {
+        vm.frame = CallFrame {
             return_ip: std::ptr::null(),
             stack_start: vm.stack_top
-        });
+        };
 
         vm.define_native("print", 1, |vm| {
-            let value_str = match vm.peek(0) {
-                Value::Null => String::from("null"),
-                Value::Number(num) => num.to_string(),
-                Value::Boolean(b) => b.to_string(),
-                Value::String(gc_ref) => unsafe { &*gc_ref }.value.clone(),
-                Value::Function(gc_ref) => match unsafe { &*gc_ref } {
-                    ObjFn { name, .. } => format!("<fn {}>", unsafe { &(**name) }.value),
-                },
-                Value::Closure(gc_ref) => match unsafe { &*gc_ref } {
-                    ObjClosure { function, .. } => format!("<closure {}>", unsafe { &*(**function).name }.value)
-                },
-                Value::BoundMethod(gc_ref) => match unsafe { &*gc_ref } {
-                    ObjBoundMethod { closure, .. } => format!("<bound method {}>", unsafe { &*(*(**closure).function).name }.value)
-                },
-                Value::NativeFunction(gc_ref) => match unsafe { &*gc_ref } {
-                    ObjNativeFn { name, .. } => format!("<native fn {}>", unsafe { &**name }.value)
-                },
-                Value::Class(gc_ref) => match unsafe { &*gc_ref } {
-                    ObjClass { name, .. } => format!("<class {}>", unsafe { &**name }.value)
-                },
-                Value::Instance(gc_ref) => match unsafe { &*gc_ref } {
-                    ObjInstance { class, .. } => format!("<instance {}>", unsafe { &*(**class).name }.value)
-                }
+            let value = vm.peek(0);
+            let value_str = match value.kind() {
+                ValueKind::Null => String::from("null"),
+                ValueKind::Number => format!("{}", value.as_number()),
+                ValueKind::Boolean => format!("{}", value.as_bool()),
+                ValueKind::Object(_) => format!("{}", value.as_object().fmt())
             };
             vm.out.push(value_str.clone());
             println!("{}", value_str);
-            vm.push(Value::Null);
+            vm.push(Value::NULL);
         });
 
         vm.define_native("time", 0, |vm| {
             let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as f64;
-            vm.push(Value::Number(time));
+            vm.push(Value::from(time));
         });
 
         vm.define_native("gcHeapSize", 0, |vm| {
-            vm.push(Value::Number(vm.gc.bytes_allocated as f64));
+            vm.push(Value::from(vm.gc.bytes_allocated as f64));
         });
 
         vm.define_native("gcCollect", 0, |vm| {
             vm.start_gc();
-            vm.push(Value::Null);
+            vm.push(Value::NULL);
         });
 
         vm.interpret()?;
@@ -114,7 +113,7 @@ impl<'out> Vm<'out> {
     }
 
     fn error(&self, message: impl Into<String>) -> Result<(), anyhow::Error> {
-        let trace = self.frames[1..].iter().rev()
+        let trace = self.frames.iter().rev()
             .map(|frame| {
                 let function = unsafe { &*self.get_closure(&frame).function };
                 let name = unsafe { &(*function.name).value };
@@ -122,7 +121,7 @@ impl<'out> Vm<'out> {
                     let idx = frame.return_ip.offset_from(self.chunk.code.as_ptr());
                     &self.chunk.code_pos[idx as usize]
                 };
-                format!("at {} ({})", name, pos)
+                format!("\tat {} ({})", name, pos)
             })
             .collect::<Vec<String>>().join("\n");
 
@@ -155,16 +154,16 @@ impl<'out> Vm<'out> {
     fn define_native(&mut self, name: impl Into<String>, arity: u8, function: fn(&mut Vm)) {
         let name_ref = self.gc.intern(name.into());
         let native = ObjNativeFn::new(name_ref, arity, function);
-        let value = Value::NativeFunction(self.gc.alloc(native));
+        let value = Value::from(self.gc.alloc(native));
         self.globals.insert(name_ref, value);
     }
 
     fn start_gc(&mut self) {
-        self.chunk.mark_refs(&mut self.gc);
+        self.chunk.mark(&mut self.gc);
 
         for (&name, value) in &self.globals {
             self.gc.mark_object(name);
-            value.mark_refs(&mut self.gc);
+            value.mark(&mut self.gc);
         }
 
         for &upvalue in &self.open_upvalues {
@@ -174,7 +173,7 @@ impl<'out> Vm<'out> {
         let mut p = self.stack.as_ptr();
         while p != self.stack_top {
             unsafe {
-                (*p).mark_refs(&mut self.gc);
+                (*p).mark(&mut self.gc);
                 p = p.offset(1);
             }
         }
@@ -182,71 +181,36 @@ impl<'out> Vm<'out> {
         self.gc.collect();
     }
 
-    fn current_stack_start(&mut self) -> *mut Value {
-        match self.frames.last() {
-            Some(frame) => frame.stack_start,
-            None => self.stack.as_mut_ptr()
-        }
-    }
-
+    #[inline]
     fn current_closure(&self) -> &ObjClosure {
-        self.get_closure(&self.frames[self.frames.len() - 1])
+        self.get_closure(&self.frame)
     }
 
     fn get_closure(&self, frame: &CallFrame) -> &ObjClosure {
         let value = unsafe { *frame.stack_start };
-        let Value::Closure(closure_ref) = value else {
-            unreachable!()
-        };
+        let closure_ref = unsafe { value.as_object().closure };
         unsafe { &*closure_ref }
     }
 
-    fn capture_upvalue(&mut self, location: u8) -> *mut ObjUpvalue {
-        let mut i = 0;
-        while i < self.open_upvalues.len() {
-            let upvalue_ref = self.open_upvalues[i];
-            let upvalue = unsafe { &*upvalue_ref };
-            if upvalue.location == location {
-                return upvalue_ref;
+    fn capture_upvalue(&mut self, location: *mut Value) -> *mut ObjUpvalue {
+        match self.open_upvalues.iter().find(|&&upvalue| unsafe { (*upvalue).location } == location) {
+            Some(&upvalue) => upvalue,
+            None =>  {
+                let upvalue = self.alloc(ObjUpvalue::new(location));
+                self.open_upvalues.push(upvalue);
+                upvalue
             }
-
-            if upvalue.location > location {
-                break;
-            }
-
-            i += 1;
         }
-
-        let current_offset = unsafe { self.current_stack_start().offset_from(self.stack.as_ptr()) };
-        let stack_location = current_offset as u8 + location;
-        let upvalue = self.alloc(ObjUpvalue::new(stack_location));
-        self.open_upvalues.insert(i, upvalue);
-        upvalue
     }
 
     fn close_upvalues(&mut self, after: *const Value) {
-        let offset = unsafe { after.offset_from(self.stack.as_ptr()) };
-        let mut split_idx = 0;
-
-        for i in 0..self.open_upvalues.len() {
-            let upvalue = unsafe { &mut *self.open_upvalues[i] };
-
-            if upvalue.location >= offset as u8 {
-                upvalue.close(self.get(upvalue.location));
-
-                if split_idx == 0 {
-                    split_idx = i;
-                }
+        for idx in (0..self.open_upvalues.len()).rev() {
+            let upvalue = *unsafe { self.open_upvalues.get_unchecked(idx) };
+            if after <= unsafe { (*upvalue).location } {
+                unsafe { (*upvalue).close() };
+                self.open_upvalues.swap_remove(idx);
             }
         }
-
-        self.open_upvalues.truncate(split_idx);
-    }
-
-    #[inline]
-    fn get(&self, idx: impl Into<usize>) -> Value {
-        let idx = idx.into();
-        self.stack[idx]
     }
 
     #[inline]
@@ -257,6 +221,11 @@ impl<'out> Vm<'out> {
     #[inline]
     fn pop(&mut self) {
         self.stack_top = unsafe { self.stack_top.offset(-1) };
+    }
+
+    #[inline]
+    fn pop_n(&mut self, count: usize) {
+        self.stack_top = unsafe { self.stack_top.sub(count) };
     }
 
     #[inline]
@@ -275,18 +244,6 @@ impl<'out> Vm<'out> {
         }
     }
 
-    #[inline]
-    fn set(&mut self, idx: impl Into<usize>, value: Value) {
-        let idx = idx.into();
-        assert!(idx < self.stack.len());
-        self.stack[idx] = value;
-    }
-
-    #[inline]
-    fn truncate(&mut self, count: usize) {
-        self.stack_top = unsafe { self.stack_top.sub(count) };
-    }
-
     fn create_closure(&mut self, function: *mut ObjFn) -> *mut ObjClosure {
         let mut closure = ObjClosure::new(function);
         let upvalue_count = unsafe { (*function).upvalues.len() };
@@ -294,7 +251,7 @@ impl<'out> Vm<'out> {
         for i in 0..upvalue_count {
             let fn_upval = unsafe { &(*function).upvalues[i] };
             let upvalue = if fn_upval.is_local {
-                self.capture_upvalue(fn_upval.location)
+                self.capture_upvalue(unsafe { self.frame.stack_start.add(fn_upval.location as usize) })
             } else {
                 let closure = self.current_closure();
                 closure.upvalues[fn_upval.location as usize]
@@ -319,76 +276,75 @@ impl<'out> Vm<'out> {
 
     fn get_property_by_id(&mut self, instance_ref: *mut ObjInstance, id: u8) -> Value {
         let value = unsafe { (*instance_ref).get(id, &self.gc) };
-        match value {
-            Value::Function(func_ref) => {
-                let closure = self.create_closure(func_ref);
+        match value.kind() {
+            ValueKind::Object(ObjectKind::Function) => {
+                let closure = self.create_closure(unsafe { value.as_object().function });
                 let method = self.alloc(ObjBoundMethod::new(instance_ref, closure));
-                Value::BoundMethod(method)
+                Value::from(method)
             },
-            value => value
+            _ => value
         }
     }
 
-    fn call_native(&mut self, arg_count: usize, gc_ref: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
-        let func = unsafe { &(*gc_ref).function };
+    #[inline]
+    fn push_frame(&mut self, ip: *const OpCode, stack_start: *mut Value) {
+        let frame = CallFrame {
+            return_ip: ip,
+            stack_start
+        };
+        unsafe { self.frames.push_unchecked(mem::replace(&mut self.frame, frame)); }
+    }
+
+    fn call_native(&mut self, arg_count: usize, ptr: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
+        let func = unsafe { &(*ptr).function };
         func(self);
         let result = self.peek(0);
-        self.truncate(arg_count + 2);
+        self.pop_n(arg_count + 2);
         self.push(result);
         Ok(())
     }
 
-    fn call_closure(&mut self, arg_count: usize, gc_ref: *mut ObjClosure) -> Result<(), anyhow::Error> {
-        self.frames.push(CallFrame {
-            return_ip: self.ip, 
-            stack_start: unsafe { self.stack_top.sub(arg_count + 1) }
-        });
-        let closure = unsafe { &*gc_ref };
-        let function = unsafe { &*closure.function };
-        self.ip = unsafe { self.chunk.code.as_ptr().offset(function.ip_start as isize) };
+    fn call_function(&mut self, arg_count: usize, ptr: *mut ObjFn) -> Result<(), anyhow::Error> {
+        self.push_frame(self.ip, unsafe { self.stack_top.sub(arg_count + 1) });
+        let ip_start = unsafe { (*ptr).ip_start };
+        self.ip = unsafe { self.chunk.code.as_ptr().offset(ip_start as isize) };
         Ok(())
     }
 
-    fn call_bound_method(&mut self, arg_count: usize, gc_ref: *mut ObjBoundMethod) -> Result<(), anyhow::Error> {
-        let instance = unsafe { (*gc_ref).instance };
+    fn call_closure(&mut self, arg_count: usize, ptr: *mut ObjClosure) -> Result<(), anyhow::Error> {
+        let function = unsafe { (*ptr).function };
+        self.call_function(arg_count, function)
+    }
+
+    fn call_bound_method(&mut self, arg_count: usize, ptr: *mut ObjBoundMethod) -> Result<(), anyhow::Error> {
+        let instance = unsafe { (*ptr).instance };
         let stack_start = unsafe { self.stack_top.sub(arg_count + 1) };
-        unsafe {
-            *stack_start = Value::Instance(instance);
-        };
+        unsafe { *stack_start = Value::from(instance); };
+        self.push_frame(self.ip, stack_start);
 
-        self.frames.push(CallFrame {
-            return_ip: self.ip, 
-            stack_start
-        });
-
-        let function = unsafe { &*(*(*gc_ref).closure).function };
+        let function = unsafe { &*(*(*ptr).closure).function };
         self.ip = unsafe { self.chunk.code.as_ptr().offset(function.ip_start as isize) };
         Ok(())
     }
 
-    fn call_class(&mut self, arg_count: usize, class_ref: *mut ObjClass) -> Result<(), anyhow::Error> {
-        let class = unsafe { &*class_ref };
+    fn call_class(&mut self, arg_count: usize, ptr: *mut ObjClass) -> Result<(), anyhow::Error> {
+        let class = unsafe { &*ptr };
         let init_id = class.resolve_id(self.gc.intern("init")).unwrap();
         let init_ref = class.get_method(init_id).unwrap();
         
         let closure = self.create_closure(init_ref);
-        self.push(Value::Closure(closure));
+        self.push(Value::from(closure));
 
-        let mut instance = ObjInstance::new(class_ref);
+        let mut instance = ObjInstance::new(ptr);
         for field in &class.fields {
-            instance.values.insert(*field, Value::Null);
+            instance.values.insert(*field, Value::NULL);
         }
 
         let instance = self.alloc(instance);
         let stack_start = unsafe { self.stack_top.sub(arg_count + 1) };
-        unsafe {
-            *stack_start = Value::Instance(instance);
-        };
+        unsafe { *stack_start = Value::from(instance); }
+        self.push_frame(self.ip, stack_start);
 
-        self.frames.push(CallFrame {
-            return_ip: self.ip, 
-            stack_start
-        });
         let init = unsafe { &*init_ref };
         self.ip = unsafe { self.chunk.code.as_ptr().offset(init.ip_start as isize) };
         Ok(())
@@ -441,7 +397,15 @@ impl<'out> Vm<'out> {
                 OpCode::GreaterThan => self.op_greater_than()?,
                 OpCode::GreaterThanEqual => self.op_greater_than_equal()?,
                 OpCode::Negate => self.op_negate()?,
-                OpCode::Not => self.op_not()?
+                OpCode::Not => self.op_not()?,
+                OpCode::And => self.op_and()?,
+                OpCode::Or => self.op_or()?,
+                OpCode::LeftShift => self.op_left_shift()?,
+                OpCode::RightShift => self.op_right_shift()?,
+                OpCode::BitAnd => self.op_bit_and()?,
+                OpCode::BitOr => self.op_bit_or()?,
+                OpCode::BitXor => self.op_bit_xor()?,
+                OpCode::BitNot => self.op_bit_not()?
             }
 
             // for i in 0..self.stack_top {
@@ -453,17 +417,19 @@ impl<'out> Vm<'out> {
     
     fn op_return(&mut self) -> bool {
         let value = self.pop_get();
-        let frame = self.frames.pop().unwrap();
 
-        if self.frames.is_empty() {
-            return false;
-        }
+        let frame = match self.frames.pop() {
+            Some(frame) => frame,
+            None => return false
+        };
 
-        self.ip = frame.return_ip;
-        self.close_upvalues(frame.stack_start);
+        self.ip = self.frame.return_ip;
+        self.close_upvalues(self.frame.stack_start);
 
-        self.stack_top = frame.stack_start;
+        self.stack_top = self.frame.stack_start;
         self.push(value);
+
+        self.frame = frame;
         true
     }
 
@@ -472,20 +438,22 @@ impl<'out> Vm<'out> {
     }
 
     fn op_close_upvalue(&mut self, location: u8) {
-        let p = unsafe { self.current_stack_start().add(location as usize) };
+        let p = unsafe { self.frame.stack_start.add(location as usize) };
         self.close_upvalues(p);
         self.pop();
     }
 
     fn op_call(&mut self, arg_count: u8) -> Result<(), anyhow::Error> {
         let arg_count = arg_count as usize;
-        Ok(match self.peek(arg_count) {
-            Value::NativeFunction(gc_ref) => self.call_native(arg_count, gc_ref)?,
-            Value::Closure(gc_ref) => self.call_closure(arg_count, gc_ref)?,
-            Value::BoundMethod(gc_ref) => self.call_bound_method(arg_count, gc_ref)?,
-            Value::Class(class_ref) => self.call_class(arg_count, class_ref)?,
+        let object = self.peek(arg_count).as_object();
+        match object.kind() {
+            ObjectKind::Function => self.call_function(arg_count, unsafe { object.function }),
+            ObjectKind::NativeFunction => self.call_native(arg_count, unsafe { object.native_function }),
+            ObjectKind::Closure => self.call_closure(arg_count, unsafe { object.closure }),
+            ObjectKind::BoundMethod => self.call_bound_method(arg_count, unsafe { object.bound_method }),
+            ObjectKind::Class => self.call_class(arg_count, unsafe { object.class }),
             _ => unreachable!()
-        })
+        }
     }
 
     fn op_jump(&mut self, lpos: u8, rpos: u8) {
@@ -495,7 +463,8 @@ impl<'out> Vm<'out> {
 
     fn op_jump_if_false(&mut self, lpos: u8, rpos: u8) {
         let offset = as_short!(lpos, rpos) as isize;
-        if let Value::Boolean(false) = self.pop_get() {
+        let value = self.pop_get();
+        if value.is_bool() && !value.as_bool() {
             self.ip = unsafe { self.chunk.code.as_ptr().offset(offset) };
         }
     }
@@ -506,24 +475,22 @@ impl<'out> Vm<'out> {
     }
 
     fn op_push_null(&mut self) {
-        self.push(Value::Null)
+        self.push(Value::NULL)
     }
 
     fn op_push_true(&mut self) {
-        self.push(Value::Boolean(true))
+        self.push(Value::TRUE)
     }
 
     fn op_push_false(&mut self) {
-        self.push(Value::Boolean(false))
+        self.push(Value::FALSE)
     }
 
     fn op_push_closure(&mut self, const_idx: u8) -> Result<(), anyhow::Error> {
         let value = self.chunk.constants[const_idx as usize];
-        let Value::Function(fn_ref) = value else {
-            bail!("Invalid closure")
-        };
+        let fn_ref = unsafe { value.as_object().function };
         let closure = self.create_closure(fn_ref);
-        self.push(Value::Closure(closure));
+        self.push(Value::from(closure));
         Ok(())
     }
 
@@ -534,65 +501,54 @@ impl<'out> Vm<'out> {
 
     fn op_get_global(&mut self, const_idx: u8) -> Result<(), anyhow::Error> {
         let constant = &self.chunk.constants[const_idx as usize];
-        let global_name = match constant {
-            Value::String(gc_ref) => gc_ref,
-            _ => bail!("Invalid global name")
-        };
-        let value = self.globals[global_name];
+        let string = unsafe { &constant.as_object().string };
+        let value = self.globals[string];
         self.push(value);
         Ok(())
     }
 
     fn op_set_global(&mut self, const_idx: u8) -> Result<(), anyhow::Error> {
         let constant = &self.chunk.constants[const_idx as usize];
-        let global_name = match constant {
-            Value::String(gc_ref) => *gc_ref,
-            _ => bail!("Invalid global name")
-        };
+        let string = unsafe { constant.as_object().string };
         let value = self.pop_get();
-        self.globals.insert(global_name, value);
+        self.globals.insert(string, value);
         Ok(())
     }
 
     fn op_get_local(&mut self, idx: u8) {
-        let value = unsafe { *self.current_stack_start().add(idx as usize) };
+        let value = unsafe { *self.frame.stack_start.add(idx as usize) };
         self.push(value);
     }
 
     fn op_set_local(&mut self, idx: u8) {
         unsafe {
-            *self.current_stack_start().add(idx as usize) = self.peek(0);
+            *self.frame.stack_start.add(idx as usize) = self.peek(0);
         };
     }
 
     fn op_get_upvalue(&mut self, idx: u8) {
         let upvalue = self.current_closure().upvalues[idx as usize];
-        let upvalue = unsafe { &*upvalue };
-        if let Some(value) = upvalue.closed {
-            self.push(value);
-        } else {
-            let value = self.get(upvalue.location);
-            self.push(value);
-        }
+        self.push(unsafe { *(*upvalue).location });
     }
 
     fn op_set_upvalue(&mut self, idx: u8) {
         let upvalue = self.current_closure().upvalues[idx as usize];
-        let upvalue = unsafe { &mut *upvalue };
-        if let Some(_) = upvalue.closed {
-            upvalue.close(self.peek(0));
-        } else {
-            self.set(upvalue.location, self.peek(0));
-        }
+        unsafe { *(*upvalue).location = self.peek(0) };
     }
 
     fn op_get_property(&mut self, const_idx: u8) -> Result<(), anyhow::Error> {
-        let Value::Instance(instance_ref) = self.pop_get() else {
-            bail!("Invalid property access")
-        };
-        let Value::String(prop) = self.chunk.constants[const_idx as usize] else {
-            bail!("Invalid property access")
-        };
+        let value = self.pop_get();
+        if !value.is_object() {
+            return self.error(format!("Invalid property access: {}", value.fmt()));
+        }
+
+        let object = value.as_object();
+        if object.kind() != ObjectKind::Instance {
+            return self.error(format!("Invalid property access: {}", value.fmt()));
+        }
+
+        let instance_ref = unsafe { object.instance };
+        let prop = unsafe { self.chunk.constants[const_idx as usize].as_object().string };
 
         if let Some(value) = self.get_property(instance_ref, prop) {
             self.push(value.clone());
@@ -603,12 +559,19 @@ impl<'out> Vm<'out> {
     }
 
     fn op_set_property(&mut self, const_idx: u8) -> Result<(), anyhow::Error> {
-        let Value::Instance(instance_ref) = self.pop_get() else {
-            bail!("Invalid property access")
-        };
-        let Value::String(prop) = self.chunk.constants[const_idx as usize] else {
-            bail!("Invalid property access")
-        };
+        let value = self.pop_get();
+        if !value.is_object() {
+            return self.error(format!("Invalid property access: {}", value.fmt()));
+        }
+
+        let object = value.as_object();
+        if object.kind() != ObjectKind::Instance {
+            return self.error(format!("Invalid property access: {}", value.fmt()));
+        }
+
+        let instance_ref = unsafe { object.instance };
+        let prop = unsafe { self.chunk.constants[const_idx as usize].as_object().string };
+
         let instance = unsafe { &mut *instance_ref };
         let class = unsafe { &*instance.class };
         match class.resolve(prop) {
@@ -627,18 +590,34 @@ impl<'out> Vm<'out> {
     }
 
     fn op_get_property_by_id(&mut self, member_id: u8) -> Result<(), anyhow::Error> {
-        let Value::Instance(instance_ref) = self.pop_get() else {
-            bail!("Invalid property access")
-        };
+        let value = self.pop_get();
+        if !value.is_object() {
+            return self.error(format!("Invalid property access: {}", value.fmt()));
+        }
+
+        let object = value.as_object();
+        if object.kind() != ObjectKind::Instance {
+            return self.error(format!("Invalid property access: {}", value.fmt()));
+        }
+
+        let instance_ref = unsafe { object.instance };
         let value = self.get_property_by_id(instance_ref, member_id);
         self.push(value);
         Ok(())
     }
 
     fn op_set_property_by_id(&mut self, member_id: u8) -> Result<(), anyhow::Error> {
-        let Value::Instance(instance_ref) = self.pop_get() else {
-            bail!("Invalid property access")
-        };
+        let value = self.pop_get();
+        if !value.is_object() {
+            return self.error(format!("Invalid property access: {}", value.fmt()));
+        }
+
+        let object = value.as_object();
+        if object.kind() != ObjectKind::Instance {
+            return self.error(format!("Invalid property access: {}", value.fmt()));
+        }
+
+        let instance_ref = unsafe { object.instance };
         let value = self.peek(0);
         let instance = unsafe { &mut *instance_ref };
         instance.set(member_id, value);
@@ -646,16 +625,18 @@ impl<'out> Vm<'out> {
     }
 
     fn op_add(&mut self) -> Result<(), anyhow::Error> {
-        let result = match (self.pop_get(), self.pop_get()) {
-            (Value::Number(b), Value::Number(a)) => Value::Number(a + b),
-            (Value::String(b), Value::String(a)) => {
-                let sa = unsafe { &*a }.value.as_str();
-                let sb = unsafe { &*b }.value.as_str();
+        let b = self.pop_get();
+        let a = self.pop_get();
+        let result = match (a.kind(), b.kind()) {
+            (ValueKind::Number, ValueKind::Number) => Value::from(a.as_number() + b.as_number()),
+            (ValueKind::Object(ObjectKind::String), ValueKind::Object(ObjectKind::String)) => {
+                let sa = unsafe { &*a.as_object().string }.value.as_str();
+                let sb = unsafe { &*b.as_object().string }.value.as_str();
                 let s = [sa, sb].concat();
-                Value::String(self.intern(s))
+                Value::from(self.intern(s))
             },
-            (b, a) => {
-                return self.error(format!("Operator '+' cannot be applied to {} and {}", a, b))
+            _ => {
+                return self.error(format!("Operator '+' cannot be applied to operands {} and {}", a, b))
             }
         };
         self.push(result);
@@ -663,65 +644,105 @@ impl<'out> Vm<'out> {
     }
     
     fn op_subtract(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op_number(|a, b| Value::Number(a - b))
+        self.binary_op_number(|a, b| Value::from(a - b), "-")
     }
     
     fn op_multiply(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op_number(|a, b| Value::Number(a * b))
+        self.binary_op_number(|a, b| Value::from(a * b), "*")
     }
     
     fn op_divide(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op_number(|a, b| Value::Number(a / b))
+        self.binary_op_number(|a, b| Value::from(a / b), "/")
     }
     
     fn op_equal(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op(|a, b| Value::Boolean(values_equal(a, b)))
+        self.binary_op(|a, b| Value::from(a == b))
     }
 
     fn op_not_equal(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op(|a, b| Value::Boolean(!values_equal(a, b)))
+        self.binary_op(|a, b| Value::from(a != b))
     }
     
     fn op_less_than(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op_number(|a, b| Value::Boolean(a < b))
+        self.binary_op_number(|a, b| Value::from(a < b), "<")
     }
     
     fn op_less_than_equal(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op_number(|a, b| Value::Boolean(a <= b))
+        self.binary_op_number(|a, b| Value::from(a <= b), "<=")
     }
     
     fn op_greater_than(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op_number(|a, b| Value::Boolean(a > b))
+        self.binary_op_number(|a, b| Value::from(a > b), ">")
     }
     
     fn op_greater_than_equal(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op_number(|a, b| Value::Boolean(a >= b))
+        self.binary_op_number(|a, b| Value::from(a >= b), ">=")
     }
     
     fn op_negate(&mut self) -> Result<(), anyhow::Error> {
-        let Value::Number(value) = self.pop_get() else {
+        let value = self.pop_get();
+        if !value.is_number() {
             bail!("Invalid operand")
-        };
-        self.push(Value::Number(-value));
+        }
+        self.push(Value::from(-value.as_number()));
         Ok(())
     }
     
     fn op_not(&mut self) -> Result<(), anyhow::Error> {
-        let Value::Boolean(value) = self.pop_get() else {
+        let value = self.pop_get();
+        if !value.is_bool() {
             bail!("Invalid operand")
-        };
-        self.push(Value::Boolean(!value));
+        }
+        self.push(Value::from(!value.as_bool()));
+        Ok(())
+    }
+    
+    fn op_and(&mut self) -> Result<(), anyhow::Error> {
+        self.binary_op(|a, b| Value::from(a.as_bool() && b.as_bool()))
+    }
+    
+    fn op_or(&mut self) -> Result<(), anyhow::Error> {
+        self.binary_op(|a, b| Value::from(a.as_bool() || b.as_bool()))
+    }
+
+    fn op_left_shift(&mut self) -> Result<(), anyhow::Error> {
+        self.binary_op_number(|a, b| Value::from(((a as i64) << (b as i64)) as f64), "<<")
+    }
+
+    fn op_right_shift(&mut self) -> Result<(), anyhow::Error> {
+        self.binary_op_number(|a, b| Value::from(((a as i64) >> (b as i64)) as f64), ">>")
+    }
+
+    fn op_bit_and(&mut self) -> Result<(), anyhow::Error> {
+        self.binary_op_number(|a, b| Value::from(((a as i64) & (b as i64)) as f64), "&&")
+    }
+
+    fn op_bit_or(&mut self) -> Result<(), anyhow::Error> {
+        self.binary_op_number(|a, b| Value::from(((a as i64) | (b as i64)) as f64), "||")
+    }
+
+    fn op_bit_xor(&mut self) -> Result<(), anyhow::Error> {
+        self.binary_op_number(|a, b| Value::from(((a as i64) ^ (b as i64)) as f64), "^")
+    }
+
+    fn op_bit_not(&mut self) -> Result<(), anyhow::Error> {
+        let value = self.pop_get();
+        if !value.is_number() {
+            bail!("Invalid operand")
+        }
+        self.push(Value::from(!(value.as_number() as i64) as f64));
         Ok(())
     }
 
-    fn binary_op_number<F: Fn(f64, f64) -> Value>(&mut self, func: F) -> Result<(), anyhow::Error> {
-        let Value::Number(b) = self.pop_get() else {
-            bail!("Invalid operand")
-        };
-        let Value::Number(a) = self.pop_get() else {
-            bail!("Invalid operand")
-        };
-        self.push(func(a, b));
+    fn binary_op_number<F: Fn(f64, f64) -> Value>(&mut self, func: F, token: impl Into<String>) -> Result<(), anyhow::Error> {
+        let b = self.pop_get();
+        let a = self.pop_get();
+
+        if !a.is_number() || !b.is_number() {
+            return self.error(format!("Operator '{}' cannot be applied to operands {} and {}", token.into(), a, b));
+        }
+
+        self.push(func(a.as_number(), b.as_number()));
         Ok(())
     }
 
@@ -730,21 +751,5 @@ impl<'out> Vm<'out> {
         let a = self.pop_get();
         self.push(func(a, b));
         Ok(())
-    }
-}
-
-fn values_equal(a: Value, b: Value) -> bool {
-    match (a, b) {
-        (Value::Number(a), Value::Number(b)) => a == b,
-        (Value::Boolean(a), Value::Boolean(b)) => a == b,
-        (Value::String(a), Value::String(b)) => a == b,
-        (Value::NativeFunction(a), Value::NativeFunction(b)) => a == b,
-        (Value::Class(a), Value::Class(b)) => a == b,
-        (Value::Instance(a), Value::Instance(b)) => a == b,
-        (Value::Function(a), Value::Function(b)) => a == b,
-        (Value::Closure(a), Value::Closure(b)) => a == b,
-        (Value::BoundMethod(a), Value::BoundMethod(b)) => a == b,
-        (Value::Null, Value::Null) => true,
-        (_, _) => false
     }
 }

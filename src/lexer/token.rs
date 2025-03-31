@@ -55,7 +55,7 @@ pub struct Token {
 
 impl Token {
     pub fn new(token_type: TokenType, lexeme: &str) -> Self {
-        let pos = SourcePosition { file: String::from(""), line: 0, column: 0 };
+        let pos = SourcePosition { file: String::from(""), line: 0 };
         return Token { kind: token_type, lexeme: String::from(lexeme), pos };
     }
 

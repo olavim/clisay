@@ -44,9 +44,3 @@ fn operators() {
 fn gc() {
     test_folder("tests/gc");
 }
-
-#[test]
-fn perf() {
-    // test_file("tests/perf.say");
-    test_file("tests/perf.say");
-}

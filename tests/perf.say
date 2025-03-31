@@ -9,3 +9,4 @@ say start = time();
 say res = fib(39);
 say end = time();
 print(end - start);
+print(res == 63245986);

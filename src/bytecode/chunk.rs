@@ -5,7 +5,7 @@ use anyhow::bail;
 use crate::lexer::SourcePosition;
 
 use super::gc::{Gc, GcTraceable};
-use super::objects::Value;
+use super::value::Value;
 use super::OpCode;
 
 
@@ -38,7 +38,7 @@ impl BytecodeChunk {
 }
 
 impl GcTraceable for BytecodeChunk {
-    fn fmt(&self, gc: &Gc) -> String {
+    fn fmt(&self) -> String {
         let mut string = String::new();
 
         macro_rules! push_fmt {
@@ -65,17 +65,17 @@ impl GcTraceable for BytecodeChunk {
                 OpCode::PushTrue => push_fmt!("TRUE"),
                 OpCode::PushFalse => push_fmt!("FALSE"),
                 OpCode::PushConstant(const_idx) => {
-                    push_fmt!("CONST {}", self.constants[const_idx as usize].fmt(gc));
+                    push_fmt!("CONST {}", self.constants[const_idx as usize].fmt());
                 },
                 OpCode::PushClosure(idx) => {
-                    if let Value::Function(func) = self.constants[idx as usize] {
-                        push_fmt!("CLOSURE {}", unsafe { (*func).fmt(gc) });
-                    }
+                    let func_const = self.constants[idx as usize];
+                    let func = unsafe { func_const.as_object().function };
+                    push_fmt!("CLOSURE {}", unsafe { (*func).fmt() });
                 },
                 OpCode::PushClass(idx) => {
-                    if let Value::Class(class) = self.constants[idx as usize] {
-                        push_fmt!("CLASS {}", unsafe { (*class).fmt(gc) });
-                    }
+                    let class_const = self.constants[idx as usize];
+                    let class = unsafe { class_const.as_object().class };
+                    push_fmt!("CLASS {}", unsafe { (*class).fmt() });
                 },
                 OpCode::Add => push_fmt!("ADD"),
                 OpCode::Subtract => push_fmt!("SUB"),
@@ -89,15 +89,23 @@ impl GcTraceable for BytecodeChunk {
                 OpCode::GreaterThan => push_fmt!("GT"),
                 OpCode::GreaterThanEqual => push_fmt!("GTE"),
                 OpCode::Not => push_fmt!("NOT"),
+                OpCode::LeftShift => push_fmt!("LSH"),
+                OpCode::RightShift => push_fmt!("RSH"),
+                OpCode::BitAnd => push_fmt!("AND"),
+                OpCode::BitOr => push_fmt!("OR"),
+                OpCode::BitXor => push_fmt!("XOR"),
+                OpCode::BitNot => push_fmt!("BIT_NOT"),
+                OpCode::And => push_fmt!("AND"),
+                OpCode::Or => push_fmt!("OR"),
                 OpCode::GetLocal(loc_idx) => push_fmt!("GET_LOCAL <{}>", loc_idx),
                 OpCode::SetLocal(loc_idx) => push_fmt!("SET_LOCAL <{}>", loc_idx),
                 OpCode::GetUpvalue(loc_idx) => push_fmt!("GET_UPVAL <{}>", loc_idx),
                 OpCode::SetUpvalue(loc_idx) => push_fmt!("SET_UPVAL <{}>", loc_idx),
                 OpCode::GetProperty(const_idx) => {
-                    push_fmt!("GET_PROP <{}>", self.constants[const_idx as usize].fmt(gc))
+                    push_fmt!("GET_PROP <{}>", self.constants[const_idx as usize].fmt())
                 },
                 OpCode::SetProperty(const_idx) => {
-                    push_fmt!("SET_PROP <{}>", self.constants[const_idx as usize].fmt(gc))
+                    push_fmt!("SET_PROP <{}>", self.constants[const_idx as usize].fmt())
                 },
                 OpCode::GetPropertyId(member_id) => {
                     push_fmt!("GET_PROP_ID <{}>", member_id)
@@ -106,10 +114,10 @@ impl GcTraceable for BytecodeChunk {
                     push_fmt!("SET_PROP_ID <{}>", member_id)
                 },
                 OpCode::GetGlobal(const_idx) => {
-                    push_fmt!("GET_GLOBAL {}", self.constants[const_idx as usize].fmt(gc));
+                    push_fmt!("GET_GLOBAL {}", self.constants[const_idx as usize].fmt());
                 },
                 OpCode::SetGlobal(const_idx) => {
-                    push_fmt!("SET_GLOBAL {}", self.constants[const_idx as usize].fmt(gc));
+                    push_fmt!("SET_GLOBAL {}", self.constants[const_idx as usize].fmt());
                 }
             }
 
@@ -119,9 +127,9 @@ impl GcTraceable for BytecodeChunk {
         string
     }
 
-    fn mark_refs(&self, gc: &mut Gc) {
+    fn mark(&self, gc: &mut Gc) {
         for constant in &self.constants {
-            constant.mark_refs(gc);
+            constant.mark(gc);
         }
     }
 

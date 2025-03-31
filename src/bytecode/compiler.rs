@@ -1,22 +1,24 @@
-use std::collections::HashMap;
 use std::ops::Range;
 
 use anyhow::anyhow;
 use anyhow::bail;
+use fnv::FnvHashMap;
 
 use super::chunk::BytecodeChunk;
 use super::gc::Gc;
 use super::objects::ObjClass;
 use super::objects::ClassMember;
 use super::objects::ObjString;
-use super::objects::{ObjFn, UpvalueLocation, Value};
+use super::objects::{ObjFn, UpvalueLocation};
 use super::operator::Operator;
 use super::parser::{ASTId, ClassDecl, Expr, FieldInit, FnDecl, Literal, Stmt, AST};
+use super::value::Value;
 use super::OpCode;
 
 struct Local {
     name: *mut ObjString,
     depth: u8,
+    is_mutable: bool,
     is_captured: bool
 }
 
@@ -48,7 +50,7 @@ pub struct Compiler<'a> {
     fn_frames: Vec<FnFrame>,
     class_frames: Vec<ClassFrame>,
     fn_type: FnType,
-    classes: HashMap<*mut ObjString, u8>
+    classes: FnvHashMap<*mut ObjString, u8>
 }
 
 impl<'a> Compiler<'a> {
@@ -64,7 +66,7 @@ impl<'a> Compiler<'a> {
             fn_frames: Vec::new(),
             class_frames: Vec::new(),
             fn_type: FnType::None,
-            classes: HashMap::default()
+            classes: FnvHashMap::default()
         };
 
         let stmt_id = compiler.ast.get_root();
@@ -72,6 +74,11 @@ impl<'a> Compiler<'a> {
         compiler.statement(&stmt_id)?;
         compiler.exit_function(&stmt_id);
         Ok(chunk)
+    }
+
+    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &ASTId<T>) -> Result<(), anyhow::Error> {
+        let pos = self.ast.pos(node_id);
+        Err(anyhow!("{}\n\tat {}", msg.into(), pos))
     }
 
     fn emit<T: 'static>(&mut self, op: OpCode, node_id: &ASTId<T>) {
@@ -164,7 +171,7 @@ impl<'a> Compiler<'a> {
         frame.superclass
     }
 
-    fn declare_local(&mut self, name: *mut ObjString) -> Result<u8, anyhow::Error> {
+    fn declare_local(&mut self, name: *mut ObjString, is_mutable: bool) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
         }
@@ -173,8 +180,8 @@ impl<'a> Compiler<'a> {
             bail!("Variable '{}' already declared in this scope", unsafe { &(*name).value });
         }
 
-        self.chunk.add_constant(Value::String(name.clone()))?;
-        self.locals.push(Local { name, depth: self.scope_depth, is_captured: false });
+        self.chunk.add_constant(Value::from(name))?;
+        self.locals.push(Local { name, depth: self.scope_depth, is_mutable, is_captured: false });
         Ok((self.locals.len() - 1) as u8)
     }
 
@@ -283,17 +290,22 @@ impl<'a> Compiler<'a> {
                 self.emit(OpCode::Return, stmt_id);
             },
             Stmt::Fn(decl) => {
-                self.declare_local(decl.name)?;
+                self.declare_local(decl.name, false)?;
                 let prev_fn_type = self.fn_type;
                 self.fn_type = FnType::Function;
                 let const_idx = self.function(stmt_id, decl)?;
                 self.fn_type = prev_fn_type;
-                self.emit(OpCode::PushClosure(const_idx), stmt_id);
+                let fn_ref = unsafe { self.chunk.constants[const_idx as usize].as_object().function };
+                if unsafe { (*fn_ref).upvalues.len() == 0 } {
+                    self.emit(OpCode::PushConstant(const_idx), stmt_id);
+                } else {
+                    self.emit(OpCode::PushClosure(const_idx), stmt_id);
+                }
             },
             Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
             Stmt::If(cond, then, otherwise) => self.if_stmt(cond, then, otherwise)?,
             Stmt::Say(FieldInit { name, value }) => {
-                let local = self.declare_local(*name)?;
+                let local = self.declare_local(*name, true)?;
 
                 if let Some(expr) = value {
                     self.expression(expr)?;
@@ -341,6 +353,17 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    fn if_expression(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+        self.expression(cond)?;
+        let jump_ref = self.emit_jump(OpCode::JumpIfFalse(0, 0), cond);
+        self.expression(then)?;
+        let else_jump_ref = self.emit_jump(OpCode::Jump(0, 0), then);
+        self.patch_jump(jump_ref)?;
+        self.expression(otherwise)?;
+        self.patch_jump(else_jump_ref)?;
+        Ok(())
+    }
+
     fn method(&mut self, stmt: &ASTId<Stmt>, decl: &Box<FnDecl>) -> Result<u8, anyhow::Error> {
         let prev_fn_type = self.fn_type;
         self.fn_type = FnType::Method;
@@ -369,7 +392,7 @@ impl<'a> Compiler<'a> {
         let arity = decl.params.len() as u8;
 
         for param in &decl.params {
-            self.declare_local(*param)?;
+            self.declare_local(*param, true)?;
         }
 
         self.statement(&decl.body)?;
@@ -380,19 +403,19 @@ impl<'a> Compiler<'a> {
         let frame = self.fn_frames.pop().unwrap();
         let func = self.gc.alloc(ObjFn::new(decl.name, arity, ip_start, frame.upvalues));
 
-        self.chunk.add_constant(Value::Function(func))
+        self.chunk.add_constant(Value::from(func))
     }
 
     fn class_declaration(&mut self, stmt: &ASTId<Stmt>, decl: &Box<ClassDecl>) -> Result<(), anyhow::Error> {
-        self.declare_local(decl.name)?;
+        self.declare_local(decl.name, false)?;
         self.enter_scope();
 
         let superclass = match decl.superclass {
             Some(name) => {
                 let const_idx = self.classes.get(&name)
                     .ok_or(anyhow!("Class '{}' not declared", unsafe { &(*name).value }))?;
-                let Value::Class(gc_ref) = self.chunk.constants[*const_idx as usize] else { unreachable!(); };
-                Some(gc_ref)
+                let value = self.chunk.constants[*const_idx as usize];
+                Some(unsafe { value.as_object().class })
             },
             None => None
         };
@@ -414,22 +437,22 @@ impl<'a> Compiler<'a> {
 
         let Stmt::Fn(init_fn_decl) = self.ast.get(&decl.init) else { unreachable!(); };
         let const_idx = self.initializer(stmt, init_fn_decl)?;
-        let Value::Function(init) = self.chunk.constants[const_idx as usize] else { unreachable!(); };
+        let init_const = self.chunk.constants[const_idx as usize];
         let init_str = self.gc.intern("init");
         self.current_class_mut().declare_method(init_str);
-        self.current_class_mut().define_method(init_str, init);
+        self.current_class_mut().define_method(init_str, unsafe { init_const.as_object().function });
 
         for stmt_id in &decl.methods {
             let Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
             let const_idx = self.method(stmt_id, decl)?;
-            let Value::Function(gc_ref) = self.chunk.constants[const_idx as usize] else { unreachable!(); };
-            self.current_class_mut().define_method(decl.name, gc_ref);
+            let funct_const = self.chunk.constants[const_idx as usize];
+            self.current_class_mut().define_method(decl.name, unsafe { funct_const.as_object().function });
         }
 
         let class = self.class_frames.pop().unwrap().class;
         self.exit_scope(stmt);
 
-        let idx = self.chunk.add_constant(Value::Class(self.gc.alloc(class)))?;
+        let idx = self.chunk.add_constant(Value::from(self.gc.alloc(class)))?;
         self.classes.insert(decl.name, idx);
         self.emit(OpCode::PushClass(idx), stmt);
         
@@ -440,7 +463,7 @@ impl<'a> Compiler<'a> {
         match self.ast.get(expr) {
             Expr::Unary(op, expr) => self.unary_expression(op, expr)?,
             Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
-            Expr::Ternary(_cond, _then, _otherwise) => unimplemented!(),
+            Expr::Ternary(cond, then, otherwise) => self.if_expression(cond, then, otherwise)?,
             Expr::Call(expr, args) => self.call_expression(expr, args)?,
             Expr::Literal(lit) => self.literal(expr, lit)?,
             Expr::Identifier(name) => self.identifier(expr, *name, false)?,
@@ -470,6 +493,12 @@ impl<'a> Compiler<'a> {
         if let Operator::Assign(_) = op {
             match self.ast.get(left) {
                 Expr::Identifier(name) => {
+                    if let Some(local) = self.locals.iter().rev().find(|local| local.name == *name) {
+                        if !local.is_mutable {
+                            return self.error(format!("Invalid assignment: '{}' is immutable", unsafe { &(**name).value }), left);
+                        }
+                    }
+
                     self.expression(right)?;
                     self.identifier(left, *name, true)?;
                     return Ok(());
@@ -478,7 +507,7 @@ impl<'a> Compiler<'a> {
                     self.set_member(obj, member, right)?;
                     return Ok(());
                 },
-                _ => bail!("Invalid assignment target at {}", self.ast.pos(left))
+                _ => return self.error("Invalid assignment", left)
             }
         }
 
@@ -494,24 +523,26 @@ impl<'a> Compiler<'a> {
     }
 
     fn get_member(&mut self, expr: &ASTId<Expr>, member_expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
-        let Expr::Identifier(member) = self.ast.get(member_expr) else {
-            bail!("Invalid member access at {}", self.ast.pos(member_expr));
+        let Expr::Identifier(member) = *self.ast.get(member_expr) else {
+            return self.error("Invalid member access", member_expr);
         };
 
         self.expression(expr)?;
 
         match self.ast.get(expr) {
             Expr::This => {
-                let id = match self.current_class().resolve(*member) {
+                let id = match self.current_class().resolve(member) {
                     Some(ClassMember::Field(id)) => id,
                     Some(ClassMember::Method(id)) => id,
-                    None => bail!("Class '{}' has no member '{}'", unsafe { &(*self.current_class().name).value }, unsafe { &(**member).value })
+                    None => return unsafe {
+                        self.error(format!("Class '{}' has no member '{}'", (*self.current_class().name).value, (*member).value), expr)
+                    }
                 };
                 self.emit(OpCode::GetPropertyId(id), expr);
                 Ok(())
             },
             _ => {
-                let const_idx = self.chunk.add_constant(Value::String(*member))?;
+                let const_idx = self.chunk.add_constant(Value::from(member))?;
                 self.emit(OpCode::GetProperty(const_idx), expr);
                 Ok(())
             }
@@ -519,8 +550,8 @@ impl<'a> Compiler<'a> {
     }
 
     fn set_member(&mut self, expr: &ASTId<Expr>, member_expr: &ASTId<Expr>, value_expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
-        let Expr::Identifier(member) = self.ast.get(member_expr) else {
-            bail!("Invalid member access at {}", self.ast.pos(member_expr));
+        let Expr::Identifier(member) = *self.ast.get(member_expr) else {
+            return self.error("Invalid member access", member_expr);
         };
 
         self.expression(value_expr)?;
@@ -528,16 +559,18 @@ impl<'a> Compiler<'a> {
 
         match self.ast.get(expr) {
             Expr::This => {
-                let id = match self.current_class().resolve(*member) {
+                let id = match self.current_class().resolve(member) {
                     Some(ClassMember::Field(id)) => id,
                     Some(ClassMember::Method(id)) => id,
-                    None => bail!("Class '{}' has no member '{}'", unsafe { &(*self.current_class().name).value }, unsafe { &(**member).value })
+                    None => return unsafe {
+                        self.error(format!("Class '{}' has no member '{}'", (*self.current_class().name).value, (*member).value), expr)
+                    }
                 };
                 self.emit(OpCode::SetPropertyId(id), expr);
                 Ok(())
             },
             _ => {
-                let const_idx = self.chunk.add_constant(Value::String(*member))?;
+                let const_idx = self.chunk.add_constant(Value::from(member))?;
                 self.emit(OpCode::SetProperty(const_idx), expr);
                 Ok(())
             }
@@ -548,13 +581,13 @@ impl<'a> Compiler<'a> {
         match self.ast.get(expr) {
             Expr::Super => {
                 if self.class_frames.is_empty() {
-                    bail!("Cannot use 'super' outside of class context");
+                    return self.error("Cannot use 'super' outside of class context", expr);
                 }
 
                 let init_str = self.gc.intern("init");
                 let member_id = self.current_superclass()
                     .map(|class| unsafe { &*class })
-                    .ok_or(anyhow!("Cannot use 'super' outside of child class context"))?
+                    .ok_or(self.error("Cannot use 'super' outside of child class context", expr).unwrap_err())?
                     .resolve_id(init_str)
                     .unwrap();
 
@@ -574,11 +607,11 @@ impl<'a> Compiler<'a> {
     fn literal(&mut self, expr: &ASTId<Expr>, literal: &Literal) -> Result<(), anyhow::Error> {
         match literal {
             Literal::Number(num) => {
-                let idx = self.chunk.add_constant(Value::Number(*num))?;
+                let idx = self.chunk.add_constant(Value::from(*num))?;
                 self.emit(OpCode::PushConstant(idx), expr);
             },
             Literal::String(str_ref) => {
-                let idx = self.chunk.add_constant(Value::String(*str_ref))?;
+                let idx = self.chunk.add_constant(Value::from(*str_ref))?;
                 self.emit(OpCode::PushConstant(idx), expr);
             },
             Literal::Null => { self.emit(OpCode::PushNull, expr); },
@@ -598,10 +631,10 @@ impl<'a> Compiler<'a> {
             (OpCode::GetUpvalue(upvalue_idx), OpCode::SetUpvalue(upvalue_idx))
         } else if class_frame_idx.is_some() {
             self.emit(OpCode::GetLocal(0), expr);
-            let const_idx = self.chunk.add_constant(Value::String(name))?;
+            let const_idx = self.chunk.add_constant(Value::from(name))?;
             (OpCode::GetProperty(const_idx), OpCode::SetProperty(const_idx))
         } else {
-            let const_idx = self.chunk.add_constant(Value::String(name))?;
+            let const_idx = self.chunk.add_constant(Value::from(name))?;
             (OpCode::GetGlobal(const_idx), OpCode::SetGlobal(const_idx))
         };
 
