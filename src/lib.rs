@@ -2,8 +2,8 @@
 mod _tests;
 
 mod lexer;
-mod bytecode;
+mod vm;
 
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
-    bytecode::run(file_name, src)
+    vm::run(file_name, src)
 }

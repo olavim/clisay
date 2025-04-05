@@ -1,11 +1,11 @@
-use std::mem;
+use std::{iter, mem};
 
 use anyhow::bail;
 use arrayvec::ArrayVec;
 use fnv::FnvHashMap;
 
-use crate::bytecode::objects::{ObjBoundMethod, ObjInstance};
-use crate::bytecode::value::ValueKind;
+use crate::vm::objects::{ObjBoundMethod, ObjInstance};
+use crate::vm::value::ValueKind;
 use crate::lexer::{tokenize, TokenStream};
 
 use super::chunk::BytecodeChunk;
@@ -20,6 +20,7 @@ const MAX_STACK: usize = 16384;
 const MAX_FRAMES: usize = 256;
 
 pub struct CallFrame {
+    name: *const ObjString,
     return_ip: *const OpCode,
     stack_start: *mut Value
 }
@@ -27,6 +28,7 @@ pub struct CallFrame {
 impl CallFrame {
     pub fn default() -> Self {
         CallFrame {
+            name: std::ptr::null(),
             return_ip: std::ptr::null(),
             stack_start: std::ptr::null_mut()
         }
@@ -77,6 +79,7 @@ impl<'out> Vm<'out> {
 
         vm.stack_top = vm.stack.as_mut_ptr();
         vm.frame = CallFrame {
+            name: std::ptr::null(),
             return_ip: std::ptr::null(),
             stack_start: vm.stack_top
         };
@@ -112,18 +115,23 @@ impl<'out> Vm<'out> {
         Ok(out)
     }
 
+    fn stringify_frame(&self, frame: &CallFrame) -> String {
+        let name = unsafe { &(*frame.name).value };
+        let pos = unsafe { 
+            let idx = frame.return_ip.offset_from(self.chunk.code.as_ptr());
+            &self.chunk.code_pos[idx as usize]
+        };
+        format!("\tat {} ({})", name, pos)
+    }
+
     fn error(&self, message: impl Into<String>) -> Result<(), anyhow::Error> {
-        let trace = self.frames.iter().rev()
-            .map(|frame| {
-                let function = unsafe { &*self.get_closure(&frame).function };
-                let name = unsafe { &(*function.name).value };
-                let pos = unsafe { 
-                    let idx = frame.return_ip.offset_from(self.chunk.code.as_ptr());
-                    &self.chunk.code_pos[idx as usize]
-                };
-                format!("\tat {} ({})", name, pos)
-            })
+        let mut trace = self.frames.iter().skip(1).rev()
+            .map(|frame| self.stringify_frame(frame))
             .collect::<Vec<String>>().join("\n");
+
+        if self.frames.len() > 0 {
+            trace.push_str(&self.stringify_frame(&self.frame));
+        }
 
         let pos = unsafe { 
             let idx = self.ip.offset_from(self.chunk.code.as_ptr()) as usize - 1;
@@ -183,13 +191,9 @@ impl<'out> Vm<'out> {
 
     #[inline]
     fn get_upvalue(&self, idx: usize) -> *mut ObjUpvalue {
-        self.get_closure(&self.frame).upvalues[idx]
-    }
-
-    fn get_closure(&self, frame: &CallFrame) -> &ObjClosure {
-        let value = unsafe { *frame.stack_start };
+        let value = unsafe { *self.frame.stack_start };
         let closure_ref = unsafe { value.as_object().closure };
-        unsafe { &*closure_ref }
+        unsafe { (*closure_ref).upvalues[idx] }
     }
 
     fn capture_upvalue(&mut self, location: *mut Value) -> *mut ObjUpvalue {
@@ -297,8 +301,9 @@ impl<'out> Vm<'out> {
     }
 
     #[inline]
-    fn push_frame(&mut self, ip: *const OpCode, stack_start: *mut Value) {
+    fn push_frame(&mut self, name: *const ObjString, ip: *const OpCode, stack_start: *mut Value) {
         let frame = CallFrame {
+            name,
             return_ip: ip,
             stack_start
         };
@@ -306,8 +311,12 @@ impl<'out> Vm<'out> {
     }
 
     fn call_native(&mut self, arg_count: usize, ptr: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
-        let func = unsafe { &(*ptr).function };
-        func(self);
+        let func = unsafe { &*ptr };
+        if arg_count != func.arity as usize {
+            return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*func.name }.value, func.arity, arg_count));
+        }
+
+        (func.function)(self);
         let result = self.peek(0);
         self.pop_n(arg_count + 2);
         self.push(result);
@@ -315,8 +324,12 @@ impl<'out> Vm<'out> {
     }
 
     fn call_function(&mut self, arg_count: usize, ptr: *mut ObjFn) -> Result<(), anyhow::Error> {
-        self.push_frame(self.ip, unsafe { self.stack_top.sub(arg_count + 1) });
-        let ip_start = unsafe { (*ptr).ip_start };
+        let func = unsafe { &*ptr };
+        if arg_count != func.arity as usize {
+            return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*func.name }.value, func.arity, arg_count));
+        }
+        self.push_frame(func.name, self.ip, unsafe { self.stack_top.sub(arg_count + 1) });
+        let ip_start = func.ip_start;
         self.ip = unsafe { self.chunk.code.as_ptr().offset(ip_start as isize) };
         Ok(())
     }
@@ -327,12 +340,15 @@ impl<'out> Vm<'out> {
     }
 
     fn call_bound_method(&mut self, arg_count: usize, ptr: *mut ObjBoundMethod) -> Result<(), anyhow::Error> {
+        let func = unsafe { &*(*(*ptr).closure).function };
+        if arg_count != func.arity as usize {
+            return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*func.name }.value, func.arity, arg_count));
+        }
+
         let instance = unsafe { (*ptr).instance };
         let stack_start = self.set(arg_count + 1, Value::from(instance));
-        self.push_frame(self.ip, stack_start);
-
-        let function = unsafe { &*(*(*ptr).closure).function };
-        self.ip = unsafe { self.chunk.code.as_ptr().offset(function.ip_start as isize) };
+        self.push_frame(func.name, self.ip, stack_start);
+        self.ip = unsafe { self.chunk.code.as_ptr().offset(func.ip_start as isize) };
         Ok(())
     }
 
@@ -340,15 +356,18 @@ impl<'out> Vm<'out> {
         let class = unsafe { &*ptr };
         let init_id = class.resolve_id(self.gc.intern("init")).unwrap();
         let init_ref = class.get_method(init_id).unwrap();
+        let init = unsafe { &*init_ref };
+        if arg_count != init.arity as usize {
+            return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*init.name }.value, init.arity, arg_count));
+        }
         
         let closure = self.create_closure(init_ref);
         self.push(Value::from(closure));
 
         let instance = self.alloc(ObjInstance::new(ptr));
         let stack_start = self.set(arg_count + 1, Value::from(instance));
-        self.push_frame(self.ip, stack_start);
 
-        let init = unsafe { &*init_ref };
+        self.push_frame(init.name, self.ip, stack_start);
         self.ip = unsafe { self.chunk.code.as_ptr().offset(init.ip_start as isize) };
         Ok(())
     }
@@ -569,7 +588,7 @@ impl<'out> Vm<'out> {
                 instance.values.insert(id, value);
                 Ok(())
             },
-            Some(ClassMember::Method(_)) => bail!("Cannot set method"),
+            Some(ClassMember::Method(_)) => return self.error(format!("Cannot assign to instance method '{}'", unsafe { &*prop }.value)),
             None => bail!("No such property")
         }
     }

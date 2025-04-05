@@ -8,10 +8,11 @@ use regex::Regex;
 
 use crate::run;
 
-const REGEX_SKIP: &str = r"^\s*//.*//[ ]*error[ ]*:";
+const REGEX_SKIP: &str = r"^\s*//.*//";
 const REGEX_EXPECTED_ERROR: &str = r"//[ ]*error[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
 const REGEX_EXPECTED_OUT: &str = r"//[ ]*expect[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
 const REGEX_ERROR_MESSAGE: &str = r"(.*)(\s*at .*:(\d+))+";
+const REGEX_SPLIT: &str = r"// @split(\r\n|\r|\n)";
 
 pub fn test_folder(folder: &str) {
     let mut test_count = 0;
@@ -65,7 +66,7 @@ pub fn test_file(file: &str) {
         .collect::<Vec<&str>>()
         .join("\n");
 
-    let split_regex = Regex::new(r"// @split(\r\n|\r|\n)").unwrap();
+    let split_regex = Regex::new(REGEX_SPLIT).unwrap();
     let sections = split_regex.split(&src).collect::<Vec<&str>>();
 
     for section in sections {

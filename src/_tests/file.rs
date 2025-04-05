@@ -7,11 +7,11 @@ fn parser() {
 
 #[test]
 fn classes() {
-    test_folder("tests/classes2");
+    test_folder("tests/classes");
 }
 
 #[test]
-fn super_kw() {
+fn super_() {
     test_folder("tests/super");
 }
 

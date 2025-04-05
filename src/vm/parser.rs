@@ -142,7 +142,8 @@ impl AST {
 pub struct Parser<'parser, 'vm> {
     gc: &'vm mut Gc,
     tokens: &'vm mut TokenStream<'vm>,
-    ast: &'parser mut AST
+    ast: &'parser mut AST,
+    current_class: Option<*mut ObjString>
 }
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
@@ -154,7 +155,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut parser = Parser {
             gc,
             tokens,
-            ast: &mut ast
+            ast: &mut ast,
+            current_class: None
         };
 
         let pos = parser.tokens.peek(0).pos.clone();
@@ -211,7 +213,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_init(&mut self, has_superclass: bool) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Init)?.pos.clone();
-        let name = self.gc.intern("init");
+        let name = self.gc.intern(format!("{}.init", unsafe { &*self.current_class.unwrap() }.value));
         let params = self.parse_params()?;
 
         self.tokens.expect(TokenType::LeftBrace)?;
@@ -261,6 +263,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_class(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Class)?.pos.clone();
         let name = self.parse_identifier()?;
+
+        let prev_class = self.current_class.replace(name);
+
         let superclass = match self.tokens.next_if(TokenType::Colon) {
             Some(_) => Some(self.parse_identifier()?),
             None => None
@@ -325,6 +330,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             methods: method_stmts
         });
 
+        self.current_class = prev_class;
         Ok(self.ast.add_stmt(Stmt::Class(class_decl), pos))
     }
 

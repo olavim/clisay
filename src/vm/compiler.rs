@@ -22,6 +22,12 @@ struct Local {
     is_captured: bool
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum AccessKind {
+    Get,
+    Set
+}
+
 struct FnFrame {
     upvalues: Vec<UpvalueLocation>,
     local_offset: u8,
@@ -53,6 +59,10 @@ pub struct Compiler<'a> {
     classes: FnvHashMap<*mut ObjString, u8>
 }
 
+macro_rules! compiler_error {
+    ($self:ident, $msg:expr, $node:expr) => { return Err($self.error($msg, $node)) };
+}
+
 impl<'a> Compiler<'a> {
     pub fn compile<'b>(ast: &'b AST, gc: &'b mut Gc) -> Result<BytecodeChunk, anyhow::Error> {
         let mut chunk = BytecodeChunk::new();
@@ -76,9 +86,9 @@ impl<'a> Compiler<'a> {
         Ok(chunk)
     }
 
-    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &ASTId<T>) -> Result<(), anyhow::Error> {
+    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &ASTId<T>) -> anyhow::Error {
         let pos = self.ast.pos(node_id);
-        Err(anyhow!("{}\n\tat {}", msg.into(), pos))
+        anyhow!("{}\n\tat {}", msg.into(), pos)
     }
 
     fn emit<T: 'static>(&mut self, op: OpCode, node_id: &ASTId<T>) {
@@ -152,23 +162,6 @@ impl<'a> Compiler<'a> {
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
             self.locals.pop();
         }
-    }
-
-    #[inline]
-    fn current_class(&self) -> &ObjClass {
-        &self.class_frames[self.class_frames.len() - 1].class
-    }
-
-    #[inline]
-    fn current_class_mut(&mut self) -> &mut ObjClass {
-        let last = self.class_frames.len() - 1;
-        &mut self.class_frames[last].class
-    }
-
-    #[inline]
-    fn current_superclass(&self) -> Option<*mut ObjClass> {
-        let frame = &self.class_frames[self.class_frames.len() - 1];
-        frame.superclass
     }
 
     fn declare_local(&mut self, name: *mut ObjString, is_mutable: bool) -> Result<u8, anyhow::Error> {
@@ -420,34 +413,40 @@ impl<'a> Compiler<'a> {
             None => None
         };
 
-        self.class_frames.push(ClassFrame {
+        let mut frame = ClassFrame {
             class: ObjClass::new(decl.name, superclass.map(|gc_ref| unsafe { &*gc_ref })),
             superclass
-        });
+        };
 
         // Declare fields and methods before compiling init and method bodies
         for &field in &decl.fields {
-            self.current_class_mut().declare_field(field);
+            frame.class.declare_field(field);
         }
 
         for stmt_id in &decl.methods {
             let Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
-            self.current_class_mut().declare_method(decl.name);
+            frame.class.declare_method(decl.name);
+        }
+
+        // Push class frame to make the current class visible in method bodies
+        self.class_frames.push(frame);
+
+        for stmt_id in &decl.methods {
+            let Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
+            let const_idx = self.method(stmt_id, decl)?;
+            let funct_const = self.chunk.constants[const_idx as usize];
+            let frame = self.class_frames.last_mut().unwrap();
+            frame.class.define_method(decl.name, unsafe { funct_const.as_object().function });
         }
 
         let Stmt::Fn(init_fn_decl) = self.ast.get(&decl.init) else { unreachable!(); };
         let const_idx = self.initializer(stmt, init_fn_decl)?;
         let init_const = self.chunk.constants[const_idx as usize];
         let init_str = self.gc.intern("init");
-        self.current_class_mut().declare_method(init_str);
-        self.current_class_mut().define_method(init_str, unsafe { init_const.as_object().function });
 
-        for stmt_id in &decl.methods {
-            let Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
-            let const_idx = self.method(stmt_id, decl)?;
-            let funct_const = self.chunk.constants[const_idx as usize];
-            self.current_class_mut().define_method(decl.name, unsafe { funct_const.as_object().function });
-        }
+        let frame = self.class_frames.last_mut().unwrap();
+        frame.class.declare_method(init_str);
+        frame.class.define_method(init_str, unsafe { init_const.as_object().function });
 
         let class = self.class_frames.pop().unwrap().class;
         self.exit_scope(stmt);
@@ -468,7 +467,7 @@ impl<'a> Compiler<'a> {
             Expr::Literal(lit) => self.literal(expr, lit)?,
             Expr::Identifier(name) => self.identifier(expr, *name, false)?,
             Expr::This => self.this(expr)?,
-            Expr::Super => bail!("Invalid use of 'super'")
+            Expr::Super => self.super_(expr)?
         };
 
         Ok(())
@@ -477,6 +476,18 @@ impl<'a> Compiler<'a> {
     fn this(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         if self.class_frames.is_empty() {
             bail!("Cannot use 'this' outside of a class method");
+        }
+
+        self.emit(OpCode::GetLocal(0), expr);
+        Ok(())
+    }
+
+    fn super_(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+        let Some(frame) = self.class_frames.last() else {
+            bail!("Cannot use 'super' outside of a class method");
+        };
+        if frame.superclass.is_none() {
+            bail!("Cannot use 'super' outside of a child class method");
         }
 
         self.emit(OpCode::GetLocal(0), expr);
@@ -495,7 +506,7 @@ impl<'a> Compiler<'a> {
                 Expr::Identifier(name) => {
                     if let Some(local) = self.locals.iter().rev().find(|local| local.name == *name) {
                         if !local.is_mutable {
-                            return self.error(format!("Invalid assignment: '{}' is immutable", unsafe { &(**name).value }), left);
+                            compiler_error!(self, format!("Invalid assignment: '{}' is immutable", unsafe { &(**name).value }), left);
                         }
                     }
 
@@ -504,15 +515,16 @@ impl<'a> Compiler<'a> {
                     return Ok(());
                 },
                 Expr::Binary(Operator::MemberAccess, obj, member) => {
-                    self.set_member(obj, member, right)?;
+                    self.expression(right)?;
+                    self.member_access(obj, member, AccessKind::Set)?;
                     return Ok(());
                 },
-                _ => return self.error("Invalid assignment", left)
+                _ => compiler_error!(self, "Invalid assignment", left)
             }
         }
 
         if let Operator::MemberAccess = op {
-            self.get_member(left, right)?;
+            self.member_access(left, right, AccessKind::Get)?;
             return Ok(());
         }
 
@@ -522,74 +534,53 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn get_member(&mut self, expr: &ASTId<Expr>, member_expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn member_access(&mut self, expr: &ASTId<Expr>, member_expr: &ASTId<Expr>, access_kind: AccessKind) -> Result<(), anyhow::Error> {
         let Expr::Identifier(member) = *self.ast.get(member_expr) else {
-            return self.error("Invalid member access", member_expr);
+            compiler_error!(self, "Invalid member access", member_expr);
         };
 
         self.expression(expr)?;
 
-        match self.ast.get(expr) {
+        let op = match self.ast.get(expr) {
             Expr::This => {
-                let id = match self.current_class().resolve(member) {
-                    Some(ClassMember::Field(id)) => id,
-                    Some(ClassMember::Method(id)) => id,
-                    None => return unsafe {
-                        self.error(format!("Class '{}' has no member '{}'", (*self.current_class().name).value, (*member).value), expr)
-                    }
-                };
-                self.emit(OpCode::GetPropertyId(id), expr);
-                Ok(())
+                let frame = self.class_frames.last().unwrap();
+                let id = self.resolve_class_member(expr, &frame.class, member)?;
+                if access_kind == AccessKind::Get { OpCode::GetPropertyId(id) } else { OpCode::SetPropertyId(id) }
+            },
+            Expr::Super => {
+                let frame = self.class_frames.last().unwrap();
+                let superclass = unsafe { &*frame.superclass.unwrap() };
+                let id = self.resolve_class_member(expr, superclass, member)?;
+                if access_kind == AccessKind::Get { OpCode::GetPropertyId(id) } else { OpCode::SetPropertyId(id) }
             },
             _ => {
                 let const_idx = self.chunk.add_constant(Value::from(member))?;
-                self.emit(OpCode::GetProperty(const_idx), expr);
-                Ok(())
+                if access_kind == AccessKind::Get { OpCode::GetProperty(const_idx) } else { OpCode::SetProperty(const_idx) }
             }
-        }
+        };
+
+        self.emit(op, expr);
+        Ok(())
     }
 
-    fn set_member(&mut self, expr: &ASTId<Expr>, member_expr: &ASTId<Expr>, value_expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
-        let Expr::Identifier(member) = *self.ast.get(member_expr) else {
-            return self.error("Invalid member access", member_expr);
-        };
-
-        self.expression(value_expr)?;
-        self.expression(expr)?;
-
-        match self.ast.get(expr) {
-            Expr::This => {
-                let id = match self.current_class().resolve(member) {
-                    Some(ClassMember::Field(id)) => id,
-                    Some(ClassMember::Method(id)) => id,
-                    None => return unsafe {
-                        self.error(format!("Class '{}' has no member '{}'", (*self.current_class().name).value, (*member).value), expr)
-                    }
-                };
-                self.emit(OpCode::SetPropertyId(id), expr);
-                Ok(())
-            },
-            _ => {
-                let const_idx = self.chunk.add_constant(Value::from(member))?;
-                self.emit(OpCode::SetProperty(const_idx), expr);
-                Ok(())
+    fn resolve_class_member(&self, expr: &ASTId<Expr>, class: &ObjClass, member: *mut ObjString) -> Result<u8, anyhow::Error> {
+        let id = match class.resolve(member) {
+            Some(ClassMember::Field(id)) => id,
+            Some(ClassMember::Method(id)) => id,
+            None => unsafe {
+                compiler_error!(self, format!("Class '{}' has no member '{}'", (*class.name).value, (*member).value), expr)
             }
-        }
+        };
+        Ok(id)
     }
     
     fn call_expression(&mut self, expr: &ASTId<Expr>, args: &Vec<ASTId<Expr>>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
             Expr::Super => {
-                if self.class_frames.is_empty() {
-                    return self.error("Cannot use 'super' outside of class context", expr);
-                }
-
+                let frame = self.class_frames.last().unwrap();
+                let superclass = frame.superclass.unwrap();
                 let init_str = self.gc.intern("init");
-                let member_id = self.current_superclass()
-                    .map(|class| unsafe { &*class })
-                    .ok_or(self.error("Cannot use 'super' outside of child class context", expr).unwrap_err())?
-                    .resolve_id(init_str)
-                    .unwrap();
+                let member_id = unsafe { &*superclass }.resolve_id(init_str).unwrap();
 
                 self.emit(OpCode::GetLocal(0), expr);
                 self.emit(OpCode::GetPropertyId(member_id), expr);
@@ -629,10 +620,10 @@ impl<'a> Compiler<'a> {
             (OpCode::GetLocal(local_idx), OpCode::SetLocal(local_idx))
         } else if let Some(upvalue_idx) = self.resolve_upvalue(name, class_frame_idx)? {
             (OpCode::GetUpvalue(upvalue_idx), OpCode::SetUpvalue(upvalue_idx))
-        } else if class_frame_idx.is_some() {
+        } else if let Some(id) = self.class_frames.last().and_then(|f| f.class.resolve_id(name)) {
+            // Implicit 'this'
             self.emit(OpCode::GetLocal(0), expr);
-            let const_idx = self.chunk.add_constant(Value::from(name))?;
-            (OpCode::GetProperty(const_idx), OpCode::SetProperty(const_idx))
+            (OpCode::GetPropertyId(id), OpCode::SetPropertyId(id))
         } else {
             let const_idx = self.chunk.add_constant(Value::from(name))?;
             (OpCode::GetGlobal(const_idx), OpCode::SetGlobal(const_idx))
