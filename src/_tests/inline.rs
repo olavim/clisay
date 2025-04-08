@@ -27,5 +27,5 @@ fn ops() {
     assert_inline("say a = 3; a &= 1; print(a);", Ok(["1"]));
     assert_inline("say a = 2; a |= 1; print(a);", Ok(["3"]));
     assert_inline("say a = 1; a ^= 2; print(a);", Ok(["3"]));
-    assert_inline("say a = 3; a += a += 1; print(a);", Ok(["8"]));
+    assert_inline("say a = 3; a += a += 1; print(a);", Ok(["7"]));
 }

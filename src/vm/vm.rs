@@ -14,7 +14,7 @@ use super::parser::Parser;
 use super::stack::{CachedStack, Stack};
 use super::value::Value;
 use super::gc::{Gc, GcTraceable};
-use super::objects::{self, ClassMember, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object};
+use super::objects::{self, ClassMember, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object};
 use super::compiler::Compiler;
 
 const MAX_STACK: usize = 16384;
@@ -41,6 +41,7 @@ macro_rules! as_short {
     ($l:expr, $r:expr) => { ($l as u16) | (($r as u16) << 8) }
 }
 
+#[cfg(feature = "debug")]
 fn disassemble(chunk: &BytecodeChunk) {
     println!("=== Bytecode ===");
     print!("{}", chunk.fmt());
