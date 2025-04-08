@@ -8,6 +8,7 @@ fn parser() {
 #[test]
 fn classes() {
     test_folder("tests/classes");
+    // test_file("tests/classes/method_closures.say");
 }
 
 #[test]
@@ -23,6 +24,7 @@ fn functions() {
 #[test]
 fn closures() {
     test_folder("tests/closures");
+    // test_file("tests/closures/deep_sum.say");
 }
 
 #[test]

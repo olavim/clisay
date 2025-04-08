@@ -8,12 +8,12 @@ use super::vm::Vm;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ObjectKind {
+    Closure,
+    NativeFunction,
+    Class,
+    BoundMethod,
     String,
     Function,
-    NativeFunction,
-    BoundMethod,
-    Closure,
-    Class,
     Instance,
     Upvalue
 }
@@ -47,10 +47,10 @@ impl ObjectHeader {
 }
 
 #[derive(Clone, Copy)]
+#[repr(align(8))]
 #[repr(C)]
 pub union Object {
     pub header: *mut ObjectHeader,
-
     pub string: *mut ObjString,
     pub function: *mut ObjFn,
     pub native_function: *mut ObjNativeFn,
@@ -61,9 +61,25 @@ pub union Object {
     pub upvalue: *mut ObjUpvalue
 }
 
+pub const TAG_STRING: usize = 0;
+pub const TAG_FUNCTION: usize = 1;
+pub const TAG_INSTANCE: usize = 2;
+pub const TAG_UPVALUE: usize = 3;
+pub const TAG_CLOSURE: usize = 4;
+pub const TAG_NATIVE_FUNCTION: usize = 5;
+pub const TAG_BOUND_METHOD: usize = 6;
+pub const TAG_CLASS: usize = 7;
+
+const PTR_TAG: usize = 0b111;
+
+fn without_tag<T>(ptr: *mut T) -> *mut T {
+    ((ptr as usize) & !PTR_TAG) as *mut T
+}
+
 impl Object {
-    pub fn kind(self) -> ObjectKind {
-        unsafe { (*self.header).kind }
+    #[inline]
+    pub fn tag(self) -> usize {
+        unsafe { (self.header as usize) & PTR_TAG }
     }
 
     pub fn free(self) -> usize {
@@ -75,29 +91,78 @@ impl Object {
             }};
         }
 
-        match self.kind() {
-            ObjectKind::String => free_object!(self.string),
-            ObjectKind::Function => free_object!(self.function),
-            ObjectKind::NativeFunction => free_object!(self.native_function),
-            ObjectKind::BoundMethod => free_object!(self.bound_method),
-            ObjectKind::Closure => free_object!(self.closure),
-            ObjectKind::Class => free_object!(self.class),
-            ObjectKind::Instance => free_object!(self.instance),
-            ObjectKind::Upvalue => free_object!(self.upvalue)
+        match self.tag() {
+            TAG_STRING => free_object!(self.as_string()),
+            TAG_FUNCTION => free_object!(self.as_function()),
+            TAG_NATIVE_FUNCTION => free_object!(self.as_native_function()),
+            TAG_BOUND_METHOD => free_object!(self.as_bound_method()),
+            TAG_CLOSURE => free_object!(self.as_closure()),
+            TAG_CLASS => free_object!(self.as_class()),
+            TAG_INSTANCE => free_object!(self.as_instance()),
+            TAG_UPVALUE => free_object!(self.as_upvalue()),
+            _ => unsafe { std::hint::unreachable_unchecked() }
         }
     }
 
     fn as_traceable(&self) -> &dyn GcTraceable {
-        match self.kind() {
-            ObjectKind::String => unsafe { &*self.string },
-            ObjectKind::Function => unsafe { &*self.function },
-            ObjectKind::NativeFunction => unsafe { &*self.native_function },
-            ObjectKind::BoundMethod => unsafe { &*self.bound_method },
-            ObjectKind::Closure => unsafe { &*self.closure },
-            ObjectKind::Class => unsafe { &*self.class },
-            ObjectKind::Instance => unsafe { &*self.instance },
-            ObjectKind::Upvalue => unsafe { &*self.upvalue }
+        unsafe { 
+            match self.tag() {
+                TAG_STRING => &*self.as_string(),
+                TAG_FUNCTION => &*self.as_function(),
+                TAG_NATIVE_FUNCTION => &*self.as_native_function(),
+                TAG_BOUND_METHOD => &*self.as_bound_method(),
+                TAG_CLOSURE => &*self.as_closure(),
+                TAG_CLASS => &*self.as_class(),
+                TAG_INSTANCE => &*self.as_instance(),
+                TAG_UPVALUE => &*self.as_upvalue(),
+                _ => std::hint::unreachable_unchecked()
+            }
         }
+    }
+
+    #[inline]
+    pub fn as_header(&self) -> *mut ObjectHeader {
+        unsafe { without_tag(self.header) }
+    }
+
+    #[inline]
+    pub fn as_string(&self) -> *mut ObjString {
+        unsafe { without_tag(self.string) }
+    }
+
+    #[inline]
+    pub fn as_function(&self) -> *mut ObjFn {
+        unsafe { without_tag(self.function) }
+    }
+
+    #[inline]
+    pub fn as_native_function(&self) -> *mut ObjNativeFn {
+        unsafe { without_tag(self.native_function) }
+    }
+
+    #[inline]
+    pub fn as_bound_method(&self) -> *mut ObjBoundMethod {
+        unsafe { without_tag(self.bound_method) }
+    }
+
+    #[inline]
+    pub fn as_closure(&self) -> *mut ObjClosure {
+        unsafe { without_tag(self.closure) }
+    }
+
+    #[inline]
+    pub fn as_class(&self) -> *mut ObjClass {
+        unsafe { without_tag(self.class) }
+    }
+
+    #[inline]
+    pub fn as_instance(&self) -> *mut ObjInstance {
+        unsafe { without_tag(self.instance) }
+    }
+
+    #[inline]
+    pub fn as_upvalue(&self) -> *mut ObjUpvalue {
+        unsafe { without_tag(self.upvalue) }
     }
 }
 
@@ -117,25 +182,26 @@ impl GcTraceable for Object {
 }
 
 macro_rules! impl_from_for_object {
-    ($name:ident, $class:tt) => {
-        impl From<*mut $class> for Object {
-            fn from($name: *mut $class) -> Self {
+    ($name:ident, $kind:tt, $tag:ident) => {
+        impl From<*mut $kind> for Object {
+            fn from($name: *mut $kind) -> Self {
+                let $name = ($name as u64 | $tag as u64) as *mut $kind;
                 Object { $name }
             }
         }
     };
 }
 
-impl_from_for_object!(header, ObjectHeader);
-impl_from_for_object!(string, ObjString);
-impl_from_for_object!(function, ObjFn);
-impl_from_for_object!(native_function, ObjNativeFn);
-impl_from_for_object!(bound_method, ObjBoundMethod);
-impl_from_for_object!(closure, ObjClosure);
-impl_from_for_object!(class, ObjClass);
-impl_from_for_object!(instance, ObjInstance);
-impl_from_for_object!(upvalue, ObjUpvalue);
+impl_from_for_object!(string, ObjString, TAG_STRING);
+impl_from_for_object!(instance, ObjInstance, TAG_INSTANCE);
+impl_from_for_object!(upvalue, ObjUpvalue, TAG_UPVALUE);
+impl_from_for_object!(function, ObjFn, TAG_FUNCTION);
+impl_from_for_object!(native_function, ObjNativeFn, TAG_NATIVE_FUNCTION);
+impl_from_for_object!(bound_method, ObjBoundMethod, TAG_BOUND_METHOD);
+impl_from_for_object!(closure, ObjClosure, TAG_CLOSURE);
+impl_from_for_object!(class, ObjClass, TAG_CLASS);
 
+#[repr(align(8))]
 #[repr(C)]
 pub struct ObjString {
     pub header: ObjectHeader,
@@ -169,6 +235,7 @@ pub struct UpvalueLocation {
     pub location: u8
 }
 
+#[repr(align(8))]
 #[repr(C)]
 pub struct ObjFn {
     pub header: ObjectHeader,
@@ -204,6 +271,7 @@ impl GcTraceable for ObjFn {
     }
 }
 
+#[repr(align(8))]
 #[repr(C)]
 pub struct ObjNativeFn {
     pub header: ObjectHeader,
@@ -237,6 +305,7 @@ impl GcTraceable for ObjNativeFn {
     }
 }
 
+#[repr(align(8))]
 #[repr(C)]
 pub struct ObjClosure {
     pub header: ObjectHeader,
@@ -262,8 +331,8 @@ impl GcTraceable for ObjClosure {
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.function);
 
-        for upvalue in &self.upvalues {
-            gc.mark_object(*upvalue);
+        for &upvalue in &self.upvalues {
+            gc.mark_object(upvalue);
         }
     }
 
@@ -272,6 +341,7 @@ impl GcTraceable for ObjClosure {
     }
 }
 
+#[repr(align(8))]
 #[repr(C)]
 pub struct ObjBoundMethod {
     pub header: ObjectHeader,
@@ -314,6 +384,7 @@ pub enum ClassMember {
     Method(MemberId)
 }
 
+#[repr(align(8))]
 #[repr(C)]
 pub struct ObjClass {
     pub header: ObjectHeader,
@@ -400,6 +471,7 @@ impl GcTraceable for ObjClass {
     }
 }
 
+#[repr(align(8))]
 #[repr(C)]
 pub struct ObjInstance {
     pub header: ObjectHeader,
@@ -455,6 +527,7 @@ impl GcTraceable for ObjInstance {
     }
 }
 
+#[repr(align(8))]
 #[repr(C)]
 pub struct ObjUpvalue {
     pub header: ObjectHeader,

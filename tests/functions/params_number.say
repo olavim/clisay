@@ -1,0 +1,5 @@
+fn printArg(x) {
+    print(x);
+}
+
+printArg(1); // expect: 1

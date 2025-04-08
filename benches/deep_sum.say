@@ -1,0 +1,30 @@
+fn getAdder(a, b, c, d, e) {
+    say sum = 0;
+    fn addA() {
+        sum = sum + a;
+        fn addB() {
+            sum = sum + b;
+            fn addC() {
+                sum = sum + c;
+                fn addD() {
+                    sum = sum + d;
+                    fn addE() {
+                        sum = sum + e;
+                        return sum;
+                    }
+                    return addE;
+                }
+                return addD;
+            }
+            return addC;
+        }
+        return addB;
+    }
+    return addA;
+}
+
+say i = 0;
+while i < 1000000 {
+    getAdder(1, 2, 3, 4, 5)()()()()();
+    i = i + 1;
+}

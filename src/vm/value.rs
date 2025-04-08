@@ -1,13 +1,13 @@
 use std::{fmt, mem};
 
 use super::gc::{Gc, GcTraceable};
-use super::objects::{Object, ObjectHeader, ObjectKind};
+use super::objects::{self, Object};
 
 pub enum ValueKind {
     Null,
     Number,
     Boolean,
-    Object(ObjectKind)
+    Object(usize)
 }
 
 impl fmt::Display for ValueKind {
@@ -36,7 +36,7 @@ impl Value {
      * If these bits are set, the value does not represent an f64.
      */
     const NAN_MASK: u64 = 0x7FFC000000000000;
-    const SIGN: u64 = 0x8000000000000000;
+    const SIGN: u64 = 1 << 63; // 0x8000000000000000;
 
     /**
      * The sign and QNaN bits are set for object values. 
@@ -46,6 +46,8 @@ impl Value {
      * common architectures only use the first 48 bits.
      */
     const OBJECT_MASK: u64 = Self::SIGN | Self::NAN_MASK;
+    const PTR_MASK: u64 = 0x0000FFFFFFFFFFFF;
+    const CALLABLE_MASK: u64 = Self::OBJECT_MASK | (1 << 48); // 0x4000000000000000
 
     pub const NULL: Self = Self(Self::NAN_MASK | 0b01);
     pub const TRUE: Self = Self(Self::NAN_MASK | 0b10);
@@ -59,7 +61,7 @@ impl Value {
         } else if self.is_number() {
             ValueKind::Number
         } else if self.is_object() {
-            ValueKind::Object(self.as_object().kind())
+            ValueKind::Object((self.0 & 0b111) as usize)
         } else {
             unreachable!("Invalid value type")
         }
@@ -77,6 +79,10 @@ impl Value {
         self == Self::NULL
     }
 
+    pub fn is_callable(self) -> bool {
+        (self.0 & Self::CALLABLE_MASK) == Self::CALLABLE_MASK
+    }
+
     pub fn is_object(self) -> bool {
         (self.0 & Self::OBJECT_MASK) == Self::OBJECT_MASK
     }
@@ -90,7 +96,7 @@ impl Value {
     }
 
     pub fn as_object(self) -> Object {
-        Object { header: (self.0 & !Self::OBJECT_MASK) as *mut ObjectHeader }
+        Object { header: (self.0 & Self::PTR_MASK) as *mut objects::ObjectHeader }
     }
 }
 
@@ -109,7 +115,10 @@ impl From<bool> for Value {
 impl<T: Into<Object>> From<T> for Value {
     fn from(object: T) -> Self {
         let object: Object = object.into();
-        Self((unsafe { object.header } as u64) | Self::OBJECT_MASK)
+        let tag = object.tag();
+        let mask = if tag >= objects::TAG_CLOSURE { Self::CALLABLE_MASK } else { Self::OBJECT_MASK };
+        let ptr = unsafe { object.header };
+        Self((ptr as u64) | mask | (tag as u64))
     }
 }
 
@@ -140,14 +149,16 @@ impl fmt::Display for Value {
             ValueKind::Null => format!("null"),
             ValueKind::Number => format!("number"),
             ValueKind::Boolean => format!("boolean"),
-            ValueKind::Object(ObjectKind::BoundMethod) => format!("function"),
-            ValueKind::Object(ObjectKind::Function) => format!("function"),
-            ValueKind::Object(ObjectKind::NativeFunction) => format!("function"),
-            ValueKind::Object(ObjectKind::Closure) => format!("function"),
-            ValueKind::Object(ObjectKind::Class) => format!("class"),
-            ValueKind::Object(ObjectKind::Instance) => format!("instance"),
-            ValueKind::Object(ObjectKind::String) => format!("string"),
-            ValueKind::Object(ObjectKind::Upvalue) => format!("upvalue")
+            ValueKind::Object(tag) => match tag as usize {
+                objects::TAG_BOUND_METHOD => format!("function"),
+                objects::TAG_NATIVE_FUNCTION => format!("function"),
+                objects::TAG_CLOSURE => format!("function"),
+                objects::TAG_CLASS => format!("class"),
+                objects::TAG_INSTANCE => format!("instance"),
+                objects::TAG_STRING => format!("string"),
+                objects::TAG_UPVALUE => format!("upvalue"),
+                _ => format!("object")
+            }
         })
     }
 }

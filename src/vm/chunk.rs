@@ -3,10 +3,11 @@ use std::mem;
 use anyhow::bail;
 
 use crate::lexer::SourcePosition;
+use crate::vm::opcode;
 
 use super::gc::{Gc, GcTraceable};
+use super::opcode::OpCode;
 use super::value::Value;
-use super::OpCode;
 
 
 
@@ -14,12 +15,18 @@ use super::OpCode;
 pub struct BytecodeChunk {
     pub code: Vec<OpCode>,
     pub constants: Vec<Value>,
-    pub code_pos: Vec<SourcePosition>
+    pub code_pos: Vec<SourcePosition>,
+    ptr: *const OpCode
 }
 
 impl BytecodeChunk {
     pub fn new() -> BytecodeChunk {
-        return BytecodeChunk { code: Vec::new(), constants: Vec::new(), code_pos: Vec::new() };
+        BytecodeChunk {
+            code: Vec::new(), 
+            constants: Vec::new(), 
+            code_pos: Vec::new(),
+            ptr: std::ptr::null()
+        }
     }
 
     pub fn write(&mut self, op: OpCode, pos: &SourcePosition) {
@@ -35,6 +42,34 @@ impl BytecodeChunk {
         self.constants.push(value);
         Ok((self.constants.len() - 1) as u8)
     }
+
+    pub fn make_readable(&mut self) {
+        self.ptr = self.code.as_ptr();
+    }
+
+    #[inline(always)]
+    pub fn read_next(&mut self) -> OpCode {
+        let op = unsafe { *self.ptr };
+        self.ptr = unsafe { self.ptr.add(1) };
+        op
+    }
+
+    #[inline(always)]
+    pub fn get_position(&mut self) -> *const OpCode {
+        self.ptr
+    }
+
+    #[inline(always)]
+    pub fn set_position(&mut self, pos: *const OpCode) {
+        self.ptr = pos;
+    }
+
+    pub fn get_source_position(&self) -> &SourcePosition {
+        unsafe { 
+            let idx = self.ptr.offset_from(self.code.as_ptr()) as usize - 1;
+            &self.code_pos[idx]
+        }
+    }
 }
 
 impl GcTraceable for BytecodeChunk {
@@ -47,78 +82,92 @@ impl GcTraceable for BytecodeChunk {
             }};
         }
 
-        let mut i = 0;
-        while i < self.code.len() {
-            let op = self.code[i];
-            i += 1;
+        let mut pos = 0;
 
-            push_fmt!("{i}: ");
+        macro_rules! byte {
+            () => {{
+                pos += 1;
+                self.code[pos - 1]
+            }};
+        }
+
+        macro_rules! short {
+            () => {{
+                pos += 2;
+                (self.code[pos - 2] as u16) | ((self.code[pos - 1] as u16) << 8)
+            }};
+        }
+
+        while pos < self.code.len() {
+            push_fmt!("{pos}: ");
+            let op = byte!();
 
             match op {
-                OpCode::Return => push_fmt!("RET"),
-                OpCode::Pop => push_fmt!("POP"),
-                OpCode::Call(arg_count) => push_fmt!("CALL {arg_count}"),
-                OpCode::Jump(lpos, rpos) => push_fmt!("JUMP <{}>", (lpos as u16) << 8 | (rpos as u16)),
-                OpCode::JumpIfFalse(lpos, rpos) => push_fmt!("JUMP_F <{}>", (lpos as u16) << 8 | (rpos as u16)),
-                OpCode::CloseUpvalue(idx) => push_fmt!("CLOSE_UPVALUE <{}>", idx),
-                OpCode::PushNull => push_fmt!("NULL"),
-                OpCode::PushTrue => push_fmt!("TRUE"),
-                OpCode::PushFalse => push_fmt!("FALSE"),
-                OpCode::PushConstant(const_idx) => {
-                    push_fmt!("CONST {}", self.constants[const_idx as usize].fmt());
+                opcode::RETURN => push_fmt!("RET"),
+                opcode::POP => push_fmt!("POP"),
+                opcode::CALL => push_fmt!("CALL {}", byte!()),
+                opcode::JUMP => push_fmt!("JUMP <{}>", short!()),
+                opcode::JUMP_IF_FALSE => push_fmt!("JUMP_F <{}>", short!()),
+                opcode::CLOSE_UPVALUE => push_fmt!("CLOSE_UPVALUE <{}>", byte!()),
+                opcode::PUSH_NULL => push_fmt!("NULL"),
+                opcode::PUSH_TRUE => push_fmt!("TRUE"),
+                opcode::PUSH_FALSE => push_fmt!("FALSE"),
+                opcode::PUSH_CONSTANT => {
+                    push_fmt!("CONST {}", self.constants[byte!() as usize].fmt());
                 },
-                OpCode::PushClosure(idx) => {
-                    let func_const = self.constants[idx as usize];
-                    let func = unsafe { func_const.as_object().function };
+                opcode::PUSH_CLOSURE => {
+                    let func_const = self.constants[byte!() as usize];
+                    let func = func_const.as_object().as_function();
                     push_fmt!("CLOSURE {}", unsafe { (*func).fmt() });
                 },
-                OpCode::PushClass(idx) => {
-                    let class_const = self.constants[idx as usize];
-                    let class = unsafe { class_const.as_object().class };
+                opcode::PUSH_CLASS => {
+                    let class_const = self.constants[byte!() as usize];
+                    let class = class_const.as_object().as_class();
                     push_fmt!("CLASS {}", unsafe { (*class).fmt() });
                 },
-                OpCode::Add => push_fmt!("ADD"),
-                OpCode::Subtract => push_fmt!("SUB"),
-                OpCode::Multiply => push_fmt!("MUL"),
-                OpCode::Divide => push_fmt!("DIV"),
-                OpCode::Negate => push_fmt!("NEG"),
-                OpCode::Equal => push_fmt!("EQ"),
-                OpCode::NotEqual => push_fmt!("NEQ"),
-                OpCode::LessThan => push_fmt!("LT"),
-                OpCode::LessThanEqual => push_fmt!("LTE"),
-                OpCode::GreaterThan => push_fmt!("GT"),
-                OpCode::GreaterThanEqual => push_fmt!("GTE"),
-                OpCode::Not => push_fmt!("NOT"),
-                OpCode::LeftShift => push_fmt!("LSH"),
-                OpCode::RightShift => push_fmt!("RSH"),
-                OpCode::BitAnd => push_fmt!("AND"),
-                OpCode::BitOr => push_fmt!("OR"),
-                OpCode::BitXor => push_fmt!("XOR"),
-                OpCode::BitNot => push_fmt!("BIT_NOT"),
-                OpCode::And => push_fmt!("AND"),
-                OpCode::Or => push_fmt!("OR"),
-                OpCode::GetLocal(loc_idx) => push_fmt!("GET_LOCAL <{}>", loc_idx),
-                OpCode::SetLocal(loc_idx) => push_fmt!("SET_LOCAL <{}>", loc_idx),
-                OpCode::GetUpvalue(loc_idx) => push_fmt!("GET_UPVAL <{}>", loc_idx),
-                OpCode::SetUpvalue(loc_idx) => push_fmt!("SET_UPVAL <{}>", loc_idx),
-                OpCode::GetProperty(const_idx) => {
-                    push_fmt!("GET_PROP <{}>", self.constants[const_idx as usize].fmt())
+                opcode::ADD => push_fmt!("ADD"),
+                opcode::SUBTRACT => push_fmt!("SUB"),
+                opcode::MULTIPLY => push_fmt!("MUL"),
+                opcode::DIVIDE => push_fmt!("DIV"),
+                opcode::NEGATE => push_fmt!("NEG"),
+                opcode::EQUAL => push_fmt!("EQ"),
+                opcode::NOT_EQUAL => push_fmt!("NEQ"),
+                opcode::LESS_THAN => push_fmt!("LT"),
+                opcode::LESS_THAN_EQUAL => push_fmt!("LTE"),
+                opcode::GREATER_THAN => push_fmt!("GT"),
+                opcode::GREATER_THAN_EQUAL => push_fmt!("GTE"),
+                opcode::NOT => push_fmt!("NOT"),
+                opcode::LEFT_SHIFT => push_fmt!("LSH"),
+                opcode::RIGHT_SHIFT => push_fmt!("RSH"),
+                opcode::BIT_AND => push_fmt!("AND"),
+                opcode::BIT_OR => push_fmt!("OR"),
+                opcode::BIT_XOR => push_fmt!("XOR"),
+                opcode::BIT_NOT => push_fmt!("BIT_NOT"),
+                opcode::AND => push_fmt!("AND"),
+                opcode::OR => push_fmt!("OR"),
+                opcode::GET_LOCAL => push_fmt!("GET_LOCAL <{}>", byte!()),
+                opcode::SET_LOCAL => push_fmt!("SET_LOCAL <{}>", byte!()),
+                opcode::GET_UPVALUE => push_fmt!("GET_UPVAL <{}>", byte!()),
+                opcode::SET_UPVALUE => push_fmt!("SET_UPVAL <{}>", byte!()),
+                opcode::GET_PROPERTY => {
+                    push_fmt!("GET_PROP <{}>", self.constants[byte!() as usize].fmt())
                 },
-                OpCode::SetProperty(const_idx) => {
-                    push_fmt!("SET_PROP <{}>", self.constants[const_idx as usize].fmt())
+                opcode::SET_PROPERTY => {
+                    push_fmt!("SET_PROP <{}>", self.constants[byte!() as usize].fmt())
                 },
-                OpCode::GetPropertyId(member_id) => {
-                    push_fmt!("GET_PROP_ID <{}>", member_id)
+                opcode::GET_PROPERTY_ID => {
+                    push_fmt!("GET_PROP_ID <{}>", byte!())
                 },
-                OpCode::SetPropertyId(member_id) => {
-                    push_fmt!("SET_PROP_ID <{}>", member_id)
+                opcode::SET_PROPERTY_ID => {
+                    push_fmt!("SET_PROP_ID <{}>", byte!())
                 },
-                OpCode::GetGlobal(const_idx) => {
-                    push_fmt!("GET_GLOBAL {}", self.constants[const_idx as usize].fmt());
+                opcode::GET_GLOBAL => {
+                    push_fmt!("GET_GLOBAL {}", self.constants[byte!() as usize].fmt());
                 },
-                OpCode::SetGlobal(const_idx) => {
-                    push_fmt!("SET_GLOBAL {}", self.constants[const_idx as usize].fmt());
-                }
+                opcode::SET_GLOBAL => {
+                    push_fmt!("SET_GLOBAL {}", self.constants[byte!() as usize].fmt());
+                },
+                _ => panic!("Unknown opcode {}", op)
             }
 
             push_fmt!("\n");

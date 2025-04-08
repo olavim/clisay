@@ -2,6 +2,8 @@ use std::fmt;
 
 use crate::lexer::{TokenStream, TokenType};
 
+use super::opcode;
+
 #[derive(Clone, Debug)]
 pub enum Operator {
     // Infix
@@ -203,6 +205,29 @@ impl Operator {
             Operator::BitNot => false,
             Operator::Group => false,
             _ => true
+        };
+    }
+
+    pub fn as_opcode(&self) -> opcode::OpCode {
+        return match self {
+            Operator::Add => opcode::ADD,
+            Operator::Subtract => opcode::SUBTRACT,
+            Operator::Multiply => opcode::MULTIPLY,
+            Operator::Divide => opcode::DIVIDE,
+            Operator::LeftShift => opcode::LEFT_SHIFT,
+            Operator::RightShift => opcode::RIGHT_SHIFT,
+            Operator::LessThan => opcode::LESS_THAN,
+            Operator::LessThanEqual => opcode::LESS_THAN_EQUAL,
+            Operator::GreaterThan => opcode::GREATER_THAN,
+            Operator::GreaterThanEqual => opcode::GREATER_THAN_EQUAL,
+            Operator::LogicalEqual => opcode::EQUAL,
+            Operator::LogicalNotEqual => opcode::NOT_EQUAL,
+            Operator::LogicalAnd => opcode::AND,
+            Operator::LogicalOr => opcode::OR,
+            Operator::BitAnd => opcode::BIT_AND,
+            Operator::BitOr => opcode::BIT_OR,
+            Operator::BitXor => opcode::BIT_XOR,
+            _ => panic!("Invalid operator")
         };
     }
 }

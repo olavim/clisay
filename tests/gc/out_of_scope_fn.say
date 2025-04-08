@@ -1,0 +1,4 @@
+say bytesStart = gcHeapSize();
+{ fn f() { } }
+gcCollect();
+print(gcHeapSize() - bytesStart); // expect: 0

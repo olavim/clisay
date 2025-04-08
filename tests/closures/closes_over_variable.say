@@ -1,0 +1,25 @@
+fn getClosure() {
+    say x = "foo";
+
+    fn closure(arg) {
+        fn get() {
+            return x;
+        }
+        fn set(val) {
+            x = val;
+        }
+
+        if arg == "get" {
+            return get;
+        } else if arg == "set" {
+            return set;
+        } else {
+            return null;
+        }
+    }
+    return closure;
+}
+say closure = getClosure();
+print(closure("get")()); // expect: foo
+closure("set")("foz");
+print(closure("get")()); // expect: foz

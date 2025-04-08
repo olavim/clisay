@@ -10,10 +10,11 @@ use super::objects::ObjClass;
 use super::objects::ClassMember;
 use super::objects::ObjString;
 use super::objects::{ObjFn, UpvalueLocation};
+use super::opcode;
+use super::opcode::OpCode;
 use super::operator::Operator;
 use super::parser::{ASTId, ClassDecl, Expr, FieldInit, FnDecl, Literal, Stmt, AST};
 use super::value::Value;
-use super::OpCode;
 
 struct Local {
     name: *mut ObjString,
@@ -91,33 +92,26 @@ impl<'a> Compiler<'a> {
         anyhow!("{}\n\tat {}", msg.into(), pos)
     }
 
-    fn emit<T: 'static>(&mut self, op: OpCode, node_id: &ASTId<T>) {
+    fn emit<T: 'static>(&mut self, byte: u8, node_id: &ASTId<T>) {
         let pos = self.ast.pos(node_id);
-        self.chunk.write(op, pos);
+        self.chunk.write(byte, pos);
     }
 
-    fn emit_jump<T: 'static>(&mut self, op: OpCode, node_id: &ASTId<T>) -> usize {
+    fn emit_jump<T: 'static>(&mut self, op: OpCode, pos: u16, node_id: &ASTId<T>) -> u16 {
         self.emit(op, node_id);
-        return self.chunk.code.len() - 1;
+        self.emit(pos as u8, node_id);
+        self.emit((pos >> 8) as u8, node_id);
+        return self.chunk.code.len() as u16 - 3;
     }
 
-    fn get_jump(&mut self) -> OpCode {
-        let pos = self.chunk.code.len() as u16;
-        OpCode::Jump((pos >> 8) as u8, pos as u8)
-    }
-
-    fn patch_jump(&mut self, jump_ref: usize) -> Result<(), anyhow::Error> {
+    fn patch_jump(&mut self, jump_ref: u16) -> Result<(), anyhow::Error> {
         if self.chunk.code.len() > u16::MAX as usize {
             bail!("Jump too large");
         }
 
         let pos = self.chunk.code.len() as u16;
-        let op = self.chunk.code[jump_ref];
-        self.chunk.code[jump_ref] = match op {
-            OpCode::JumpIfFalse(_, _) => OpCode::JumpIfFalse((pos >> 8) as u8, pos as u8),
-            OpCode::Jump(_, _) => OpCode::Jump((pos >> 8) as u8, pos as u8),
-            _ => bail!("Invalid jump opcode")
-        };
+        self.chunk.code[jump_ref as usize + 1] = pos as u8;
+        self.chunk.code[jump_ref as usize + 2] = (pos >> 8) as u8;
         Ok(())
     }
 
@@ -129,9 +123,10 @@ impl<'a> Compiler<'a> {
         self.scope_depth -= 1;
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
             if self.locals.last().unwrap().is_captured {
-                self.emit(OpCode::CloseUpvalue(self.locals.len() as u8 - 1), node_id);
+                self.emit(opcode::CLOSE_UPVALUE, node_id);
+                self.emit(self.locals.len() as u8 - 1, node_id);
             } else {
-                self.emit(OpCode::Pop, node_id);
+                self.emit(opcode::POP, node_id);
             }
             self.locals.pop();
         }
@@ -148,13 +143,14 @@ impl<'a> Compiler<'a> {
     }
 
     fn exit_function<T: 'static>(&mut self, node_id: &ASTId<T>) {
-        if self.chunk.code[self.chunk.code.len() - 1] != OpCode::Return {
+        if self.chunk.code[self.chunk.code.len() - 1] != opcode::RETURN {
             if let FnType::Initializer = self.fn_type {
-                self.emit(OpCode::GetLocal(0), node_id);
+                self.emit(opcode::GET_LOCAL, node_id);
+                self.emit(0, node_id);
             } else {
-                self.emit(OpCode::PushNull, node_id);
+                self.emit(opcode::PUSH_NULL, node_id);
             }
-            self.emit(OpCode::Return, node_id);
+            self.emit(opcode::RETURN, node_id);
         }
 
         self.scope_depth -= 1;
@@ -273,14 +269,15 @@ impl<'a> Compiler<'a> {
                         bail!("Cannot return a value from a class initializer");
                     }
 
-                    self.emit(OpCode::GetLocal(0), stmt_id);
+                    self.emit(opcode::GET_LOCAL, stmt_id);
+                    self.emit(0, stmt_id);
                 } else if let Some(expr) = expr {
                     self.expression(expr)?;
                 } else {
-                    self.emit(OpCode::PushNull, stmt_id);
+                    self.emit(opcode::PUSH_NULL, stmt_id);
                 }
 
-                self.emit(OpCode::Return, stmt_id);
+                self.emit(opcode::RETURN, stmt_id);
             },
             Stmt::Fn(decl) => {
                 self.declare_local(decl.name, false)?;
@@ -288,12 +285,8 @@ impl<'a> Compiler<'a> {
                 self.fn_type = FnType::Function;
                 let const_idx = self.function(stmt_id, decl)?;
                 self.fn_type = prev_fn_type;
-                let fn_ref = unsafe { self.chunk.constants[const_idx as usize].as_object().function };
-                if unsafe { (*fn_ref).upvalues.len() == 0 } {
-                    self.emit(OpCode::PushConstant(const_idx), stmt_id);
-                } else {
-                    self.emit(OpCode::PushClosure(const_idx), stmt_id);
-                }
+                self.emit(opcode::PUSH_CLOSURE, stmt_id);
+                self.emit(const_idx, stmt_id);
             },
             Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
             Stmt::If(cond, then, otherwise) => self.if_stmt(cond, then, otherwise)?,
@@ -302,21 +295,23 @@ impl<'a> Compiler<'a> {
 
                 if let Some(expr) = value {
                     self.expression(expr)?;
-                    self.emit(OpCode::SetLocal(local), stmt_id);
+                    self.emit(opcode::SET_LOCAL, stmt_id);
                 } else {
-                    self.emit(OpCode::GetLocal(local), stmt_id);
+                    self.emit(opcode::GET_LOCAL, stmt_id);
                 }
+                self.emit(local, stmt_id);
             },
             Stmt::Expression(expr) => {
                 self.expression(expr)?;
-                self.emit(OpCode::Pop, stmt_id);
+                self.emit(opcode::POP, stmt_id);
             },
             Stmt::While(cond, body) => {
-                let loop_start = self.get_jump();
+                let pos = self.chunk.code.len() as u16;
+
                 self.expression(cond)?;
-                let jump_ref = self.emit_jump(OpCode::JumpIfFalse(0, 0), stmt_id);
+                let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, stmt_id);
                 self.statement(body)?;
-                self.emit(loop_start, stmt_id);
+                self.emit_jump(opcode::JUMP, pos, stmt_id);
                 self.patch_jump(jump_ref)?;
             }
         };
@@ -335,9 +330,9 @@ impl<'a> Compiler<'a> {
 
     fn if_stmt(&mut self, cond: &ASTId<Expr>, then: &ASTId<Stmt>, otherwise: &Option<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
         self.expression(cond)?;
-        let jump_ref = self.emit_jump(OpCode::JumpIfFalse(0, 0), cond);
+        let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, cond);
         self.statement(then)?;
-        let else_jump_ref = self.emit_jump(OpCode::Jump(0, 0), then);
+        let else_jump_ref = self.emit_jump(opcode::JUMP, 0, then);
         self.patch_jump(jump_ref)?;
         if let Some(otherwise) = otherwise {
             self.statement(otherwise)?;
@@ -348,9 +343,9 @@ impl<'a> Compiler<'a> {
 
     fn if_expression(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         self.expression(cond)?;
-        let jump_ref = self.emit_jump(OpCode::JumpIfFalse(0, 0), cond);
+        let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, cond);
         self.expression(then)?;
-        let else_jump_ref = self.emit_jump(OpCode::Jump(0, 0), then);
+        let else_jump_ref = self.emit_jump(opcode::JUMP, 0, then);
         self.patch_jump(jump_ref)?;
         self.expression(otherwise)?;
         self.patch_jump(else_jump_ref)?;
@@ -380,7 +375,7 @@ impl<'a> Compiler<'a> {
 
         self.enter_function();
 
-        let jump_ref = self.emit_jump(OpCode::Jump(0, 0), stmt);
+        let jump_ref = self.emit_jump(opcode::JUMP, 0, stmt);
         let ip_start = self.chunk.code.len();
         let arity = decl.params.len() as u8;
 
@@ -408,13 +403,13 @@ impl<'a> Compiler<'a> {
                 let const_idx = self.classes.get(&name)
                     .ok_or(anyhow!("Class '{}' not declared", unsafe { &(*name).value }))?;
                 let value = self.chunk.constants[*const_idx as usize];
-                Some(unsafe { value.as_object().class })
+                Some(value.as_object().as_class())
             },
             None => None
         };
 
         let mut frame = ClassFrame {
-            class: ObjClass::new(decl.name, superclass.map(|gc_ref| unsafe { &*gc_ref })),
+            class: ObjClass::new(decl.name, superclass.map(|ptr| unsafe { &*ptr })),
             superclass
         };
 
@@ -431,14 +426,6 @@ impl<'a> Compiler<'a> {
         // Push class frame to make the current class visible in method bodies
         self.class_frames.push(frame);
 
-        for stmt_id in &decl.methods {
-            let Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
-            let const_idx = self.method(stmt_id, decl)?;
-            let funct_const = self.chunk.constants[const_idx as usize];
-            let frame = self.class_frames.last_mut().unwrap();
-            frame.class.define_method(decl.name, unsafe { funct_const.as_object().function });
-        }
-
         let Stmt::Fn(init_fn_decl) = self.ast.get(&decl.init) else { unreachable!(); };
         let const_idx = self.initializer(stmt, init_fn_decl)?;
         let init_const = self.chunk.constants[const_idx as usize];
@@ -446,14 +433,23 @@ impl<'a> Compiler<'a> {
 
         let frame = self.class_frames.last_mut().unwrap();
         frame.class.declare_method(init_str);
-        frame.class.define_method(init_str, unsafe { init_const.as_object().function });
+        frame.class.define_method(init_str, init_const.as_object().as_function());
+
+        for stmt_id in &decl.methods {
+            let Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
+            let const_idx = self.method(stmt_id, decl)?;
+            let funct_const = self.chunk.constants[const_idx as usize];
+            let frame = self.class_frames.last_mut().unwrap();
+            frame.class.define_method(decl.name, funct_const.as_object().as_function());
+        }
 
         let class = self.class_frames.pop().unwrap().class;
         self.exit_scope(stmt);
 
         let idx = self.chunk.add_constant(Value::from(self.gc.alloc(class)))?;
         self.classes.insert(decl.name, idx);
-        self.emit(OpCode::PushClass(idx), stmt);
+        self.emit(opcode::PUSH_CLASS, stmt);
+        self.emit(idx, stmt);
         
         Ok(())
     }
@@ -478,7 +474,8 @@ impl<'a> Compiler<'a> {
             bail!("Cannot use 'this' outside of a class method");
         }
 
-        self.emit(OpCode::GetLocal(0), expr);
+        self.emit(opcode::GET_LOCAL, expr);
+        self.emit(0, expr);
         Ok(())
     }
 
@@ -490,13 +487,14 @@ impl<'a> Compiler<'a> {
             bail!("Cannot use 'super' outside of a child class method");
         }
 
-        self.emit(OpCode::GetLocal(0), expr);
+        self.emit(opcode::GET_LOCAL, expr);
+        self.emit(0, expr);
         Ok(())
     }
     
     fn unary_expression(&mut self, op: &Operator, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         self.expression(expr)?;
-        self.emit(OpCode::from_operator(op), expr);
+        self.emit(op.as_opcode(), expr);
         Ok(())
     }
 
@@ -530,7 +528,7 @@ impl<'a> Compiler<'a> {
 
         self.expression(left)?;
         self.expression(right)?;
-        self.emit(OpCode::from_operator(op), right);
+        self.emit(op.as_opcode(), right);
         Ok(())
     }
 
@@ -541,25 +539,31 @@ impl<'a> Compiler<'a> {
 
         self.expression(expr)?;
 
-        let op = match self.ast.get(expr) {
+        let (operand, get_op, set_op) = match self.ast.get(expr) {
             Expr::This => {
                 let frame = self.class_frames.last().unwrap();
                 let id = self.resolve_class_member(expr, &frame.class, member)?;
-                if access_kind == AccessKind::Get { OpCode::GetPropertyId(id) } else { OpCode::SetPropertyId(id) }
+                (id, opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
             },
             Expr::Super => {
                 let frame = self.class_frames.last().unwrap();
                 let superclass = unsafe { &*frame.superclass.unwrap() };
                 let id = self.resolve_class_member(expr, superclass, member)?;
-                if access_kind == AccessKind::Get { OpCode::GetPropertyId(id) } else { OpCode::SetPropertyId(id) }
+                (id, opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
             },
             _ => {
                 let const_idx = self.chunk.add_constant(Value::from(member))?;
-                if access_kind == AccessKind::Get { OpCode::GetProperty(const_idx) } else { OpCode::SetProperty(const_idx) }
+                (const_idx, opcode::GET_PROPERTY, opcode::SET_PROPERTY)
             }
         };
 
+        let op = match access_kind {
+            AccessKind::Get => get_op,
+            AccessKind::Set => set_op
+        };
+
         self.emit(op, expr);
+        self.emit(operand, expr);
         Ok(())
     }
 
@@ -582,8 +586,11 @@ impl<'a> Compiler<'a> {
                 let init_str = self.gc.intern("init");
                 let member_id = unsafe { &*superclass }.resolve_id(init_str).unwrap();
 
-                self.emit(OpCode::GetLocal(0), expr);
-                self.emit(OpCode::GetPropertyId(member_id), expr);
+                self.emit(opcode::GET_LOCAL, expr);
+                self.emit(0, expr);
+
+                self.emit(opcode::GET_PROPERTY_ID, expr);
+                self.emit(member_id, expr);
             },
             _ => { self.expression(expr)? }
         };
@@ -591,7 +598,8 @@ impl<'a> Compiler<'a> {
         for arg in args {
             self.expression(arg)?;
         }
-        self.emit(OpCode::Call(args.len() as u8), expr);
+        self.emit(opcode::CALL, expr);
+        self.emit(args.len() as u8, expr);
         Ok(())
     }
     
@@ -599,15 +607,17 @@ impl<'a> Compiler<'a> {
         match literal {
             Literal::Number(num) => {
                 let idx = self.chunk.add_constant(Value::from(*num))?;
-                self.emit(OpCode::PushConstant(idx), expr);
+                self.emit(opcode::PUSH_CONSTANT, expr);
+                self.emit(idx, expr);
             },
             Literal::String(str_ref) => {
                 let idx = self.chunk.add_constant(Value::from(*str_ref))?;
-                self.emit(OpCode::PushConstant(idx), expr);
+                self.emit(opcode::PUSH_CONSTANT, expr);
+                self.emit(idx, expr);
             },
-            Literal::Null => { self.emit(OpCode::PushNull, expr); },
-            Literal::Boolean(true) => { self.emit(OpCode::PushTrue, expr); },
-            Literal::Boolean(false) => { self.emit(OpCode::PushFalse, expr); }
+            Literal::Null => { self.emit(opcode::PUSH_NULL, expr); },
+            Literal::Boolean(true) => { self.emit(opcode::PUSH_TRUE, expr); },
+            Literal::Boolean(false) => { self.emit(opcode::PUSH_FALSE, expr); }
         };
 
         return Ok(());
@@ -616,21 +626,23 @@ impl<'a> Compiler<'a> {
     fn identifier(&mut self, expr: &ASTId<Expr>, name: *mut ObjString, assign: bool) -> Result<(), anyhow::Error> {
         let class_frame_idx = self.resolve_member_class(name);
 
-        let (get_op, set_op) = if let Some(local_idx) = self.resolve_local(name) {
-            (OpCode::GetLocal(local_idx), OpCode::SetLocal(local_idx))
+        let (operand, get_op, set_op) = if let Some(local_idx) = self.resolve_local(name) {
+            (local_idx, opcode::GET_LOCAL, opcode::SET_LOCAL)
         } else if let Some(upvalue_idx) = self.resolve_upvalue(name, class_frame_idx)? {
-            (OpCode::GetUpvalue(upvalue_idx), OpCode::SetUpvalue(upvalue_idx))
+            (upvalue_idx, opcode::GET_UPVALUE, opcode::SET_UPVALUE)
         } else if let Some(id) = self.class_frames.last().and_then(|f| f.class.resolve_id(name)) {
             // Implicit 'this'
-            self.emit(OpCode::GetLocal(0), expr);
-            (OpCode::GetPropertyId(id), OpCode::SetPropertyId(id))
+            self.emit(opcode::GET_LOCAL, expr);
+            self.emit(0, expr);
+            (id, opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
         } else {
             let const_idx = self.chunk.add_constant(Value::from(name))?;
-            (OpCode::GetGlobal(const_idx), OpCode::SetGlobal(const_idx))
+            (const_idx, opcode::GET_GLOBAL, opcode::SET_GLOBAL)
         };
 
         let op = if assign { set_op } else { get_op };
         self.emit(op, expr);
+        self.emit(operand, expr);
         return Ok(());
     }
 }
