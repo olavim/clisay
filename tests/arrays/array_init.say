@@ -1,0 +1,6 @@
+say arr1 = [];
+say arr2 = [1];
+say arr3 = [true];
+say arr4 = [null];
+say arr5 = ["foo"];
+say arr6 = [[]];

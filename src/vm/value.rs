@@ -1,13 +1,13 @@
 use std::{fmt, mem};
 
 use super::gc::{Gc, GcTraceable};
-use super::objects::{self, Object};
+use super::objects::{self, Object, ObjectKind};
 
 pub enum ValueKind {
     Null,
     Number,
     Boolean,
-    Object(usize)
+    Object(ObjectKind)
 }
 
 impl fmt::Display for ValueKind {
@@ -47,6 +47,7 @@ impl Value {
      */
     const OBJECT_MASK: u64 = Self::SIGN | Self::NAN_MASK;
     const PTR_MASK: u64 = 0x0000FFFFFFFFFFFF;
+    
     const CALLABLE_MASK: u64 = Self::OBJECT_MASK | (1 << 48); // 0x4000000000000000
 
     pub const NULL: Self = Self(Self::NAN_MASK | 0b01);
@@ -61,7 +62,7 @@ impl Value {
         } else if self.is_number() {
             ValueKind::Number
         } else if self.is_object() {
-            ValueKind::Object((self.0 & 0b111) as usize)
+            ValueKind::Object(unsafe { (*self.as_object().as_header()).kind })
         } else {
             unreachable!("Invalid value type")
         }
@@ -149,16 +150,15 @@ impl fmt::Display for Value {
             ValueKind::Null => format!("null"),
             ValueKind::Number => format!("number"),
             ValueKind::Boolean => format!("boolean"),
-            ValueKind::Object(tag) => match tag as usize {
-                objects::TAG_BOUND_METHOD => format!("function"),
-                objects::TAG_NATIVE_FUNCTION => format!("function"),
-                objects::TAG_CLOSURE => format!("function"),
-                objects::TAG_CLASS => format!("class"),
-                objects::TAG_INSTANCE => format!("instance"),
-                objects::TAG_STRING => format!("string"),
-                objects::TAG_UPVALUE => format!("upvalue"),
-                _ => format!("object")
-            }
+            ValueKind::Object(ObjectKind::Function) => format!("function"),
+            ValueKind::Object(ObjectKind::BoundMethod) => format!("function"),
+            ValueKind::Object(ObjectKind::NativeFunction) => format!("function"),
+            ValueKind::Object(ObjectKind::Closure) => format!("function"),
+            ValueKind::Object(ObjectKind::Class) => format!("class"),
+            ValueKind::Object(ObjectKind::Instance) => format!("instance"),
+            ValueKind::Object(ObjectKind::String) => format!("string"),
+            ValueKind::Object(ObjectKind::Upvalue) => format!("upvalue"),
+            ValueKind::Object(ObjectKind::Array) => format!("array"),
         })
     }
 }

@@ -8,7 +8,7 @@ fn parser() {
 #[test]
 fn classes() {
     test_folder("tests/classes");
-    // test_file("tests/classes/method_closures.say");
+    // test_file("tests/classes/field_init.say");
 }
 
 #[test]
@@ -25,6 +25,11 @@ fn functions() {
 fn closures() {
     test_folder("tests/closures");
     // test_file("tests/closures/deep_sum.say");
+}
+
+#[test]
+fn arrays() {
+    test_folder("tests/arrays");
 }
 
 #[test]

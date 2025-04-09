@@ -33,9 +33,11 @@ pub enum Operator {
     LogicalNot,
     BitNot,
     Group,
+    Array,
 
     // Postfix
-    Call
+    Call,
+    Index
 }
 
 impl Operator {
@@ -52,6 +54,7 @@ impl Operator {
     pub fn parse_prefix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
             TokenType::LeftParen => Operator::Group,
+            TokenType::LeftBracket => Operator::Array,
             TokenType::Minus => Operator::Negate,
             TokenType::Exclamation => Operator::LogicalNot,
             TokenType::Tilde => Operator::BitNot,
@@ -91,6 +94,7 @@ impl Operator {
                 (None, TokenType::Exclamation) => Some(Operator::LogicalNot),
                 (None, TokenType::Question) => Some(Operator::Ternary),
                 (None, TokenType::Dot) => Some(Operator::MemberAccess),
+                (None, TokenType::LeftBracket) => Some(Operator::Index),
         
                 (Some(Operator::LessThan), TokenType::LessThan) => Some(Operator::LeftShift),
                 (Some(Operator::GreaterThan), TokenType::GreaterThan) => Some(Operator::RightShift),
@@ -132,6 +136,7 @@ impl Operator {
     pub fn parse_postfix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
             TokenType::LeftParen => Operator::Call,
+            TokenType::LeftBracket => Operator::Index,
             _ => return None
         };
     
@@ -182,7 +187,7 @@ impl Operator {
     pub fn prefix_precedence(&self) -> Option<u8> {
         let bp = match self {
             Operator::Negate | Operator::LogicalNot | Operator::BitNot => 13,
-            Operator::Group => 16,
+            Operator::Group | Operator::Array => 16,
             _ => return None
         };
         Some(bp)
@@ -190,7 +195,7 @@ impl Operator {
 
     pub fn postfix_precedence(&self) -> Option<u8> {
         let bp = match self {
-            Operator::Call => 16,
+            Operator::Call | Operator::Index => 16,
             _ => return None
         };
         Some(bp)
@@ -204,6 +209,7 @@ impl Operator {
             Operator::LogicalNot => false,
             Operator::BitNot => false,
             Operator::Group => false,
+            Operator::Array => false,
             _ => true
         };
     }
@@ -259,6 +265,8 @@ impl fmt::Display for Operator {
             Operator::Group => "<group>",
             Operator::Call => "<call>",
             Operator::MemberAccess => ".",
+            Operator::Array => "<array>",
+            Operator::Index => "<index>",
             Operator::Assign(None) => "=",
             Operator::Assign(Some(op)) => match **op {
                 Operator::Add => "+=",

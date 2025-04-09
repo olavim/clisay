@@ -50,6 +50,16 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
         }
     }
 
+    /// Pops a slice of `count` elements from the stack and copies them into a new `Vec<T>`.
+    #[inline]
+    pub fn pop_slice(&mut self, count: usize) -> Vec<T> {
+        unsafe {
+            self.top = self.top.sub(count);
+            let slice = std::slice::from_raw_parts(self.top, count);
+            Vec::from(slice)
+        }
+    }
+
     #[inline]
     pub fn truncate(&mut self, count: usize) {
         unsafe {
@@ -141,8 +151,8 @@ impl<'a, T: Copy, const N: usize> CachedStack<T, N> {
     }
 
     pub fn push(&mut self, value: T) {
-        self.top = value;
         self.stack.push(value);
+        self.top = value;
     }
 
     pub fn pop(&mut self) -> T {

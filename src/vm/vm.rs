@@ -14,7 +14,7 @@ use super::parser::Parser;
 use super::stack::{CachedStack, Stack};
 use super::value::Value;
 use super::gc::{Gc, GcTraceable};
-use super::objects::{self, ClassMember, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object};
+use super::objects::{self, ClassMember, ObjArray, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
 use super::compiler::Compiler;
 
 const MAX_STACK: usize = 16384;
@@ -218,7 +218,7 @@ impl<'out> Vm<'out> {
         self.alloc(closure)
     }
 
-    fn get_property(&mut self, instance_ref: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
+    fn get_instance_property(&mut self, instance_ref: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
         let instance = unsafe { &*instance_ref };
         let class = unsafe { &*instance.class };
 
@@ -232,7 +232,7 @@ impl<'out> Vm<'out> {
     fn get_property_by_id(&mut self, instance_ref: *mut ObjInstance, id: u8) -> Value {
         let value = unsafe { (*instance_ref).get(id) };
         match value.kind() {
-            ValueKind::Object(tag) if tag == objects::TAG_FUNCTION => {
+            ValueKind::Object(ObjectKind::Function) => {
                 let closure = self.create_closure(value.as_object().as_function());
                 let method = self.alloc(ObjBoundMethod::new(instance_ref, closure));
                 Value::from(method)
@@ -316,6 +316,7 @@ impl<'out> Vm<'out> {
                 },
                 opcode::POP => self.op_pop(),
                 opcode::CLOSE_UPVALUE => self.op_close_upvalue(),
+                opcode::ARRAY => self.op_array(),
                 opcode::CALL => self.op_call()?,
                 opcode::JUMP => self.op_jump(),
                 opcode::JUMP_IF_FALSE => self.op_jump_if_false(),
@@ -331,8 +332,8 @@ impl<'out> Vm<'out> {
                 opcode::SET_LOCAL => self.op_set_local(),
                 opcode::GET_UPVALUE => self.op_get_upvalue(),
                 opcode::SET_UPVALUE => self.op_set_upvalue(),
-                opcode::GET_PROPERTY => self.op_get_property()?,
-                opcode::SET_PROPERTY => self.op_set_property()?,
+                opcode::GET_INDEX => self.op_get_index()?,
+                opcode::SET_INDEX => self.op_set_index()?,
                 opcode::GET_PROPERTY_ID => self.op_get_property_by_id()?,
                 opcode::SET_PROPERTY_ID => self.op_set_property_by_id()?,
                 opcode::ADD => self.op_add()?,
@@ -387,6 +388,13 @@ impl<'out> Vm<'out> {
         self.stack.truncate(1);
     }
 
+    fn op_array(&mut self) {
+        let len = self.chunk.read_next() as usize;
+        let array = ObjArray::new(self.stack.pop_slice(len));
+        let array = self.alloc(array);
+        self.stack.push(Value::from(array));
+    }
+
     fn op_call(&mut self) -> Result<(), anyhow::Error> {
         let arg_count = self.chunk.read_next() as usize;
         let value = self.stack.peek(arg_count);
@@ -396,7 +404,9 @@ impl<'out> Vm<'out> {
         }
 
         let object = value.as_object();
-        match object.tag() {
+        let tag = object.tag();
+
+        match tag {
             objects::TAG_CLOSURE => self.call_closure(arg_count, object),
             objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, object),
             objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object),
@@ -485,53 +495,89 @@ impl<'out> Vm<'out> {
         unsafe { *(*upvalue).location = self.stack.peek(0) };
     }
 
-    fn op_get_property(&mut self) -> Result<(), anyhow::Error> {
-        let const_idx = self.chunk.read_next() as usize;
-        let value = self.stack.pop();
-        if !matches!(value.kind(), ValueKind::Object(tag) if tag == objects::TAG_INSTANCE) {
-            return self.error(format!("Invalid property access: {}", value.fmt()));
-        }
+    fn op_get_index(&mut self) -> Result<(), anyhow::Error> {
+        let prop = self.stack.pop();
+        let target = self.stack.pop();
+        let ValueKind::Object(object_kind) = target.kind() else {
+            return self.error(format!("Invalid property access: {}", target.fmt()));
+        };
 
-        let object = value.as_object();
-        let instance_ref = object.as_instance();
-        let prop = self.chunk.constants[const_idx].as_object().as_string();
+        match object_kind {
+            ObjectKind::Instance => {
+                if !matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
+                    return self.error(format!("Invalid property access: {}.{}", target.fmt(), prop.fmt()));
+                };
+        
+                let instance_ref = target.as_object().as_instance();
+                if let Some(value) = self.get_instance_property(instance_ref, prop.as_object().as_string()) {
+                    self.stack.push(value);
+                    Ok(())
+                } else {
+                    self.error(format!("Property not found: {}", prop.fmt()))
+                }
+            },
+            ObjectKind::Array => {
+                if !matches!(prop.kind(), ValueKind::Number) {
+                    return self.error(format!("Invalid array index: {}", prop.fmt()));
+                };
 
-        if let Some(value) = self.get_property(instance_ref, prop) {
-            self.stack.push(value);
-            Ok(())
-        } else {
-            bail!("Property not found")
+                let array_ref = target.as_object().as_array();
+                let index = prop.as_number() as usize;
+                let value = unsafe { (*array_ref).values[index] };
+                self.stack.push(value);
+                Ok(())
+            },
+            _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
     }
 
-    fn op_set_property(&mut self) -> Result<(), anyhow::Error> {
-        let const_idx = self.chunk.read_next() as usize;
-        let value = self.stack.pop();
-        if !matches!(value.kind(), ValueKind::Object(tag) if tag == objects::TAG_INSTANCE) {
-            return self.error(format!("Invalid property access: {}", value.fmt()));
-        }
+    fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
+        let prop = self.stack.pop();
+        let target = self.stack.pop();
+        let ValueKind::Object(object_kind) = target.kind() else {
+            return self.error(format!("Invalid property access: {}", target.fmt()));
+        };
 
-        let object = value.as_object();
-        let instance_ref = object.as_instance();
-        let prop = self.chunk.constants[const_idx].as_object().as_string();
+        match object_kind {
+            ObjectKind::Instance => {
+                if !matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
+                    return self.error(format!("Invalid property access: {}.{}", target.fmt(), prop.fmt()));
+                };
 
-        let instance = unsafe { &mut *instance_ref };
-        let class = unsafe { &*instance.class };
-        match class.resolve(prop) {
-            Some(ClassMember::Field(id)) => {
-                let value = self.stack.peek(0);
-                instance.values.insert(id, value);
+                let object = target.as_object();
+                let instance_ref = object.as_instance();
+                let prop_str = prop.as_object().as_string();
+        
+                let instance = unsafe { &mut *instance_ref };
+                let class = unsafe { &*instance.class };
+                match class.resolve(prop_str) {
+                    Some(ClassMember::Field(id)) => {
+                        let value = self.stack.peek(0);
+                        instance.values.insert(id, value);
+                        Ok(())
+                    },
+                    Some(ClassMember::Method(_)) => return self.error(format!("Cannot assign to instance method '{}'", unsafe { &*prop_str }.value)),
+                    None => self.error(format!("Property not found: {}", prop.fmt()))
+                }
+            },
+            ObjectKind::Array => {
+                if !matches!(prop.kind(), ValueKind::Number) {
+                    return self.error(format!("Invalid array index: {}", prop.fmt()));
+                };
+
+                let array_ref = target.as_object().as_array();
+                let index = prop.as_number() as usize;
+                unsafe { (*array_ref).values[index] = self.stack.peek(0) };
                 Ok(())
             },
-            Some(ClassMember::Method(_)) => return self.error(format!("Cannot assign to instance method '{}'", unsafe { &*prop }.value)),
-            None => bail!("No such property")
+            _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
     }
 
     fn op_get_property_by_id(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.chunk.read_next();
         let value = self.stack.pop();
-        if !matches!(value.kind(), ValueKind::Object(tag) if tag == objects::TAG_INSTANCE) {
+        if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
 
@@ -545,7 +591,7 @@ impl<'out> Vm<'out> {
     fn op_set_property_by_id(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.chunk.read_next();
         let value = self.stack.pop();
-        if !matches!(value.kind(), ValueKind::Object(tag) if tag == objects::TAG_INSTANCE) {
+        if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
 
@@ -562,7 +608,7 @@ impl<'out> Vm<'out> {
         let a = self.stack.pop();
         let result = match (a.kind(), b.kind()) {
             (ValueKind::Number, ValueKind::Number) => Value::from(a.as_number() + b.as_number()),
-            (ValueKind::Object(tag1), ValueKind::Object(tag2)) if tag1 == objects::TAG_STRING && tag2 == objects::TAG_STRING => {
+            (ValueKind::Object(ObjectKind::String), ValueKind::Object(ObjectKind::String)) => {
                 let sa = unsafe { &*a.as_object().as_string() }.value.as_str();
                 let sb = unsafe { &*b.as_object().as_string() }.value.as_str();
                 let s = [sa, sb].concat();

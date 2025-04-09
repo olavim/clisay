@@ -1,0 +1,11 @@
+say arr = [0, true, null, "foo", ["first"]];
+arr[0] = 1;
+arr[1] = false;
+arr[2] = "bar";
+arr[3] = 2.5;
+arr[4][0] = "second";
+print(arr[0]); // expect: 1
+print(arr[1]); // expect: false
+print(arr[2]); // expect: bar
+print(arr[3]); // expect: 2.5
+print(arr[4][0]); // expect: second

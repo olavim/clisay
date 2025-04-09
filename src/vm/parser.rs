@@ -28,6 +28,8 @@ pub enum Expr {
     Binary(Operator, ASTId<Expr>, ASTId<Expr>),
     Ternary(ASTId<Expr>, ASTId<Expr>, ASTId<Expr>),
     Call(ASTId<Expr>, Vec<ASTId<Expr>>),
+    Index(ASTId<Expr>, ASTId<Expr>),
+    Array(Vec<ASTId<Expr>>),
     This,
     Super
 }
@@ -429,15 +431,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 right = self.ast.add_expr(kind, pos.clone());
                 Expr::Binary(op, expr, right)
             },
-            // Operator::MemberAccess => {
-            //     let member = stream.expect(TokenType::Identifier)?.lexeme.clone();
-            //     ExprKind::MemberAccess(Box::new(expr), member)
-            // },
             Operator::Ternary => {
                 let left = self.parse_expr_precedence(0)?;
                 self.tokens.expect(TokenType::Colon)?;
                 let right = self.parse_expr_precedence(0)?;
                 Expr::Ternary(expr, left, right)
+            },
+            Operator::MemberAccess => {
+                let id = self.parse_identifier()?;
+                let right = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                Expr::Binary(op, expr, right)
             },
             _ => {
                 let right = self.parse_expr_precedence(op.infix_precedence().unwrap())?;
@@ -456,6 +459,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 self.tokens.expect(TokenType::RightParen)?;
                 return Ok(expr);
             },
+            Operator::Array => {
+                let exprs = self.parse_expr_list(TokenType::RightBracket)?;
+                return Ok(self.ast.add_expr(Expr::Array(exprs), pos));
+            },
             _ => {
                 let right = self.parse_expr_precedence(op.prefix_precedence().unwrap())?;
                 Expr::Unary(op, right)
@@ -471,19 +478,31 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let args = self.parse_args()?;
                 Ok(self.ast.add_expr(Expr::Call(expr, args), pos))
             },
+            Operator::Index => {
+                let index = self.parse_expr()?;
+                self.tokens.expect(TokenType::RightBracket)?;
+                Ok(self.ast.add_expr(Expr::Index(expr, index), pos))
+            },
             _ => unreachable!()
         }
     }
 
     fn parse_args(&mut self) -> Result<Vec<ASTId<Expr>>, anyhow::Error> {
+        if self.tokens.next_if(TokenType::RightParen).is_some() {
+            return Ok(Vec::new());
+        }
+        self.parse_expr_list(TokenType::RightParen)
+    }
+
+    fn parse_expr_list(&mut self, end_token: TokenType) -> Result<Vec<ASTId<Expr>>, anyhow::Error> {
         let mut args: Vec<ASTId<Expr>> = Vec::new();
-        while !self.tokens.match_next(TokenType::RightParen) {
+        while !self.tokens.match_next(end_token) {
             if args.len() > 0 {
                 self.tokens.expect(TokenType::Comma)?;
             }
             args.push(self.parse_expr()?);
         }
-        self.tokens.expect(TokenType::RightParen)?;
+        self.tokens.expect(end_token)?;
         Ok(args)
     }
 

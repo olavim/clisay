@@ -25,6 +25,7 @@ ops! {
     JUMP,
     JUMP_IF_FALSE,
     CLOSE_UPVALUE,
+    ARRAY,
     RETURN,
 
     // Explicit stack manipulation
@@ -43,8 +44,8 @@ ops! {
     SET_LOCAL,
     GET_UPVALUE,
     SET_UPVALUE,
-    GET_PROPERTY,
-    SET_PROPERTY,
+    GET_INDEX,
+    SET_INDEX,
     GET_PROPERTY_ID,
     SET_PROPERTY_ID,
 

@@ -15,7 +15,8 @@ pub enum ObjectKind {
     String,
     Function,
     Instance,
-    Upvalue
+    Upvalue,
+    Array
 }
 
 impl fmt::Display for ObjectKind {
@@ -28,7 +29,8 @@ impl fmt::Display for ObjectKind {
             ObjectKind::Closure => "function",
             ObjectKind::Class => "class",
             ObjectKind::Instance => "object",
-            ObjectKind::Upvalue => "upvalue"
+            ObjectKind::Upvalue => "upvalue",
+            ObjectKind::Array => "array"
         };
         write!(f, "{}", kind)
     }
@@ -58,19 +60,18 @@ pub union Object {
     pub closure: *mut ObjClosure,
     pub class: *mut ObjClass,
     pub instance: *mut ObjInstance,
-    pub upvalue: *mut ObjUpvalue
+    pub upvalue: *mut ObjUpvalue,
+    pub array: *mut ObjArray
 }
 
-pub const TAG_STRING: usize = 0;
-pub const TAG_FUNCTION: usize = 1;
-pub const TAG_INSTANCE: usize = 2;
-pub const TAG_UPVALUE: usize = 3;
-pub const TAG_CLOSURE: usize = 4;
-pub const TAG_NATIVE_FUNCTION: usize = 5;
-pub const TAG_BOUND_METHOD: usize = 6;
-pub const TAG_CLASS: usize = 7;
+pub const TAG_HEADER: u8 = 0;
+pub const TAG_CLOSURE: u8 = 4;
+pub const TAG_NATIVE_FUNCTION: u8 = 5;
+pub const TAG_BOUND_METHOD: u8 = 6;
+pub const TAG_CLASS: u8 = 7;
 
 const PTR_TAG: usize = 0b111;
+const PTR_TAG_U8: u8 = 0b111;
 
 fn without_tag<T>(ptr: *mut T) -> *mut T {
     ((ptr as usize) & !PTR_TAG) as *mut T
@@ -78,8 +79,8 @@ fn without_tag<T>(ptr: *mut T) -> *mut T {
 
 impl Object {
     #[inline]
-    pub fn tag(self) -> usize {
-        unsafe { (self.header as usize) & PTR_TAG }
+    pub fn tag(self) -> u8 {
+        unsafe { (self.header as u8) & PTR_TAG_U8 }
     }
 
     pub fn free(self) -> usize {
@@ -92,30 +93,36 @@ impl Object {
         }
 
         match self.tag() {
-            TAG_STRING => free_object!(self.as_string()),
-            TAG_FUNCTION => free_object!(self.as_function()),
+            TAG_CLOSURE => free_object!(self.as_closure()),
             TAG_NATIVE_FUNCTION => free_object!(self.as_native_function()),
             TAG_BOUND_METHOD => free_object!(self.as_bound_method()),
-            TAG_CLOSURE => free_object!(self.as_closure()),
             TAG_CLASS => free_object!(self.as_class()),
-            TAG_INSTANCE => free_object!(self.as_instance()),
-            TAG_UPVALUE => free_object!(self.as_upvalue()),
-            _ => unsafe { std::hint::unreachable_unchecked() }
+            _ => match unsafe { (*self.as_header()).kind } {
+                ObjectKind::String => free_object!(self.as_string()),
+                ObjectKind::Function => free_object!(self.as_function()),
+                ObjectKind::Instance => free_object!(self.as_instance()),
+                ObjectKind::Upvalue => free_object!(self.as_upvalue()),
+                ObjectKind::Array => free_object!(self.as_array()),
+                _ => unsafe { std::hint::unreachable_unchecked() }
+            }
         }
     }
 
     fn as_traceable(&self) -> &dyn GcTraceable {
         unsafe { 
             match self.tag() {
-                TAG_STRING => &*self.as_string(),
-                TAG_FUNCTION => &*self.as_function(),
+                TAG_CLOSURE => &*self.as_closure(),
                 TAG_NATIVE_FUNCTION => &*self.as_native_function(),
                 TAG_BOUND_METHOD => &*self.as_bound_method(),
-                TAG_CLOSURE => &*self.as_closure(),
                 TAG_CLASS => &*self.as_class(),
-                TAG_INSTANCE => &*self.as_instance(),
-                TAG_UPVALUE => &*self.as_upvalue(),
-                _ => std::hint::unreachable_unchecked()
+                _ => match (*self.as_header()).kind  {
+                    ObjectKind::String => &*self.as_string(),
+                    ObjectKind::Function => &*self.as_function(),
+                    ObjectKind::Instance => &*self.as_instance(),
+                    ObjectKind::Upvalue => &*self.as_upvalue(),
+                    ObjectKind::Array => &*self.as_array(),
+                    _ => std::hint::unreachable_unchecked()
+                }
             }
         }
     }
@@ -164,6 +171,11 @@ impl Object {
     pub fn as_upvalue(&self) -> *mut ObjUpvalue {
         unsafe { without_tag(self.upvalue) }
     }
+
+    #[inline]
+    pub fn as_array(&self) -> *mut ObjArray {
+        unsafe { without_tag(self.array) }
+    }
 }
 
 impl GcTraceable for Object {
@@ -192,10 +204,12 @@ macro_rules! impl_from_for_object {
     };
 }
 
-impl_from_for_object!(string, ObjString, TAG_STRING);
-impl_from_for_object!(instance, ObjInstance, TAG_INSTANCE);
-impl_from_for_object!(upvalue, ObjUpvalue, TAG_UPVALUE);
-impl_from_for_object!(function, ObjFn, TAG_FUNCTION);
+impl_from_for_object!(function, ObjFn, TAG_HEADER);
+impl_from_for_object!(string, ObjString, TAG_HEADER);
+impl_from_for_object!(instance, ObjInstance, TAG_HEADER);
+impl_from_for_object!(upvalue, ObjUpvalue, TAG_HEADER);
+impl_from_for_object!(array, ObjArray, TAG_HEADER);
+
 impl_from_for_object!(native_function, ObjNativeFn, TAG_NATIVE_FUNCTION);
 impl_from_for_object!(bound_method, ObjBoundMethod, TAG_BOUND_METHOD);
 impl_from_for_object!(closure, ObjClosure, TAG_CLOSURE);
@@ -561,5 +575,37 @@ impl GcTraceable for ObjUpvalue {
 
     fn size(&self) -> usize {
         mem::size_of::<ObjUpvalue>()
+    }
+}
+
+#[repr(align(8))]
+#[repr(C)]
+pub struct ObjArray {
+    pub header: ObjectHeader,
+    pub values: Vec<Value>
+}
+
+impl ObjArray {
+    pub fn new(values: Vec<Value>) -> ObjArray {
+        ObjArray {
+            header: ObjectHeader::new(ObjectKind::Array),
+            values
+        }
+    }
+}
+
+impl GcTraceable for ObjArray {
+    fn fmt(&self) -> String {
+        format!("<array {}>", self.values.len())
+    }
+
+    fn mark(&self, gc: &mut Gc) {
+        for value in &self.values {
+            value.mark(gc);
+        }
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<ObjArray>() + self.values.capacity() * mem::size_of::<Value>()
     }
 }

@@ -1,0 +1,6 @@
+say arr = [0, true, null, "foo", ["inner"]];
+print(arr[0]); // expect: 0
+print(arr[1]); // expect: true
+print(arr[2]); // expect: null
+print(arr[3]); // expect: foo
+print(arr[4][0]); // expect: inner

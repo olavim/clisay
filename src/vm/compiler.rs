@@ -341,17 +341,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn if_expression(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &ASTId<Expr>) -> Result<(), anyhow::Error> {
-        self.expression(cond)?;
-        let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, cond);
-        self.expression(then)?;
-        let else_jump_ref = self.emit_jump(opcode::JUMP, 0, then);
-        self.patch_jump(jump_ref)?;
-        self.expression(otherwise)?;
-        self.patch_jump(else_jump_ref)?;
-        Ok(())
-    }
-
     fn method(&mut self, stmt: &ASTId<Stmt>, decl: &Box<FnDecl>) -> Result<u8, anyhow::Error> {
         let prev_fn_type = self.fn_type;
         self.fn_type = FnType::Method;
@@ -460,6 +449,8 @@ impl<'a> Compiler<'a> {
             Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
             Expr::Ternary(cond, then, otherwise) => self.if_expression(cond, then, otherwise)?,
             Expr::Call(expr, args) => self.call_expression(expr, args)?,
+            Expr::Array(exprs) => self.array_expression(expr, exprs)?,
+            Expr::Index(expr, id) => self.member_access(expr, id, AccessKind::Get)?,
             Expr::Literal(lit) => self.literal(expr, lit)?,
             Expr::Identifier(name) => self.identifier(expr, *name, false)?,
             Expr::This => self.this(expr)?,
@@ -491,6 +482,17 @@ impl<'a> Compiler<'a> {
         self.emit(0, expr);
         Ok(())
     }
+
+    fn if_expression(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+        self.expression(cond)?;
+        let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, cond);
+        self.expression(then)?;
+        let else_jump_ref = self.emit_jump(opcode::JUMP, 0, then);
+        self.patch_jump(jump_ref)?;
+        self.expression(otherwise)?;
+        self.patch_jump(else_jump_ref)?;
+        Ok(())
+    }
     
     fn unary_expression(&mut self, op: &Operator, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         self.expression(expr)?;
@@ -517,6 +519,11 @@ impl<'a> Compiler<'a> {
                     self.member_access(obj, member, AccessKind::Set)?;
                     return Ok(());
                 },
+                Expr::Index(obj, member) => {
+                    self.expression(right)?;
+                    self.member_access(obj, member, AccessKind::Set)?;
+                    return Ok(());
+                },
                 _ => compiler_error!(self, "Invalid assignment", left)
             }
         }
@@ -533,27 +540,23 @@ impl<'a> Compiler<'a> {
     }
 
     fn member_access(&mut self, expr: &ASTId<Expr>, member_expr: &ASTId<Expr>, access_kind: AccessKind) -> Result<(), anyhow::Error> {
-        let Expr::Identifier(member) = *self.ast.get(member_expr) else {
-            compiler_error!(self, "Invalid member access", member_expr);
-        };
-
         self.expression(expr)?;
 
-        let (operand, get_op, set_op) = match self.ast.get(expr) {
-            Expr::This => {
+        let (operand, get_op, set_op) = match (self.ast.get(expr), self.ast.get(member_expr)) {
+            (Expr::This, Expr::Literal(Literal::String(member))) => {
                 let frame = self.class_frames.last().unwrap();
-                let id = self.resolve_class_member(expr, &frame.class, member)?;
-                (id, opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
+                let id = self.resolve_class_member(expr, &frame.class, *member)?;
+                (Some(id), opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
             },
-            Expr::Super => {
+            (Expr::Super, Expr::Literal(Literal::String(member))) => {
                 let frame = self.class_frames.last().unwrap();
                 let superclass = unsafe { &*frame.superclass.unwrap() };
-                let id = self.resolve_class_member(expr, superclass, member)?;
-                (id, opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
+                let id = self.resolve_class_member(expr, superclass, *member)?;
+                (Some(id), opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
             },
             _ => {
-                let const_idx = self.chunk.add_constant(Value::from(member))?;
-                (const_idx, opcode::GET_PROPERTY, opcode::SET_PROPERTY)
+                self.expression(member_expr)?;
+                (None, opcode::GET_INDEX, opcode::SET_INDEX)
             }
         };
 
@@ -563,7 +566,9 @@ impl<'a> Compiler<'a> {
         };
 
         self.emit(op, expr);
-        self.emit(operand, expr);
+        if let Some(operand) = operand {
+            self.emit(operand, expr);
+        }
         Ok(())
     }
 
@@ -600,6 +605,15 @@ impl<'a> Compiler<'a> {
         }
         self.emit(opcode::CALL, expr);
         self.emit(args.len() as u8, expr);
+        Ok(())
+    }
+    
+    fn array_expression(&mut self, expr: &ASTId<Expr>, exprs: &Vec<ASTId<Expr>>) -> Result<(), anyhow::Error> {
+        for item in exprs {
+            self.expression(item)?;
+        }
+        self.emit(opcode::ARRAY, expr);
+        self.emit(exprs.len() as u8, expr);
         Ok(())
     }
     

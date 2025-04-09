@@ -101,6 +101,8 @@ tokens! {
     RightBrace => "}",
     LeftParen => "(",
     RightParen => ")",
+    LeftBracket => "[",
+    RightBracket => "]",
     Question => "?",
     Exclamation => "!",
     Semicolon => ";",
