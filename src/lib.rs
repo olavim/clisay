@@ -2,6 +2,7 @@
 mod _tests;
 
 mod lexer;
+mod parser;
 mod vm;
 
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {

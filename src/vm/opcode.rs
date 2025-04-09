@@ -1,3 +1,5 @@
+use crate::parser::Operator;
+
 pub type OpCode = u8;
 
 macro_rules! ops_ {
@@ -72,4 +74,27 @@ ops! {
     NOT,
     AND,
     OR
+}
+
+pub fn from_operator(op: &Operator) -> OpCode {
+    return match op {
+        Operator::Add => ADD,
+        Operator::Subtract => SUBTRACT,
+        Operator::Multiply => MULTIPLY,
+        Operator::Divide => DIVIDE,
+        Operator::LeftShift => LEFT_SHIFT,
+        Operator::RightShift => RIGHT_SHIFT,
+        Operator::LessThan => LESS_THAN,
+        Operator::LessThanEqual => LESS_THAN_EQUAL,
+        Operator::GreaterThan => GREATER_THAN,
+        Operator::GreaterThanEqual => GREATER_THAN_EQUAL,
+        Operator::LogicalEqual => EQUAL,
+        Operator::LogicalNotEqual => NOT_EQUAL,
+        Operator::LogicalAnd => AND,
+        Operator::LogicalOr => OR,
+        Operator::BitAnd => BIT_AND,
+        Operator::BitOr => BIT_OR,
+        Operator::BitXor => BIT_XOR,
+        _ => panic!("Invalid operator")
+    };
 }

@@ -1,19 +1,18 @@
+mod operator;
+
 use std::collections::HashSet;
 use std::{any::Any, marker::PhantomData};
 
 use anyhow::bail;
+pub use operator::Operator;
 
 use crate::lexer::{SourcePosition, TokenStream, TokenType};
-
-use super::gc::Gc;
-use super::objects::ObjString;
-use super::operator::Operator;
 
 pub enum Literal {
     Null,
     Boolean(bool),
     Number(f64),
-    String(*mut ObjString)
+    String(String)
 }
 
 pub trait ASTKind {
@@ -23,7 +22,7 @@ pub trait ASTKind {
 
 pub enum Expr {
     Literal(Literal),
-    Identifier(*mut ObjString),
+    Identifier(String),
     Unary(Operator, ASTId<Expr>),
     Binary(Operator, ASTId<Expr>, ASTId<Expr>),
     Ternary(ASTId<Expr>, ASTId<Expr>, ASTId<Expr>),
@@ -45,21 +44,21 @@ impl ASTKind for Expr {
 }
 
 pub struct FieldInit {
-    pub name: *mut ObjString,
+    pub name: String,
     pub value: Option<ASTId<Expr>>
 }
 
 pub struct FnDecl {
-    pub name: *mut ObjString,
-    pub params: Vec<*mut ObjString>,
+    pub name: String,
+    pub params: Vec<String>,
     pub body: ASTId<Stmt>
 }
 
 pub struct ClassDecl {
-    pub name: *mut ObjString,
-    pub superclass: Option<*mut ObjString>,
+    pub name: String,
+    pub superclass: Option<String>,
     pub init: ASTId<Stmt>,
-    pub fields: HashSet<*mut ObjString>,
+    pub fields: HashSet<String>,
     pub methods: Vec<ASTId<Stmt>>
 }
 
@@ -142,20 +141,18 @@ impl AST {
 }
 
 pub struct Parser<'parser, 'vm> {
-    gc: &'vm mut Gc,
     tokens: &'vm mut TokenStream<'vm>,
     ast: &'parser mut AST,
-    current_class: Option<*mut ObjString>
+    current_class: Option<String>
 }
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
-    pub fn parse(gc: &'vm mut Gc, tokens: &'vm mut TokenStream<'vm>) -> Result<AST, anyhow::Error> {
+    pub fn parse(tokens: &'vm mut TokenStream<'vm>) -> Result<AST, anyhow::Error> {
         let mut ast = AST {
             nodes: Vec::new()
         };
 
         let mut parser = Parser {
-            gc,
             tokens,
             ast: &mut ast,
             current_class: None
@@ -171,9 +168,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(ast)
     }
 
-    fn parse_identifier(&mut self) -> Result<*mut ObjString, anyhow::Error> {
+    fn parse_identifier(&mut self) -> Result<String, anyhow::Error> {
         let token = self.tokens.expect(TokenType::Identifier)?;
-        Ok(self.gc.intern(token.lexeme.clone()))
+        Ok(token.lexeme.clone())
     }
 
     fn parse_stmt(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
@@ -215,7 +212,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_init(&mut self, has_superclass: bool) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Init)?.pos.clone();
-        let name = self.gc.intern(format!("{}.init", unsafe { &*self.current_class.unwrap() }.value));
+        let name = format!("{}.init", self.current_class.as_ref().unwrap());
         let params = self.parse_params()?;
 
         self.tokens.expect(TokenType::LeftBrace)?;
@@ -240,10 +237,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    fn parse_params(&mut self) -> Result<Vec<*mut ObjString>, anyhow::Error> {
+    fn parse_params(&mut self) -> Result<Vec<String>, anyhow::Error> {
         self.tokens.expect(TokenType::LeftParen)?;
 
-        let mut params: Vec<*mut ObjString> = Vec::new();
+        let mut params: Vec<String> = Vec::new();
         while !self.tokens.match_next(TokenType::RightParen) {
             if params.len() > 0 {
                 self.tokens.expect(TokenType::Comma)?;
@@ -266,7 +263,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = self.tokens.expect(TokenType::Class)?.pos.clone();
         let name = self.parse_identifier()?;
 
-        let prev_class = self.current_class.replace(name);
+        let prev_class = self.current_class.replace(name.clone());
 
         let superclass = match self.tokens.next_if(TokenType::Colon) {
             Some(_) => Some(self.parse_identifier()?),
@@ -275,7 +272,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         self.tokens.expect(TokenType::LeftBrace)?;
 
-        let mut fields: HashSet<*mut ObjString> = HashSet::default();
+        let mut fields: HashSet<String> = HashSet::default();
         let mut field_stmts: Vec<ASTId<Stmt>> = Vec::new();
         let mut method_stmts: Vec<ASTId<Stmt>> = Vec::new();
         let mut init = None;
@@ -293,7 +290,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     None
                 };
                 self.tokens.expect(TokenType::Semicolon)?;
-                fields.insert(name);
+                fields.insert(name.clone());
 
                 if let Some(value) = value {
                     let id = self.ast.add_expr(Expr::Identifier(name), pos.clone());
@@ -315,7 +312,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 };
 
                 let body = self.ast.add_stmt(Stmt::Block(stmts), pos.clone());
-                let fn_decl = Box::new(FnDecl { name, params: Vec::new(), body });
+                let fn_decl = Box::new(FnDecl { name: name.clone(), params: Vec::new(), body });
                 self.ast.add_stmt(Stmt::Fn(fn_decl), pos.clone())
             }
         };
@@ -514,7 +511,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::StringLiteral => {
                 let val = token.lexeme.clone();
                 let val = &val[1..val.len() - 1]; // Strip quotes
-                Expr::Literal(Literal::String(self.gc.intern(val)))
+                Expr::Literal(Literal::String(String::from(val)))
             },
             TokenType::NumericLiteral => Expr::Literal(Literal::Number(token.lexeme.parse().unwrap())),
             TokenType::Null => Expr::Literal(Literal::Null),
@@ -522,7 +519,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::False => Expr::Literal(Literal::Boolean(false)),
             TokenType::This => Expr::This,
             TokenType::Super => Expr::Super,
-            TokenType::Identifier => Expr::Identifier(self.gc.intern(token.lexeme.clone())),
+            TokenType::Identifier => Expr::Identifier(token.lexeme.clone()),
             _ => bail!("Unexpected token {} at {}", token, token.pos)
         };
     

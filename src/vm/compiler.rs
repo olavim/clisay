@@ -12,8 +12,7 @@ use super::objects::ObjString;
 use super::objects::{ObjFn, UpvalueLocation};
 use super::opcode;
 use super::opcode::OpCode;
-use super::operator::Operator;
-use super::parser::{ASTId, ClassDecl, Expr, FieldInit, FnDecl, Literal, Stmt, AST};
+use crate::parser;
 use super::value::Value;
 
 struct Local {
@@ -50,7 +49,7 @@ struct ClassFrame {
 
 pub struct Compiler<'a> {
     chunk: &'a mut BytecodeChunk,
-    ast: &'a AST,
+    ast: &'a parser::AST,
     gc: &'a mut Gc,
     locals: Vec<Local>,
     scope_depth: u8,
@@ -65,7 +64,7 @@ macro_rules! compiler_error {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn compile<'b>(ast: &'b AST, gc: &'b mut Gc) -> Result<BytecodeChunk, anyhow::Error> {
+    pub fn compile<'b>(ast: &'b parser::AST, gc: &'b mut Gc) -> Result<BytecodeChunk, anyhow::Error> {
         let mut chunk = BytecodeChunk::new();
 
         let mut compiler = Compiler {
@@ -87,17 +86,17 @@ impl<'a> Compiler<'a> {
         Ok(chunk)
     }
 
-    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &ASTId<T>) -> anyhow::Error {
+    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &parser::ASTId<T>) -> anyhow::Error {
         let pos = self.ast.pos(node_id);
         anyhow!("{}\n\tat {}", msg.into(), pos)
     }
 
-    fn emit<T: 'static>(&mut self, byte: u8, node_id: &ASTId<T>) {
+    fn emit<T: 'static>(&mut self, byte: u8, node_id: &parser::ASTId<T>) {
         let pos = self.ast.pos(node_id);
         self.chunk.write(byte, pos);
     }
 
-    fn emit_jump<T: 'static>(&mut self, op: OpCode, pos: u16, node_id: &ASTId<T>) -> u16 {
+    fn emit_jump<T: 'static>(&mut self, op: OpCode, pos: u16, node_id: &parser::ASTId<T>) -> u16 {
         self.emit(op, node_id);
         self.emit(pos as u8, node_id);
         self.emit((pos >> 8) as u8, node_id);
@@ -119,7 +118,7 @@ impl<'a> Compiler<'a> {
         self.scope_depth += 1;
     }
 
-    fn exit_scope<T: 'static>(&mut self, node_id: &ASTId<T>) {
+    fn exit_scope<T: 'static>(&mut self, node_id: &parser::ASTId<T>) {
         self.scope_depth -= 1;
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
             if self.locals.last().unwrap().is_captured {
@@ -142,7 +141,7 @@ impl<'a> Compiler<'a> {
         self.scope_depth += 1;
     }
 
-    fn exit_function<T: 'static>(&mut self, node_id: &ASTId<T>) {
+    fn exit_function<T: 'static>(&mut self, node_id: &parser::ASTId<T>) {
         if self.chunk.code[self.chunk.code.len() - 1] != opcode::RETURN {
             if let FnType::Initializer = self.fn_type {
                 self.emit(opcode::GET_LOCAL, node_id);
@@ -260,10 +259,10 @@ impl<'a> Compiler<'a> {
         return Ok((self.fn_frames[frame_idx].upvalues.len() - 1) as u8);
     }
 
-    fn statement(&mut self, stmt_id: &ASTId<Stmt>) -> Result<(), anyhow::Error> {
+    fn statement(&mut self, stmt_id: &parser::ASTId<parser::Stmt>) -> Result<(), anyhow::Error> {
         match self.ast.get(stmt_id) {
-            Stmt::Block(stmts) => self.block(stmt_id, stmts)?,
-            Stmt::Return(expr) => {
+            parser::Stmt::Block(stmts) => self.block(stmt_id, stmts)?,
+            parser::Stmt::Return(expr) => {
                 if let FnType::Initializer = self.fn_type {
                     if expr.is_some() {
                         bail!("Cannot return a value from a class initializer");
@@ -279,8 +278,9 @@ impl<'a> Compiler<'a> {
 
                 self.emit(opcode::RETURN, stmt_id);
             },
-            Stmt::Fn(decl) => {
-                self.declare_local(decl.name, false)?;
+            parser::Stmt::Fn(decl) => {
+                let name = self.gc.intern(&decl.name);
+                self.declare_local(name, false)?;
                 let prev_fn_type = self.fn_type;
                 self.fn_type = FnType::Function;
                 let const_idx = self.function(stmt_id, decl)?;
@@ -288,10 +288,11 @@ impl<'a> Compiler<'a> {
                 self.emit(opcode::PUSH_CLOSURE, stmt_id);
                 self.emit(const_idx, stmt_id);
             },
-            Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
-            Stmt::If(cond, then, otherwise) => self.if_stmt(cond, then, otherwise)?,
-            Stmt::Say(FieldInit { name, value }) => {
-                let local = self.declare_local(*name, true)?;
+            parser::Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
+            parser::Stmt::If(cond, then, otherwise) => self.if_stmt(cond, then, otherwise)?,
+            parser::Stmt::Say(parser::FieldInit { name, value }) => {
+                let name = self.gc.intern(name);
+                let local = self.declare_local(name, true)?;
 
                 if let Some(expr) = value {
                     self.expression(expr)?;
@@ -301,11 +302,11 @@ impl<'a> Compiler<'a> {
                 }
                 self.emit(local, stmt_id);
             },
-            Stmt::Expression(expr) => {
+            parser::Stmt::Expression(expr) => {
                 self.expression(expr)?;
                 self.emit(opcode::POP, stmt_id);
             },
-            Stmt::While(cond, body) => {
+            parser::Stmt::While(cond, body) => {
                 let pos = self.chunk.code.len() as u16;
 
                 self.expression(cond)?;
@@ -319,7 +320,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn block(&mut self, stmt: &ASTId<Stmt>, stmts: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
+    fn block(&mut self, stmt: &parser::ASTId<parser::Stmt>, stmts: &Vec<parser::ASTId<parser::Stmt>>) -> Result<(), anyhow::Error> {
         self.enter_scope();
         for stmt in stmts {
             self.statement(stmt)?;
@@ -328,7 +329,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn if_stmt(&mut self, cond: &ASTId<Expr>, then: &ASTId<Stmt>, otherwise: &Option<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
+    fn if_stmt(&mut self, cond: &parser::ASTId<parser::Expr>, then: &parser::ASTId<parser::Stmt>, otherwise: &Option<parser::ASTId<parser::Stmt>>) -> Result<(), anyhow::Error> {
         self.expression(cond)?;
         let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, cond);
         self.statement(then)?;
@@ -341,7 +342,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn method(&mut self, stmt: &ASTId<Stmt>, decl: &Box<FnDecl>) -> Result<u8, anyhow::Error> {
+    fn method(&mut self, stmt: &parser::ASTId<parser::Stmt>, decl: &Box<parser::FnDecl>) -> Result<u8, anyhow::Error> {
         let prev_fn_type = self.fn_type;
         self.fn_type = FnType::Method;
         let const_idx = self.function(stmt, decl)?;
@@ -349,7 +350,7 @@ impl<'a> Compiler<'a> {
         Ok(const_idx)
     }
 
-    fn initializer(&mut self, stmt: &ASTId<Stmt>, decl: &Box<FnDecl>) -> Result<u8, anyhow::Error> {
+    fn initializer(&mut self, stmt: &parser::ASTId<parser::Stmt>, decl: &Box<parser::FnDecl>) -> Result<u8, anyhow::Error> {
         let prev_fn_type = self.fn_type;
         self.fn_type = FnType::Initializer;
         let const_idx = self.function(stmt, decl)?;
@@ -357,7 +358,7 @@ impl<'a> Compiler<'a> {
         Ok(const_idx)
     }
 
-    fn function(&mut self, stmt: &ASTId<Stmt>, decl: &Box<FnDecl>) -> Result<u8, anyhow::Error> {
+    fn function(&mut self, stmt: &parser::ASTId<parser::Stmt>, decl: &Box<parser::FnDecl>) -> Result<u8, anyhow::Error> {
         if let FnType::None = self.fn_type {
             bail!("Function declaration outside of function");
         }
@@ -369,7 +370,8 @@ impl<'a> Compiler<'a> {
         let arity = decl.params.len() as u8;
 
         for param in &decl.params {
-            self.declare_local(*param, true)?;
+            let param = self.gc.intern(param);
+            self.declare_local(param, true)?;
         }
 
         self.statement(&decl.body)?;
@@ -378,19 +380,21 @@ impl<'a> Compiler<'a> {
         self.patch_jump(jump_ref)?;
 
         let frame = self.fn_frames.pop().unwrap();
-        let func = self.gc.alloc(ObjFn::new(decl.name, arity, ip_start, frame.upvalues));
+        let name = self.gc.intern(&decl.name);
+        let func = self.gc.alloc(ObjFn::new(name, arity, ip_start, frame.upvalues));
 
         self.chunk.add_constant(Value::from(func))
     }
 
-    fn class_declaration(&mut self, stmt: &ASTId<Stmt>, decl: &Box<ClassDecl>) -> Result<(), anyhow::Error> {
-        self.declare_local(decl.name, false)?;
+    fn class_declaration(&mut self, stmt: &parser::ASTId<parser::Stmt>, decl: &Box<parser::ClassDecl>) -> Result<(), anyhow::Error> {
+        let name = self.gc.intern(&decl.name);
+        self.declare_local(name, false)?;
         self.enter_scope();
 
-        let superclass = match decl.superclass {
+        let superclass = match &decl.superclass {
             Some(name) => {
-                let const_idx = self.classes.get(&name)
-                    .ok_or(anyhow!("Class '{}' not declared", unsafe { &(*name).value }))?;
+                let const_idx = self.classes.get(&self.gc.intern(name))
+                    .ok_or(anyhow!("Class '{}' not declared", name))?;
                 let value = self.chunk.constants[*const_idx as usize];
                 Some(value.as_object().as_class())
             },
@@ -398,24 +402,24 @@ impl<'a> Compiler<'a> {
         };
 
         let mut frame = ClassFrame {
-            class: ObjClass::new(decl.name, superclass.map(|ptr| unsafe { &*ptr })),
+            class: ObjClass::new(self.gc.intern(&decl.name), superclass.map(|ptr| unsafe { &*ptr })),
             superclass
         };
 
         // Declare fields and methods before compiling init and method bodies
-        for &field in &decl.fields {
-            frame.class.declare_field(field);
+        for field in &decl.fields {
+            frame.class.declare_field(self.gc.intern(field));
         }
 
         for stmt_id in &decl.methods {
-            let Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
-            frame.class.declare_method(decl.name);
+            let parser::Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
+            frame.class.declare_method(self.gc.intern(&decl.name));
         }
 
         // Push class frame to make the current class visible in method bodies
         self.class_frames.push(frame);
 
-        let Stmt::Fn(init_fn_decl) = self.ast.get(&decl.init) else { unreachable!(); };
+        let parser::Stmt::Fn(init_fn_decl) = self.ast.get(&decl.init) else { unreachable!(); };
         let const_idx = self.initializer(stmt, init_fn_decl)?;
         let init_const = self.chunk.constants[const_idx as usize];
         let init_str = self.gc.intern("init");
@@ -425,42 +429,45 @@ impl<'a> Compiler<'a> {
         frame.class.define_method(init_str, init_const.as_object().as_function());
 
         for stmt_id in &decl.methods {
-            let Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
+            let parser::Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
             let const_idx = self.method(stmt_id, decl)?;
             let funct_const = self.chunk.constants[const_idx as usize];
             let frame = self.class_frames.last_mut().unwrap();
-            frame.class.define_method(decl.name, funct_const.as_object().as_function());
+            frame.class.define_method(self.gc.intern(&decl.name), funct_const.as_object().as_function());
         }
 
         let class = self.class_frames.pop().unwrap().class;
         self.exit_scope(stmt);
 
         let idx = self.chunk.add_constant(Value::from(self.gc.alloc(class)))?;
-        self.classes.insert(decl.name, idx);
+        self.classes.insert(self.gc.intern(&decl.name), idx);
         self.emit(opcode::PUSH_CLASS, stmt);
         self.emit(idx, stmt);
         
         Ok(())
     }
 
-    fn expression(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn expression(&mut self, expr: &parser::ASTId<parser::Expr>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
-            Expr::Unary(op, expr) => self.unary_expression(op, expr)?,
-            Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
-            Expr::Ternary(cond, then, otherwise) => self.if_expression(cond, then, otherwise)?,
-            Expr::Call(expr, args) => self.call_expression(expr, args)?,
-            Expr::Array(exprs) => self.array_expression(expr, exprs)?,
-            Expr::Index(expr, id) => self.member_access(expr, id, AccessKind::Get)?,
-            Expr::Literal(lit) => self.literal(expr, lit)?,
-            Expr::Identifier(name) => self.identifier(expr, *name, false)?,
-            Expr::This => self.this(expr)?,
-            Expr::Super => self.super_(expr)?
+            parser::Expr::Unary(op, expr) => self.unary_expression(op, expr)?,
+            parser::Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
+            parser::Expr::Ternary(cond, then, otherwise) => self.if_expression(cond, then, otherwise)?,
+            parser::Expr::Call(expr, args) => self.call_expression(expr, args)?,
+            parser::Expr::Array(exprs) => self.array_expression(expr, exprs)?,
+            parser::Expr::Index(expr, id) => self.member_access(expr, id, AccessKind::Get)?,
+            parser::Expr::Literal(lit) => self.literal(expr, lit)?,
+            parser::Expr::Identifier(name) => {
+                let name = self.gc.intern(name);
+                self.identifier(expr, name, false)?
+            },
+            parser::Expr::This => self.this(expr)?,
+            parser::Expr::Super => self.super_(expr)?
         };
 
         Ok(())
     }
 
-    fn this(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn this(&mut self, expr: &parser::ASTId<parser::Expr>) -> Result<(), anyhow::Error> {
         if self.class_frames.is_empty() {
             bail!("Cannot use 'this' outside of a class method");
         }
@@ -470,7 +477,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn super_(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn super_(&mut self, expr: &parser::ASTId<parser::Expr>) -> Result<(), anyhow::Error> {
         let Some(frame) = self.class_frames.last() else {
             bail!("Cannot use 'super' outside of a class method");
         };
@@ -483,7 +490,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn if_expression(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn if_expression(&mut self, cond: &parser::ASTId<parser::Expr>, then: &parser::ASTId<parser::Expr>, otherwise: &parser::ASTId<parser::Expr>) -> Result<(), anyhow::Error> {
         self.expression(cond)?;
         let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, cond);
         self.expression(then)?;
@@ -494,32 +501,33 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
     
-    fn unary_expression(&mut self, op: &Operator, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn unary_expression(&mut self, op: &parser::Operator, expr: &parser::ASTId<parser::Expr>) -> Result<(), anyhow::Error> {
         self.expression(expr)?;
-        self.emit(op.as_opcode(), expr);
+        self.emit(opcode::from_operator(op), expr);
         Ok(())
     }
 
-    fn binary_expression(&mut self, op: &Operator, left: &ASTId<Expr>, right: &ASTId<Expr>) -> Result<(), anyhow::Error> {
-        if let Operator::Assign(_) = op {
+    fn binary_expression(&mut self, op: &parser::Operator, left: &parser::ASTId<parser::Expr>, right: &parser::ASTId<parser::Expr>) -> Result<(), anyhow::Error> {
+        if let parser::Operator::Assign(_) = op {
             match self.ast.get(left) {
-                Expr::Identifier(name) => {
-                    if let Some(local) = self.locals.iter().rev().find(|local| local.name == *name) {
+                parser::Expr::Identifier(name) => {
+                    let intern_name = self.gc.intern(name);
+                    if let Some(local) = self.locals.iter().rev().find(|local| local.name == intern_name) {
                         if !local.is_mutable {
-                            compiler_error!(self, format!("Invalid assignment: '{}' is immutable", unsafe { &(**name).value }), left);
+                            compiler_error!(self, format!("Invalid assignment: '{}' is immutable", name), left);
                         }
                     }
 
                     self.expression(right)?;
-                    self.identifier(left, *name, true)?;
+                    self.identifier(left, intern_name, true)?;
                     return Ok(());
                 },
-                Expr::Binary(Operator::MemberAccess, obj, member) => {
+                parser::Expr::Binary(parser::Operator::MemberAccess, obj, member) => {
                     self.expression(right)?;
                     self.member_access(obj, member, AccessKind::Set)?;
                     return Ok(());
                 },
-                Expr::Index(obj, member) => {
+                parser::Expr::Index(obj, member) => {
                     self.expression(right)?;
                     self.member_access(obj, member, AccessKind::Set)?;
                     return Ok(());
@@ -528,30 +536,32 @@ impl<'a> Compiler<'a> {
             }
         }
 
-        if let Operator::MemberAccess = op {
+        if let parser::Operator::MemberAccess = op {
             self.member_access(left, right, AccessKind::Get)?;
             return Ok(());
         }
 
         self.expression(left)?;
         self.expression(right)?;
-        self.emit(op.as_opcode(), right);
+        self.emit(opcode::from_operator(op), right);
         Ok(())
     }
 
-    fn member_access(&mut self, expr: &ASTId<Expr>, member_expr: &ASTId<Expr>, access_kind: AccessKind) -> Result<(), anyhow::Error> {
+    fn member_access(&mut self, expr: &parser::ASTId<parser::Expr>, member_expr: &parser::ASTId<parser::Expr>, access_kind: AccessKind) -> Result<(), anyhow::Error> {
         self.expression(expr)?;
 
         let (operand, get_op, set_op) = match (self.ast.get(expr), self.ast.get(member_expr)) {
-            (Expr::This, Expr::Literal(Literal::String(member))) => {
+            (parser::Expr::This, parser::Expr::Literal(parser::Literal::String(member))) => {
                 let frame = self.class_frames.last().unwrap();
-                let id = self.resolve_class_member(expr, &frame.class, *member)?;
+                let member = self.gc.intern(member);
+                let id = self.resolve_class_member(expr, &frame.class, member)?;
                 (Some(id), opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
             },
-            (Expr::Super, Expr::Literal(Literal::String(member))) => {
+            (parser::Expr::Super, parser::Expr::Literal(parser::Literal::String(member))) => {
                 let frame = self.class_frames.last().unwrap();
+                let member = self.gc.intern(member);
                 let superclass = unsafe { &*frame.superclass.unwrap() };
-                let id = self.resolve_class_member(expr, superclass, *member)?;
+                let id = self.resolve_class_member(expr, superclass, member)?;
                 (Some(id), opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
             },
             _ => {
@@ -572,7 +582,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn resolve_class_member(&self, expr: &ASTId<Expr>, class: &ObjClass, member: *mut ObjString) -> Result<u8, anyhow::Error> {
+    fn resolve_class_member(&self, expr: &parser::ASTId<parser::Expr>, class: &ObjClass, member: *mut ObjString) -> Result<u8, anyhow::Error> {
         let id = match class.resolve(member) {
             Some(ClassMember::Field(id)) => id,
             Some(ClassMember::Method(id)) => id,
@@ -583,9 +593,9 @@ impl<'a> Compiler<'a> {
         Ok(id)
     }
     
-    fn call_expression(&mut self, expr: &ASTId<Expr>, args: &Vec<ASTId<Expr>>) -> Result<(), anyhow::Error> {
+    fn call_expression(&mut self, expr: &parser::ASTId<parser::Expr>, args: &Vec<parser::ASTId<parser::Expr>>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
-            Expr::Super => {
+            parser::Expr::Super => {
                 let frame = self.class_frames.last().unwrap();
                 let superclass = frame.superclass.unwrap();
                 let init_str = self.gc.intern("init");
@@ -608,7 +618,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
     
-    fn array_expression(&mut self, expr: &ASTId<Expr>, exprs: &Vec<ASTId<Expr>>) -> Result<(), anyhow::Error> {
+    fn array_expression(&mut self, expr: &parser::ASTId<parser::Expr>, exprs: &Vec<parser::ASTId<parser::Expr>>) -> Result<(), anyhow::Error> {
         for item in exprs {
             self.expression(item)?;
         }
@@ -617,27 +627,28 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
     
-    fn literal(&mut self, expr: &ASTId<Expr>, literal: &Literal) -> Result<(), anyhow::Error> {
+    fn literal(&mut self, expr: &parser::ASTId<parser::Expr>, literal: &parser::Literal) -> Result<(), anyhow::Error> {
         match literal {
-            Literal::Number(num) => {
+            parser::Literal::Number(num) => {
                 let idx = self.chunk.add_constant(Value::from(*num))?;
                 self.emit(opcode::PUSH_CONSTANT, expr);
                 self.emit(idx, expr);
             },
-            Literal::String(str_ref) => {
-                let idx = self.chunk.add_constant(Value::from(*str_ref))?;
+            parser::Literal::String(str) => {
+                let str = self.gc.intern(str);
+                let idx = self.chunk.add_constant(Value::from(str))?;
                 self.emit(opcode::PUSH_CONSTANT, expr);
                 self.emit(idx, expr);
             },
-            Literal::Null => { self.emit(opcode::PUSH_NULL, expr); },
-            Literal::Boolean(true) => { self.emit(opcode::PUSH_TRUE, expr); },
-            Literal::Boolean(false) => { self.emit(opcode::PUSH_FALSE, expr); }
+            parser::Literal::Null => { self.emit(opcode::PUSH_NULL, expr); },
+            parser::Literal::Boolean(true) => { self.emit(opcode::PUSH_TRUE, expr); },
+            parser::Literal::Boolean(false) => { self.emit(opcode::PUSH_FALSE, expr); }
         };
 
         return Ok(());
     }
     
-    fn identifier(&mut self, expr: &ASTId<Expr>, name: *mut ObjString, assign: bool) -> Result<(), anyhow::Error> {
+    fn identifier(&mut self, expr: &parser::ASTId<parser::Expr>, name: *mut ObjString, assign: bool) -> Result<(), anyhow::Error> {
         let class_frame_idx = self.resolve_member_class(name);
 
         let (operand, get_op, set_op) = if let Some(local_idx) = self.resolve_local(name) {

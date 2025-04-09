@@ -4,13 +4,13 @@ use std::hash::BuildHasherDefault;
 use anyhow::bail;
 use rustc_hash::FxHasher;
 
+use crate::parser::Parser;
 use crate::vm::objects::{ObjBoundMethod, ObjInstance};
 use crate::vm::value::ValueKind;
 use crate::lexer::{tokenize, TokenStream};
 
 use super::chunk::BytecodeChunk;
 use super::opcode::{self, OpCode};
-use super::parser::Parser;
 use super::stack::{CachedStack, Stack};
 use super::value::Value;
 use super::gc::{Gc, GcTraceable};
@@ -52,7 +52,7 @@ impl<'out> Vm<'out> {
     pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
         let mut gc = Gc::new();
         let tokens = tokenize(String::from(file_name), String::from(src))?;
-        let ast = Parser::parse(&mut gc, &mut TokenStream::new(&tokens))?;
+        let ast = Parser::parse(&mut TokenStream::new(&tokens))?;
         let chunk = Compiler::compile(&ast, &mut gc)?;
 
         #[cfg(feature = "debug")] {
