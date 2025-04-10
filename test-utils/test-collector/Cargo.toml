@@ -1,0 +1,12 @@
+[package]
+name = "test-collector"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "./lib.rs"
+
+[dependencies]
+ctor = "0.4.1"
+libtest-mimic = "0.8.1"
+test-macro = { path = "../test-macro" }

@@ -4,6 +4,7 @@ use std::hash::BuildHasherDefault;
 use anyhow::bail;
 use rustc_hash::FxHasher;
 
+use crate::Output;
 use crate::parser::Parser;
 use crate::vm::objects::{ObjBoundMethod, ObjInstance};
 use crate::vm::value::ValueKind;
@@ -41,11 +42,11 @@ macro_rules! as_short {
     ($l:expr, $r:expr) => { ($l as u16) | (($r as u16) << 8) }
 }
 
-#[cfg(feature = "debug")]
+#[cfg(debug_assertions)]
 fn disassemble(chunk: &BytecodeChunk) {
-    println!("=== Bytecode ===");
-    print!("{}", chunk.fmt());
-    println!("================");
+    Output::println("=== Bytecode ===");
+    Output::println(chunk.fmt());
+    Output::println("================");
 }
 
 impl<'out> Vm<'out> {
@@ -55,7 +56,7 @@ impl<'out> Vm<'out> {
         let ast = Parser::parse(&mut TokenStream::new(&tokens))?;
         let chunk = Compiler::compile(&ast, &mut gc)?;
 
-        #[cfg(feature = "debug")] {
+        #[cfg(debug_assertions)] {
             disassemble(&chunk);
         }
 
@@ -86,10 +87,11 @@ impl<'out> Vm<'out> {
                 ValueKind::Null => String::from("null"),
                 ValueKind::Number => format!("{}", value.as_number()),
                 ValueKind::Boolean => format!("{}", value.as_bool()),
+                ValueKind::Object(ObjectKind::String) => format!("{}", value.as_object().as_string()),
                 ValueKind::Object(_) => format!("{}", value.as_object().fmt())
             };
             vm.out.push(value_str.clone());
-            println!("{}", value_str);
+            Output::println(value_str);
             vm.stack.push(Value::NULL);
         });
 
@@ -233,7 +235,7 @@ impl<'out> Vm<'out> {
         let value = unsafe { (*instance_ref).get(id) };
         match value.kind() {
             ValueKind::Object(ObjectKind::Function) => {
-                let closure = self.create_closure(value.as_object().as_function());
+                let closure = self.create_closure(value.as_object().as_function_ptr());
                 let method = self.alloc(ObjBoundMethod::new(instance_ref, closure));
                 Value::from(method)
             },
@@ -251,7 +253,7 @@ impl<'out> Vm<'out> {
     }
 
     fn call_native(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
-        let func = unsafe { &*obj.as_native_function() };
+        let func = unsafe { &*obj.as_native_function_ptr() };
         if arg_count != func.arity as usize {
             return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*func.name }.value, func.arity, arg_count));
         }
@@ -264,7 +266,7 @@ impl<'out> Vm<'out> {
     }
 
     fn call_closure(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
-        let closure_ptr = obj.as_closure();
+        let closure_ptr = obj.as_closure_ptr();
         let func = unsafe { &*(*closure_ptr).function };
         if arg_count != func.arity as usize {
             return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*func.name }.value, func.arity, arg_count));
@@ -274,7 +276,7 @@ impl<'out> Vm<'out> {
     }
 
     fn call_bound_method(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
-        let bound_method = unsafe { &*obj.as_bound_method() };
+        let bound_method = unsafe { &*obj.as_bound_method_ptr() };
         let func = unsafe { std::ptr::read((*bound_method.closure).function) };
         if arg_count != func.arity as usize {
             return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*func.name }.value, func.arity, arg_count));
@@ -286,7 +288,7 @@ impl<'out> Vm<'out> {
     }
 
     fn call_class(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
-        let class_ptr = obj.as_class();
+        let class_ptr = obj.as_class_ptr();
         let class = unsafe { &*class_ptr };
         let init_id = class.resolve_id(self.intern("init")).unwrap();
         let init_ref = class.get_method(init_id).unwrap();
@@ -309,17 +311,17 @@ impl<'out> Vm<'out> {
         loop {
             let op = self.chunk.read_next();
             match op {
+                opcode::CALL => self.op_call()?,
+                opcode::JUMP => self.op_jump(),
+                opcode::JUMP_IF_FALSE => self.op_jump_if_false(),
+                opcode::CLOSE_UPVALUE => self.op_close_upvalue(),
+                opcode::ARRAY => self.op_array(),
                 opcode::RETURN => {
                     if !self.op_return() {
                         return Ok(());
                     }
                 },
                 opcode::POP => self.op_pop(),
-                opcode::CLOSE_UPVALUE => self.op_close_upvalue(),
-                opcode::ARRAY => self.op_array(),
-                opcode::CALL => self.op_call()?,
-                opcode::JUMP => self.op_jump(),
-                opcode::JUMP_IF_FALSE => self.op_jump_if_false(),
                 opcode::PUSH_CONSTANT => self.op_push_constant(),
                 opcode::PUSH_NULL => self.op_push_null(),
                 opcode::PUSH_TRUE => self.op_push_true(),
@@ -340,23 +342,23 @@ impl<'out> Vm<'out> {
                 opcode::SUBTRACT => self.op_subtract()?,
                 opcode::MULTIPLY => self.op_multiply()?,
                 opcode::DIVIDE => self.op_divide()?,
-                opcode::EQUAL => self.op_equal()?,
-                opcode::NOT_EQUAL => self.op_not_equal()?,
-                opcode::LESS_THAN => self.op_less_than()?,
-                opcode::LESS_THAN_EQUAL => self.op_less_than_equal()?,
-                opcode::GREATER_THAN => self.op_greater_than()?,
-                opcode::GREATER_THAN_EQUAL => self.op_greater_than_equal()?,
                 opcode::NEGATE => self.op_negate()?,
-                opcode::NOT => self.op_not()?,
-                opcode::AND => self.op_and()?,
-                opcode::OR => self.op_or()?,
                 opcode::LEFT_SHIFT => self.op_left_shift()?,
                 opcode::RIGHT_SHIFT => self.op_right_shift()?,
                 opcode::BIT_AND => self.op_bit_and()?,
                 opcode::BIT_OR => self.op_bit_or()?,
                 opcode::BIT_XOR => self.op_bit_xor()?,
                 opcode::BIT_NOT => self.op_bit_not()?,
-                _ => unsafe { std::hint::unreachable_unchecked() }
+                opcode::EQUAL => self.op_equal()?,
+                opcode::NOT_EQUAL => self.op_not_equal()?,
+                opcode::LESS_THAN => self.op_less_than()?,
+                opcode::LESS_THAN_EQUAL => self.op_less_than_equal()?,
+                opcode::GREATER_THAN => self.op_greater_than()?,
+                opcode::GREATER_THAN_EQUAL => self.op_greater_than_equal()?,
+                opcode::NOT => self.op_not()?,
+                opcode::AND => self.op_and()?,
+                opcode::OR => self.op_or()?,
+                _ => unreachable!()
             }
         }
     }
@@ -411,7 +413,7 @@ impl<'out> Vm<'out> {
             objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, object),
             objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object),
             objects::TAG_CLASS => self.call_class(arg_count, object),
-            _ => unsafe { std::hint::unreachable_unchecked() }
+            _ => unreachable!()
         }
     }
 
@@ -449,7 +451,7 @@ impl<'out> Vm<'out> {
     fn op_push_closure(&mut self) -> Result<(), anyhow::Error> {
         let const_idx = self.chunk.read_next() as usize;
         let value = self.chunk.constants[const_idx];
-        let fn_ref = value.as_object().as_function();
+        let fn_ref = value.as_object().as_function_ptr();
         let closure = self.create_closure(fn_ref);
         self.stack.push(Value::from(closure));
         Ok(())
@@ -464,7 +466,7 @@ impl<'out> Vm<'out> {
     fn op_get_global(&mut self) -> Result<(), anyhow::Error> {
         let const_idx = self.chunk.read_next() as usize;
         let constant = &self.chunk.constants[const_idx];
-        let string = constant.as_object().as_string();
+        let string = constant.as_object().as_string_ptr();
         let value = self.globals[&string];
         self.stack.push(value);
         Ok(())
@@ -508,8 +510,8 @@ impl<'out> Vm<'out> {
                     return self.error(format!("Invalid property access: {}.{}", target.fmt(), prop.fmt()));
                 };
         
-                let instance_ref = target.as_object().as_instance();
-                if let Some(value) = self.get_instance_property(instance_ref, prop.as_object().as_string()) {
+                let instance_ref = target.as_object().as_instance_ptr();
+                if let Some(value) = self.get_instance_property(instance_ref, prop.as_object().as_string_ptr()) {
                     self.stack.push(value);
                     Ok(())
                 } else {
@@ -521,7 +523,7 @@ impl<'out> Vm<'out> {
                     return self.error(format!("Invalid array index: {}", prop.fmt()));
                 };
 
-                let array_ref = target.as_object().as_array();
+                let array_ref = target.as_object().as_array_ptr();
                 let index = prop.as_number() as usize;
                 let value = unsafe { (*array_ref).values[index] };
                 self.stack.push(value);
@@ -545,8 +547,8 @@ impl<'out> Vm<'out> {
                 };
 
                 let object = target.as_object();
-                let instance_ref = object.as_instance();
-                let prop_str = prop.as_object().as_string();
+                let instance_ref = object.as_instance_ptr();
+                let prop_str = prop.as_object().as_string_ptr();
         
                 let instance = unsafe { &mut *instance_ref };
                 let class = unsafe { &*instance.class };
@@ -556,7 +558,7 @@ impl<'out> Vm<'out> {
                         instance.values.insert(id, value);
                         Ok(())
                     },
-                    Some(ClassMember::Method(_)) => return self.error(format!("Cannot assign to instance method '{}'", unsafe { &*prop_str }.value)),
+                    Some(ClassMember::Method(_)) => return self.error(format!("Cannot assign to instance method '{}'", prop.as_object().as_string())),
                     None => self.error(format!("Property not found: {}", prop.fmt()))
                 }
             },
@@ -565,7 +567,7 @@ impl<'out> Vm<'out> {
                     return self.error(format!("Invalid array index: {}", prop.fmt()));
                 };
 
-                let array_ref = target.as_object().as_array();
+                let array_ref = target.as_object().as_array_ptr();
                 let index = prop.as_number() as usize;
                 unsafe { (*array_ref).values[index] = self.stack.peek(0) };
                 Ok(())
@@ -582,7 +584,7 @@ impl<'out> Vm<'out> {
         }
 
         let object = value.as_object();
-        let instance_ref = object.as_instance();
+        let instance_ref = object.as_instance_ptr();
         let value = self.get_property_by_id(instance_ref, member_id);
         self.stack.push(value);
         Ok(())
@@ -596,7 +598,7 @@ impl<'out> Vm<'out> {
         }
 
         let object = value.as_object();
-        let instance_ref = object.as_instance();
+        let instance_ref = object.as_instance_ptr();
         let value = self.stack.peek(0);
         let instance = unsafe { &mut *instance_ref };
         instance.set(member_id, value);
@@ -609,9 +611,9 @@ impl<'out> Vm<'out> {
         let result = match (a.kind(), b.kind()) {
             (ValueKind::Number, ValueKind::Number) => Value::from(a.as_number() + b.as_number()),
             (ValueKind::Object(ObjectKind::String), ValueKind::Object(ObjectKind::String)) => {
-                let sa = unsafe { &*a.as_object().as_string() }.value.as_str();
-                let sb = unsafe { &*b.as_object().as_string() }.value.as_str();
-                let s = [sa, sb].concat();
+                let a = a.as_object();
+                let b = b.as_object();
+                let s = [a.as_string().as_str(), b.as_string().as_str()].concat();
                 Value::from(self.intern(s))
             },
             _ => {

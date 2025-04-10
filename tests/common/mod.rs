@@ -1,12 +1,10 @@
-mod inline;
-mod file;
-
-use std::{backtrace::Backtrace, panic};
+use std::fmt;
+use std::panic;
 
 use anyhow::Error;
+use clisay::run;
+use libtest_mimic::Failed;
 use regex::Regex;
-
-use crate::run;
 
 const REGEX_SKIP: &str = r"^\s*//.*//";
 const REGEX_EXPECTED_ERROR: &str = r"//[ ]*error[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
@@ -14,50 +12,14 @@ const REGEX_EXPECTED_OUT: &str = r"//[ ]*expect[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\
 const REGEX_ERROR_MESSAGE: &str = r"(.*)(\s*at .*:(\d+))+";
 const REGEX_SPLIT: &str = r"// @split(\r\n|\r|\n)";
 
-pub fn test_folder(folder: &str) {
-    let mut test_count = 0;
-    let mut errors = Vec::new();
-    
-    let default_panic = std::panic::take_hook();
-    panic::set_hook(Box::new(|_| {
-        // do nothing
-        let backtrace = Backtrace::capture();
-        println!("{}", backtrace);
-    }));
-
-    for entry in std::fs::read_dir(folder).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_file() && path.to_str().unwrap().ends_with(".say") {
-            test_count += 1;
-
-            let path_str = path.to_str().unwrap().replace("\\", "/");
-            let status = match panic::catch_unwind(|| test_file(&path_str)) {
-                Ok(_) => "\x1b[92mok\x1b[0m",
-                Err(err) => {
-                    if let Some(msg) = err.downcast_ref::<String>() {
-                        errors.push(msg.clone());
-                    } else if let Some(msg) = err.downcast_ref::<&str>() {
-                        errors.push(msg.to_string());
-                    };
-                    "\x1b[91mfail\x1b[0m"
-                }
-            };
-            println!("file {} ... {}", path_str, status);
-        }
+fn eq_or_fail<T: PartialEq + fmt::Debug>(a: T, b: T) -> Result<(), Failed> {
+    if a != b {
+        return Err(format!("Expected {a:?}, got {b:?}").into());
     }
-
-    if !errors.is_empty() {
-        println!("\nfailures:");
-        for err in &errors {
-            println!("{}", err);
-        }
-        panic!("{} out of {} tests failed", errors.len(), test_count);
-    }
-
-    panic::set_hook(default_panic);
+    Ok(())
 }
 
-pub fn test_file(file: &str) {
+pub fn test_file(file: &str) -> Result<(), Failed> {
     let skip_regex = Regex::new(REGEX_SKIP).unwrap();
     let src = std::fs::read_to_string(file).unwrap();
     let src = Regex::new(r"\r\n|\r|\n").unwrap()
@@ -74,26 +36,28 @@ pub fn test_file(file: &str) {
     
         if let Some(expected_error) = parse_expected_error(section) {
             match result {
-                Ok(_) => panic!("Expected error: {}", expected_error),
-                Err(err) => assert_eq!(parse_error_message(err), expected_error, "{}", file)
+                Ok(_) => return Err(format!("Expected error: {expected_error}").into()),
+                Err(err) => eq_or_fail(parse_error_message(err), expected_error)?
             }
         } else {
             let expected_out = parse_expected_output(section);
             match result {
-                Ok(out) => assert_eq!(out, expected_out.iter().map(|s| String::from(*s)).collect::<Vec<String>>(), "{}", file),
-                Err(err) => panic!("{err:?}")
+                Ok(out) => eq_or_fail(out, expected_out.iter().map(|s| String::from(*s)).collect::<Vec<String>>())?,
+                Err(err) => return Err(format!("Unexpected error: {err:?}").into())
             }
         }
     }
+
+    Ok(())
 }
 
 pub fn assert_inline<const COUNT: usize>(src: &str, r: Result<[&str; COUNT], String>) {
     let out = run("inline", src);
     match (&out, r) {
-        (Ok(l), Ok(r)) => assert_eq!(l, &r.iter().map(|s| String::from(*s)).collect::<Vec<String>>(), "{}", src),
-        (Err(l), Err(r)) => assert_eq!(l.to_string(), r, "{}", src),
+        (Ok(l), Ok(r)) => assert_eq!(l, &r.iter().map(|s| String::from(*s)).collect::<Vec<String>>(), "{src}"),
+        (Err(l), Err(r)) => assert_eq!(l.to_string(), r, "{src}"),
         (Err(err), _) => panic!("{err:?}"),
-        _ => assert!(false, "{}", src)
+        _ => assert!(false, "{src}")
     }
 }
 
@@ -123,11 +87,6 @@ fn parse_expected_error(src: &str) -> Option<String> {
     if expected_errors.len() > 1 {
         panic!("Only one error is allowed per test file");
     }
-
-    // let expected_errors = expected_regex
-    //     .captures_iter(src)
-    //     .map(|c| (c.get(2).unwrap().as_str(), c.get(1).unwrap().as_str().parse::<i8>().unwrap()))
-    //     .collect::<Vec<(&str, i8)>>();
 
     match expected_errors.first() {
         Some((line, msg)) => Some(format!("[line {}] {}", line + 1, msg)),

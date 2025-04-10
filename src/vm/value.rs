@@ -62,7 +62,7 @@ impl Value {
         } else if self.is_number() {
             ValueKind::Number
         } else if self.is_object() {
-            ValueKind::Object(unsafe { (*self.as_object().as_header()).kind })
+            ValueKind::Object(unsafe { (*self.as_object().as_header_ptr()).kind })
         } else {
             unreachable!("Invalid value type")
         }

@@ -118,12 +118,12 @@ impl GcTraceable for BytecodeChunk {
                 },
                 opcode::PUSH_CLOSURE => {
                     let func_const = self.constants[byte!() as usize];
-                    let func = func_const.as_object().as_function();
+                    let func = func_const.as_object().as_function_ptr();
                     push_fmt!("CLOSURE {}", unsafe { (*func).fmt() });
                 },
                 opcode::PUSH_CLASS => {
                     let class_const = self.constants[byte!() as usize];
-                    let class = class_const.as_object().as_class();
+                    let class = class_const.as_object().as_class_ptr();
                     push_fmt!("CLASS {}", unsafe { (*class).fmt() });
                 },
                 opcode::ADD => push_fmt!("ADD"),
@@ -167,7 +167,9 @@ impl GcTraceable for BytecodeChunk {
                 _ => panic!("Unknown opcode {}", op)
             }
 
-            push_fmt!("\n");
+            if pos < self.code.len() {
+                push_fmt!("\n");
+            }
         }
         
         string

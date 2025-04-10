@@ -16,14 +16,22 @@ regex = "1.11.1"
 rustc-hash = "2.1.1"
 
 [dev-dependencies]
+test-collector = { path = "./test-utils/test-collector" }
 criterion = "0.5.1"
+libtest-mimic = "0.8.1"
+test-generator = "0.3.1"
 
 [features]
 default = []
-debug = []
+capture_output = []
 
 [profile.release]
 debug = true
+
+[[test]]
+name = "file"
+path = "tests/file.rs"
+harness = false
 
 [[bench]]
 name = "fib"

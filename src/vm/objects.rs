@@ -93,16 +93,16 @@ impl Object {
         }
 
         match self.tag() {
-            TAG_CLOSURE => free_object!(self.as_closure()),
-            TAG_NATIVE_FUNCTION => free_object!(self.as_native_function()),
-            TAG_BOUND_METHOD => free_object!(self.as_bound_method()),
-            TAG_CLASS => free_object!(self.as_class()),
-            _ => match unsafe { (*self.as_header()).kind } {
-                ObjectKind::String => free_object!(self.as_string()),
-                ObjectKind::Function => free_object!(self.as_function()),
-                ObjectKind::Instance => free_object!(self.as_instance()),
-                ObjectKind::Upvalue => free_object!(self.as_upvalue()),
-                ObjectKind::Array => free_object!(self.as_array()),
+            TAG_CLOSURE => free_object!(self.as_closure_ptr()),
+            TAG_NATIVE_FUNCTION => free_object!(self.as_native_function_ptr()),
+            TAG_BOUND_METHOD => free_object!(self.as_bound_method_ptr()),
+            TAG_CLASS => free_object!(self.as_class_ptr()),
+            _ => match unsafe { (*self.as_header_ptr()).kind } {
+                ObjectKind::String => free_object!(self.as_string_ptr()),
+                ObjectKind::Function => free_object!(self.as_function_ptr()),
+                ObjectKind::Instance => free_object!(self.as_instance_ptr()),
+                ObjectKind::Upvalue => free_object!(self.as_upvalue_ptr()),
+                ObjectKind::Array => free_object!(self.as_array_ptr()),
                 _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }
@@ -111,16 +111,16 @@ impl Object {
     fn as_traceable(&self) -> &dyn GcTraceable {
         unsafe { 
             match self.tag() {
-                TAG_CLOSURE => &*self.as_closure(),
-                TAG_NATIVE_FUNCTION => &*self.as_native_function(),
-                TAG_BOUND_METHOD => &*self.as_bound_method(),
-                TAG_CLASS => &*self.as_class(),
-                _ => match (*self.as_header()).kind  {
-                    ObjectKind::String => &*self.as_string(),
-                    ObjectKind::Function => &*self.as_function(),
-                    ObjectKind::Instance => &*self.as_instance(),
-                    ObjectKind::Upvalue => &*self.as_upvalue(),
-                    ObjectKind::Array => &*self.as_array(),
+                TAG_CLOSURE => &*self.as_closure_ptr(),
+                TAG_NATIVE_FUNCTION => &*self.as_native_function_ptr(),
+                TAG_BOUND_METHOD => &*self.as_bound_method_ptr(),
+                TAG_CLASS => &*self.as_class_ptr(),
+                _ => match (*self.as_header_ptr()).kind  {
+                    ObjectKind::String => &*self.as_string_ptr(),
+                    ObjectKind::Function => &*self.as_function_ptr(),
+                    ObjectKind::Instance => &*self.as_instance_ptr(),
+                    ObjectKind::Upvalue => &*self.as_upvalue_ptr(),
+                    ObjectKind::Array => &*self.as_array_ptr(),
                     _ => std::hint::unreachable_unchecked()
                 }
             }
@@ -128,52 +128,57 @@ impl Object {
     }
 
     #[inline]
-    pub fn as_header(&self) -> *mut ObjectHeader {
+    pub fn as_header_ptr(&self) -> *mut ObjectHeader {
         unsafe { without_tag(self.header) }
     }
 
     #[inline]
-    pub fn as_string(&self) -> *mut ObjString {
+    pub fn as_string_ptr(&self) -> *mut ObjString {
         unsafe { without_tag(self.string) }
     }
 
     #[inline]
-    pub fn as_function(&self) -> *mut ObjFn {
+    pub fn as_string(&self) -> &String {
+        unsafe { &(*self.as_string_ptr()).value }
+    }
+
+    #[inline]
+    pub fn as_function_ptr(&self) -> *mut ObjFn {
         unsafe { without_tag(self.function) }
     }
 
     #[inline]
-    pub fn as_native_function(&self) -> *mut ObjNativeFn {
+    pub fn as_native_function_ptr(&self) -> *mut ObjNativeFn {
         unsafe { without_tag(self.native_function) }
     }
 
     #[inline]
-    pub fn as_bound_method(&self) -> *mut ObjBoundMethod {
+    pub fn as_bound_method_ptr(&self) -> *mut ObjBoundMethod {
         unsafe { without_tag(self.bound_method) }
     }
 
     #[inline]
-    pub fn as_closure(&self) -> *mut ObjClosure {
+    pub fn as_closure_ptr(&self) -> *mut ObjClosure {
         unsafe { without_tag(self.closure) }
     }
 
     #[inline]
-    pub fn as_class(&self) -> *mut ObjClass {
+    pub fn as_class_ptr(&self) -> *mut ObjClass {
         unsafe { without_tag(self.class) }
     }
 
     #[inline]
-    pub fn as_instance(&self) -> *mut ObjInstance {
+    pub fn as_instance_ptr(&self) -> *mut ObjInstance {
         unsafe { without_tag(self.instance) }
     }
 
     #[inline]
-    pub fn as_upvalue(&self) -> *mut ObjUpvalue {
+    pub fn as_upvalue_ptr(&self) -> *mut ObjUpvalue {
         unsafe { without_tag(self.upvalue) }
     }
 
     #[inline]
-    pub fn as_array(&self) -> *mut ObjArray {
+    pub fn as_array_ptr(&self) -> *mut ObjArray {
         unsafe { without_tag(self.array) }
     }
 }
@@ -233,7 +238,7 @@ impl ObjString {
 
 impl GcTraceable for ObjString {
     fn fmt(&self) -> String {
-        format!("{}", self.value)
+        format!("\"{}\"", self.value)
     }
 
     fn mark(&self, _gc: &mut Gc) { }

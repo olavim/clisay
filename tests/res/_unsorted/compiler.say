@@ -8,6 +8,6 @@ fn getCounter() {
 }
 
 say counter = getCounter();
-print(counter()); // 1
-print(counter()); // 2
-print(counter()); // 3
+print(counter()); // expect: 1
+print(counter()); // expect: 2
+print(counter()); // expect: 3

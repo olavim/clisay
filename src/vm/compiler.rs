@@ -396,7 +396,7 @@ impl<'a> Compiler<'a> {
                 let const_idx = self.classes.get(&self.gc.intern(name))
                     .ok_or(anyhow!("Class '{}' not declared", name))?;
                 let value = self.chunk.constants[*const_idx as usize];
-                Some(value.as_object().as_class())
+                Some(value.as_object().as_class_ptr())
             },
             None => None
         };
@@ -426,14 +426,14 @@ impl<'a> Compiler<'a> {
 
         let frame = self.class_frames.last_mut().unwrap();
         frame.class.declare_method(init_str);
-        frame.class.define_method(init_str, init_const.as_object().as_function());
+        frame.class.define_method(init_str, init_const.as_object().as_function_ptr());
 
         for stmt_id in &decl.methods {
             let parser::Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
             let const_idx = self.method(stmt_id, decl)?;
             let funct_const = self.chunk.constants[const_idx as usize];
             let frame = self.class_frames.last_mut().unwrap();
-            frame.class.define_method(self.gc.intern(&decl.name), funct_const.as_object().as_function());
+            frame.class.define_method(self.gc.intern(&decl.name), funct_const.as_object().as_function_ptr());
         }
 
         let class = self.class_frames.pop().unwrap().class;

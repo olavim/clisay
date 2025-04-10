@@ -1,4 +1,6 @@
-use super::assert_inline;
+use common::assert_inline;
+
+mod common;
 
 #[test]
 fn ops() {

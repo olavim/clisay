@@ -65,8 +65,8 @@ impl Gc {
     pub fn mark_object<T: Into<Object>>(&mut self, obj: T) {
         let obj: Object = obj.into();
         unsafe {
-            if !(*obj.as_header()).marked {
-                (*obj.as_header()).marked = true;
+            if !(*obj.as_header_ptr()).marked {
+                (*obj.as_header_ptr()).marked = true;
                 self.reachable_refs.push(obj);
             }
         }
@@ -92,8 +92,8 @@ impl Gc {
         for i in (0..self.refs.len()).rev() {
             let obj = &self.refs[i];
             unsafe {
-                if (*obj.as_header()).marked {
-                    (*obj.as_header()).marked = false;
+                if (*obj.as_header_ptr()).marked {
+                    (*obj.as_header_ptr()).marked = false;
                 } else {
                     self.free(i);
                 }
