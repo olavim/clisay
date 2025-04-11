@@ -1,0 +1,10 @@
+class A {
+    x = "a";
+}
+
+class B : A {
+    x = "b";
+}
+
+say obj = B();
+print(obj.x); // expect: b

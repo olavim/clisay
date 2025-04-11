@@ -1,0 +1,9 @@
+class A {
+    val;
+    init() {
+        this.val = "b";
+    }
+}
+
+say obj = A();
+print(obj.val); // expect: b

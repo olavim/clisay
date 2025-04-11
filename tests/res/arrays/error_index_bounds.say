@@ -1,0 +1,5 @@
+print([][0]); // error: Array index out of bounds: 0
+// @split
+print([0][-1]); // error: Array index out of bounds: -1
+// @split
+print([0][1]); // error: Array index out of bounds: 1

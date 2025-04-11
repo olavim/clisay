@@ -255,7 +255,9 @@ impl<'out> Vm<'out> {
     fn call_native(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
         let func = unsafe { &*obj.as_native_function_ptr() };
         if arg_count != func.arity as usize {
-            return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*func.name }.value, func.arity, arg_count));
+            let name = unsafe { &(*func.name).value };
+            let arity = func.arity;
+            return self.error(format!("{name} expects {arity} arguments, but got {arg_count}"));
         }
 
         (func.function)(self);
@@ -269,7 +271,9 @@ impl<'out> Vm<'out> {
         let closure_ptr = obj.as_closure_ptr();
         let func = unsafe { &*(*closure_ptr).function };
         if arg_count != func.arity as usize {
-            return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*func.name }.value, func.arity, arg_count));
+            let name = unsafe { &(*func.name).value };
+            let arity = func.arity;
+            return self.error(format!("{name} expects {arity} arguments, but got {arg_count}"));
         }
         self.push_frame(closure_ptr, self.stack.offset(arg_count), func.ip_start);
         Ok(())
@@ -279,7 +283,9 @@ impl<'out> Vm<'out> {
         let bound_method = unsafe { &*obj.as_bound_method_ptr() };
         let func = unsafe { std::ptr::read((*bound_method.closure).function) };
         if arg_count != func.arity as usize {
-            return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*func.name }.value, func.arity, arg_count));
+            let name = unsafe { &(*func.name).value };
+            let arity = func.arity;
+            return self.error(format!("{name} expects {arity} arguments, but got {arg_count}"));
         }
 
         let stack_start = self.stack.set(arg_count, Value::from(bound_method.instance));
@@ -290,20 +296,19 @@ impl<'out> Vm<'out> {
     fn call_class(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
         let class_ptr = obj.as_class_ptr();
         let class = unsafe { &*class_ptr };
-        let init_id = class.resolve_id(self.intern("init")).unwrap();
-        let init_ref = class.get_method(init_id).unwrap();
-        let init = unsafe { &*init_ref };
-        if arg_count != init.arity as usize {
-            return self.error(format!("{} expects {} arguments, but got {}", unsafe { &*init.name }.value, init.arity, arg_count));
+        let init_member_id = class.resolve_id(self.intern("init")).unwrap();
+        let init_method_ref = class.get_method(init_member_id).unwrap();
+        let init_method = unsafe { &*init_method_ref };
+        if arg_count != init_method.arity as usize {
+            let name = unsafe { &(*init_method.name).value };
+            let arity = init_method.arity;
+            return self.error(format!("{name} expects {arity} arguments, but got {arg_count}"));
         }
         
-        let closure = self.create_closure(init_ref);
-        self.stack.push(Value::from(closure));
-
+        let closure = self.create_closure(init_method_ref);
         let instance = self.alloc(ObjInstance::new(class_ptr));
         let stack_start = self.stack.set(arg_count, Value::from(instance));
-
-        self.push_frame(closure, stack_start, init.ip_start);
+        self.push_frame(closure, stack_start, init_method.ip_start);
         Ok(())
     }
 
@@ -362,6 +367,7 @@ impl<'out> Vm<'out> {
             }
         }
     }
+    
     
     fn op_return(&mut self) -> bool {
         if self.frames.len() == 1 {
@@ -524,8 +530,19 @@ impl<'out> Vm<'out> {
                 };
 
                 let array_ref = target.as_object().as_array_ptr();
-                let index = prop.as_number() as usize;
-                let value = unsafe { (*array_ref).values[index] };
+                let index = prop.as_number();
+
+                if index.fract() != 0.0 {
+                    return self.error(format!("Invalid array index: {}", prop.fmt()));
+                }
+
+                let array = unsafe { &*array_ref };
+
+                if index < 0.0 || index >= array.values.len() as f64 {
+                    return self.error(format!("Array index out of bounds: {}", prop.fmt()));
+                }
+
+                let value = unsafe { (*array_ref).values[index as usize] };
                 self.stack.push(value);
                 Ok(())
             },

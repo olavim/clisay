@@ -1,0 +1,3 @@
+say bytesStart = gcHeapSize();
+[];
+print(gcHeapSize() - bytesStart); // expect: 32

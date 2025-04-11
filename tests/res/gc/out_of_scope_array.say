@@ -1,0 +1,4 @@
+say bytesStart = gcHeapSize();
+{ ["hello"]; }
+gcCollect();
+print(gcHeapSize() - bytesStart); // expect: 0

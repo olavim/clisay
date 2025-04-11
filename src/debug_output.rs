@@ -1,45 +1,44 @@
-use std::sync::{Mutex, MutexGuard};
+use std::cell::RefCell;
+use std::sync::Mutex;
 
-static OUTPUT: Mutex<Output> = Mutex::new(Output::new());
+static CAPTURE: Mutex<bool> = Mutex::new(false);
 
-pub struct Output {
-    output: Vec<String>,
-    capture: bool
+thread_local! {
+    static OUTPUT: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
+
+pub struct Output {}
 
 impl Output {
     pub const fn new() -> Self {
-        Output {
-            output: Vec::new(),
-            capture: false
-        }
-    }
-
-    fn get() -> MutexGuard<'static, Output> {
-        OUTPUT.lock().unwrap()
+        Output {}
     }
 
     pub fn enable_capture(enable: bool) {
-        Self::get().capture = enable;
+        *CAPTURE.lock().unwrap() = enable;
     }
 
     pub fn clear() {
-        Self::get().output.clear();
+        OUTPUT.with(|out| out.borrow_mut().clear());
     }
 
-    pub fn println(output: impl Into<String>) {
-        if Self::get().capture {
-            Self::get().output.push(output.into());
-        } else {
-            println!("{}", output.into());
-        }
+    pub fn println(value: impl Into<String>) {
+        OUTPUT.with(|out| {
+            if *CAPTURE.lock().unwrap() {
+                out.borrow_mut().push(value.into());
+            } else {
+                println!("{}", value.into());
+            }
+        });
     }
 
     pub fn flush() {
-        let output = &mut Self::get().output;
-        for line in output.iter() {
-            println!("{}", line);
-        }
-        output.clear();
+        OUTPUT.with(|out| {
+            let output = &mut out.borrow_mut();
+            for line in output.iter() {
+                println!("{}", line);
+            }
+            output.clear();
+        });
     }
 }

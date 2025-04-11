@@ -1,0 +1,7 @@
+
+class A {
+    x;
+}
+
+say obj = A();
+obj.y = true; // error: Property not found: "y"
