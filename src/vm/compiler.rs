@@ -342,22 +342,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn method(&mut self, stmt: &parser::ASTId<parser::Stmt>, decl: &Box<parser::FnDecl>) -> Result<u8, anyhow::Error> {
-        let prev_fn_type = self.fn_type;
-        self.fn_type = FnType::Method;
-        let const_idx = self.function(stmt, decl)?;
-        self.fn_type = prev_fn_type;
-        Ok(const_idx)
-    }
-
-    fn initializer(&mut self, stmt: &parser::ASTId<parser::Stmt>, decl: &Box<parser::FnDecl>) -> Result<u8, anyhow::Error> {
-        let prev_fn_type = self.fn_type;
-        self.fn_type = FnType::Initializer;
-        let const_idx = self.function(stmt, decl)?;
-        self.fn_type = prev_fn_type;
-        Ok(const_idx)
-    }
-
     fn function(&mut self, stmt: &parser::ASTId<parser::Stmt>, decl: &Box<parser::FnDecl>) -> Result<u8, anyhow::Error> {
         if let FnType::None = self.fn_type {
             bail!("Function declaration outside of function");
@@ -419,21 +403,28 @@ impl<'a> Compiler<'a> {
         // Push class frame to make the current class visible in method bodies
         self.class_frames.push(frame);
 
-        let parser::Stmt::Fn(init_fn_decl) = self.ast.get(&decl.init) else { unreachable!(); };
-        let const_idx = self.initializer(stmt, init_fn_decl)?;
-        let init_const = self.chunk.constants[const_idx as usize];
-        let init_str = self.gc.intern("init");
-
-        let frame = self.class_frames.last_mut().unwrap();
-        frame.class.declare_method(init_str);
-        frame.class.define_method(init_str, init_const.as_object().as_function_ptr());
-
-        for stmt_id in &decl.methods {
-            let parser::Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
-            let const_idx = self.method(stmt_id, decl)?;
-            let funct_const = self.chunk.constants[const_idx as usize];
+        if let Some(stmt_id) = &decl.getter {
+            let function_ptr = self.class_method(stmt_id)?;
             let frame = self.class_frames.last_mut().unwrap();
-            frame.class.define_method(self.gc.intern(&decl.name), funct_const.as_object().as_function_ptr());
+            frame.class.set_getter(function_ptr);
+        }
+
+        if let Some(stmt_id) = &decl.setter {
+            let function_ptr = self.class_method(stmt_id)?;
+            let frame = self.class_frames.last_mut().unwrap();
+            frame.class.set_setter(function_ptr);
+        }
+
+        // Compile and assign class initializer function
+        let init_func_ptr = self.initializer(&decl.init)?;
+        let frame = self.class_frames.last_mut().unwrap();
+        frame.class.set_init(init_func_ptr);
+
+        // Compile and add methods to class object
+        for stmt_id in &decl.methods {
+            let function_ptr = self.class_method(stmt_id)?;
+            let frame = self.class_frames.last_mut().unwrap();
+            frame.class.define_method(self.gc.intern(&decl.name), function_ptr);
         }
 
         let class = self.class_frames.pop().unwrap().class;
@@ -445,6 +436,30 @@ impl<'a> Compiler<'a> {
         self.emit(idx, stmt);
         
         Ok(())
+    }
+
+    fn initializer(&mut self, stmt: &parser::ASTId<parser::Stmt>) -> Result<*mut ObjFn, anyhow::Error> {
+        let parser::Stmt::Fn(decl) = self.ast.get(&stmt) else { unreachable!(); };
+
+        let prev_fn_type = self.fn_type;
+        self.fn_type = FnType::Initializer;
+        let const_idx = self.function(stmt, decl)?;
+        self.fn_type = prev_fn_type;
+
+        let func_const = self.chunk.constants[const_idx as usize];
+        Ok(func_const.as_object().as_function_ptr())
+    }
+
+    fn class_method(&mut self, stmt: &parser::ASTId<parser::Stmt>) -> Result<*mut ObjFn, anyhow::Error> {
+        let parser::Stmt::Fn(decl) = self.ast.get(stmt) else { unreachable!(); };
+
+        let prev_fn_type = self.fn_type;
+        self.fn_type = FnType::Method;
+        let const_idx = self.function(stmt, decl)?;
+        self.fn_type = prev_fn_type;
+
+        let func_const = self.chunk.constants[const_idx as usize];
+        Ok(func_const.as_object().as_function_ptr())
     }
 
     fn expression(&mut self, expr: &parser::ASTId<parser::Expr>) -> Result<(), anyhow::Error> {

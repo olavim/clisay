@@ -1,0 +1,11 @@
+class Object {
+    foo = "bar";
+    get(prop) {
+        return prop;
+    }
+}
+
+say obj = Object();
+print(obj.foo); // expect: bar
+print(obj["foo"]); // expect: bar
+print(obj.other); // expect: other

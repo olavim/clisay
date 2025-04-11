@@ -1,0 +1,11 @@
+class A {
+    a = "a";
+}
+
+class B : A {
+    init() {
+        print(super.a);
+    }
+}
+
+B(); // expect: a

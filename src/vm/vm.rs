@@ -296,8 +296,7 @@ impl<'out> Vm<'out> {
     fn call_class(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
         let class_ptr = obj.as_class_ptr();
         let class = unsafe { &*class_ptr };
-        let init_member_id = class.resolve_id(self.intern("init")).unwrap();
-        let init_method_ref = class.get_method(init_member_id).unwrap();
+        let init_method_ref = class.init;
         let init_method = unsafe { &*init_method_ref };
         if arg_count != init_method.arity as usize {
             let name = unsafe { &(*init_method.name).value };
@@ -519,6 +518,13 @@ impl<'out> Vm<'out> {
                 let instance_ref = target.as_object().as_instance_ptr();
                 if let Some(value) = self.get_instance_property(instance_ref, prop.as_object().as_string_ptr()) {
                     self.stack.push(value);
+                    Ok(())
+                } else if let Some(getter) = unsafe { &*(*instance_ref).class }.getter {
+                    let closure = self.create_closure(getter);
+                    self.stack.push(target);
+                    self.stack.push(prop);
+                    let ip_start = unsafe { (*getter).ip_start };
+                    self.push_frame(closure, self.stack.offset(1), ip_start);
                     Ok(())
                 } else {
                     self.error(format!("Property not found: {}", prop.fmt()))

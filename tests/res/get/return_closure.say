@@ -1,0 +1,21 @@
+fn getClosure(param) {
+    fn closure() {
+        return param;
+    }
+    return closure;
+}
+
+class Object {
+    get(prop) {
+        return getClosure(prop);
+    }
+}
+
+say obj = Object();
+print(obj.a()); // expect: a
+print(obj["b"]()); // expect: b
+
+say funcC = obj.c;
+say funcD = obj["d"];
+print(funcC()); // expect: c
+print(funcD()); // expect: d

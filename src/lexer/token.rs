@@ -84,6 +84,8 @@ tokens! {
     Init => "init",
     This => "this",
     Super => "super",
+    Get => "get",
+    Set => "set",
 
     Return => "return",
     Say => "say",

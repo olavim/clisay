@@ -3,7 +3,7 @@ mod operator;
 use std::collections::HashSet;
 use std::{any::Any, marker::PhantomData};
 
-use anyhow::bail;
+use anyhow::anyhow;
 pub use operator::Operator;
 
 use crate::lexer::{SourcePosition, TokenStream, TokenType};
@@ -58,6 +58,8 @@ pub struct ClassDecl {
     pub name: String,
     pub superclass: Option<String>,
     pub init: ASTId<Stmt>,
+    pub getter: Option<ASTId<Stmt>>,
+    pub setter: Option<ASTId<Stmt>>,
     pub fields: HashSet<String>,
     pub methods: Vec<ASTId<Stmt>>
 }
@@ -140,6 +142,10 @@ impl AST {
     }
 }
 
+macro_rules! parse_error {
+    ($self:ident, $pos:expr, $($arg:tt)*) => { return Err($self.error(format!($($arg)*), $pos)) };
+}
+
 pub struct Parser<'parser, 'vm> {
     tokens: &'vm mut TokenStream<'vm>,
     ast: &'parser mut AST,
@@ -166,6 +172,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         ast.add_stmt(Stmt::Block(stmts), pos);
 
         Ok(ast)
+    }
+
+    fn error(&self, message: impl Into<String>, pos: &SourcePosition) -> anyhow::Error {
+        anyhow!(format!("{}\nat {}", message.into(), pos))
     }
 
     fn parse_identifier(&mut self) -> Result<String, anyhow::Error> {
@@ -201,15 +211,23 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_stmt(Stmt::Say(field_init), pos))
     }
 
+    /// Parses an fn statement, which includes the `fn` keyword and a function declaration.
     fn parse_fn(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Fn)?.pos.clone();
         let name = self.parse_identifier()?;
-        let params = self.parse_params()?;
-        let body = self.parse_block()?;
-        let fn_decl = Box::new(FnDecl { name, params, body });
+        let fn_decl = Box::new(self.parse_fn_decl(name)?);
         Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
     }
 
+    /// Parses a function declaration, including the function name, parameters, and body.
+    fn parse_fn_decl(&mut self, name: String) -> Result<FnDecl, anyhow::Error> {
+        let params = self.parse_params()?;
+        let body = self.parse_block()?;
+        Ok(FnDecl { name, params, body })
+    }
+
+    /// Parses a class initializer method.
+    /// The init method may contain a super() call in the body as the first statement.
     fn parse_init(&mut self, has_superclass: bool) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Init)?.pos.clone();
         let name = format!("{}.init", self.current_class.as_ref().unwrap());
@@ -221,7 +239,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut stmts = if has_superclass {
             // Parse super() call if it exists, or add a virtual zero-arity super() call
             match (self.tokens.peek(0).kind, self.tokens.peek(1).kind) {
-                (TokenType::Super, TokenType::LeftParen) => vec![self.parse_stmt()?],
+                (TokenType::Super, TokenType::LeftParen) => vec![self.parse_super_call()?],
                 _ => vec![self.virtual_super_call(pos.clone())?]
             }
         } else {
@@ -276,26 +294,43 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut field_stmts: Vec<ASTId<Stmt>> = Vec::new();
         let mut method_stmts: Vec<ASTId<Stmt>> = Vec::new();
         let mut init = None;
+        let mut getter = None;
+        let mut setter = None;
 
         while !self.tokens.match_next(TokenType::RightBrace) {
-            if self.tokens.match_next(TokenType::Init) {
-                init = Some(self.parse_init(superclass.is_some())?);
-            } else if self.tokens.match_next(TokenType::Fn) {
-                method_stmts.push(self.parse_fn()?);
-            } else {
-                let name = self.parse_identifier()?;
-                let value = if let Some(_) = self.tokens.next_if(TokenType::Equal) {
-                    Some(self.parse_expr()?)
-                } else {
-                    None
-                };
-                self.tokens.expect(TokenType::Semicolon)?;
-                fields.insert(name.clone());
-
-                if let Some(value) = value {
-                    let id = self.ast.add_expr(Expr::Identifier(name), pos.clone());
-                    let assign = self.ast.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
-                    field_stmts.push(self.ast.add_stmt(Stmt::Expression(assign), pos.clone()));
+            match self.tokens.peek(0).kind {
+                TokenType::Init => {
+                    init = Some(self.parse_init(superclass.is_some())?);
+                },
+                TokenType::Fn => {
+                    method_stmts.push(self.parse_fn()?);
+                },
+                kind @ (TokenType::Get | TokenType::Set) => {
+                    let token = self.tokens.next().clone();
+                    let fn_decl = Box::new(self.parse_fn_decl(token.lexeme)?);
+                    let stmt = Some(self.ast.add_stmt(Stmt::Fn(fn_decl), token.pos));
+                    match kind {
+                        TokenType::Get => getter = stmt,
+                        TokenType::Set => setter = stmt,
+                        _ => unreachable!()
+                    }
+                },
+                _ => {
+                    // Field declaration
+                    let name = self.parse_identifier()?;
+                    let value = if let Some(_) = self.tokens.next_if(TokenType::Equal) {
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+                    self.tokens.expect(TokenType::Semicolon)?;
+                    fields.insert(name.clone());
+    
+                    if let Some(value) = value {
+                        let id = self.ast.add_expr(Expr::Identifier(name), pos.clone());
+                        let assign = self.ast.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
+                        field_stmts.push(self.ast.add_stmt(Stmt::Expression(assign), pos.clone()));
+                    }
                 }
             }
         }
@@ -325,6 +360,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             name,
             superclass,
             init,
+            getter,
+            setter,
             fields,
             methods: method_stmts
         });
@@ -518,12 +555,41 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::True => Expr::Literal(Literal::Boolean(true)),
             TokenType::False => Expr::Literal(Literal::Boolean(false)),
             TokenType::This => Expr::This,
-            TokenType::Super => Expr::Super,
+            /* The super keyword is not a valid expression on its own,
+             * so it makes sense to consider something like `super.x` as an "atom".
+             */
+            TokenType::Super => return self.parse_super(),
             TokenType::Identifier => Expr::Identifier(token.lexeme.clone()),
-            _ => bail!("Unexpected token {} at {}", token, token.pos)
+            _ => parse_error!(self, &pos, "Unexpected token {token}")
         };
     
         Ok(self.ast.add_expr(kind, pos))
     }
-    
+
+    fn parse_super(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+        let token = self.tokens.next();
+        let pos = token.pos.clone();
+
+        match token.kind {
+            TokenType::Dot => {
+                let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
+                let id = self.parse_identifier()?;
+                let id_expr = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                let expr = self.ast.add_expr(Expr::Binary(Operator::MemberAccess, super_expr, id_expr), pos.clone());
+                Ok(expr)
+            },
+            TokenType::LeftParen => parse_error!(self, &pos, "Super call must be the first statement in an init block"),
+            _ => parse_error!(self, &pos, "Unexpected token {token}"),
+        }
+    }
+
+    fn parse_super_call(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::Super)?.pos.clone();
+        self.tokens.expect(TokenType::LeftParen)?;
+        let args = self.parse_args()?;
+        self.tokens.expect(TokenType::Semicolon)?;
+        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
+        let expr = self.ast.add_expr(Expr::Call(super_expr, args), pos.clone());
+        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
+    }
 }

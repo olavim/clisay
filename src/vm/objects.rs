@@ -411,6 +411,9 @@ pub struct ObjClass {
     members: IntMap<usize, ClassMember>,
     pub fields: IntSet<MemberId>,
     methods: IntMap<MemberId, *mut ObjFn>,
+    pub init: *mut ObjFn,
+    pub getter: Option<*mut ObjFn>,
+    pub setter: Option<*mut ObjFn>,
     next_member_id: MemberId
 }
 
@@ -422,7 +425,10 @@ impl ObjClass {
             members: IntMap::default(),
             fields: IntSet::default(),
             methods: IntMap::default(),
-            next_member_id: 1
+            init: std::ptr::null_mut(),
+            getter: None,
+            setter: None,
+            next_member_id: 0
         };
 
         if let Some(superclass) = superclass {
@@ -438,6 +444,18 @@ impl ObjClass {
         self.fields = superclass.fields.clone();
         self.methods = superclass.methods.clone();
         self.methods.remove(&0);
+    }
+
+    pub fn set_init(&mut self, init: *mut ObjFn) {
+        self.init = init;
+    }
+
+    pub fn set_getter(&mut self, getter: *mut ObjFn) {
+        self.getter = Some(getter);
+    }
+
+    pub fn set_setter(&mut self, setter: *mut ObjFn) {
+        self.setter = Some(setter);
     }
 
     pub fn declare_field(&mut self, name: *mut ObjString) {
