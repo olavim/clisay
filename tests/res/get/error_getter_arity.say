@@ -1,0 +1,13 @@
+class Object {
+    get() { // error: Getter must have exactly one parameter
+        return "hello";
+    }
+}
+
+// @split
+
+class Object {
+    get(one, tooMany) { // error: Getter must have exactly one parameter
+        return "hello";
+    }
+}

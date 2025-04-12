@@ -7,7 +7,6 @@ use fnv::FnvHashMap;
 use super::chunk::BytecodeChunk;
 use super::gc::Gc;
 use super::objects::ObjClass;
-use super::objects::ClassMember;
 use super::objects::ObjString;
 use super::objects::{ObjFn, UpvalueLocation};
 use super::opcode;
@@ -400,28 +399,38 @@ impl<'a> Compiler<'a> {
             frame.class.declare_method(self.gc.intern(&decl.name));
         }
 
+        if let Some(_) = &decl.getter {
+            frame.class.declare_method(self.gc.preset_identifiers.get);
+        }
+
+        if let Some(_) = &decl.setter {
+            frame.class.declare_method(self.gc.preset_identifiers.set);
+        }
+
         // Push class frame to make the current class visible in method bodies
         self.class_frames.push(frame);
 
         if let Some(stmt_id) = &decl.getter {
             let function_ptr = self.class_method(stmt_id)?;
             let frame = self.class_frames.last_mut().unwrap();
-            frame.class.set_getter(function_ptr);
+            frame.class.define_method(self.gc.preset_identifiers.get, function_ptr);
         }
 
         if let Some(stmt_id) = &decl.setter {
             let function_ptr = self.class_method(stmt_id)?;
             let frame = self.class_frames.last_mut().unwrap();
-            frame.class.set_setter(function_ptr);
+            frame.class.define_method(self.gc.preset_identifiers.set, function_ptr);
         }
 
         // Compile and assign class initializer function
         let init_func_ptr = self.initializer(&decl.init)?;
         let frame = self.class_frames.last_mut().unwrap();
-        frame.class.set_init(init_func_ptr);
+        frame.class.declare_method(self.gc.preset_identifiers.init);
+        frame.class.define_method(self.gc.preset_identifiers.init, init_func_ptr);
 
         // Compile and add methods to class object
         for stmt_id in &decl.methods {
+            let parser::Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
             let function_ptr = self.class_method(stmt_id)?;
             let frame = self.class_frames.last_mut().unwrap();
             frame.class.define_method(self.gc.intern(&decl.name), function_ptr);
@@ -469,7 +478,7 @@ impl<'a> Compiler<'a> {
             parser::Expr::Ternary(cond, then, otherwise) => self.if_expression(cond, then, otherwise)?,
             parser::Expr::Call(expr, args) => self.call_expression(expr, args)?,
             parser::Expr::Array(exprs) => self.array_expression(expr, exprs)?,
-            parser::Expr::Index(expr, id) => self.member_access(expr, id, AccessKind::Get)?,
+            parser::Expr::Index(expr, id) => self.index(expr, id, None)?,
             parser::Expr::Literal(lit) => self.literal(expr, lit)?,
             parser::Expr::Identifier(name) => {
                 let name = self.gc.intern(name);
@@ -537,14 +546,8 @@ impl<'a> Compiler<'a> {
                     self.identifier(left, intern_name, true)?;
                     return Ok(());
                 },
-                parser::Expr::Binary(parser::Operator::MemberAccess, obj, member) => {
-                    self.expression(right)?;
-                    self.member_access(obj, member, AccessKind::Set)?;
-                    return Ok(());
-                },
                 parser::Expr::Index(obj, member) => {
-                    self.expression(right)?;
-                    self.member_access(obj, member, AccessKind::Set)?;
+                    self.index(obj, member, Some(right))?;
                     return Ok(());
                 },
                 _ => compiler_error!(self, "Invalid assignment", left)
@@ -552,7 +555,7 @@ impl<'a> Compiler<'a> {
         }
 
         if let parser::Operator::MemberAccess = op {
-            self.member_access(left, right, AccessKind::Get)?;
+            self.index(left, right, None)?;
             return Ok(());
         }
 
@@ -562,50 +565,145 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn member_access(&mut self, expr: &parser::ASTId<parser::Expr>, member_expr: &parser::ASTId<parser::Expr>, access_kind: AccessKind) -> Result<(), anyhow::Error> {
-        self.expression(expr)?;
+    fn index(&mut self, expr: &parser::ASTId<parser::Expr>, member_expr_id: &parser::ASTId<parser::Expr>, assign_expr: Option<&parser::ASTId<parser::Expr>>) -> Result<(), anyhow::Error> {
+        match self.ast.get(expr) {
+            parser::Expr::This => {
+                let member_expr = self.ast.get(member_expr_id);
+                let frame = self.class_frames.last().unwrap();
+                let member_id = if let parser::Expr::Literal(parser::Literal::String(name)) = member_expr {
+                    frame.class.resolve_id(self.gc.intern(name))
+                } else {
+                    None
+                };
 
-        let (operand, get_op, set_op) = match (self.ast.get(expr), self.ast.get(member_expr)) {
-            (parser::Expr::This, parser::Expr::Literal(parser::Literal::String(member))) => {
-                let frame = self.class_frames.last().unwrap();
-                let member = self.gc.intern(member);
-                let id = self.resolve_class_member(expr, &frame.class, member)?;
-                (Some(id), opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
+                match (assign_expr, member_id) {
+                    (None, Some(id)) => {
+                        self.expression(expr)?;
+                        self.emit(opcode::GET_PROPERTY_ID, expr);
+                        self.emit(id, expr);
+                    },
+                    (Some(assign_expr), Some(id)) => {
+                        self.expression(assign_expr)?;
+                        self.expression(expr)?;
+                        self.emit(opcode::SET_PROPERTY_ID, assign_expr);
+                        self.emit(id, assign_expr);
+                    },
+                    (None, None) => match frame.class.resolve_id(self.gc.preset_identifiers.get) {
+                        Some(getter_id) => {
+                            self.expression(expr)?;
+                            self.emit(opcode::GET_PROPERTY_ID, expr);
+                            self.emit(getter_id, expr);
+                            self.expression(member_expr_id)?;
+                            self.emit(opcode::CALL, expr);
+                            self.emit(1, expr);
+                        },
+                        None => {
+                            let class_name = unsafe { &(*frame.class.name).value };
+                            if let parser::Expr::Literal(parser::Literal::String(member_name)) = member_expr {
+                                compiler_error!(self, format!("Invalid index: {class_name} doesn't have member {member_name} and doesn't have a getter"), expr)
+                            } else {
+                                compiler_error!(self, format!("Invalid index: {class_name} doesn't have a getter"), expr)
+                            }
+                        }
+                    },
+                    (Some(assign_expr), None) => match frame.class.resolve_id(self.gc.preset_identifiers.set) {
+                        Some(setter_id) => {
+                            self.expression(expr)?;
+                            self.emit(opcode::GET_PROPERTY_ID, assign_expr);
+                            self.emit(setter_id, assign_expr);
+                            self.expression(member_expr_id)?;
+                            self.expression(assign_expr)?;
+                            self.emit(opcode::CALL, assign_expr);
+                            self.emit(2, assign_expr);
+                        },
+                        None => {
+                            let class_name = unsafe { &(*frame.class.name).value };
+                            if let parser::Expr::Literal(parser::Literal::String(member_name)) = member_expr {
+                                compiler_error!(self, format!("Invalid index: {class_name} doesn't have member {member_name} and doesn't have a setter"), assign_expr)
+                            } else {
+                                compiler_error!(self, format!("Invalid index: {class_name} doesn't have a setter"), assign_expr)
+                            }
+                        }
+                    }
+                }
             },
-            (parser::Expr::Super, parser::Expr::Literal(parser::Literal::String(member))) => {
+            parser::Expr::Super => {
+                let member_expr = self.ast.get(member_expr_id);
                 let frame = self.class_frames.last().unwrap();
-                let member = self.gc.intern(member);
                 let superclass = unsafe { &*frame.superclass.unwrap() };
-                let id = self.resolve_class_member(expr, superclass, member)?;
-                (Some(id), opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
+                let member_id = if let parser::Expr::Literal(parser::Literal::String(name)) = member_expr {
+                    superclass.resolve_id(self.gc.intern(name))
+                } else {
+                    None
+                };
+
+                match (assign_expr, member_id) {
+                    (None, Some(id)) => {
+                        self.expression(expr)?;
+                        self.emit(opcode::GET_PROPERTY_ID, expr);
+                        self.emit(id, expr);
+                    },
+                    (Some(assign_expr), Some(id)) => {
+                        self.expression(assign_expr)?;
+                        self.expression(expr)?;
+                        self.emit(opcode::SET_PROPERTY_ID, expr);
+                        self.emit(id, expr);
+                    },
+                    (None, None) => match superclass.resolve_id(self.gc.preset_identifiers.get) {
+                        Some(getter_id) => {
+                            self.expression(expr)?;
+                            self.emit(opcode::GET_PROPERTY_ID, expr);
+                            self.emit(getter_id, expr);
+                            self.expression(member_expr_id)?;
+                            self.emit(opcode::CALL, expr);
+                            self.emit(1, expr);
+                        },
+                        None => {
+                            let class_name = unsafe { &(*superclass.name).value };
+                            if let parser::Expr::Literal(parser::Literal::String(member_name)) = member_expr {
+                                compiler_error!(self, format!("Invalid index: {class_name} doesn't have member {member_name} and doesn't have a getter"), expr)
+                            } else {
+                                compiler_error!(self, format!("Invalid index: {class_name} doesn't have a getter"), expr)
+                            }
+                        }
+                    },
+                    (Some(assign_expr), None) => match superclass.resolve_id(self.gc.preset_identifiers.set) {
+                        Some(setter_id) => {
+                            self.expression(expr)?;
+                            self.emit(opcode::GET_PROPERTY_ID, expr);
+                            self.emit(setter_id, expr);
+                            self.expression(member_expr_id)?;
+                            self.expression(assign_expr)?;
+                            self.emit(opcode::CALL, expr);
+                            self.emit(2, expr);
+                        },
+                        None => {
+                            let class_name = unsafe { &(*superclass.name).value };
+                            if let parser::Expr::Literal(parser::Literal::String(member_name)) = member_expr {
+                                compiler_error!(self, format!("Invalid index: {class_name} doesn't have member {member_name} and doesn't have a setter"), expr)
+                            } else {
+                                compiler_error!(self, format!("Invalid index: {class_name} doesn't have a setter"), expr)
+                            }
+                        }
+                    }
+                }
             },
             _ => {
-                self.expression(member_expr)?;
-                (None, opcode::GET_INDEX, opcode::SET_INDEX)
+                if let Some(assign_expr) = assign_expr {
+                    self.expression(assign_expr)?;
+                }
+
+                self.expression(expr)?;
+                self.expression(member_expr_id)?;
+                
+                match assign_expr {
+                    None => self.emit(opcode::GET_INDEX, expr),
+                    Some(_) => self.emit(opcode::SET_INDEX, expr)
+                };
             }
         };
 
-        let op = match access_kind {
-            AccessKind::Get => get_op,
-            AccessKind::Set => set_op
-        };
-
-        self.emit(op, expr);
-        if let Some(operand) = operand {
-            self.emit(operand, expr);
-        }
         Ok(())
-    }
-
-    fn resolve_class_member(&self, expr: &parser::ASTId<parser::Expr>, class: &ObjClass, member: *mut ObjString) -> Result<u8, anyhow::Error> {
-        let id = match class.resolve(member) {
-            Some(ClassMember::Field(id)) => id,
-            Some(ClassMember::Method(id)) => id,
-            None => unsafe {
-                compiler_error!(self, format!("Class '{}' has no member '{}'", (*class.name).value, (*member).value), expr)
-            }
-        };
-        Ok(id)
     }
     
     fn call_expression(&mut self, expr: &parser::ASTId<parser::Expr>, args: &Vec<parser::ASTId<parser::Expr>>) -> Result<(), anyhow::Error> {
@@ -613,7 +711,7 @@ impl<'a> Compiler<'a> {
             parser::Expr::Super => {
                 let frame = self.class_frames.last().unwrap();
                 let superclass = frame.superclass.unwrap();
-                let init_str = self.gc.intern("init");
+                let init_str = self.gc.intern("@init");
                 let member_id = unsafe { &*superclass }.resolve_id(init_str).unwrap();
 
                 self.emit(opcode::GET_LOCAL, expr);

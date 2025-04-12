@@ -1,0 +1,17 @@
+class Object {
+    prop;
+    value;
+    foo;
+
+    set(prop, value) {
+        this.prop = prop;
+        this.value = value;
+    }
+}
+
+say obj = Object();
+obj.hello = "world";
+obj.foo = "bar";
+print(obj.foo); // expect: bar
+print(obj.prop); // expect: hello
+print(obj.value); // expect: world

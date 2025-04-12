@@ -1,5 +1,6 @@
 mod operator;
 
+use core::fmt;
 use std::collections::HashSet;
 use std::{any::Any, marker::PhantomData};
 
@@ -13,6 +14,17 @@ pub enum Literal {
     Boolean(bool),
     Number(f64),
     String(String)
+}
+
+impl fmt::Display for Literal {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Literal::Null => write!(f, "null"),
+            Literal::Boolean(b) => write!(f, "{}", b),
+            Literal::Number(n) => write!(f, "{}", n),
+            Literal::String(s) => write!(f, "\"{}\"", s)
+        }
+    }
 }
 
 pub trait ASTKind {
@@ -229,7 +241,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses a class initializer method.
     /// The init method may contain a super() call in the body as the first statement.
     fn parse_init(&mut self, has_superclass: bool) -> Result<ASTId<Stmt>, anyhow::Error> {
-        let pos = self.tokens.expect(TokenType::Init)?.pos.clone();
+        let pos = self.tokens.peek(0).pos.clone();
         let name = format!("{}.init", self.current_class.as_ref().unwrap());
         let params = self.parse_params()?;
 
@@ -298,39 +310,58 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut setter = None;
 
         while !self.tokens.match_next(TokenType::RightBrace) {
-            match self.tokens.peek(0).kind {
-                TokenType::Init => {
-                    init = Some(self.parse_init(superclass.is_some())?);
-                },
+            let kind = self.tokens.peek(0).kind;
+            match kind {
                 TokenType::Fn => {
                     method_stmts.push(self.parse_fn()?);
                 },
-                kind @ (TokenType::Get | TokenType::Set) => {
-                    let token = self.tokens.next().clone();
-                    let fn_decl = Box::new(self.parse_fn_decl(token.lexeme)?);
-                    let stmt = Some(self.ast.add_stmt(Stmt::Fn(fn_decl), token.pos));
-                    match kind {
-                        TokenType::Get => getter = stmt,
-                        TokenType::Set => setter = stmt,
-                        _ => unreachable!()
+                TokenType::Identifier => {
+                    let name = self.parse_identifier()?;
+
+                    // Some identifiers have special meaning in classes but are not outright keywords
+                    match name.as_str() {
+                        "init" => {
+                            init = Some(self.parse_init(superclass.is_some())?);
+                        },
+                        "get" => {
+                            let token = self.tokens.peek(0).clone();
+                            let fn_decl = Box::new(self.parse_fn_decl(name)?);
+                            if fn_decl.params.len() != 1 {
+                                parse_error!(self, &token.pos, "Getter must have exactly one parameter")
+                            }
+                            let stmt = Some(self.ast.add_stmt(Stmt::Fn(fn_decl), token.pos));
+                            getter = stmt;
+                        },
+                        "set" => {
+                            let token = self.tokens.peek(0).clone();
+                            let fn_decl = Box::new(self.parse_fn_decl(name)?);
+                            if fn_decl.params.len() != 2 {
+                                parse_error!(self, &token.pos, "Setter must have exactly two parameters")
+                            }
+                            let stmt = Some(self.ast.add_stmt(Stmt::Fn(fn_decl), token.pos));
+                            setter = stmt;
+                        },
+                        _ => {
+                            // Field declaration
+                            let value = if let Some(_) = self.tokens.next_if(TokenType::Equal) {
+                                Some(self.parse_expr()?)
+                            } else {
+                                None
+                            };
+        
+                            self.tokens.expect(TokenType::Semicolon)?;
+                            fields.insert(name.clone());
+            
+                            if let Some(value) = value {
+                                let id = self.ast.add_expr(Expr::Identifier(name), pos.clone());
+                                let assign = self.ast.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
+                                field_stmts.push(self.ast.add_stmt(Stmt::Expression(assign), pos.clone()));
+                            }
+                        }
                     }
                 },
-                _ => {
-                    // Field declaration
-                    let name = self.parse_identifier()?;
-                    let value = if let Some(_) = self.tokens.next_if(TokenType::Equal) {
-                        Some(self.parse_expr()?)
-                    } else {
-                        None
-                    };
-                    self.tokens.expect(TokenType::Semicolon)?;
-                    fields.insert(name.clone());
-    
-                    if let Some(value) = value {
-                        let id = self.ast.add_expr(Expr::Identifier(name), pos.clone());
-                        let assign = self.ast.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
-                        field_stmts.push(self.ast.add_stmt(Stmt::Expression(assign), pos.clone()));
-                    }
+                kind => {
+                    parse_error!(self, &self.tokens.peek(0).pos, "Unexpected token {kind}")
                 }
             }
         }
@@ -474,7 +505,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Operator::MemberAccess => {
                 let id = self.parse_identifier()?;
                 let right = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                Expr::Binary(op, expr, right)
+                Expr::Index(expr, right)
             },
             _ => {
                 let right = self.parse_expr_precedence(op.infix_precedence().unwrap())?;
@@ -575,7 +606,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
                 let id = self.parse_identifier()?;
                 let id_expr = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                let expr = self.ast.add_expr(Expr::Binary(Operator::MemberAccess, super_expr, id_expr), pos.clone());
+                let expr = self.ast.add_expr(Expr::Index(super_expr, id_expr), pos.clone());
+                Ok(expr)
+            },
+            TokenType::LeftBracket => {
+                let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
+                let expr = self.parse_expr()?;
+                self.tokens.expect(TokenType::RightBracket)?;
+                let expr = self.ast.add_expr(Expr::Index(super_expr, expr), pos.clone());
                 Ok(expr)
             },
             TokenType::LeftParen => parse_error!(self, &pos, "Super call must be the first statement in an init block"),

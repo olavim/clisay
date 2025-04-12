@@ -1,0 +1,11 @@
+class A {
+    get(prop) {
+        return prop;
+    }
+}
+
+class B : A { }
+
+say obj = B();
+print(obj.b); // expect: b
+print(obj["foo"]); // expect: foo

@@ -10,4 +10,4 @@ class A {
 
 say objA = A();
 say objB = B();
-objA.getMe = objB.getMe; // error: Cannot assign to instance method 'getMe'
+objA.getMe = objB.getMe; // error: Cannot assign to method 'getMe'

@@ -39,6 +39,11 @@ fn classes(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
+#[test_resources("tests/res/classes2")]
+fn classes2(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
 #[test_resources("tests/res/this")]
 fn this(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
@@ -51,6 +56,11 @@ fn super_kw(resource: &str) -> Result<(), Failed> {
 
 #[test_resources("tests/res/get")]
 fn getter(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/set")]
+fn setter(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 

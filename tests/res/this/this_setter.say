@@ -1,0 +1,15 @@
+class A {
+    value;
+
+    fn set(a, b) {
+        this[a] = b;
+    }
+
+    set(prop, value) {
+        this.value = prop + "." + value;
+    }
+}
+
+say obj = A();
+obj.set("foo", "bar");
+print(obj.value); // expect: foo.bar

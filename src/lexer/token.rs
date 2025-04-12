@@ -81,11 +81,8 @@ impl fmt::Display for Token {
 
 tokens! {
     Class => "class",
-    Init => "init",
     This => "this",
     Super => "super",
-    Get => "get",
-    Set => "set",
 
     Return => "return",
     Say => "say",

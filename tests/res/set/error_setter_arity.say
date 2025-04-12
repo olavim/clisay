@@ -1,0 +1,21 @@
+class Object {
+    set() { // error: Setter must have exactly two parameters
+        return "hello";
+    }
+}
+
+// @split
+
+class Object {
+    set(one) { // error: Setter must have exactly two parameters
+        return "hello";
+    }
+}
+
+// @split
+
+class Object {
+    set(one, too, many) { // error: Setter must have exactly two parameters
+        return "hello";
+    }
+}

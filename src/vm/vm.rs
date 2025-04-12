@@ -15,7 +15,7 @@ use super::opcode::{self, OpCode};
 use super::stack::{CachedStack, Stack};
 use super::value::Value;
 use super::gc::{Gc, GcTraceable};
-use super::objects::{self, ClassMember, ObjArray, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
+use super::objects::{self, ClassMember, ObjArray, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
 use super::compiler::Compiler;
 
 const MAX_STACK: usize = 16384;
@@ -40,6 +40,15 @@ pub struct Vm<'out> {
 
 macro_rules! as_short {
     ($l:expr, $r:expr) => { ($l as u16) | (($r as u16) << 8) }
+}
+
+macro_rules! check_arity {
+    ($vm:expr, $arg_count:expr, $arity:expr, $func_name:expr) => {
+        if $arg_count != $arity as usize {
+            let name = unsafe { &(*$func_name).value };
+            return $vm.error(format!("{} expects {} arguments, but got {}", name, $arity, $arg_count));
+        }
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -220,13 +229,17 @@ impl<'out> Vm<'out> {
         self.alloc(closure)
     }
 
-    fn get_instance_property(&mut self, instance_ref: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
-        let instance = unsafe { &*instance_ref };
+    fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
+        let instance = unsafe { &*instance_ptr };
         let class = unsafe { &*instance.class };
 
         match class.resolve(prop) {
-            Some(ClassMember::Field(id)) |
-            Some(ClassMember::Method(id)) => Some(self.get_property_by_id(instance_ref, id)),
+            Some(ClassMember::Field(id)) => Some(unsafe { (*instance_ptr).get(id) }),
+            Some(ClassMember::Method(id)) => {
+                let closure = self.create_closure(class.get_method(id));
+                let method = self.alloc(ObjBoundMethod::new(instance_ptr, closure));
+                Some(Value::from(method))
+            },
             None => None
         }
     }
@@ -252,13 +265,9 @@ impl<'out> Vm<'out> {
         self.chunk.set_position(unsafe { self.chunk.code.as_ptr().offset(ip_start as isize) });
     }
 
-    fn call_native(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
-        let func = unsafe { &*obj.as_native_function_ptr() };
-        if arg_count != func.arity as usize {
-            let name = unsafe { &(*func.name).value };
-            let arity = func.arity;
-            return self.error(format!("{name} expects {arity} arguments, but got {arg_count}"));
-        }
+    fn call_native(&mut self, arg_count: usize, native_fn_ptr: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
+        let func = unsafe { &*native_fn_ptr };
+        check_arity!(self, arg_count, func.arity as usize, func.name);
 
         (func.function)(self);
         let result = self.stack.peek(0);
@@ -267,48 +276,133 @@ impl<'out> Vm<'out> {
         Ok(())
     }
 
-    fn call_closure(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
-        let closure_ptr = obj.as_closure_ptr();
+    fn call_closure(&mut self, arg_count: usize, closure_ptr: *mut ObjClosure) -> Result<(), anyhow::Error> {
         let func = unsafe { &*(*closure_ptr).function };
-        if arg_count != func.arity as usize {
-            let name = unsafe { &(*func.name).value };
-            let arity = func.arity;
-            return self.error(format!("{name} expects {arity} arguments, but got {arg_count}"));
-        }
+        check_arity!(self, arg_count, func.arity, func.name);
         self.push_frame(closure_ptr, self.stack.offset(arg_count), func.ip_start);
         Ok(())
     }
 
-    fn call_bound_method(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
-        let bound_method = unsafe { &*obj.as_bound_method_ptr() };
+    fn call_bound_method(&mut self, arg_count: usize, bound_method_ptr: *mut ObjBoundMethod) -> Result<(), anyhow::Error> {
+        let bound_method = unsafe { &*bound_method_ptr };
         let func = unsafe { std::ptr::read((*bound_method.closure).function) };
-        if arg_count != func.arity as usize {
-            let name = unsafe { &(*func.name).value };
-            let arity = func.arity;
-            return self.error(format!("{name} expects {arity} arguments, but got {arg_count}"));
-        }
+        check_arity!(self, arg_count, func.arity, func.name);
 
         let stack_start = self.stack.set(arg_count, Value::from(bound_method.instance));
         self.push_frame(bound_method.closure, stack_start, func.ip_start);
         Ok(())
     }
 
-    fn call_class(&mut self, arg_count: usize, obj: Object) -> Result<(), anyhow::Error> {
-        let class_ptr = obj.as_class_ptr();
+    fn call_class(&mut self, arg_count: usize, class_ptr: *mut ObjClass) -> Result<(), anyhow::Error> {
         let class = unsafe { &*class_ptr };
-        let init_method_ref = class.init;
+        let init_method_ref = class.resolve_method(self.gc.preset_identifiers.init).unwrap();
         let init_method = unsafe { &*init_method_ref };
-        if arg_count != init_method.arity as usize {
-            let name = unsafe { &(*init_method.name).value };
-            let arity = init_method.arity;
-            return self.error(format!("{name} expects {arity} arguments, but got {arg_count}"));
-        }
+        check_arity!(self, arg_count, init_method.arity, init_method.name);
         
         let closure = self.create_closure(init_method_ref);
         let instance = self.alloc(ObjInstance::new(class_ptr));
         let stack_start = self.stack.set(arg_count, Value::from(instance));
         self.push_frame(closure, stack_start, init_method.ip_start);
         Ok(())
+    }
+
+    fn get_array_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
+        if !matches!(prop.kind(), ValueKind::Number) {
+            return self.error(format!("Invalid array index: {}", prop.fmt()));
+        };
+
+        let index = prop.as_number();
+
+        if index.fract() != 0.0 {
+            return self.error(format!("Invalid array index: {}", prop.fmt()));
+        }
+
+        let array = unsafe { &*target.as_object().as_array_ptr() };
+
+        if index < 0.0 || index >= array.values.len() as f64 {
+            return self.error(format!("Array index out of bounds: {}", prop.fmt()));
+        }
+
+        let value = array.values[index as usize];
+        self.stack.push(value);
+        Ok(())
+    }
+    
+    fn get_instance_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
+        let instance_ref = target.as_object().as_instance_ptr();
+
+        if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
+            if let Some(value) = self.get_instance_property(instance_ref, prop.as_object().as_string_ptr()) {
+                self.stack.push(value);
+                return Ok(());
+            }
+        }
+
+        let class = unsafe { &*(*instance_ref).class };
+
+        if let Some(getter) = class.resolve_method(self.gc.preset_identifiers.get) {
+            let closure = self.create_closure(getter);
+            self.stack.push(target);
+            self.stack.push(prop);
+            let ip_start = unsafe { (*getter).ip_start };
+            self.push_frame(closure, self.stack.offset(1), ip_start);
+            return Ok(());
+        }
+
+        self.error(format!(
+            "Invalid index: {} doesn't have member {} and doesn't have a getter",
+            unsafe { &*class.name }.value,
+            prop.fmt()
+        ))
+    }
+
+    fn set_array_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
+        if !matches!(prop.kind(), ValueKind::Number) {
+            return self.error(format!("Invalid array index: {}", prop.fmt()));
+        };
+        let array_ref = target.as_object().as_array_ptr();
+        let index = prop.as_number() as usize;
+        unsafe { (*array_ref).values[index] = self.stack.peek(0) };
+        Ok(())
+    }
+    
+    fn set_instance_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
+        let instance_ref = target.as_object().as_instance_ptr();
+        let instance = unsafe { &mut *instance_ref };
+        let class = unsafe { &*instance.class };
+
+        if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
+            let member = class.resolve(prop.as_object().as_string_ptr());
+    
+            if let Some(member) = member {
+                if let ClassMember::Field(id) = member {
+                    let value = self.stack.peek(0);
+                    instance.values.insert(id, value);
+                    return Ok(());
+                }
+    
+                return self.error(format!("Cannot assign to method '{}'", prop.as_object().as_string()));
+            }
+        }
+
+        if let Some(setter) = class.resolve_method(self.gc.preset_identifiers.set) {
+            let value = self.stack.pop();
+            
+            self.stack.push(target);
+            self.stack.push(prop);
+            self.stack.push(value);
+
+            let closure = self.create_closure(setter);
+            let ip_start = unsafe { (*setter).ip_start };
+            self.push_frame(closure, self.stack.offset(2), ip_start);
+            return Ok(());
+        }
+
+        self.error(format!(
+            "Invalid index: {} doesn't have member {} and doesn't have a setter",
+            unsafe { &*class.name }.value,
+            prop.fmt()
+        ))
     }
 
     fn interpret(&mut self) -> Result<(), anyhow::Error> {
@@ -414,10 +508,10 @@ impl<'out> Vm<'out> {
         let tag = object.tag();
 
         match tag {
-            objects::TAG_CLOSURE => self.call_closure(arg_count, object),
-            objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, object),
-            objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object),
-            objects::TAG_CLASS => self.call_class(arg_count, object),
+            objects::TAG_CLOSURE => self.call_closure(arg_count, object.as_closure_ptr()),
+            objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, object.as_native_function_ptr()),
+            objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object.as_bound_method_ptr()),
+            objects::TAG_CLASS => self.call_class(arg_count, object.as_class_ptr()),
             _ => unreachable!()
         }
     }
@@ -510,52 +604,12 @@ impl<'out> Vm<'out> {
         };
 
         match object_kind {
-            ObjectKind::Instance => {
-                if !matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
-                    return self.error(format!("Invalid property access: {}.{}", target.fmt(), prop.fmt()));
-                };
-        
-                let instance_ref = target.as_object().as_instance_ptr();
-                if let Some(value) = self.get_instance_property(instance_ref, prop.as_object().as_string_ptr()) {
-                    self.stack.push(value);
-                    Ok(())
-                } else if let Some(getter) = unsafe { &*(*instance_ref).class }.getter {
-                    let closure = self.create_closure(getter);
-                    self.stack.push(target);
-                    self.stack.push(prop);
-                    let ip_start = unsafe { (*getter).ip_start };
-                    self.push_frame(closure, self.stack.offset(1), ip_start);
-                    Ok(())
-                } else {
-                    self.error(format!("Property not found: {}", prop.fmt()))
-                }
-            },
-            ObjectKind::Array => {
-                if !matches!(prop.kind(), ValueKind::Number) {
-                    return self.error(format!("Invalid array index: {}", prop.fmt()));
-                };
-
-                let array_ref = target.as_object().as_array_ptr();
-                let index = prop.as_number();
-
-                if index.fract() != 0.0 {
-                    return self.error(format!("Invalid array index: {}", prop.fmt()));
-                }
-
-                let array = unsafe { &*array_ref };
-
-                if index < 0.0 || index >= array.values.len() as f64 {
-                    return self.error(format!("Array index out of bounds: {}", prop.fmt()));
-                }
-
-                let value = unsafe { (*array_ref).values[index as usize] };
-                self.stack.push(value);
-                Ok(())
-            },
+            ObjectKind::Instance => self.get_instance_index(prop, target),
+            ObjectKind::Array => self.get_array_index(prop, target),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
     }
-
+    
     fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
         let prop = self.stack.pop();
         let target = self.stack.pop();
@@ -564,41 +618,12 @@ impl<'out> Vm<'out> {
         };
 
         match object_kind {
-            ObjectKind::Instance => {
-                if !matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
-                    return self.error(format!("Invalid property access: {}.{}", target.fmt(), prop.fmt()));
-                };
-
-                let object = target.as_object();
-                let instance_ref = object.as_instance_ptr();
-                let prop_str = prop.as_object().as_string_ptr();
-        
-                let instance = unsafe { &mut *instance_ref };
-                let class = unsafe { &*instance.class };
-                match class.resolve(prop_str) {
-                    Some(ClassMember::Field(id)) => {
-                        let value = self.stack.peek(0);
-                        instance.values.insert(id, value);
-                        Ok(())
-                    },
-                    Some(ClassMember::Method(_)) => return self.error(format!("Cannot assign to instance method '{}'", prop.as_object().as_string())),
-                    None => self.error(format!("Property not found: {}", prop.fmt()))
-                }
-            },
-            ObjectKind::Array => {
-                if !matches!(prop.kind(), ValueKind::Number) {
-                    return self.error(format!("Invalid array index: {}", prop.fmt()));
-                };
-
-                let array_ref = target.as_object().as_array_ptr();
-                let index = prop.as_number() as usize;
-                unsafe { (*array_ref).values[index] = self.stack.peek(0) };
-                Ok(())
-            },
+            ObjectKind::Instance => self.set_instance_index(prop, target),
+            ObjectKind::Array => self.set_array_index(prop, target),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
     }
-
+    
     fn op_get_property_by_id(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.chunk.read_next();
         let value = self.stack.pop();

@@ -1,0 +1,16 @@
+class A {
+    prop;
+    value;
+
+    set(prop, value) {
+        this.prop = prop;
+        this.value = value;
+    }
+}
+
+class B : A { }
+
+say obj = B();
+obj.foo = "bar";
+print(obj.prop); // expect: foo
+print(obj.value); // expect: bar

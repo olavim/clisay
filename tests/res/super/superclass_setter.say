@@ -1,0 +1,17 @@
+class A {
+    value;
+
+    set(prop, value) {
+        this.value = prop + "." + value;
+    }
+}
+
+class B : A {
+    fn set(a, b) {
+        super[a] = b;
+    }
+}
+
+say obj = B();
+obj.set("foo", "bar");
+print(obj.value); // expect: foo.bar

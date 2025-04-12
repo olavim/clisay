@@ -411,9 +411,6 @@ pub struct ObjClass {
     members: IntMap<usize, ClassMember>,
     pub fields: IntSet<MemberId>,
     methods: IntMap<MemberId, *mut ObjFn>,
-    pub init: *mut ObjFn,
-    pub getter: Option<*mut ObjFn>,
-    pub setter: Option<*mut ObjFn>,
     next_member_id: MemberId
 }
 
@@ -425,9 +422,6 @@ impl ObjClass {
             members: IntMap::default(),
             fields: IntSet::default(),
             methods: IntMap::default(),
-            init: std::ptr::null_mut(),
-            getter: None,
-            setter: None,
             next_member_id: 0
         };
 
@@ -443,19 +437,6 @@ impl ObjClass {
         self.members = superclass.members.clone();
         self.fields = superclass.fields.clone();
         self.methods = superclass.methods.clone();
-        self.methods.remove(&0);
-    }
-
-    pub fn set_init(&mut self, init: *mut ObjFn) {
-        self.init = init;
-    }
-
-    pub fn set_getter(&mut self, getter: *mut ObjFn) {
-        self.getter = Some(getter);
-    }
-
-    pub fn set_setter(&mut self, setter: *mut ObjFn) {
-        self.setter = Some(setter);
     }
 
     pub fn declare_field(&mut self, name: *mut ObjString) {
@@ -480,6 +461,13 @@ impl ObjClass {
         self.members.get(&(name as usize)).copied()
     }
 
+    pub fn resolve_method(&self, name: *mut ObjString) -> Option<*mut ObjFn> {
+        match self.members.get(&(name as usize)) {
+            Some(ClassMember::Method(id)) => self.methods.get(id).copied(),
+            _ => None
+        }
+    }
+
     pub fn resolve_id(&self, name: *mut ObjString) -> Option<MemberId> {
         match self.members.get(&(name as usize)) {
             Some(ClassMember::Field(id)) |
@@ -488,8 +476,8 @@ impl ObjClass {
         }
     }
 
-    pub fn get_method(&self, id: MemberId) -> Option<*mut ObjFn> {
-        self.methods.get(&id).copied()
+    pub fn get_method(&self, id: MemberId) -> *mut ObjFn {
+        self.methods[&id]
     }
 }
 
@@ -535,8 +523,7 @@ impl ObjInstance {
             Some(value) => *value,
             None => {
                 let class = unsafe { &*self.class };
-                let func = class.get_method(id).unwrap();
-                Value::from(func)
+                Value::from(class.get_method(id))
             }
         }
     }

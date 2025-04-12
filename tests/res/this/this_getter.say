@@ -1,0 +1,12 @@
+class A {
+    fn echo(prop) {
+        return this[prop];
+    }
+
+    get(prop) {
+        return prop;
+    }
+}
+
+say obj = A();
+print(obj.val); // expect: val
