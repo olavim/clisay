@@ -29,6 +29,11 @@ fn main() {
     libtest_mimic::run(&args, tests).exit();
 }
 
+#[test_resources("tests/res/_temp")]
+fn temp(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
 #[test_resources("tests/res/parser")]
 fn parser(file: &str) -> Result<(), Failed> {
     common::test_file(file)
@@ -36,11 +41,6 @@ fn parser(file: &str) -> Result<(), Failed> {
 
 #[test_resources("tests/res/classes")]
 fn classes(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/classes2")]
-fn classes2(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 

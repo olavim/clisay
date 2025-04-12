@@ -2,6 +2,7 @@ mod stack;
 mod opcode;
 mod chunk;
 mod objects;
+mod native;
 mod vm;
 mod gc;
 mod value;

@@ -1,0 +1,4 @@
+print([].length()); // expect: 0
+print([1].length()); // expect: 1
+print([1, 2].length()); // expect: 2
+print([[], []]["length"]()); // expect: 2

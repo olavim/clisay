@@ -11,15 +11,34 @@ use crate::vm::value::ValueKind;
 use crate::lexer::{tokenize, TokenStream};
 
 use super::chunk::BytecodeChunk;
+use super::native::{NativeArray, NativeType};
 use super::opcode::{self, OpCode};
 use super::stack::{CachedStack, Stack};
 use super::value::Value;
 use super::gc::{Gc, GcTraceable};
-use super::objects::{self, ClassMember, ObjArray, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
+use super::objects::{self, ClassMember, NativeFn, ObjArray, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
 use super::compiler::Compiler;
 
 const MAX_STACK: usize = 16384;
 const MAX_FRAMES: usize = 256;
+
+struct NativeTypes {
+    array: *mut ObjClass
+}
+
+impl GcTraceable for NativeTypes {
+    fn mark(&self, gc: &mut Gc) {
+        gc.mark_object(self.array);
+    }
+    
+    fn fmt(&self) -> String {
+        unreachable!()
+    }
+    
+    fn size(&self) -> usize {
+        unreachable!()
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct CallFrame {
@@ -35,6 +54,7 @@ pub struct Vm<'out> {
     stack: Stack<Value, MAX_STACK>,
     frames: CachedStack<CallFrame, MAX_FRAMES>,
     open_upvalues: Vec<*mut ObjUpvalue>,
+    native_types: NativeTypes,
     out: &'out mut Vec<String>
 }
 
@@ -58,6 +78,11 @@ fn disassemble(chunk: &BytecodeChunk) {
     Output::println("================");
 }
 
+fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjClass {
+    let class = native_type.build_class(gc);
+    gc.alloc(class)
+}
+
 impl<'out> Vm<'out> {
     pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
         let mut gc = Gc::new();
@@ -69,6 +94,10 @@ impl<'out> Vm<'out> {
             disassemble(&chunk);
         }
 
+        let native_types = NativeTypes {
+            array: build_native_type(&mut gc, NativeArray)
+        };
+
         let mut out = Vec::new();
         let mut vm = Vm {
             gc,
@@ -77,6 +106,7 @@ impl<'out> Vm<'out> {
             stack: Stack::new(),
             frames: CachedStack::new(),
             open_upvalues: Vec::new(),
+            native_types,
             out: &mut out
         };
 
@@ -90,8 +120,8 @@ impl<'out> Vm<'out> {
             stack_start: vm.stack.top()
         });
 
-        vm.define_native("print", 1, |vm| {
-            let value = vm.stack.peek(0);
+        vm.define_native("print", 1, |vm, _target, args| {
+            let value = args[0];
             let value_str = match value.kind() {
                 ValueKind::Null => String::from("null"),
                 ValueKind::Number => format!("{}", value.as_number()),
@@ -101,21 +131,21 @@ impl<'out> Vm<'out> {
             };
             vm.out.push(value_str.clone());
             Output::println(value_str);
-            vm.stack.push(Value::NULL);
+            Ok(Value::NULL)
         });
 
-        vm.define_native("time", 0, |vm| {
+        vm.define_native("time", 0, |_vm, _target, _args| {
             let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as f64;
-            vm.stack.push(Value::from(time));
+            Ok(Value::from(time))
         });
 
-        vm.define_native("gcHeapSize", 0, |vm| {
-            vm.stack.push(Value::from(vm.gc.bytes_allocated as f64));
+        vm.define_native("gcHeapSize", 0, |vm, _target, _args| {
+            Ok(Value::from(vm.gc.bytes_allocated as f64))
         });
 
-        vm.define_native("gcCollect", 0, |vm| {
+        vm.define_native("gcCollect", 0, |vm, _target, _args| {
             vm.start_gc();
-            vm.stack.push(Value::NULL);
+            Ok(Value::NULL)
         });
 
         vm.interpret()?;
@@ -158,7 +188,7 @@ impl<'out> Vm<'out> {
         self.gc.alloc(obj)
     }
 
-    fn define_native(&mut self, name: impl Into<String>, arity: u8, function: fn(&mut Vm)) {
+    fn define_native(&mut self, name: impl Into<String>, arity: u8, function: NativeFn) {
         let name_ref = self.gc.intern(name.into());
         let native = ObjNativeFn::new(name_ref, arity, function);
         let value = Value::from(self.gc.alloc(native));
@@ -167,6 +197,7 @@ impl<'out> Vm<'out> {
 
     fn start_gc(&mut self) {
         self.chunk.mark(&mut self.gc);
+        self.native_types.mark(&mut self.gc);
 
         for (&name, value) in &self.globals {
             self.gc.mark_object(name);
@@ -211,7 +242,7 @@ impl<'out> Vm<'out> {
         }
     }
 
-    fn create_closure(&mut self, function: *mut ObjFn) -> *mut ObjClosure {
+    fn create_closure(&mut self, function: *mut ObjFn) -> Object {
         let mut closure = ObjClosure::new(function);
         let upvalue_count = unsafe { (*function).upvalues.len() };
 
@@ -226,7 +257,7 @@ impl<'out> Vm<'out> {
             closure.upvalues.push(upvalue);
         }
 
-        self.alloc(closure)
+        self.alloc(closure).into()
     }
 
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
@@ -236,9 +267,19 @@ impl<'out> Vm<'out> {
         match class.resolve(prop) {
             Some(ClassMember::Field(id)) => Some(unsafe { (*instance_ptr).get(id) }),
             Some(ClassMember::Method(id)) => {
-                let closure = self.create_closure(class.get_method(id));
-                let method = self.alloc(ObjBoundMethod::new(instance_ptr, closure));
-                Some(Value::from(method))
+                let method = class.get_method(id);
+                match method.tag() {
+                    objects::TAG_FUNCTION => {
+                        let closure = self.create_closure(method.as_function_ptr());
+                        let bound_method = self.alloc(ObjBoundMethod::new(instance_ptr.into(), closure));
+                        return Some(Value::from(bound_method));
+                    },
+                    objects::TAG_NATIVE_FUNCTION => {
+                        let bound_method = self.alloc(ObjBoundMethod::new(instance_ptr.into(), method));
+                        return Some(Value::from(bound_method));
+                    },
+                    _ => unreachable!()
+                }
             },
             None => None
         }
@@ -249,7 +290,7 @@ impl<'out> Vm<'out> {
         match value.kind() {
             ValueKind::Object(ObjectKind::Function) => {
                 let closure = self.create_closure(value.as_object().as_function_ptr());
-                let method = self.alloc(ObjBoundMethod::new(instance_ref, closure));
+                let method = self.alloc(ObjBoundMethod::new(instance_ref.into(), closure));
                 Value::from(method)
             },
             _ => value
@@ -268,12 +309,16 @@ impl<'out> Vm<'out> {
     fn call_native(&mut self, arg_count: usize, native_fn_ptr: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
         let func = unsafe { &*native_fn_ptr };
         check_arity!(self, arg_count, func.arity as usize, func.name);
-
-        (func.function)(self);
-        let result = self.stack.peek(0);
-        self.stack.truncate(arg_count + 2);
-        self.stack.push(result);
-        Ok(())
+        let args = self.stack.pop_slice(arg_count);
+        // The "target" is the first value in a call window. For method calls, this is the instance.
+        let target = self.stack.pop();
+        match (func.function)(self, target, args) {
+            Ok(result) => {
+                self.stack.push(result);
+                Ok(())
+            },
+            Err(err) => self.error(err.downcast::<String>()?)
+        }
     }
 
     fn call_closure(&mut self, arg_count: usize, closure_ptr: *mut ObjClosure) -> Result<(), anyhow::Error> {
@@ -285,50 +330,67 @@ impl<'out> Vm<'out> {
 
     fn call_bound_method(&mut self, arg_count: usize, bound_method_ptr: *mut ObjBoundMethod) -> Result<(), anyhow::Error> {
         let bound_method = unsafe { &*bound_method_ptr };
-        let func = unsafe { std::ptr::read((*bound_method.closure).function) };
-        check_arity!(self, arg_count, func.arity, func.name);
-
-        let stack_start = self.stack.set(arg_count, Value::from(bound_method.instance));
-        self.push_frame(bound_method.closure, stack_start, func.ip_start);
+        let method = bound_method.method;
+        match method.tag() {
+            objects::TAG_CLOSURE => {
+                let closure_ptr = method.as_closure_ptr();
+                let func = unsafe { &*(*closure_ptr).function };
+                check_arity!(self, arg_count, func.arity, func.name);
+                let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
+                self.push_frame(closure_ptr, stack_start, func.ip_start);
+            },
+            objects::TAG_NATIVE_FUNCTION => {
+                self.stack.set(arg_count, Value::from(bound_method.target));
+                self.call_native(arg_count, method.as_native_function_ptr())?;
+            },
+            _ => unreachable!()
+        };
         Ok(())
     }
 
     fn call_class(&mut self, arg_count: usize, class_ptr: *mut ObjClass) -> Result<(), anyhow::Error> {
         let class = unsafe { &*class_ptr };
-        let init_method_ref = class.resolve_method(self.gc.preset_identifiers.init).unwrap();
+        let init_method_ref = class.resolve_method(self.gc.preset_identifiers.init).unwrap().as_function_ptr();
         let init_method = unsafe { &*init_method_ref };
         check_arity!(self, arg_count, init_method.arity, init_method.name);
         
         let closure = self.create_closure(init_method_ref);
         let instance = self.alloc(ObjInstance::new(class_ptr));
         let stack_start = self.stack.set(arg_count, Value::from(instance));
-        self.push_frame(closure, stack_start, init_method.ip_start);
+        self.push_frame(closure.as_closure_ptr(), stack_start, init_method.ip_start);
         Ok(())
     }
 
-    fn get_array_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
-        if !matches!(prop.kind(), ValueKind::Number) {
-            return self.error(format!("Invalid array index: {}", prop.fmt()));
-        };
+    fn get_native_type_index(&mut self, native_class_ptr: *mut ObjClass, target: Value, prop: Value) -> Result<(), anyhow::Error> {
+        let native_class = unsafe { &*native_class_ptr };
 
-        let index = prop.as_number();
-
-        if index.fract() != 0.0 {
-            return self.error(format!("Invalid array index: {}", prop.fmt()));
+        if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
+            let Some(method) = native_class.resolve_method(prop.as_object().as_string_ptr()) else {
+                return self.error(format!("Invalid array index: {}", prop.fmt()));
+            };
+            
+            let bound_method = self.alloc(ObjBoundMethod::new(target, method));
+            self.stack.push(Value::from(bound_method));
+            return Ok(());
         }
 
-        let array = unsafe { &*target.as_object().as_array_ptr() };
+        let getter = native_class.resolve_method(self.gc.preset_identifiers.get).unwrap();
+        self.stack.push(target);
+        self.stack.push(prop);
+        return self.call_native(1, getter.as_native_function_ptr());
+    }
 
-        if index < 0.0 || index >= array.values.len() as f64 {
-            return self.error(format!("Array index out of bounds: {}", prop.fmt()));
-        }
-
-        let value = array.values[index as usize];
+    fn set_native_type_index(&mut self, native_class_ptr: *mut ObjClass, target: Value, prop: Value) -> Result<(), anyhow::Error> {
+        let native_class = unsafe { &*native_class_ptr };
+        let setter = native_class.resolve_method(self.gc.preset_identifiers.set).unwrap();
+        let value = self.stack.pop();
+        self.stack.push(target);
+        self.stack.push(prop);
         self.stack.push(value);
-        Ok(())
+        return self.call_native(2, setter.as_native_function_ptr());
     }
     
-    fn get_instance_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
+    fn get_instance_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let instance_ref = target.as_object().as_instance_ptr();
 
         if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
@@ -341,12 +403,22 @@ impl<'out> Vm<'out> {
         let class = unsafe { &*(*instance_ref).class };
 
         if let Some(getter) = class.resolve_method(self.gc.preset_identifiers.get) {
-            let closure = self.create_closure(getter);
             self.stack.push(target);
             self.stack.push(prop);
-            let ip_start = unsafe { (*getter).ip_start };
-            self.push_frame(closure, self.stack.offset(1), ip_start);
-            return Ok(());
+
+            match getter.tag() {
+                objects::TAG_FUNCTION => {
+                    let func_ptr = getter.as_function_ptr();
+                    let closure = self.create_closure(func_ptr);
+                    let ip_start = unsafe { (*func_ptr).ip_start };
+                    self.push_frame(closure.as_closure_ptr(), self.stack.offset(1), ip_start);
+                    return Ok(());
+                },
+                objects::TAG_NATIVE_FUNCTION => {
+                    return self.call_native(1, getter.as_native_function_ptr());
+                },
+                _ => unreachable!()
+            }
         }
 
         self.error(format!(
@@ -354,16 +426,6 @@ impl<'out> Vm<'out> {
             unsafe { &*class.name }.value,
             prop.fmt()
         ))
-    }
-
-    fn set_array_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
-        if !matches!(prop.kind(), ValueKind::Number) {
-            return self.error(format!("Invalid array index: {}", prop.fmt()));
-        };
-        let array_ref = target.as_object().as_array_ptr();
-        let index = prop.as_number() as usize;
-        unsafe { (*array_ref).values[index] = self.stack.peek(0) };
-        Ok(())
     }
     
     fn set_instance_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
@@ -387,15 +449,23 @@ impl<'out> Vm<'out> {
 
         if let Some(setter) = class.resolve_method(self.gc.preset_identifiers.set) {
             let value = self.stack.pop();
-            
             self.stack.push(target);
             self.stack.push(prop);
             self.stack.push(value);
 
-            let closure = self.create_closure(setter);
-            let ip_start = unsafe { (*setter).ip_start };
-            self.push_frame(closure, self.stack.offset(2), ip_start);
-            return Ok(());
+            match setter.tag() {
+                objects::TAG_FUNCTION => {
+                    let func_ptr = setter.as_function_ptr();
+                    let closure = self.create_closure(func_ptr);
+                    let ip_start = unsafe { (*func_ptr).ip_start };
+                    self.push_frame(closure.as_closure_ptr(), self.stack.offset(2), ip_start);
+                    return Ok(());
+                },
+                objects::TAG_NATIVE_FUNCTION => {
+                    return self.call_native(2, setter.as_native_function_ptr());
+                },
+                _ => unreachable!()
+            }
         }
 
         self.error(format!(
@@ -604,8 +674,8 @@ impl<'out> Vm<'out> {
         };
 
         match object_kind {
-            ObjectKind::Instance => self.get_instance_index(prop, target),
-            ObjectKind::Array => self.get_array_index(prop, target),
+            ObjectKind::Instance => self.get_instance_index(target, prop),
+            ObjectKind::Array => self.get_native_type_index(self.native_types.array, target, prop),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
     }
@@ -619,7 +689,7 @@ impl<'out> Vm<'out> {
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target),
-            ObjectKind::Array => self.set_array_index(prop, target),
+            ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
     }

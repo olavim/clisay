@@ -1,5 +1,6 @@
 use std::{fmt, mem};
 
+use fnv::FnvHashMap;
 use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
@@ -65,6 +66,7 @@ pub union Object {
 }
 
 pub const TAG_HEADER: u8 = 0;
+pub const TAG_FUNCTION: u8 = 3;
 pub const TAG_CLOSURE: u8 = 4;
 pub const TAG_NATIVE_FUNCTION: u8 = 5;
 pub const TAG_BOUND_METHOD: u8 = 6;
@@ -93,13 +95,13 @@ impl Object {
         }
 
         match self.tag() {
+            TAG_FUNCTION => free_object!(self.as_function_ptr()),
             TAG_CLOSURE => free_object!(self.as_closure_ptr()),
             TAG_NATIVE_FUNCTION => free_object!(self.as_native_function_ptr()),
             TAG_BOUND_METHOD => free_object!(self.as_bound_method_ptr()),
             TAG_CLASS => free_object!(self.as_class_ptr()),
             _ => match unsafe { (*self.as_header_ptr()).kind } {
                 ObjectKind::String => free_object!(self.as_string_ptr()),
-                ObjectKind::Function => free_object!(self.as_function_ptr()),
                 ObjectKind::Instance => free_object!(self.as_instance_ptr()),
                 ObjectKind::Upvalue => free_object!(self.as_upvalue_ptr()),
                 ObjectKind::Array => free_object!(self.as_array_ptr()),
@@ -111,13 +113,13 @@ impl Object {
     fn as_traceable(&self) -> &dyn GcTraceable {
         unsafe { 
             match self.tag() {
+                TAG_FUNCTION => &*self.as_function_ptr(),
                 TAG_CLOSURE => &*self.as_closure_ptr(),
                 TAG_NATIVE_FUNCTION => &*self.as_native_function_ptr(),
                 TAG_BOUND_METHOD => &*self.as_bound_method_ptr(),
                 TAG_CLASS => &*self.as_class_ptr(),
                 _ => match (*self.as_header_ptr()).kind  {
                     ObjectKind::String => &*self.as_string_ptr(),
-                    ObjectKind::Function => &*self.as_function_ptr(),
                     ObjectKind::Instance => &*self.as_instance_ptr(),
                     ObjectKind::Upvalue => &*self.as_upvalue_ptr(),
                     ObjectKind::Array => &*self.as_array_ptr(),
@@ -209,12 +211,12 @@ macro_rules! impl_from_for_object {
     };
 }
 
-impl_from_for_object!(function, ObjFn, TAG_HEADER);
 impl_from_for_object!(string, ObjString, TAG_HEADER);
 impl_from_for_object!(instance, ObjInstance, TAG_HEADER);
 impl_from_for_object!(upvalue, ObjUpvalue, TAG_HEADER);
 impl_from_for_object!(array, ObjArray, TAG_HEADER);
 
+impl_from_for_object!(function, ObjFn, TAG_FUNCTION);
 impl_from_for_object!(native_function, ObjNativeFn, TAG_NATIVE_FUNCTION);
 impl_from_for_object!(bound_method, ObjBoundMethod, TAG_BOUND_METHOD);
 impl_from_for_object!(closure, ObjClosure, TAG_CLOSURE);
@@ -290,17 +292,19 @@ impl GcTraceable for ObjFn {
     }
 }
 
+pub type NativeFn = fn(vm: &mut Vm, target: Value, args: Vec<Value>) -> Result<Value, anyhow::Error>;
+
 #[repr(align(8))]
 #[repr(C)]
 pub struct ObjNativeFn {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
     pub arity: u8,
-    pub function: fn(vm: &mut Vm)
+    pub function: NativeFn
 }
 
 impl ObjNativeFn {
-    pub fn new(name: *mut ObjString, arity: u8, function: fn(vm: &mut Vm)) -> ObjNativeFn {
+    pub fn new(name: *mut ObjString, arity: u8, function: NativeFn) -> ObjNativeFn {
         ObjNativeFn {
             header: ObjectHeader::new(ObjectKind::NativeFunction),
             name,
@@ -364,30 +368,28 @@ impl GcTraceable for ObjClosure {
 #[repr(C)]
 pub struct ObjBoundMethod {
     pub header: ObjectHeader,
-    pub instance: *mut ObjInstance,
-    pub closure: *mut ObjClosure
+    pub target: Value,
+    pub method: Object
 }
 
 impl ObjBoundMethod {
-    pub fn new(instance: *mut ObjInstance, closure: *mut ObjClosure) -> ObjBoundMethod {
+    pub fn new(target: Value, method: Object) -> ObjBoundMethod {
         ObjBoundMethod {
             header: ObjectHeader::new(ObjectKind::BoundMethod),
-            instance,
-            closure
+            target,
+            method
         }
     }
 }
 
 impl GcTraceable for ObjBoundMethod {
     fn fmt(&self) -> String {
-        let closure = unsafe { &*self.closure };
-        let function = unsafe { &*closure.function };
-        format!("<bound method {}>", unsafe { &(*function.name).value } )
+        format!("<bound method {}>", self.method.fmt())
     }
 
     fn mark(&self, gc: &mut Gc) {
-        gc.mark_object(self.instance);
-        gc.mark_object(self.closure);
+        self.target.mark(gc);
+        self.method.mark(gc);
     }
 
     fn size(&self) -> usize {
@@ -408,75 +410,42 @@ pub enum ClassMember {
 pub struct ObjClass {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
-    members: IntMap<usize, ClassMember>,
+    pub members: FnvHashMap<*mut ObjString, ClassMember>,
     pub fields: IntSet<MemberId>,
-    methods: IntMap<MemberId, *mut ObjFn>,
-    next_member_id: MemberId
+    pub methods: IntMap<MemberId, Object>
 }
 
 impl ObjClass {
-    pub fn new(name: *mut ObjString, superclass: Option<&ObjClass>) -> ObjClass {
-        let mut class = ObjClass {
+    pub fn new(name: *mut ObjString) -> ObjClass {
+        ObjClass {
             header: ObjectHeader::new(ObjectKind::Class),
             name,
-            members: IntMap::default(),
+            members: FnvHashMap::default(),
             fields: IntSet::default(),
-            methods: IntMap::default(),
-            next_member_id: 0
-        };
-
-        if let Some(superclass) = superclass {
-            class.inherit(superclass);
+            methods: IntMap::default()
         }
-
-        class
-    }
-
-    fn inherit(&mut self, superclass: &ObjClass) {
-        self.next_member_id = superclass.next_member_id;
-        self.members = superclass.members.clone();
-        self.fields = superclass.fields.clone();
-        self.methods = superclass.methods.clone();
-    }
-
-    pub fn declare_field(&mut self, name: *mut ObjString) {
-        self.members.insert(name as usize, ClassMember::Field(self.next_member_id));
-        self.fields.insert(self.next_member_id);
-        self.next_member_id += 1;
-    }
-
-    pub fn declare_method(&mut self, name: *mut ObjString) {
-        self.members.insert(name as usize, ClassMember::Method(self.next_member_id));
-        self.next_member_id += 1;
-    }
-
-    pub fn define_method(&mut self, name: *mut ObjString, method: *mut ObjFn) {
-        let ClassMember::Method(id) = self.resolve(name).unwrap() else {
-            unreachable!("Cannot define field as method");
-        };
-        self.methods.insert(id, method);
     }
 
     pub fn resolve(&self, name: *mut ObjString) -> Option<ClassMember> {
-        self.members.get(&(name as usize)).copied()
+        self.members.get(&name).copied()
     }
 
-    pub fn resolve_method(&self, name: *mut ObjString) -> Option<*mut ObjFn> {
-        match self.members.get(&(name as usize)) {
+    pub fn resolve_method(&self, name: *mut ObjString) -> Option<Object> {
+        match self.members.get(&name) {
             Some(ClassMember::Method(id)) => self.methods.get(id).copied(),
             _ => None
         }
     }
 
     pub fn resolve_id(&self, name: *mut ObjString) -> Option<MemberId> {
-        match self.members.get(&(name as usize)) {
+        match self.members.get(&name) {
             Some(ClassMember::Field(id)) |
             Some(ClassMember::Method(id)) => Some(*id),
             None => None
         }
     }
 
-    pub fn get_method(&self, id: MemberId) -> *mut ObjFn {
+    pub fn get_method(&self, id: MemberId) -> Object {
         self.methods[&id]
     }
 }
@@ -488,6 +457,12 @@ impl GcTraceable for ObjClass {
 
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.name);
+        for (&name, _) in &self.members {
+            gc.mark_object(name);
+        }
+        for (_, &method) in &self.methods {
+            gc.mark_object(method);
+        }
     }
 
     fn size(&self) -> usize {
