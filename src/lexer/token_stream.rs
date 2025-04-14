@@ -53,7 +53,7 @@ impl<'a> TokenStream<'a> {
         if token.kind == token_type {
             Ok(token)
         } else {
-            bail!("Unexpected token: Expected '{token}' but found '{token_type}'\nat {}", token.pos)
+            bail!("Unexpected token: Expected '{token_type}' but found '{token}'\nat {}", token.pos)
         }
     }
 

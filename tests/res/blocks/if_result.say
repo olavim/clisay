@@ -1,0 +1,11 @@
+say value = if true { "hello" } else { "world" };
+print(value); // expect: hello
+
+say value2 = if false { "hello" } else { "world" };
+print(value2); // expect: world
+
+say value3 = if true { "hello" };
+print(value3); // expect: hello
+
+say value4 = if false { "hello" };
+print(value4); // expect: null

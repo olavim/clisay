@@ -52,7 +52,7 @@ impl<'a> Compiler<'a> {
             self.declare_local(param, true)?;
         }
 
-        self.statement(&decl.body)?;
+        self.expression(&decl.body)?;
         let frame = self.exit_function(&decl.body);
         self.patch_jump(jump_ref)?;
 

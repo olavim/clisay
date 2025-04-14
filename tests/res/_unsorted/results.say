@@ -1,0 +1,84 @@
+say array = [1, 2, 3, 4, 5];
+
+// The `Result` qualifier means that the function always returns a `Result` object, which can be either `Ok` or `Error`.
+// There are currently no other qualifiers in the language.
+// Other possible qualifiers: `Async` for asynchronous functions, `Iterator` for generator functions (in JavaScript terms), etc.
+// Some keywords and syntax are only usable within `Result` functions, such as `?`.
+// Something to think about: what if a function has multiple qualifiers?
+fn getIndex(i): Result {
+    if i < 0 || i >= array.length() {
+        // Return an Error result.
+        // Any expression can be wrapped in Error.
+        return Error("Index out of bounds");
+    }
+
+    // Return an Ok result.
+    return Ok(array[i]);
+
+    // Other cases:
+    // return array[i]; // Non-result return values are automatically wrapped in Ok.
+    // If a value is not returned, the function implicitly returns Ok(null).
+}
+
+fn propagateResult1(i): Result {
+    // If getIndex returns Ok(x): return Ok(x)
+    // If getIndex returns Error(x): return Error(x)
+    // If getIndex returns a non-Result value x: return Ok(x)
+    return getIndex(i);
+}
+
+// Shows redundant rewrapping of Ok values.
+// This is bad code, but it is allowed.
+fn propagateResult2(i): Result {
+    // getIndex returns Ok(x): return Ok(x)
+    // getIndex returns Error(x): propagate with `?`
+    say value = getIndex(i)?;
+    return Ok(value);
+}
+
+// Always wraps getIndex(i) return value in Ok, which might result in nested results.
+// In most use-cases users should instead return the result directly like in propagateResult1, but this is allowed.
+fn propagateResult3(i): Result {
+    // getIndex returns Ok(x): return Ok(Ok(x))
+    // getIndex returns Error(x): return Ok(Error(x))
+    say result = getIndex(i);
+    return Ok(result);
+}
+
+// Unwraps getIndex(i) Ok value and rewraps it in Error, or propagates Error.
+// This kind of converts an Ok value to an Error value.
+// Not good practice, but it is allowed.
+fn propagateResult4(i): Result {
+    // getIndex returns Ok(x): return Error(x)
+    // getIndex returns Error(x): propagate with `?`
+    say value = getIndex(i)?;
+    return Error(value);
+}
+
+// Always wraps getIndex(i) return value in Error, which might result in nested results.
+// Not good practice, but it is allowed.
+fn propagateResult5(i): Result {
+    // getIndex returns Ok(x): return Error(Ok(x))
+    // getIndex returns Error(x): Error(Error(x))
+    say result = getIndex(i);
+    return Error(result);
+}
+
+// `Result` functions can still be called from non-`Result` contexts, but the result cannot be propagated with `?`, and must be handled otherwise.
+say result = getIndex(0);
+
+// The Result.isOk method returns true if the result is an Ok, or false if the result is an Error.
+say value1 = result.isOk();
+
+// The Result.isError method returns true if the result is an Error, or false if the result is an Ok.
+say value2 = result.isError();
+
+// The Result.okOrPanic method returns the Ok value if the result is an Ok, or panics if the result is an Error.
+// Explicitly unsafe.
+say value3 = result.okOrPanic();
+
+// The Result.okOr method returns the Ok value if the result is an Ok, or the provided fallback value if the result is an Error.
+say value4 = result.okOr(err => "fallback value");
+
+// The Result.error method returns the Error value if the result is an Error, or null if the result is an Ok.
+say value5 = result.error();

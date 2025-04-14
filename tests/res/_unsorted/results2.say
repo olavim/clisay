@@ -1,0 +1,107 @@
+say array = [1, 2, 3, 4, 5];
+
+// The `Result` qualifier means that the function always returns a `Result` object, which can be either `Ok` or `Error`.
+// There are currently no other qualifiers in the language.
+// Other possible qualifiers: `Async` for asynchronous functions, `Iterator` for generator functions (in JavaScript terms), etc.
+// Some keywords and syntax are only usable within `Result` functions, such as `?`.
+// Something to think about: what if a function has multiple qualifiers?
+fn getIndex(i): Result {
+    if i < 0 || i >= array.length() {
+        // Return an Error result.
+        // Any expression can be wrapped in Error.
+        return Error("Index out of bounds");
+    }
+
+    // Return an Ok result.
+    return array[i];
+
+    // If a value is not returned, the function implicitly returns Ok(null).
+}
+
+// Errors can be propagated with `?` in Result functions.
+fn propagateResult(): Result {
+    // If getIndex returns Ok(x): return Ok(x)
+    // If getIndex returns Error(x): return Error(x)
+    // If getIndex returns a non-Result value x: return Ok(x)
+    return getIndex(0)?;
+}
+
+// When a Result function is called from a non-Result function, the result cannot be propagated with `?`, and must be handled explicitly with a catch.
+fn handleError() {
+    // getIndex returns Ok(x): return Ok(Ok(x))
+    // getIndex returns Error(x): return Ok(Error(x))
+    say value = getIndex(0)
+        catch err => {
+            // Handle the error here, e.g., log it, return a default value, panic, etc.
+            panic(err);
+        };
+    return value;
+}
+
+fn catchDefault() {
+    // Catch and use a default value.
+    say value = getIndex(0)
+        catch err => "default value";
+    return value;
+}
+
+fn catchReturn() {
+    // Catch and return a value if the result is an Error.
+    // This returns the value from the `handleError3` function.
+    say value = getIndex(0)
+        catch err => Exit("early return");
+    return value;
+}
+
+fn catchChain() {
+    // Chain catches when returning Result from catch.
+    return getIndex(0)
+        catch (err): Result => getIndex(i + 1)?
+        catch err => "default value";
+}
+
+fn catchHandler() {
+    fn handler(err): Catch {
+        return 0; // return Default(0);
+    }
+
+    say value = getIndex(0) catch handler;
+}
+
+fn catchHandler2() {
+    fn handler(err): Catch -> Result {
+        return 0; // return Default(Ok(0));
+    }
+
+    return getIndex(0)
+        catch handler
+        catch err => "default value";
+}
+
+fn catchHandler3() {
+    fn handler(err): Catch -> Result {
+        return Exit(0); // return Exit(Ok(0));
+    }
+
+    // panics because handler tries to exit with a Result, but catchHandler3 is not a Result function.
+    return getIndex(0)
+        catch handler
+        catch err => "default value";
+}
+
+fn handleError8() {
+    say i = 0;
+    while i < 10 {
+        getIndex(i) catch err => Break();
+        i += 1;
+    }
+    return i;
+}
+
+// When a Result function is called from a non-Result function, the result must be handled explicitly with a catch.
+// If a function returns any Result value, it must be handled with a catch, even if the function doesn't return an Error.
+// If a catch is not provided in such cases, the program will panic.
+fn unhandledError() {
+    // This will panic!
+    return getIndex(0);
+}

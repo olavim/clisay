@@ -33,6 +33,8 @@ pub trait ASTKind {
 }
 
 pub enum Expr {
+    Block(Vec<ASTId<Stmt>>, Option<ASTId<Expr>>),
+    If(ASTId<Expr>, ASTId<Expr>, Option<ASTId<Expr>>),
     Literal(Literal),
     Identifier(String),
     Unary(Operator, ASTId<Expr>),
@@ -63,7 +65,7 @@ pub struct FieldInit {
 pub struct FnDecl {
     pub name: String,
     pub params: Vec<String>,
-    pub body: ASTId<Stmt>
+    pub body: ASTId<Expr>
 }
 
 pub struct ClassDecl {
@@ -77,14 +79,12 @@ pub struct ClassDecl {
 }
 
 pub enum Stmt {
-    Block(Vec<ASTId<Stmt>>),
     Expression(ASTId<Expr>),
     Return(Option<ASTId<Expr>>),
+    While(ASTId<Expr>, Vec<ASTId<Stmt>>),
     Say(FieldInit),
     Fn(Box<FnDecl>),
-    Class(Box<ClassDecl>),
-    If(ASTId<Expr>, ASTId<Stmt>, Option<ASTId<Stmt>>),
-    While(ASTId<Expr>, ASTId<Stmt>)
+    Class(Box<ClassDecl>)
 }
 
 impl ASTKind for Stmt {
@@ -181,7 +181,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         while parser.tokens.has_next() {
             stmts.push(parser.parse_stmt()?);
         }
-        ast.add_stmt(Stmt::Block(stmts), pos);
+        let block = parser.ast.add_expr(Expr::Block(stmts, None), pos.clone());
+        ast.add_stmt(Stmt::Expression(block), pos);
 
         Ok(ast)
     }
@@ -198,12 +199,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_stmt(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
         match self.tokens.peek(0).kind {
             TokenType::Say => self.parse_say(),
+            TokenType::While => self.parse_while(),
             TokenType::Fn => self.parse_fn(),
             TokenType::Class => self.parse_class(),
-            TokenType::If => self.parse_if(),
-            TokenType::While => self.parse_while(),
             TokenType::Return => self.parse_return(),
-            TokenType::LeftBrace => self.parse_block(),
             _ => self.parse_expr_stmt()
         }
     }
@@ -234,7 +233,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses a function declaration, including the function name, parameters, and body.
     fn parse_fn_decl(&mut self, name: String) -> Result<FnDecl, anyhow::Error> {
         let params = self.parse_params()?;
-        let body = self.parse_block()?;
+        let body = self.parse_expr_body()?;
         Ok(FnDecl { name, params, body })
     }
 
@@ -262,7 +261,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         
         self.tokens.expect(TokenType::RightBrace)?;
 
-        let body = self.ast.add_stmt(Stmt::Block(stmts), pos.clone());
+        let body = self.ast.add_expr(Expr::Block(stmts, None), pos.clone());
         let fn_decl = Box::new(FnDecl { name, params, body });
         Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
     }
@@ -377,14 +376,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     Vec::new()
                 };
 
-                let body = self.ast.add_stmt(Stmt::Block(stmts), pos.clone());
+                let body = self.ast.add_expr(Expr::Block(stmts, None), pos.clone());
                 let fn_decl = Box::new(FnDecl { name: name.clone(), params: Vec::new(), body });
                 self.ast.add_stmt(Stmt::Fn(fn_decl), pos.clone())
             }
         };
 
         let Stmt::Fn(fn_decl) = self.ast.get(&init) else { unreachable!() };
-        let Stmt::Block(body) = self.ast.get_mut(&fn_decl.body.clone()) else { unreachable!() };
+        let Expr::Block(body, _) = self.ast.get_mut(&fn_decl.body.clone()) else { unreachable!() };
         body.splice(0..0, field_stmts.iter().cloned());
 
         let class_decl = Box::new(ClassDecl {
@@ -401,32 +400,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_stmt(Stmt::Class(class_decl), pos))
     }
 
-    fn parse_if(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
-        let pos = self.tokens.expect(TokenType::If)?.pos.clone();
-        let condition = self.parse_expr()?;
-        let then = match self.tokens.match_next(TokenType::LeftBrace) {
-            true => self.parse_block()?,
-            false => self.parse_expr_stmt()?
-        };
-        let otherwise = match self.tokens.next_if(TokenType::Else) {
-            Some(_) => match self.tokens.peek(0).kind {
-                TokenType::LeftBrace => Some(self.parse_block()?),
-                TokenType::If => Some(self.parse_if()?),
-                _ => Some(self.parse_expr_stmt()?)
-            },
-            None => None
-        };
-
-        Ok(self.ast.add_stmt(Stmt::If(condition, then, otherwise), pos))
-    }
-
     fn parse_while(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::While)?.pos.clone();
         let condition = self.parse_expr()?;
-        let body = match self.tokens.match_next(TokenType::LeftBrace) {
-            true => self.parse_block()?,
-            false => self.parse_expr_stmt()?
-        };
+        let body = self.parse_stmt_body()?;
         Ok(self.ast.add_stmt(Stmt::While(condition, body), pos))
     }
 
@@ -440,11 +417,71 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_stmt(Stmt::Return(expr), pos))
     }
 
-    fn parse_block(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_if(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::If)?.pos.clone();
+        let condition = self.parse_expr()?;
+        let then = self.parse_expr_body()?;
+        let otherwise = match self.tokens.next_if(TokenType::Else) {
+            Some(_) => Some(self.parse_expr()?),
+            None => None
+        };
+
+        Ok(self.ast.add_expr(Expr::If(condition, then, otherwise), pos))
+    }
+
+    /// Parses a statement or an expression, and converts it to an expression if necessary.
+    fn parse_expr_body(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+        let token = self.tokens.peek(0);
+        match token.kind {
+            kind if kind.starts_statement() => {
+                let stmt = self.parse_stmt()?;
+                Ok(self.ast.add_expr(Expr::Block(vec![stmt], None), token.pos.clone()))
+            },
+            _ => self.parse_expr()
+        }
+    }
+
+    /// Parses a statement or a block, and converts it to a list of statements.
+    fn parse_stmt_body(&mut self) -> Result<Vec<ASTId<Stmt>>, anyhow::Error> {
+        let token = self.tokens.peek(0);
+        match token.kind {
+            TokenType::LeftBrace => {
+                self.tokens.expect(TokenType::LeftBrace)?;
+                let stmts = self.parse_stmts()?;
+                self.tokens.expect(TokenType::RightBrace)?;
+                Ok(stmts)
+            },
+            _ => Ok(vec![self.parse_stmt()?])
+        }
+    }
+
+    fn parse_block(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
-        let stmts = self.parse_stmts()?;
+
+        let mut stmts: Vec<ASTId<Stmt>> = Vec::new();
+        let mut result_expr: Option<ASTId<Expr>> = None;
+
+        while !self.tokens.match_next(TokenType::RightBrace) {
+            match self.tokens.peek(0).kind {
+                kind if kind.starts_statement() => stmts.push(self.parse_stmt()?),
+                _ => {
+                    let expr = self.parse_expr()?;
+                    if self.tokens.match_next(TokenType::RightBrace) {
+                        result_expr = Some(expr);
+                        break;
+                    } else {
+                        if !matches!(self.ast.get(&expr), Expr::Block(_, _) | Expr::If(_, _, _)) {
+                            self.tokens.expect(TokenType::Semicolon)?;
+                        }
+                        let stmt = self.ast.add_stmt(Stmt::Expression(expr), pos.clone());
+                        stmts.push(stmt);
+                    }
+                }
+            }
+        }
+
         self.tokens.expect(TokenType::RightBrace)?;
-        Ok(self.ast.add_stmt(Stmt::Block(stmts), pos))
+        Ok(self.ast.add_expr(Expr::Block(stmts, result_expr), pos))
     }
 
     fn parse_stmts(&mut self) -> Result<Vec<ASTId<Stmt>>, anyhow::Error> {
@@ -456,14 +493,21 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn parse_expr_stmt(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
-        let pos = self.tokens.peek(0).pos.clone();
+        let token = self.tokens.peek(0);
         let expr = self.parse_expr()?;
-        self.tokens.expect(TokenType::Semicolon)?;
-        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
+        let expr_type = self.ast.get(&expr);
+        if !matches!(expr_type, Expr::Block(_, _) | Expr::If(_, _, _)) {
+            self.tokens.expect(TokenType::Semicolon)?;
+        }
+        Ok(self.ast.add_stmt(Stmt::Expression(expr), token.pos.clone()))
     }
 
     fn parse_expr(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
-        self.parse_expr_precedence(0)
+        match self.tokens.peek(0).kind {
+            TokenType::If => self.parse_if(),
+            TokenType::LeftBrace => self.parse_block(),
+            _ => self.parse_expr_precedence(0)
+        }
     }
 
     fn parse_expr_precedence(&mut self, min_precedence: u8) -> Result<ASTId<Expr>, anyhow::Error> {

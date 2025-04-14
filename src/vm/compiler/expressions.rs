@@ -1,7 +1,7 @@
 use anyhow::bail;
 
 use crate::compiler_error;
-use crate::parser::{ASTId, Expr, Literal, Operator};
+use crate::parser::{ASTId, Expr, Literal, Operator, Stmt};
 use crate::vm::objects::ObjString;
 use crate::vm::opcode;
 use crate::vm::value::Value;
@@ -11,9 +11,11 @@ use super::Compiler;
 impl<'a> Compiler<'a> {
     pub (super) fn expression(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
+            Expr::Block(stmts, last_expr) => self.block(expr, stmts, last_expr)?,
+            Expr::If(cond, then, otherwise) => self.if_expression(cond, then, otherwise)?,
             Expr::Unary(op, expr) => self.unary_expression(op, expr)?,
             Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
-            Expr::Ternary(cond, then, otherwise) => self.if_expression(cond, then, otherwise)?,
+            Expr::Ternary(cond, then, otherwise) => self.if_expression(cond, then, &Some(*otherwise))?,
             Expr::Call(expr, args) => self.call_expression(expr, args)?,
             Expr::Array(exprs) => self.array_expression(expr, exprs)?,
             Expr::Index(expr, id) => self.index(expr, id, None)?,
@@ -26,6 +28,22 @@ impl<'a> Compiler<'a> {
             Expr::Super => self.super_(expr)?
         };
 
+        Ok(())
+    }
+
+    fn block(&mut self, expr: &ASTId<Expr>, stmts: &Vec<ASTId<Stmt>>, last_expr: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
+        self.enter_scope();
+        for stmt in stmts {
+            self.statement(stmt)?;
+        }
+
+        if let Some(last_expr) = last_expr {
+            self.expression(last_expr)?;
+        } else {
+            self.emit(opcode::PUSH_NULL, expr);
+        }
+
+        self.exit_scope(expr);
         Ok(())
     }
 
@@ -52,13 +70,17 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn if_expression(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn if_expression(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
         self.expression(cond)?;
         let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, cond);
         self.expression(then)?;
         let else_jump_ref = self.emit_jump(opcode::JUMP, 0, then);
         self.patch_jump(jump_ref)?;
-        self.expression(otherwise)?;
+        if let Some(otherwise) = otherwise {
+            self.expression(otherwise)?;
+        } else {
+            self.emit(opcode::PUSH_NULL, cond);
+        }
         self.patch_jump(else_jump_ref)?;
         Ok(())
     }

@@ -34,6 +34,11 @@ fn temp(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
+#[test_resources("tests/res/blocks")]
+fn blocks(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
 #[test_resources("tests/res/parser")]
 fn parser(file: &str) -> Result<(), Failed> {
     common::test_file(file)
