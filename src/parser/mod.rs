@@ -233,7 +233,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses a function declaration, including the function name, parameters, and body.
     fn parse_fn_decl(&mut self, name: String) -> Result<FnDecl, anyhow::Error> {
         let params = self.parse_params()?;
-        let body = self.parse_expr_body()?;
+        let body = self.parse_block()?;
         Ok(FnDecl { name, params, body })
     }
 

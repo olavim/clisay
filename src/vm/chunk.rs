@@ -15,17 +15,15 @@ use super::value::Value;
 pub struct BytecodeChunk {
     pub code: Vec<OpCode>,
     pub constants: Vec<Value>,
-    pub code_pos: Vec<SourcePosition>,
-    ptr: *const OpCode
+    pub code_pos: Vec<SourcePosition>
 }
 
 impl BytecodeChunk {
     pub fn new() -> BytecodeChunk {
         BytecodeChunk {
-            code: Vec::new(), 
+            code: Vec::new(),
             constants: Vec::new(), 
-            code_pos: Vec::new(),
-            ptr: std::ptr::null()
+            code_pos: Vec::new()
         }
     }
 
@@ -41,34 +39,6 @@ impl BytecodeChunk {
 
         self.constants.push(value);
         Ok((self.constants.len() - 1) as u8)
-    }
-
-    pub fn make_readable(&mut self) {
-        self.ptr = self.code.as_ptr();
-    }
-
-    #[inline(always)]
-    pub fn read_next(&mut self) -> OpCode {
-        let op = unsafe { *self.ptr };
-        self.ptr = unsafe { self.ptr.add(1) };
-        op
-    }
-
-    #[inline(always)]
-    pub fn get_position(&mut self) -> *const OpCode {
-        self.ptr
-    }
-
-    #[inline(always)]
-    pub fn set_position(&mut self, pos: *const OpCode) {
-        self.ptr = pos;
-    }
-
-    pub fn get_source_position(&self) -> &SourcePosition {
-        unsafe { 
-            let idx = self.ptr.offset_from(self.code.as_ptr()) as usize - 1;
-            &self.code_pos[idx]
-        }
     }
 }
 

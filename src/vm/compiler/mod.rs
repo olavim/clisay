@@ -84,15 +84,19 @@ impl<'a> Compiler<'a> {
         };
 
         let stmt_id = compiler.ast.get_root();
-        compiler.enter_function(FnKind::None);
         compiler.statement(&stmt_id)?;
-        compiler.exit_function(&stmt_id);
-        Ok(compiler.chunk)
+        Ok(compiler.finish())
     }
 
     fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &ASTId<T>) -> anyhow::Error {
         let pos = self.ast.pos(node_id);
         anyhow!("{}\n\tat {}", msg.into(), pos)
+    }
+
+    fn finish(mut self) -> BytecodeChunk {
+        self.emit(opcode::PUSH_NULL, &self.ast.get_root());
+        self.emit(opcode::RETURN, &self.ast.get_root());
+        self.chunk
     }
 
     fn emit<T: 'static>(&mut self, byte: u8, node_id: &ASTId<T>) {

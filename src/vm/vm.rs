@@ -8,7 +8,7 @@ use crate::Output;
 use crate::parser::Parser;
 use crate::vm::objects::{ObjBoundMethod, ObjInstance};
 use crate::vm::value::ValueKind;
-use crate::lexer::{tokenize, TokenStream};
+use crate::lexer::{tokenize, SourcePosition, TokenStream};
 
 use super::chunk::BytecodeChunk;
 use super::native::{NativeArray, NativeType};
@@ -49,12 +49,14 @@ pub struct CallFrame {
 
 pub struct Vm<'out> {
     gc: Gc,
+    ip: *const OpCode,
     chunk: BytecodeChunk,
     globals: HashMap<*mut ObjString, Value, BuildHasherDefault<FxHasher>>,
     stack: Stack<Value, MAX_STACK>,
     frames: CachedStack<CallFrame, MAX_FRAMES>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
+    stupid: usize,
     out: &'out mut Vec<String>
 }
 
@@ -101,18 +103,20 @@ impl<'out> Vm<'out> {
         let mut out = Vec::new();
         let mut vm = Vm {
             gc,
+            ip: std::ptr::null(),
             chunk,
             globals: HashMap::default(),
             stack: Stack::new(),
             frames: CachedStack::new(),
             open_upvalues: Vec::new(),
             native_types,
+            stupid: 0,
             out: &mut out
         };
 
         vm.stack.init();
         vm.frames.init();
-        vm.chunk.make_readable();
+        vm.ip = vm.chunk.code.as_ptr();
 
         vm.frames.push(CallFrame {
             closure: std::ptr::null_mut(),
@@ -166,7 +170,7 @@ impl<'out> Vm<'out> {
             .map(|frame| self.stringify_frame(&frame))
             .collect::<Vec<String>>().join("\n");
 
-        let pos = self.chunk.get_source_position();
+        let pos = self.get_source_position();
         bail!(format!("{}\nat {}\n{}", message.into(), pos, trace))
     }
 
@@ -213,6 +217,27 @@ impl<'out> Vm<'out> {
         }
 
         self.gc.collect();
+    }
+
+    
+
+    #[inline]
+    pub fn read_next(&mut self) -> OpCode {
+        let op = unsafe { *self.ip };
+        self.ip = unsafe { self.ip.add(1) };
+        op
+    }
+
+    #[inline]
+    pub fn set_position(&mut self, pos: *const OpCode) {
+        self.ip = pos;
+    }
+
+    pub fn get_source_position(&self) -> &SourcePosition {
+        unsafe { 
+            let idx = self.ip.offset_from(self.chunk.code.as_ptr()) as usize - 1;
+            &self.chunk.code_pos[idx]
+        }
     }
 
     fn get_upvalue(&self, idx: usize) -> *mut ObjUpvalue {
@@ -300,10 +325,10 @@ impl<'out> Vm<'out> {
     fn push_frame(&mut self, closure: *mut ObjClosure, stack_start: *mut Value, ip_start: usize) {
         self.frames.push(CallFrame {
             closure,
-            return_ip: self.chunk.get_position(),
+            return_ip: self.ip,
             stack_start
         });
-        self.chunk.set_position(unsafe { self.chunk.code.as_ptr().offset(ip_start as isize) });
+        self.set_position(unsafe { self.chunk.code.as_ptr().offset(ip_start as isize) });
     }
 
     fn call_native(&mut self, arg_count: usize, native_fn_ptr: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
@@ -477,7 +502,7 @@ impl<'out> Vm<'out> {
 
     fn interpret(&mut self) -> Result<(), anyhow::Error> {
         loop {
-            let op = self.chunk.read_next();
+            let op = self.read_next();
             match op {
                 opcode::CALL => self.op_call()?,
                 opcode::JUMP => self.op_jump(),
@@ -539,11 +564,16 @@ impl<'out> Vm<'out> {
 
         let frame = self.frames.pop();
 
-        self.chunk.set_position(frame.return_ip);
+        self.set_position(frame.return_ip);
         self.close_upvalues(frame.stack_start);
 
         let value = self.stack.pop();
         self.stack.set_top(frame.stack_start);
+
+        if value.is_callable() {
+            self.stupid += 1;
+        }
+
         self.stack.push(value);
         true
     }
@@ -553,21 +583,21 @@ impl<'out> Vm<'out> {
     }
 
     fn op_close_upvalue(&mut self) {
-        let location = self.chunk.read_next() as usize;
+        let location = self.read_next() as usize;
         let p = unsafe { self.frames.top.stack_start.add(location) };
         self.close_upvalues(p);
         self.stack.truncate(1);
     }
 
     fn op_array(&mut self) {
-        let len = self.chunk.read_next() as usize;
+        let len = self.read_next() as usize;
         let array = ObjArray::new(self.stack.pop_slice(len));
         let array = self.alloc(array);
         self.stack.push(Value::from(array));
     }
 
     fn op_call(&mut self) -> Result<(), anyhow::Error> {
-        let arg_count = self.chunk.read_next() as usize;
+        let arg_count = self.read_next() as usize;
         let value = self.stack.peek(arg_count);
 
         if !value.is_callable() {
@@ -587,20 +617,20 @@ impl<'out> Vm<'out> {
     }
 
     fn op_jump(&mut self) {
-        let offset = as_short!(self.chunk.read_next(), self.chunk.read_next()) as isize;
-        self.chunk.set_position(unsafe { self.chunk.code.as_ptr().offset(offset) });
+        let offset = as_short!(self.read_next(), self.read_next()) as isize;
+        self.set_position(unsafe { self.chunk.code.as_ptr().offset(offset) });
     }
 
     fn op_jump_if_false(&mut self) {
-        let offset = as_short!(self.chunk.read_next(), self.chunk.read_next()) as isize;
+        let offset = as_short!(self.read_next(), self.read_next()) as isize;
         let value = self.stack.pop();
         if value.is_bool() && !value.as_bool() {
-            self.chunk.set_position(unsafe { self.chunk.code.as_ptr().offset(offset) });
+            self.set_position(unsafe { self.chunk.code.as_ptr().offset(offset) });
         }
     }
 
     fn op_push_constant(&mut self) {
-        let const_idx = self.chunk.read_next() as usize;
+        let const_idx = self.read_next() as usize;
         let value = self.chunk.constants[const_idx];
         self.stack.push(value);
     }
@@ -618,7 +648,7 @@ impl<'out> Vm<'out> {
     }
 
     fn op_push_closure(&mut self) -> Result<(), anyhow::Error> {
-        let const_idx = self.chunk.read_next() as usize;
+        let const_idx = self.read_next() as usize;
         let value = self.chunk.constants[const_idx];
         let fn_ref = value.as_object().as_function_ptr();
         let closure = self.create_closure(fn_ref);
@@ -627,13 +657,13 @@ impl<'out> Vm<'out> {
     }
 
     fn op_push_class(&mut self) {
-        let const_idx = self.chunk.read_next() as usize;
+        let const_idx = self.read_next() as usize;
         let value = self.chunk.constants[const_idx];
         self.stack.push(value);
     }
 
     fn op_get_global(&mut self) -> Result<(), anyhow::Error> {
-        let const_idx = self.chunk.read_next() as usize;
+        let const_idx = self.read_next() as usize;
         let constant = &self.chunk.constants[const_idx];
         let string = constant.as_object().as_string_ptr();
         let value = self.globals[&string];
@@ -642,26 +672,26 @@ impl<'out> Vm<'out> {
     }
 
     fn op_get_local(&mut self) {
-        let idx = self.chunk.read_next() as usize;
+        let idx = self.read_next() as usize;
         let value = unsafe { *self.frames.top.stack_start.add(idx) };
         self.stack.push(value);
     }
 
     fn op_set_local(&mut self) {
-        let idx = self.chunk.read_next() as usize;
+        let idx = self.read_next() as usize;
         unsafe {
             *self.frames.top.stack_start.add(idx) = self.stack.peek(0);
         };
     }
 
     fn op_get_upvalue(&mut self) {
-        let idx = self.chunk.read_next() as usize;
+        let idx = self.read_next() as usize;
         let upvalue = self.get_upvalue(idx);
         self.stack.push(unsafe { *(*upvalue).location });
     }
 
     fn op_set_upvalue(&mut self) {
-        let idx = self.chunk.read_next() as usize;
+        let idx = self.read_next() as usize;
         let upvalue = self.get_upvalue(idx);
         unsafe { *(*upvalue).location = self.stack.peek(0) };
     }
@@ -695,7 +725,7 @@ impl<'out> Vm<'out> {
     }
     
     fn op_get_property_by_id(&mut self) -> Result<(), anyhow::Error> {
-        let member_id = self.chunk.read_next();
+        let member_id = self.read_next();
         let value = self.stack.pop();
         if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
@@ -709,7 +739,7 @@ impl<'out> Vm<'out> {
     }
 
     fn op_set_property_by_id(&mut self) -> Result<(), anyhow::Error> {
-        let member_id = self.chunk.read_next();
+        let member_id = self.read_next();
         let value = self.stack.pop();
         if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
