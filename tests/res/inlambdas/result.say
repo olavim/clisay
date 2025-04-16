@@ -1,0 +1,2 @@
+say value = Error("err").catch(|err| "default");
+print(value); // expect: default

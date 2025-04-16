@@ -37,8 +37,6 @@ print(10 / 2 == 2 + 3);         // expect: true
 say a;
 a = 1 + 2 * 3 << 1;
 print(a);                       // expect: 14
-a = true ? 1 : 2;
-print(a);                       // expect: 1
 say b = 2;
 say c = 3;
 a = b = c;

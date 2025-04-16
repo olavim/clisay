@@ -163,6 +163,17 @@ impl<'a, T: Copy, const N: usize> CachedStack<T, N> {
     }
 
     #[inline]
+    pub fn set_top(&mut self, top: *mut T) {
+        self.stack.set_top(top);
+        self.top = self.stack.peek(0);
+    }
+
+    #[inline]
+    pub fn top_ptr(&self) -> *mut T {
+        self.stack.top
+    }
+
+    #[inline]
     pub fn iter(&'a self) -> StackIter<'a, T, N> {
         self.stack.iter()
     }

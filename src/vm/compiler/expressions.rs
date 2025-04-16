@@ -1,7 +1,7 @@
 use anyhow::bail;
 
 use crate::compiler_error;
-use crate::parser::{ASTId, Expr, Literal, Operator, Stmt};
+use crate::parser::{ASTId, Expr, FnDecl, Literal, Operator, Stmt};
 use crate::vm::objects::ObjString;
 use crate::vm::opcode;
 use crate::vm::value::Value;
@@ -15,7 +15,6 @@ impl<'a> Compiler<'a> {
             Expr::If(cond, then, otherwise) => self.if_expression(cond, then, otherwise)?,
             Expr::Unary(op, expr) => self.unary_expression(op, expr)?,
             Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
-            Expr::Ternary(cond, then, otherwise) => self.if_expression(cond, then, &Some(*otherwise))?,
             Expr::Call(expr, args) => self.call_expression(expr, args)?,
             Expr::Index(expr, id) => self.index(expr, id, None)?,
             Expr::Literal(lit) => self.literal(expr, lit)?,
@@ -178,6 +177,17 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    fn inlambda(&mut self, expr: &ASTId<Expr>, member_expr: &ASTId<Expr>, lambda: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+        self.index(expr, member_expr, None)?;
+        let Expr::Literal(Literal::Lambda(decl)) = self.ast.get(lambda) else {
+            compiler_error!(self, lambda, "Invalid lambda expression")
+        };
+        self.lambda(lambda, decl, FnKind::Inlambda)?;
+        self.emit(opcode::CALL, expr);
+        self.emit(1, expr);
+        Ok(())
+    }
+
     fn index_class_member_by_id(&mut self, target_expr: &ASTId<Expr>, member_id: u8, assign_expr: Option<&ASTId<Expr>>) -> Result<(), anyhow::Error> {
         match assign_expr {
             None => {
@@ -243,6 +253,16 @@ impl<'a> Compiler<'a> {
 
         Ok(())
     }
+
+    fn lambda(&mut self, expr: &ASTId<Expr>, decl: &FnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
+        let const_idx = self.function(expr, decl, kind)?;
+        match kind {
+            FnKind::Inlambda => self.emit(opcode::PUSH_INLAMBDA, expr),
+            _ => self.emit(opcode::PUSH_CLOSURE, expr)
+        };
+        self.emit(const_idx, expr);
+        return Ok(());
+    }
     
     fn literal(&mut self, expr: &ASTId<Expr>, literal: &Literal) -> Result<(), anyhow::Error> {
         match literal {
@@ -270,11 +290,8 @@ impl<'a> Compiler<'a> {
                     self.emit(0, expr);
                 }
             },
-            Literal::Lambda(decl) => {
-                let const_idx = self.function(expr, decl, FnKind::Function)?;
-                self.emit(opcode::PUSH_CLOSURE, expr);
-                self.emit(const_idx, expr);
-            }
+            Literal::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?,
+            Literal::Inlambda(decl) => self.lambda(expr, decl, FnKind::Inlambda)?
         };
 
         return Ok(());

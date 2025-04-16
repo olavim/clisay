@@ -22,8 +22,7 @@ pub enum Operator {
     BitAnd,
     BitOr,
     BitXor,
-    Ternary,
-    MemberAccess,
+    MemberAccess, // expr.member
     Comma, // expr, expr
     Arrow, // expr => expr
     Assign(Option<Box<Operator>>),
@@ -33,6 +32,7 @@ pub enum Operator {
     LogicalNot,
     BitNot,
     Group, // (expr)
+    Inlambda, // |expr| expr
     Array, // [expr, ...]
 
     // Postfix
@@ -53,6 +53,7 @@ impl Operator {
     /// * `min_precedence` - The minimum precedence of the operator to parse
     pub fn parse_prefix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
+            TokenType::Pipe => Operator::Inlambda,
             TokenType::LeftParen => Operator::Group,
             TokenType::LeftBracket => Operator::Array,
             TokenType::Minus => Operator::Negate,
@@ -92,7 +93,6 @@ impl Operator {
                 (None, TokenType::Hat) => Some(Operator::BitXor),
                 (None, TokenType::Equal) => Some(Operator::Assign(None)),
                 (None, TokenType::Exclamation) => Some(Operator::LogicalNot),
-                (None, TokenType::Question) => Some(Operator::Ternary),
                 (None, TokenType::Dot) => Some(Operator::MemberAccess),
                 (None, TokenType::LeftBracket) => Some(Operator::Index),
                 (None, TokenType::Comma) => Some(Operator::Comma),
@@ -169,7 +169,6 @@ impl Operator {
         let bp = match self {
             Operator::Comma => 1,
             Operator::Assign(_) | Operator::Arrow => 2,
-            Operator::Ternary => 3,
             Operator::LogicalOr => 4,
             Operator::LogicalAnd => 5,
             Operator::LogicalEqual | Operator::LogicalNotEqual => 6,
@@ -190,7 +189,7 @@ impl Operator {
     pub fn prefix_precedence(&self) -> Option<u8> {
         let bp = match self {
             Operator::Negate | Operator::LogicalNot | Operator::BitNot => 13,
-            Operator::Group | Operator::Array => 16,
+            Operator::Group | Operator::Array | Operator::Inlambda => 16,
             _ => return None
         };
         Some(bp)
@@ -208,7 +207,6 @@ impl Operator {
         return match self {
             Operator::Assign(_) |
             Operator::Arrow |
-            Operator::Ternary |
             Operator::Negate |
             Operator::LogicalNot |
             Operator::BitNot |
@@ -239,11 +237,11 @@ impl fmt::Display for Operator {
             Operator::BitAnd => "&",
             Operator::BitOr => "|",
             Operator::BitXor => "^",
-            Operator::Ternary => "?:",
             Operator::Negate => "-",
             Operator::LogicalNot => "!",
             Operator::BitNot => "~",
             Operator::Group => "<group>",
+            Operator::Inlambda => "<inlambda>",
             Operator::Call => "<call>",
             Operator::MemberAccess => ".",
             Operator::Comma => ",",

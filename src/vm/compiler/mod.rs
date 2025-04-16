@@ -37,6 +37,7 @@ struct FnFrame {
 
 #[derive(Clone, Copy)]
 enum FnKind {
+    Inlambda,
     Function,
     Method,
     Initializer

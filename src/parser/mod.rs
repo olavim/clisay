@@ -15,7 +15,8 @@ pub enum Literal {
     Number(f64),
     String(String),
     Array(Option<ASTId<Expr>>),
-    Lambda(FnDecl)
+    Lambda(FnDecl),
+    Inlambda(FnDecl)
 }
 
 impl fmt::Display for Literal {
@@ -26,7 +27,8 @@ impl fmt::Display for Literal {
             Literal::Number(n) => write!(f, "{}", n),
             Literal::String(s) => write!(f, "\"{}\"", s),
             Literal::Array(_) => write!(f, "[]"),
-            Literal::Lambda(_) => write!(f, "<lambda>")
+            Literal::Lambda(_) => write!(f, "<lambda>"),
+            Literal::Inlambda(_) => write!(f, "<inlambda>")
         }
     }
 }
@@ -48,9 +50,6 @@ pub enum Expr {
 
     /// A binary expression: Binary(operator, left, right)
     Binary(Operator, ASTId<Expr>, ASTId<Expr>),
-
-    /// A ternary expression: Ternary(condition, then, else)
-    Ternary(ASTId<Expr>, ASTId<Expr>, ASTId<Expr>),
 
     /// A function call: Call(callee, List(...arguments))
     Call(ASTId<Expr>, Option<ASTId<Expr>>),
@@ -81,7 +80,7 @@ pub struct FieldInit {
 
 pub struct FnDecl {
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<ASTId<Expr>>,
     pub body: ASTId<Expr>
 }
 
@@ -269,7 +268,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     /// Parses a function declaration, including the function name, parameters, and body.
     fn parse_fn_decl(&mut self, name: String) -> Result<FnDecl, anyhow::Error> {
-        let params = self.parse_params()?;
+        self.tokens.expect(TokenType::LeftParen)?;
+        let params = self.parse_params(TokenType::RightParen)?;
         self.tokens.expect(TokenType::LeftBrace)?;
         let body = self.parse_block()?;
         Ok(FnDecl {
@@ -284,7 +284,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_init(&mut self, has_superclass: bool) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let name = format!("{}.init", self.current_class.as_ref().unwrap());
-        let params = self.parse_params()?;
+        self.tokens.expect(TokenType::LeftParen)?;
+        let params = self.parse_params(TokenType::RightParen)?;
         self.tokens.expect(TokenType::LeftBrace)?;
 
         // Ensure initializer calls super() if there is a superclass
@@ -306,18 +307,23 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    fn parse_params(&mut self) -> Result<Vec<String>, anyhow::Error> {
-        self.tokens.expect(TokenType::LeftParen)?;
-
-        let mut params: Vec<String> = Vec::new();
-        while !self.tokens.match_next(TokenType::RightParen) {
-            if params.len() > 0 {
-                self.tokens.expect(TokenType::Comma)?;
+    fn parse_params(&mut self, end_token: TokenType) -> Result<Vec<ASTId<Expr>>, anyhow::Error> {
+        let params = match self.tokens.next_if(end_token) {
+            Some(_) => Vec::new(),
+            None => {
+                let mut params = Vec::new();
+                while !self.tokens.match_next(end_token) {
+                    if params.len() > 0 {
+                        self.tokens.expect(TokenType::Comma)?;
+                    }
+                    let pos = self.tokens.peek(0).pos.clone();
+                    let id = self.parse_identifier()?;
+                    params.push(self.ast.add_expr(Expr::Identifier(id), pos));
+                }
+                self.tokens.expect(end_token)?;
+                params
             }
-            params.push(self.parse_identifier()?);
-        }
-
-        self.tokens.expect(TokenType::RightParen)?;
+        };
 
         Ok(params)
     }
@@ -580,29 +586,22 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 right = self.ast.add_expr(kind, pos.clone());
                 Expr::Binary(op, expr, right)
             },
-            Operator::Ternary => {
-                let then = self.parse_expr()?;
-                self.tokens.expect(TokenType::Colon)?;
-                let otherwise = self.parse_expr()?;
-                Expr::Ternary(expr, then, otherwise)
-            },
             Operator::MemberAccess => {
                 let id = self.parse_identifier()?;
-                let property = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                Expr::Index(expr, property)
+                let member = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                Expr::Index(expr, member)
             },
             Operator::Arrow => {
                 let right = self.parse_expr_precedence(op.infix_precedence().unwrap())?;
-                let args = expr.as_comma_separated(self.ast).iter()
-                    .map(|id| self.ast.get(id))
-                    .map(|expr| match expr {
-                        Expr::Identifier(name) => Ok(name.clone()),
+                let params = expr.as_comma_separated(self.ast).iter()
+                    .map(|id| match self.ast.get(id) {
+                        Expr::Identifier(_) => Ok(*id),
                         _ => parse_error!(self, &pos, "Invalid lambda parameter")
                     })
                     .collect::<Result<Vec<_>, anyhow::Error>>()?;
                 Expr::Literal(Literal::Lambda(FnDecl {
                     name: String::from("lambda"),
-                    params: args,
+                    params,
                     body: right
                 }))
             },
@@ -614,10 +613,19 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     
         Ok(self.ast.add_expr(kind, pos.clone()))
     }
-
+    
     fn parse_expr_prefix(&mut self, op: Operator) -> Result<ASTId<Expr>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let kind = match &op {
+            Operator::Inlambda => {
+                let params = self.parse_params(TokenType::Pipe)?;
+                let right = self.parse_expr()?;
+                Expr::Literal(Literal::Inlambda(FnDecl {
+                    name: String::from("inlambda"),
+                    params,
+                    body: right
+                }))
+            },
             Operator::Group => {
                 match self.tokens.next_if(TokenType::RightParen) {
                     Some(_) => {

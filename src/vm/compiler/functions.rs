@@ -1,3 +1,4 @@
+use crate::compiler_error;
 use crate::parser::{ASTId, Expr, FnDecl};
 use crate::vm::objects::ObjFn;
 use crate::vm::opcode;
@@ -25,22 +26,26 @@ impl<'a> Compiler<'a> {
             self.locals.pop();
         }
 
-        let has_last_expr = match self.ast.get(body_id) {
-            Expr::Block(_, last_expr) => last_expr.is_some(),
-            _ => true
-        };
+        if matches!(frame.kind, FnKind::Inlambda) {
+            self.emit(opcode::POP_INLAMBDA, body_id);
+        } else {
+            let has_last_expr = match self.ast.get(body_id) {
+                Expr::Block(_, last_expr) => last_expr.is_some(),
+                _ => true
+            };
 
-        // Make sure there is a return statement at the end of the function
-        if has_last_expr {
-            self.emit(opcode::RETURN, body_id);
-        } else if self.chunk.code[self.chunk.code.len() - 1] != opcode::RETURN {
-            if let FnKind::Initializer = frame.kind {
-                self.emit(opcode::GET_LOCAL, body_id);
-                self.emit(0, body_id);
-            } else {
-                self.emit(opcode::PUSH_NULL, body_id);
+            // Make sure there is a return statement at the end of the function
+            if has_last_expr {
+                self.emit(opcode::RETURN, body_id);
+            } else if self.chunk.code[self.chunk.code.len() - 1] != opcode::RETURN {
+                if let FnKind::Initializer = frame.kind {
+                    self.emit(opcode::GET_LOCAL, body_id);
+                    self.emit(0, body_id);
+                } else {
+                    self.emit(opcode::PUSH_NULL, body_id);
+                }
+                self.emit(opcode::RETURN, body_id);
             }
-            self.emit(opcode::RETURN, body_id);
         }
 
         frame
@@ -54,6 +59,9 @@ impl<'a> Compiler<'a> {
         let arity = decl.params.len() as u8;
 
         for param in &decl.params {
+            let Expr::Identifier(param) = self.ast.get(param) else {
+                compiler_error!(self, node_id, "Invalid parameter: Expected identifier");
+            };
             let param = self.gc.intern(param);
             self.declare_local(param, true)?;
         }

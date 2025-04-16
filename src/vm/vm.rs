@@ -55,13 +55,19 @@ pub struct CallFrame {
     stack_start: *mut Value
 }
 
+#[derive(Clone, Copy)]
+pub struct InlambdaFrame {
+    origin: *mut CallFrame
+}
+
 pub struct Vm {
     pub(crate) gc: Gc,
     ip: *const OpCode,
     chunk: BytecodeChunk,
     globals: HashMap<*mut ObjString, Value, BuildHasherDefault<FxHasher>>,
-    stack: Stack<Value, MAX_STACK>,
+    pub(crate) stack: Stack<Value, MAX_STACK>,
     frames: CachedStack<CallFrame, MAX_FRAMES>,
+    inlambdas: Vec<InlambdaFrame>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     out: Vec<String>
@@ -75,7 +81,7 @@ macro_rules! check_arity {
     ($vm:expr, $arg_count:expr, $arity:expr, $func_name:expr) => {
         if $arg_count != $arity as usize {
             let name = unsafe { &(*$func_name).value };
-            return $vm.error(format!("{} expects {} arguments, but got {}", name, $arity, $arg_count));
+            return $vm.error(format!("{} expects {} arguments, but was called with {}", name, $arity, $arg_count));
         }
     }
 }
@@ -118,6 +124,7 @@ impl Vm {
             stack: Stack::new(),
             frames: CachedStack::new(),
             open_upvalues: Vec::new(),
+            inlambdas: Vec::new(),
             native_types,
             out: Vec::new()
         };
@@ -147,21 +154,25 @@ impl Vm {
             };
             vm.out.push(value_str.clone());
             Output::println(value_str);
-            Ok(Value::NULL)
+            vm.stack.push(Value::NULL);
+            Ok(())
         });
 
-        vm.define_native("time", 0, |_vm, _target, _args| {
+        vm.define_native("time", 0, |vm, _target, _args| {
             let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as f64;
-            Ok(Value::from(time))
+            vm.stack.push(Value::from(time));
+            Ok(())
         });
 
         vm.define_native("gcHeapSize", 0, |vm, _target, _args| {
-            Ok(Value::from(vm.gc.bytes_allocated as f64))
+            vm.stack.push(Value::from(vm.gc.bytes_allocated as f64));
+            Ok(())
         });
 
         vm.define_native("gcCollect", 0, |vm, _target, _args| {
             vm.start_gc();
-            Ok(Value::NULL)
+            vm.stack.push(Value::NULL);
+            Ok(())
         });
 
         Ok(vm.interpret()?)
@@ -337,6 +348,23 @@ impl Vm {
         self.ip = unsafe { self.chunk.code.as_ptr().offset(ip_start as isize) };
     }
 
+    pub(crate) fn call(&mut self, arg_count: usize, value: Value) -> Result<(), anyhow::Error> {
+        if !value.is_callable() {
+            return self.error(format!("{} is not callable", value.fmt()));
+        }
+    
+        let object = value.as_object();
+        let tag = object.tag();
+    
+        match tag {
+            objects::TAG_CLOSURE => self.call_closure(arg_count, object.as_closure_ptr()),
+            objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, object.as_native_function_ptr()),
+            objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object.as_bound_method_ptr()),
+            objects::TAG_CLASS => self.call_class(arg_count, object.as_class_ptr()),
+            _ => unreachable!()
+        }
+    }
+
     fn call_native(&mut self, arg_count: usize, native_fn_ptr: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
         let func = unsafe { &*native_fn_ptr };
         check_arity!(self, arg_count, func.arity as usize, func.name);
@@ -344,10 +372,7 @@ impl Vm {
         // The "target" is the first value in a call window. For method calls, this is the instance.
         let target = self.stack.pop();
         match (func.function)(self, target, args) {
-            Ok(result) => {
-                self.stack.push(result);
-                Ok(())
-            },
+            Ok(_) => Ok(()),
             Err(err) => self.error(err.downcast::<String>()?)
         }
     }
@@ -409,7 +434,7 @@ impl Vm {
             let Some(method) = native_class.resolve_method(prop.as_object().as_string_ptr()) else {
                 return match native_class_ptr {
                     _ if native_class_ptr == self.native_types.array => self.error(format!("Invalid array index: {}", prop.fmt())),
-                    _ => unreachable!()
+                    _ => self.error(format!("Invalid index: {} does not have method {}", target.fmt(), prop.fmt())),
                 }
             };
             
@@ -534,11 +559,13 @@ impl Vm {
                     }
                 },
                 opcode::POP => self.op_pop(),
+                opcode::POP_INLAMBDA => self.op_pop_inlambda(),
                 opcode::PUSH_CONSTANT => self.op_push_constant(),
                 opcode::PUSH_NULL => self.op_push_null(),
                 opcode::PUSH_TRUE => self.op_push_true(),
                 opcode::PUSH_FALSE => self.op_push_false(),
                 opcode::PUSH_CLOSURE => self.op_push_closure()?,
+                opcode::PUSH_INLAMBDA => self.op_push_inlambda()?,
                 opcode::PUSH_CLASS => self.op_push_class(),
                 opcode::GET_GLOBAL => self.op_get_global()?,
                 opcode::SET_GLOBAL => unreachable!(),
@@ -581,6 +608,11 @@ impl Vm {
             return false;
         }
 
+        if self.inlambdas.len() > 0 {
+            let inlambda = self.inlambdas.pop().unwrap();
+            self.frames.set_top(inlambda.origin);
+        }
+
         let frame = self.frames.pop();
 
         self.ip = frame.return_ip;
@@ -588,7 +620,6 @@ impl Vm {
 
         let value = self.stack.pop();
         self.stack.set_top(frame.stack_start);
-
         self.stack.push(value);
         true
     }
@@ -614,23 +645,9 @@ impl Vm {
     fn op_call(&mut self) -> Result<(), anyhow::Error> {
         let arg_count = self.read_next() as usize;
         let value = self.stack.peek(arg_count);
-
-        if !value.is_callable() {
-            return self.error(format!("{} is not callable", value.fmt()));
-        }
-
-        let object = value.as_object();
-        let tag = object.tag();
-
-        match tag {
-            objects::TAG_CLOSURE => self.call_closure(arg_count, object.as_closure_ptr()),
-            objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, object.as_native_function_ptr()),
-            objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object.as_bound_method_ptr()),
-            objects::TAG_CLASS => self.call_class(arg_count, object.as_class_ptr()),
-            _ => unreachable!()
-        }
+        self.call(arg_count, value)
     }
-
+    
     fn op_jump(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as isize;
         self.ip = unsafe { self.chunk.code.as_ptr().offset(offset) };
@@ -669,6 +686,30 @@ impl Vm {
         let closure = self.create_closure(fn_ref);
         self.stack.push(Value::from(closure));
         Ok(())
+    }
+
+    fn op_push_inlambda(&mut self) -> Result<(), anyhow::Error> {
+        let const_idx = self.read_next() as usize;
+        let value = self.chunk.constants[const_idx];
+        let fn_ref = value.as_object().as_function_ptr();
+        let closure = self.create_closure(fn_ref);
+        self.inlambdas.push(InlambdaFrame {
+            origin: self.frames.top_ptr()
+        });
+        self.stack.push(Value::from(closure));
+        Ok(())
+    }
+
+    fn op_pop_inlambda(&mut self) {
+        self.inlambdas.pop();
+        let frame = self.frames.pop();
+
+        self.ip = frame.return_ip;
+        self.close_upvalues(frame.stack_start);
+
+        let value = self.stack.pop();
+        self.stack.set_top(frame.stack_start);
+        self.stack.push(value);
     }
 
     fn op_push_class(&mut self) {

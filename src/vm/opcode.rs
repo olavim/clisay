@@ -32,11 +32,13 @@ ops! {
 
     // Explicit stack manipulation
     POP,
+    POP_INLAMBDA,
     PUSH_CONSTANT,
     PUSH_NULL,
     PUSH_TRUE,
     PUSH_FALSE,
     PUSH_CLOSURE,
+    PUSH_INLAMBDA,
     PUSH_CLASS,
 
     // Gets/sets

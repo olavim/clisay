@@ -5,27 +5,45 @@ use anyhow::bail;
 use crate::vm::gc::Gc;
 use crate::vm::objects::{NativeFn, ObjNativeFn, ObjResult, ObjString};
 use crate::vm::value::Value;
+use crate::vm::vm::Vm;
 
 use super::NativeType;
 
 pub struct NativeResult;
 
 impl NativeResult {
-    fn is_ok(target: Value) -> bool {
-        !Self::is_error(target)
+    fn is_ok(vm: &mut Vm, target: Value) -> Result<(), anyhow::Error> {
+        let error = unsafe { (*target.as_object().as_result_ptr()).error };
+        vm.stack.push(Value::from(!error));
+        Ok(())
     }
 
-    fn is_error(target: Value) -> bool {
-        unsafe { (*target.as_object().as_result_ptr()).error }
+    fn is_error(vm: &mut Vm, target: Value) -> Result<(), anyhow::Error> {
+        let error = unsafe { (*target.as_object().as_result_ptr()).error };
+        vm.stack.push(Value::from(error));
+        Ok(())
     }
 
-    fn unwrap(target: Value) -> Result<Value, anyhow::Error> {
+    fn unwrap(vm: &mut Vm, target: Value) -> Result<(), anyhow::Error> {
         let result = unsafe { &*target.as_object().as_result_ptr() };
         if result.error {
             bail!("Unwrapping an error result");
         } else {
-            Ok(result.value)
+            vm.stack.push(result.value);
+            Ok(())
         }
+    }
+
+    fn catch(vm: &mut Vm, target: Value, callback: Value) -> Result<(), anyhow::Error> {
+        let result = unsafe { &*target.as_object().as_result_ptr() };
+        if result.error {
+            vm.stack.push(callback);
+            vm.stack.push(result.value);
+            vm.call(1, callback)?;
+        } else {
+            vm.stack.push(result.value);
+        }
+        Ok(())
     }
 }
 
@@ -36,9 +54,10 @@ impl NativeType for NativeResult {
 
     fn instance_methods(&self, gc: &mut Gc) -> HashMap<*mut ObjString, ObjNativeFn> {
         let methods = vec![
-            (gc.intern("isOk"), 0, (|_vm, target, _args| Ok(Value::from(Self::is_ok(target)))) as NativeFn),
-            (gc.intern("isError"), 0, (|_vm, target, _args| Ok(Value::from(Self::is_error(target)))) as NativeFn),
-            (gc.intern("unwrap"), 0, (|_vm, target, _args| Self::unwrap(target)) as NativeFn)
+            (gc.intern("isOk"), 0, (|vm, target, _args| Self::is_ok(vm, target)) as NativeFn),
+            (gc.intern("isError"), 0, (|vm, target, _args|Self::is_error(vm, target)) as NativeFn),
+            (gc.intern("unwrap"), 0, (|vm, target, _args| Self::unwrap(vm, target)) as NativeFn),
+            (gc.intern("catch"), 1, (|vm, target, args| Self::catch(vm, target, args[0])) as NativeFn)
         ]
             .into_iter()
             .map(|(name, arity, function)| (name, ObjNativeFn::new(name, arity, function)))
@@ -52,9 +71,10 @@ pub struct NativeOk;
 pub struct NativeError;
 
 trait ResultInit {
-    fn initializer(gc: &mut Gc, value: Value) -> Value {
-        let result = gc.alloc(ObjResult::new(value, Self::is_error()));
-        Value::from(result)
+    fn initializer(vm: &mut Vm, value: Value) -> Result<(), anyhow::Error> {
+        let result = vm.gc.alloc(ObjResult::new(value, Self::is_error()));
+        vm.stack.push(Value::from(result));
+        Ok(())
     }
 
     fn is_error() -> bool;
@@ -78,7 +98,7 @@ impl<T: ResultInit> NativeType for T {
 
     fn instance_methods(&self, gc: &mut Gc) -> HashMap<*mut ObjString, ObjNativeFn> {
         let methods = vec![
-            (gc.preset_identifiers.init, 1, (|vm, _target, args| Ok(Self::initializer(&mut vm.gc, args[0]))) as NativeFn)
+            (gc.preset_identifiers.init, 1, (|vm, _target, args| Self::initializer(vm, args[0])) as NativeFn)
         ]
             .into_iter()
             .map(|(name, arity, function)| (name, ObjNativeFn::new(name, arity, function)))

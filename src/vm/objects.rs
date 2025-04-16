@@ -5,7 +5,7 @@ use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
 use super::value::Value;
-use super::vm::Vm;
+use super::vm::{CallFrame, Vm};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ObjectKind {
@@ -69,9 +69,9 @@ pub union Object {
 }
 
 pub const TAG_HEADER: u8 = 0;
-pub const TAG_RESULT: u8 = 2;
-pub const TAG_FUNCTION: u8 = 3;
-pub const TAG_CLOSURE: u8 = 4;
+pub const TAG_RESULT: u8 = 1;
+pub const TAG_CLOSURE: u8 = 3;
+pub const TAG_FUNCTION: u8 = 4;
 pub const TAG_NATIVE_FUNCTION: u8 = 5;
 pub const TAG_BOUND_METHOD: u8 = 6;
 pub const TAG_CLASS: u8 = 7;
@@ -304,7 +304,7 @@ impl GcTraceable for ObjFn {
     }
 }
 
-pub type NativeFn = fn(vm: &mut Vm, target: Value, args: Vec<Value>) -> Result<Value, anyhow::Error>;
+pub type NativeFn = fn(vm: &mut Vm, target: Value, args: Vec<Value>) -> Result<(), anyhow::Error>;
 
 #[repr(align(8))]
 #[repr(C)]
