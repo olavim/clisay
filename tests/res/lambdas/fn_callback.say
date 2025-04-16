@@ -1,0 +1,18 @@
+fn callback0(func) {
+    print(func());
+}
+
+callback0(() => 0); // expect: 0
+
+fn callback1(func) {
+    print(func(1));
+}
+
+say func1 = x => x;
+callback1(x => x); // expect: 1
+
+fn callback2(func) {
+    print(func(1, 2));
+}
+
+callback2((a, b) => a + b); // expect: 3

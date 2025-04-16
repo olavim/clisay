@@ -1,0 +1,8 @@
+say func0 = () => 0;
+print(func0()); // expect: 0
+
+say func1 = x => x;
+print(func1(1)); // expect: 1
+
+say func2 = (a, b) => a + b;
+print(func2(1, 2)); // expect: 3

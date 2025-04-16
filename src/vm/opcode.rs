@@ -97,6 +97,6 @@ pub fn from_operator(op: &Operator) -> OpCode {
         Operator::BitXor => BIT_XOR,
         Operator::BitNot => BIT_NOT,
         Operator::Negate => NEGATE,
-        _ => panic!("Invalid operator")
+        _ => unreachable!("Invalid operator")
     };
 }

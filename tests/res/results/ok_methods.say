@@ -1,0 +1,4 @@
+say result = Ok("hello");
+print(result.isOk()); // expect: true
+print(result.isError()); // expect: false
+print(result.unwrap()); // expect: hello

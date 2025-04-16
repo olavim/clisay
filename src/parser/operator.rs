@@ -24,18 +24,20 @@ pub enum Operator {
     BitXor,
     Ternary,
     MemberAccess,
+    Comma, // expr, expr
+    Arrow, // expr => expr
     Assign(Option<Box<Operator>>),
 
     // Prefix
     Negate,
     LogicalNot,
     BitNot,
-    Group,
-    Array,
+    Group, // (expr)
+    Array, // [expr, ...]
 
     // Postfix
-    Call,
-    Index
+    Call,  // expr(expr, ...)
+    Index  // expr[expr]
 }
 
 impl Operator {
@@ -93,6 +95,7 @@ impl Operator {
                 (None, TokenType::Question) => Some(Operator::Ternary),
                 (None, TokenType::Dot) => Some(Operator::MemberAccess),
                 (None, TokenType::LeftBracket) => Some(Operator::Index),
+                (None, TokenType::Comma) => Some(Operator::Comma),
         
                 (Some(Operator::LessThan), TokenType::LessThan) => Some(Operator::LeftShift),
                 (Some(Operator::GreaterThan), TokenType::GreaterThan) => Some(Operator::RightShift),
@@ -108,6 +111,7 @@ impl Operator {
                     Operator::LeftShift | Operator::RightShift
                 )), TokenType::Equal) => Some(Operator::assign(assign_op.clone())),
         
+                (Some(Operator::Assign(None)), TokenType::GreaterThan) => Some(Operator::Arrow),
                 (Some(Operator::Assign(None)), TokenType::Equal) => Some(Operator::LogicalEqual),
                 (Some(Operator::LessThan), TokenType::Equal) => Some(Operator::LessThanEqual),
                 (Some(Operator::GreaterThan), TokenType::Equal) => Some(Operator::GreaterThanEqual),
@@ -163,19 +167,20 @@ impl Operator {
 
     pub fn infix_precedence(&self) -> Option<u8> {
         let bp = match self {
-            Operator::Assign(_) => 1,
-            Operator::Ternary => 2,
-            Operator::LogicalOr => 3,
-            Operator::LogicalAnd => 4,
-            Operator::LogicalEqual | Operator::LogicalNotEqual => 5,
-            Operator::BitOr => 6,
-            Operator::BitXor => 7,
-            Operator::BitAnd => 8,
+            Operator::Comma => 1,
+            Operator::Assign(_) | Operator::Arrow => 2,
+            Operator::Ternary => 3,
+            Operator::LogicalOr => 4,
+            Operator::LogicalAnd => 5,
+            Operator::LogicalEqual | Operator::LogicalNotEqual => 6,
+            Operator::BitOr => 7,
+            Operator::BitXor => 8,
+            Operator::BitAnd => 9,
             Operator::LessThan | Operator::LessThanEqual |
-            Operator::GreaterThan | Operator::GreaterThanEqual => 9,
-            Operator::LeftShift | Operator::RightShift => 10,
-            Operator::Add | Operator::Subtract => 11,
-            Operator::Multiply | Operator::Divide => 12,
+            Operator::GreaterThan | Operator::GreaterThanEqual => 10,
+            Operator::LeftShift | Operator::RightShift => 11,
+            Operator::Add | Operator::Subtract => 12,
+            Operator::Multiply | Operator::Divide => 13,
             Operator::MemberAccess => 16,
             _ => return None
         };
@@ -201,12 +206,13 @@ impl Operator {
 
     fn is_left_associative(&self) -> bool {
         return match self {
-            Operator::Assign(_) => false,
-            Operator::Ternary => false,
-            Operator::Negate => false,
-            Operator::LogicalNot => false,
-            Operator::BitNot => false,
-            Operator::Group => false,
+            Operator::Assign(_) |
+            Operator::Arrow |
+            Operator::Ternary |
+            Operator::Negate |
+            Operator::LogicalNot |
+            Operator::BitNot |
+            Operator::Group |
             Operator::Array => false,
             _ => true
         };
@@ -240,7 +246,9 @@ impl fmt::Display for Operator {
             Operator::Group => "<group>",
             Operator::Call => "<call>",
             Operator::MemberAccess => ".",
+            Operator::Comma => ",",
             Operator::Array => "<array>",
+            Operator::Arrow => "=>",
             Operator::Index => "<index>",
             Operator::Assign(None) => "=",
             Operator::Assign(Some(op)) => match **op {

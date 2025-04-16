@@ -6,7 +6,7 @@ use crate::vm::objects::ObjString;
 use crate::vm::opcode;
 use crate::vm::value::Value;
 
-use super::Compiler;
+use super::{Compiler, FnKind};
 
 impl<'a> Compiler<'a> {
     pub (super) fn expression(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
@@ -17,7 +17,6 @@ impl<'a> Compiler<'a> {
             Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
             Expr::Ternary(cond, then, otherwise) => self.if_expression(cond, then, &Some(*otherwise))?,
             Expr::Call(expr, args) => self.call_expression(expr, args)?,
-            Expr::Array(exprs) => self.array_expression(expr, exprs)?,
             Expr::Index(expr, id) => self.index(expr, id, None)?,
             Expr::Literal(lit) => self.literal(expr, lit)?,
             Expr::Identifier(name) => {
@@ -98,7 +97,7 @@ impl<'a> Compiler<'a> {
                     let intern_name = self.gc.intern(name);
                     if let Some(local) = self.locals.iter().rev().find(|local| local.name == intern_name) {
                         if !local.is_mutable {
-                            compiler_error!(self, format!("Invalid assignment: '{}' is immutable", name), left);
+                            compiler_error!(self, left, "Invalid assignment: '{name}' is immutable");
                         }
                     }
 
@@ -110,7 +109,7 @@ impl<'a> Compiler<'a> {
                     self.index(obj, member, Some(right))?;
                     return Ok(());
                 },
-                _ => compiler_error!(self, "Invalid assignment", left)
+                _ => compiler_error!(self, left, "Invalid assignment")
             }
         }
 
@@ -121,7 +120,9 @@ impl<'a> Compiler<'a> {
 
         self.expression(left)?;
         self.expression(right)?;
-        self.emit(opcode::from_operator(op), right);
+        if !matches!(op, Operator::Comma) {
+            self.emit(opcode::from_operator(op), right);
+        }
         Ok(())
     }
 
@@ -155,13 +156,12 @@ impl<'a> Compiler<'a> {
 
             let class_name = unsafe { &(*class.name).value };
             let accessor_name = if assign_expr.is_some() { "setter" } else { "getter" };
-            let error_message = if let Some(member_name) = member_name {
+            if let Some(member_name) = member_name {
                 let member_name = unsafe { &(*member_name).value };
-                format!("Invalid index: {class_name} doesn't have member {member_name} and doesn't have a {accessor_name}")
+                compiler_error!(self, expr, "Invalid index: {class_name} doesn't have member {member_name} and doesn't have a {accessor_name}")
             } else {
-                format!("Invalid index: {class_name} doesn't have a {accessor_name}")
+                compiler_error!(self, expr, "Invalid index: {class_name} doesn't have a {accessor_name}")
             };
-            compiler_error!(self, error_message, expr);
         }
 
         if let Some(assign_expr) = assign_expr {
@@ -207,11 +207,15 @@ impl<'a> Compiler<'a> {
             vec![member_expr_id]
         };
 
-        self.emit_call(target_expr, args)?;
+        for arg in &args {
+            self.expression(arg)?;
+        }
+        self.emit(opcode::CALL, target_expr);
+        self.emit(args.len() as u8, target_expr);
         Ok(())
     }
     
-    fn call_expression(&mut self, expr: &ASTId<Expr>, args: &Vec<ASTId<Expr>>) -> Result<(), anyhow::Error> {
+    fn call_expression(&mut self, expr: &ASTId<Expr>, args: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
             Expr::Super => {
                 let frame = self.class_frames.last().unwrap();
@@ -228,20 +232,15 @@ impl<'a> Compiler<'a> {
             _ => { self.expression(expr)? }
         };
 
-        for arg in args {
-            self.expression(arg)?;
+        if let Some(args) = args {
+            self.expression(args)?;
+            self.emit(opcode::CALL, expr);
+            self.emit_count(args);
+        } else {
+            self.emit(opcode::CALL, expr);
+            self.emit(0, expr);
         }
-        self.emit(opcode::CALL, expr);
-        self.emit(args.len() as u8, expr);
-        Ok(())
-    }
-    
-    fn array_expression(&mut self, expr: &ASTId<Expr>, exprs: &Vec<ASTId<Expr>>) -> Result<(), anyhow::Error> {
-        for item in exprs {
-            self.expression(item)?;
-        }
-        self.emit(opcode::ARRAY, expr);
-        self.emit(exprs.len() as u8, expr);
+
         Ok(())
     }
     
@@ -260,7 +259,22 @@ impl<'a> Compiler<'a> {
             },
             Literal::Null => { self.emit(opcode::PUSH_NULL, expr); },
             Literal::Boolean(true) => { self.emit(opcode::PUSH_TRUE, expr); },
-            Literal::Boolean(false) => { self.emit(opcode::PUSH_FALSE, expr); }
+            Literal::Boolean(false) => { self.emit(opcode::PUSH_FALSE, expr); },
+            Literal::Array(list) => {
+                if let Some(list) = list {
+                    self.expression(list)?;
+                    self.emit(opcode::ARRAY, expr);
+                    self.emit_count(list);
+                } else {
+                    self.emit(opcode::ARRAY, expr);
+                    self.emit(0, expr);
+                }
+            },
+            Literal::Lambda(decl) => {
+                let const_idx = self.function(expr, decl, FnKind::Function)?;
+                self.emit(opcode::PUSH_CLOSURE, expr);
+                self.emit(const_idx, expr);
+            }
         };
 
         return Ok(());

@@ -12,9 +12,9 @@ const REGEX_EXPECTED_OUT: &str = r"//[ ]*expect[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\
 const REGEX_ERROR_MESSAGE: &str = r"(.*)(\s*at .*:(\d+))+";
 const REGEX_SPLIT: &str = r"// @split(\r\n|\r|\n)";
 
-fn eq_or_fail<T: PartialEq + fmt::Debug>(a: T, b: T) -> Result<(), Failed> {
-    if a != b {
-        return Err(format!("Expected {a:?}, got {b:?}").into());
+fn eq_or_fail<T: PartialEq + fmt::Debug>(expected: T, actual: T) -> Result<(), Failed> {
+    if expected != actual {
+        return Err(format!("Expected {expected:?}, got {actual:?}").into());
     }
     Ok(())
 }
@@ -37,12 +37,12 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
         if let Some(expected_error) = parse_expected_error(section) {
             match result {
                 Ok(_) => return Err(format!("Expected error: {expected_error}").into()),
-                Err(err) => eq_or_fail(parse_error_message(err), expected_error)?
+                Err(err) => eq_or_fail(expected_error, parse_error_message(err))?
             }
         } else {
             let expected_out = parse_expected_output(section);
             match result {
-                Ok(out) => eq_or_fail(out, expected_out.iter().map(|s| String::from(*s)).collect::<Vec<String>>())?,
+                Ok(out) => eq_or_fail(expected_out.iter().map(|s| String::from(*s)).collect::<Vec<String>>(), out)?,
                 Err(err) => return Err(format!("Unexpected error: {err:?}").into())
             }
         }

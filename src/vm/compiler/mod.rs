@@ -37,7 +37,6 @@ struct FnFrame {
 
 #[derive(Clone, Copy)]
 enum FnKind {
-    None,
     Function,
     Method,
     Initializer
@@ -67,7 +66,7 @@ pub struct Compiler<'a> {
 
 #[macro_export]
 macro_rules! compiler_error {
-    ($self:ident, $msg:expr, $node:expr) => { return Err($self.error($msg, $node)) };
+    ($self:ident, $node:expr, $($arg:tt)*) => { return Err($self.error(format!($($arg)*), $node)) };
 }
 
 impl<'a> Compiler<'a> {
@@ -110,14 +109,9 @@ impl<'a> Compiler<'a> {
         self.emit((pos >> 8) as u8, node_id);
         return self.chunk.code.len() as u16 - 3;
     }
-
-    fn emit_call<T: 'static>(&mut self, node_id: &ASTId<T>, args: Vec<&ASTId<Expr>>) -> Result<(), anyhow::Error> {
-        for arg in &args {
-            self.expression(arg)?;
-        }
-        self.emit(opcode::CALL, node_id);
-        self.emit(args.len() as u8, node_id);
-        Ok(())
+    
+    fn emit_count(&mut self, expr: &ASTId<Expr>) {
+        self.emit(expr.as_comma_separated(self.ast).len() as u8, expr);
     }
 
     fn patch_jump(&mut self, jump_ref: u16) -> Result<(), anyhow::Error> {

@@ -17,7 +17,8 @@ pub enum ObjectKind {
     Function,
     Instance,
     Upvalue,
-    Array
+    Array,
+    Result
 }
 
 impl fmt::Display for ObjectKind {
@@ -31,7 +32,8 @@ impl fmt::Display for ObjectKind {
             ObjectKind::Class => "class",
             ObjectKind::Instance => "object",
             ObjectKind::Upvalue => "upvalue",
-            ObjectKind::Array => "array"
+            ObjectKind::Array => "array",
+            ObjectKind::Result => "result"
         };
         write!(f, "{}", kind)
     }
@@ -62,10 +64,12 @@ pub union Object {
     pub class: *mut ObjClass,
     pub instance: *mut ObjInstance,
     pub upvalue: *mut ObjUpvalue,
-    pub array: *mut ObjArray
+    pub array: *mut ObjArray,
+    pub result: *mut ObjResult
 }
 
 pub const TAG_HEADER: u8 = 0;
+pub const TAG_RESULT: u8 = 2;
 pub const TAG_FUNCTION: u8 = 3;
 pub const TAG_CLOSURE: u8 = 4;
 pub const TAG_NATIVE_FUNCTION: u8 = 5;
@@ -95,6 +99,7 @@ impl Object {
         }
 
         match self.tag() {
+            TAG_RESULT => free_object!(self.as_result_ptr()),
             TAG_FUNCTION => free_object!(self.as_function_ptr()),
             TAG_CLOSURE => free_object!(self.as_closure_ptr()),
             TAG_NATIVE_FUNCTION => free_object!(self.as_native_function_ptr()),
@@ -113,6 +118,7 @@ impl Object {
     fn as_traceable(&self) -> &dyn GcTraceable {
         unsafe { 
             match self.tag() {
+                TAG_RESULT => &*self.as_result_ptr(),
                 TAG_FUNCTION => &*self.as_function_ptr(),
                 TAG_CLOSURE => &*self.as_closure_ptr(),
                 TAG_NATIVE_FUNCTION => &*self.as_native_function_ptr(),
@@ -183,6 +189,11 @@ impl Object {
     pub fn as_array_ptr(&self) -> *mut ObjArray {
         unsafe { without_tag(self.array) }
     }
+
+    #[inline]
+    pub fn as_result_ptr(&self) -> *mut ObjResult {
+        unsafe { without_tag(self.result) }
+    }
 }
 
 impl GcTraceable for Object {
@@ -216,6 +227,7 @@ impl_from_for_object!(instance, ObjInstance, TAG_HEADER);
 impl_from_for_object!(upvalue, ObjUpvalue, TAG_HEADER);
 impl_from_for_object!(array, ObjArray, TAG_HEADER);
 
+impl_from_for_object!(result, ObjResult, TAG_RESULT);
 impl_from_for_object!(function, ObjFn, TAG_FUNCTION);
 impl_from_for_object!(native_function, ObjNativeFn, TAG_NATIVE_FUNCTION);
 impl_from_for_object!(bound_method, ObjBoundMethod, TAG_BOUND_METHOD);
@@ -332,15 +344,20 @@ impl GcTraceable for ObjNativeFn {
 #[repr(C)]
 pub struct ObjClosure {
     pub header: ObjectHeader,
-    pub function: *mut ObjFn,
+    pub name: *mut ObjString,
+    pub arity: u8,
+    pub ip_start: usize,
     pub upvalues: Vec<*mut ObjUpvalue>
 }
 
 impl ObjClosure {
     pub fn new(function: *mut ObjFn) -> ObjClosure {
+        let func = unsafe { &*function };
         return ObjClosure {
             header: ObjectHeader::new(ObjectKind::Closure),
-            function, 
+            name: func.name,
+            arity: func.arity,
+            ip_start: func.ip_start, 
             upvalues: Vec::new() 
         };
     }
@@ -348,11 +365,11 @@ impl ObjClosure {
 
 impl GcTraceable for ObjClosure {
     fn fmt(&self) -> String {
-        format!("<closure {}>", unsafe { &(*(*self.function).name).value } )
+        format!("<closure {}>", unsafe { &*(*self.name).value } )
     }
 
     fn mark(&self, gc: &mut Gc) {
-        gc.mark_object(self.function);
+        gc.mark_object(self.name);
 
         for &upvalue in &self.upvalues {
             gc.mark_object(upvalue);
@@ -592,5 +609,37 @@ impl GcTraceable for ObjArray {
 
     fn size(&self) -> usize {
         mem::size_of::<ObjArray>() + self.values.capacity() * mem::size_of::<Value>()
+    }
+}
+
+#[repr(align(8))]
+#[repr(C)]
+pub struct ObjResult {
+    pub header: ObjectHeader,
+    pub value: Value,
+    pub error: bool
+}
+
+impl ObjResult {
+    pub fn new(value: Value, error: bool) -> ObjResult {
+        ObjResult {
+            header: ObjectHeader::new(ObjectKind::Result),
+            value,
+            error
+        }
+    }
+}
+
+impl GcTraceable for ObjResult {
+    fn fmt(&self) -> String {
+        format!("<result {}>", if self.error { "error" } else { "ok" })
+    }
+
+    fn mark(&self, gc: &mut Gc) {
+        self.value.mark(gc);
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<ObjResult>()
     }
 }

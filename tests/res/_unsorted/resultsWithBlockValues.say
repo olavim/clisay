@@ -83,7 +83,7 @@ fn catchHandler() {
         return 0;
     }
 
-    return getIndex(0) catch handler; // 0
+    return getIndex(0) catch(err) handler(err); // 0
 }
 
 fn catchHandler2() {
@@ -92,7 +92,7 @@ fn catchHandler2() {
     }
 
     return getIndex(0)
-        catch handler // Automatically propagates like `catch(err) handler(err)?`
+        catch(err) handler(err)?
         catch "default value";
 }
 
