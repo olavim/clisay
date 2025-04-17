@@ -317,7 +317,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Vec::new()
         };
 
-        stmts.extend(self.parse_stmts()?);        
+        stmts.extend(self.parse_stmts()?);
         self.tokens.expect(TokenType::RightBrace)?;
 
         let body = self.ast.add_expr(Expr::Block(stmts, None), pos.clone());
@@ -409,10 +409,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             } else {
                                 None
                             };
-        
+
                             self.tokens.expect(TokenType::Semicolon)?;
                             fields.insert(name.clone());
-            
+
                             if let Some(value) = value {
                                 let id = self.ast.add_expr(Expr::Identifier(name), pos.clone());
                                 let assign = self.ast.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
@@ -476,7 +476,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_return(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Return)?.pos.clone();
         let expr = match self.tokens.match_next(TokenType::Semicolon) {
-            true => None, 
+            true => None,
             false => Some(self.parse_expr()?)
         };
         self.tokens.expect(TokenType::Semicolon)?;
@@ -622,7 +622,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Some(op) => self.parse_expr_prefix(op)?,
             _ => self.parse_expr_atom()?
         };
-    
+
         loop {
             if let Some(op) = Operator::parse_postfix(self.tokens, min_precedence) {
                 left = self.parse_expr_postfix(op, left)?;
@@ -632,13 +632,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 break;
             }
         }
-    
+
         Ok(left)
     }
 
     fn parse_expr_infix(&mut self, op: Operator, expr: ASTId<Expr>) -> Result<ASTId<Expr>, anyhow::Error> {
         let pos = self.ast.pos(&expr).clone();
-    
+
         let kind = match &op {
             Operator::Assign(Some(assign_op)) => {
                 // Normalize compound assignment, for example convert (a += 1) to (a = a + 1)
@@ -647,7 +647,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 right = self.ast.add_expr(kind, pos.clone());
                 Expr::Binary(op, expr, right)
             },
-            Operator::MemberAccess => Expr::Index(expr, self.parse_identifier_expr()?),
+            Operator::MemberAccess => {
+                let id = self.parse_identifier()?;
+                let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                Expr::Index(expr, id)
+            },
             Operator::Arrow => {
                 let right = self.parse_expr_precedence(op.infix_precedence().unwrap())?;
                 let params = expr.as_comma_separated(self.ast).iter()
@@ -667,10 +671,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 Expr::Binary(op, expr, right)
             }
         };
-    
+
         Ok(self.ast.add_expr(kind, pos.clone()))
     }
-    
+
     fn parse_expr_prefix(&mut self, op: Operator) -> Result<ASTId<Expr>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let kind = match &op {
@@ -733,7 +737,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_expr_atom(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
         let token = self.tokens.next().clone();
         let pos = token.pos.clone();
-    
+
         let kind = match token.kind {
             TokenType::StringLiteral => {
                 let val = token.lexeme.clone();
@@ -754,7 +758,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Identifier => Expr::Identifier(token.lexeme.clone()),
             _ => parse_error!(self, &pos, "Unexpected token {token}")
         };
-    
+
         Ok(self.ast.add_expr(kind, pos))
     }
 
@@ -765,8 +769,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         match token.kind {
             TokenType::Dot => {
                 let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-                let id_expr = self.parse_identifier_expr()?;
-                let expr = self.ast.add_expr(Expr::Index(super_expr, id_expr), pos.clone());
+                let id = self.parse_identifier()?;
+                let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                let expr = self.ast.add_expr(Expr::Index(super_expr, id), pos.clone());
                 Ok(expr)
             },
             TokenType::LeftBracket => {

@@ -40,12 +40,12 @@ fn visit_dir(path_prefix: &PathBuf, path: &PathBuf) -> Result<Vec<PathBuf>, Box<
 }
 
 fn collect_tests(test_fn: fn(path: &str) -> Result<(), Failed>, group: String, folder_path: String) -> Result<Vec<Test>, Box<dyn Error>> {
-    let mut dir_prefix = env::current_dir()?;
-    dir_prefix.push(folder_path);
-    let paths = visit_dir(&dir_prefix, &dir_prefix)?;
+    let mut dir = env::current_dir()?;
+    dir.push(folder_path);
+    let paths = visit_dir(&dir, &dir)?;
     let mut trials = Vec::new();
     for path in paths {
-        let name = path.strip_prefix(&dir_prefix)?.display().to_string();
+        let name = path.strip_prefix(&dir)?.display().to_string();
         let path = path.display().to_string();
         let trial = Test {
             name,
@@ -64,9 +64,11 @@ pub struct TestCollection {}
 
 impl TestCollection {
     pub fn add_tests(test_fn: fn(path: &str) -> Result<(), Failed>, test_name: &str, folder_path: &str) {
-        let trials = collect_tests(test_fn, test_name.to_string(), folder_path.to_string()).unwrap_or_else(|_| {
-            panic!("Failed to collect tests from folder: {}", folder_path)
-        });
+        let trials = collect_tests(test_fn, test_name.to_string(), folder_path.to_string()).
+            unwrap_or_else(|err| {
+                println!("Failed to collect tests from folder {}: {}", folder_path, err);
+                Vec::new()
+            });
         for trial in trials {
             TESTS.lock().unwrap().push(trial);
         }

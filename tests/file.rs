@@ -13,7 +13,6 @@ fn main() {
         args.filter = args.filter.map(|name| format!("[{}]", name));
         args.exact = false;
     }
-
     let tests = test_collector::TestCollection::collect_tests()
         .into_iter()
         .map(|test| {

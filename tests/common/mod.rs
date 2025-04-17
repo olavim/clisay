@@ -41,7 +41,7 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
         } else {
             out
         };
-    
+
         if let Some(expected_error) = parse_expected_error(section) {
             match result {
                 Ok(_) => return Err(format!("Expected error: {expected_error}").into()),
@@ -50,6 +50,8 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
         } else if let Err(err) = result {
             return Err(format!("Unexpected error: {err}").into());
         }
+
+        Output::clear();
 
         let expected_out = parse_expected_output(section);
         eq_or_fail(expected_out.iter().map(|s| String::from(*s)).collect::<Vec<String>>(), out)?;
@@ -75,7 +77,7 @@ fn parse_error_message(err: Error) -> String {
     if !error_regex.is_match(&err_msg) {
         return err_msg;
     }
-    
+
     let captures = error_regex.captures(&err_msg).unwrap();
     let message = captures.get(1).unwrap().as_str();
     let line = captures.get(3).unwrap().as_str().parse::<i8>().unwrap();
