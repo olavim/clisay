@@ -73,9 +73,11 @@ impl GcTraceable for BytecodeChunk {
             let op = byte!();
 
             match op {
-                opcode::RETURN => push_fmt!("RET"),
+                opcode::RETURN => push_fmt!("RETURN"),
+                opcode::THROW => push_fmt!("THROW"),
+                opcode::PUSH_TRY => push_fmt!("TRY {}", short!()),
+                opcode::POP_TRY => push_fmt!("POP_TRY"),
                 opcode::POP => push_fmt!("POP"),
-                opcode::POP_INLAMBDA => push_fmt!("POP_INLAMBDA"),
                 opcode::CALL => push_fmt!("CALL {}", byte!()),
                 opcode::JUMP => push_fmt!("JUMP <{}>", short!()),
                 opcode::JUMP_IF_FALSE => push_fmt!("JUMP_F <{}>", short!()),
@@ -92,11 +94,6 @@ impl GcTraceable for BytecodeChunk {
                     let func = func_const.as_object().as_function_ptr();
                     push_fmt!("CLOSURE {}", unsafe { (*func).fmt() });
                 },
-                opcode::PUSH_INLAMBDA => {
-                    let func_const = self.constants[byte!() as usize];
-                    let func = func_const.as_object().as_function_ptr();
-                    push_fmt!("INLAMBDA {}", unsafe { (*func).fmt() });
-                }
                 opcode::PUSH_CLASS => {
                     let class_const = self.constants[byte!() as usize];
                     let class = class_const.as_object().as_class_ptr();

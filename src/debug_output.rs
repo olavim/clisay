@@ -41,4 +41,8 @@ impl Output {
             output.clear();
         });
     }
+
+    pub fn get_output() -> Vec<String> {
+        OUTPUT.with(|out| out.borrow().clone())
+    }
 }

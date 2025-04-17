@@ -1,6 +1,0 @@
-fn foo() {
-    Error("err").catch(|err| { return "success"; });
-    return "fail";
-}
-
-print(foo()); // expect: success

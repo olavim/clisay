@@ -13,6 +13,7 @@ use super::opcode;
 use super::opcode::OpCode;
 use crate::parser::ASTId;
 use crate::parser::Expr;
+use crate::parser::Stmt;
 use crate::parser::AST;
 use super::value::Value;
 
@@ -37,7 +38,6 @@ struct FnFrame {
 
 #[derive(Clone, Copy)]
 enum FnKind {
-    Inlambda,
     Function,
     Method,
     Initializer
@@ -54,6 +54,19 @@ struct ClassCompilation {
     next_member_id: u8
 }
 
+#[derive(Clone, Copy)]
+enum TryCatchPosition {
+    Try,
+    Catch,
+    Finally
+}
+
+#[derive(Clone)]
+struct TryFrame {
+    position: TryCatchPosition,
+    finally: Option<ASTId<Stmt>>
+}
+
 pub struct Compiler<'a> {
     chunk: BytecodeChunk,
     ast: &'a AST,
@@ -61,6 +74,7 @@ pub struct Compiler<'a> {
     locals: Vec<Local>,
     scope_depth: u8,
     fn_frames: Vec<FnFrame>,
+    try_frames: Vec<TryFrame>,
     class_frames: Vec<ClassFrame>,
     classes: FnvHashMap<*mut ObjString, ClassCompilation>
 }
@@ -79,6 +93,7 @@ impl<'a> Compiler<'a> {
             locals: Vec::new(),
             scope_depth: 0,
             fn_frames: Vec::new(),
+            try_frames: Vec::new(),
             class_frames: Vec::new(),
             classes: FnvHashMap::default()
         };

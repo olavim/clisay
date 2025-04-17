@@ -1,0 +1,5 @@
+try {
+    throw "error";
+} catch(err) {
+    print(err); // expect: error
+}

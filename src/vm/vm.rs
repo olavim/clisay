@@ -40,11 +40,11 @@ impl GcTraceable for NativeTypes {
     }
     
     fn fmt(&self) -> String {
-        unreachable!()
+        unimplemented!()
     }
     
     fn size(&self) -> usize {
-        unreachable!()
+        unimplemented!()
     }
 }
 
@@ -56,8 +56,10 @@ pub struct CallFrame {
 }
 
 #[derive(Clone, Copy)]
-pub struct InlambdaFrame {
-    origin: *mut CallFrame
+pub struct TryFrame {
+    origin: *mut CallFrame,
+    handler_ip: *const OpCode,
+    stack_start: *mut Value
 }
 
 pub struct Vm {
@@ -67,7 +69,7 @@ pub struct Vm {
     globals: HashMap<*mut ObjString, Value, BuildHasherDefault<FxHasher>>,
     pub(crate) stack: Stack<Value, MAX_STACK>,
     frames: CachedStack<CallFrame, MAX_FRAMES>,
-    inlambdas: Vec<InlambdaFrame>,
+    try_frames: Vec<TryFrame>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     out: Vec<String>
@@ -123,8 +125,8 @@ impl Vm {
             globals: HashMap::default(),
             stack: Stack::new(),
             frames: CachedStack::new(),
+            try_frames: Vec::new(),
             open_upvalues: Vec::new(),
-            inlambdas: Vec::new(),
             native_types,
             out: Vec::new()
         };
@@ -320,7 +322,7 @@ impl Vm {
                         let bound_method = self.alloc(ObjBoundMethod::new(instance_ptr.into(), method));
                         return Some(Value::from(bound_method));
                     },
-                    _ => unreachable!()
+                    _ => unsafe { std::hint::unreachable_unchecked() }
                 }
             },
             None => None
@@ -361,7 +363,7 @@ impl Vm {
             objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, object.as_native_function_ptr()),
             objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object.as_bound_method_ptr()),
             objects::TAG_CLASS => self.call_class(arg_count, object.as_class_ptr()),
-            _ => unreachable!()
+            _ => unsafe { std::hint::unreachable_unchecked() }
         }
     }
 
@@ -399,7 +401,7 @@ impl Vm {
                 self.stack.set(arg_count, Value::from(bound_method.target));
                 self.call_native(arg_count, method.as_native_function_ptr())?;
             },
-            _ => unreachable!()
+            _ => unsafe { std::hint::unreachable_unchecked() }
         };
         Ok(())
     }
@@ -423,7 +425,7 @@ impl Vm {
                 self.call_native(arg_count, init_method_obj.as_native_function_ptr())?;
                 return Ok(());
             },
-            _ => unreachable!()
+            _ => unsafe { std::hint::unreachable_unchecked() }
         }
     }
 
@@ -486,7 +488,7 @@ impl Vm {
                 objects::TAG_NATIVE_FUNCTION => {
                     return self.call_native(1, getter.as_native_function_ptr());
                 },
-                _ => unreachable!()
+                _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }
 
@@ -533,7 +535,7 @@ impl Vm {
                 objects::TAG_NATIVE_FUNCTION => {
                     return self.call_native(2, setter.as_native_function_ptr());
                 },
-                _ => unreachable!()
+                _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }
 
@@ -558,17 +560,18 @@ impl Vm {
                         return Ok(self.out);
                     }
                 },
+                opcode::THROW => self.op_throw()?,
+                opcode::PUSH_TRY => self.op_push_try(),
+                opcode::POP_TRY => self.op_pop_try(),
                 opcode::POP => self.op_pop(),
-                opcode::POP_INLAMBDA => self.op_pop_inlambda(),
                 opcode::PUSH_CONSTANT => self.op_push_constant(),
                 opcode::PUSH_NULL => self.op_push_null(),
                 opcode::PUSH_TRUE => self.op_push_true(),
                 opcode::PUSH_FALSE => self.op_push_false(),
                 opcode::PUSH_CLOSURE => self.op_push_closure()?,
-                opcode::PUSH_INLAMBDA => self.op_push_inlambda()?,
                 opcode::PUSH_CLASS => self.op_push_class(),
                 opcode::GET_GLOBAL => self.op_get_global()?,
-                opcode::SET_GLOBAL => unreachable!(),
+                opcode::SET_GLOBAL => unsafe { std::hint::unreachable_unchecked() },
                 opcode::GET_LOCAL => self.op_get_local(),
                 opcode::SET_LOCAL => self.op_set_local(),
                 opcode::GET_UPVALUE => self.op_get_upvalue(),
@@ -597,20 +600,14 @@ impl Vm {
                 opcode::NOT => self.op_not()?,
                 opcode::AND => self.op_and()?,
                 opcode::OR => self.op_or()?,
-                _ => unreachable!()
+                _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }
     }
     
-    
     fn op_return(&mut self) -> bool {
         if self.frames.len() == 1 {
             return false;
-        }
-
-        if self.inlambdas.len() > 0 {
-            let inlambda = self.inlambdas.pop().unwrap();
-            self.frames.set_top(inlambda.origin);
         }
 
         let frame = self.frames.pop();
@@ -622,6 +619,34 @@ impl Vm {
         self.stack.set_top(frame.stack_start);
         self.stack.push(value);
         true
+    }
+    
+    fn op_throw(&mut self) -> Result<(), anyhow::Error> {
+        let value = self.stack.pop();
+
+        if self.try_frames.len() == 0 {
+            return self.error(format!("Uncaught exception: {}", value.fmt()));
+        }
+
+        let frame = self.try_frames.pop().unwrap();
+        self.frames.set_top(frame.origin);
+        self.stack.set_top(frame.stack_start);
+        self.ip = frame.handler_ip;
+        self.stack.push(value);
+        Ok(())
+    }
+
+    fn op_push_try(&mut self) {
+        let handler_pos = as_short!(self.read_next(), self.read_next()) as usize;
+        self.try_frames.push(TryFrame {
+            origin: self.frames.top_ptr(),
+            handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
+            stack_start: self.stack.top()
+        });
+    }
+
+    fn op_pop_try(&mut self) {
+        self.try_frames.pop();
     }
 
     fn op_pop(&mut self) {
@@ -649,15 +674,15 @@ impl Vm {
     }
     
     fn op_jump(&mut self) {
-        let offset = as_short!(self.read_next(), self.read_next()) as isize;
-        self.ip = unsafe { self.chunk.code.as_ptr().offset(offset) };
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
     }
 
     fn op_jump_if_false(&mut self) {
-        let offset = as_short!(self.read_next(), self.read_next()) as isize;
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
         let value = self.stack.pop();
         if value.is_bool() && !value.as_bool() {
-            self.ip = unsafe { self.chunk.code.as_ptr().offset(offset) };
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
         }
     }
 
@@ -688,30 +713,6 @@ impl Vm {
         Ok(())
     }
 
-    fn op_push_inlambda(&mut self) -> Result<(), anyhow::Error> {
-        let const_idx = self.read_next() as usize;
-        let value = self.chunk.constants[const_idx];
-        let fn_ref = value.as_object().as_function_ptr();
-        let closure = self.create_closure(fn_ref);
-        self.inlambdas.push(InlambdaFrame {
-            origin: self.frames.top_ptr()
-        });
-        self.stack.push(Value::from(closure));
-        Ok(())
-    }
-
-    fn op_pop_inlambda(&mut self) {
-        self.inlambdas.pop();
-        let frame = self.frames.pop();
-
-        self.ip = frame.return_ip;
-        self.close_upvalues(frame.stack_start);
-
-        let value = self.stack.pop();
-        self.stack.set_top(frame.stack_start);
-        self.stack.push(value);
-    }
-
     fn op_push_class(&mut self) {
         let const_idx = self.read_next() as usize;
         let value = self.chunk.constants[const_idx];
@@ -722,7 +723,9 @@ impl Vm {
         let const_idx = self.read_next() as usize;
         let constant = &self.chunk.constants[const_idx];
         let string = constant.as_object().as_string_ptr();
-        let value = self.globals[&string];
+        let Some(&value) = self.globals.get(&string) else {
+            return self.error(format!("Undefined variable '{}'", unsafe { &*string }.value));
+        };
         self.stack.push(value);
         Ok(())
     }

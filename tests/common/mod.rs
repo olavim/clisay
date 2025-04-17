@@ -3,6 +3,7 @@ use std::panic;
 
 use anyhow::Error;
 use clisay::run;
+use clisay::Output;
 use libtest_mimic::Failed;
 use regex::Regex;
 
@@ -33,19 +34,25 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
 
     for section in sections {
         let result = run(file, section);
+        let out = Output::get_output();
+        let out = if out.len() > 0 && out[0] == "=== Bytecode ===" {
+            let end = out.iter().position(|s| s == "================").unwrap() + 1;
+            out[end..].to_vec()
+        } else {
+            out
+        };
     
         if let Some(expected_error) = parse_expected_error(section) {
             match result {
                 Ok(_) => return Err(format!("Expected error: {expected_error}").into()),
                 Err(err) => eq_or_fail(expected_error, parse_error_message(err))?
             }
-        } else {
-            let expected_out = parse_expected_output(section);
-            match result {
-                Ok(out) => eq_or_fail(expected_out.iter().map(|s| String::from(*s)).collect::<Vec<String>>(), out)?,
-                Err(err) => return Err(format!("Unexpected error: {err:?}").into())
-            }
+        } else if let Err(err) = result {
+            return Err(format!("Unexpected error: {err}").into());
         }
+
+        let expected_out = parse_expected_output(section);
+        eq_or_fail(expected_out.iter().map(|s| String::from(*s)).collect::<Vec<String>>(), out)?;
     }
 
     Ok(())

@@ -5,7 +5,7 @@ use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
 use super::value::Value;
-use super::vm::{CallFrame, Vm};
+use super::vm::Vm;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum ObjectKind {

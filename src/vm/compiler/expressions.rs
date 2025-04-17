@@ -177,17 +177,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn inlambda(&mut self, expr: &ASTId<Expr>, member_expr: &ASTId<Expr>, lambda: &ASTId<Expr>) -> Result<(), anyhow::Error> {
-        self.index(expr, member_expr, None)?;
-        let Expr::Literal(Literal::Lambda(decl)) = self.ast.get(lambda) else {
-            compiler_error!(self, lambda, "Invalid lambda expression")
-        };
-        self.lambda(lambda, decl, FnKind::Inlambda)?;
-        self.emit(opcode::CALL, expr);
-        self.emit(1, expr);
-        Ok(())
-    }
-
     fn index_class_member_by_id(&mut self, target_expr: &ASTId<Expr>, member_id: u8, assign_expr: Option<&ASTId<Expr>>) -> Result<(), anyhow::Error> {
         match assign_expr {
             None => {
@@ -256,10 +245,7 @@ impl<'a> Compiler<'a> {
 
     fn lambda(&mut self, expr: &ASTId<Expr>, decl: &FnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
         let const_idx = self.function(expr, decl, kind)?;
-        match kind {
-            FnKind::Inlambda => self.emit(opcode::PUSH_INLAMBDA, expr),
-            _ => self.emit(opcode::PUSH_CLOSURE, expr)
-        };
+        self.emit(opcode::PUSH_CLOSURE, expr);
         self.emit(const_idx, expr);
         return Ok(());
     }
@@ -290,8 +276,7 @@ impl<'a> Compiler<'a> {
                     self.emit(0, expr);
                 }
             },
-            Literal::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?,
-            Literal::Inlambda(decl) => self.lambda(expr, decl, FnKind::Inlambda)?
+            Literal::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };
 
         return Ok(());

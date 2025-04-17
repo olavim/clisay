@@ -15,8 +15,7 @@ pub enum Literal {
     Number(f64),
     String(String),
     Array(Option<ASTId<Expr>>),
-    Lambda(FnDecl),
-    Inlambda(FnDecl)
+    Lambda(FnDecl)
 }
 
 impl fmt::Display for Literal {
@@ -27,8 +26,7 @@ impl fmt::Display for Literal {
             Literal::Number(n) => write!(f, "{}", n),
             Literal::String(s) => write!(f, "\"{}\"", s),
             Literal::Array(_) => write!(f, "[]"),
-            Literal::Lambda(_) => write!(f, "<lambda>"),
-            Literal::Inlambda(_) => write!(f, "<inlambda>")
+            Literal::Lambda(_) => write!(f, "<lambda>")
         }
     }
 }
@@ -97,6 +95,11 @@ pub struct ClassDecl {
 pub enum Stmt {
     Expression(ASTId<Expr>),
     Return(Option<ASTId<Expr>>),
+    Throw(ASTId<Expr>),
+    /// (try body, opt(opt(catch param), catch body), finally body)
+    Try(Vec<ASTId<Stmt>>, Option<ASTId<Stmt>>, Option<ASTId<Stmt>>),
+    Catch(Option<ASTId<Expr>>, Vec<ASTId<Stmt>>),
+    Finally(Vec<ASTId<Stmt>>),
     While(ASTId<Expr>, Vec<ASTId<Stmt>>),
     Say(FieldInit),
     Fn(FnDecl),
@@ -194,10 +197,16 @@ macro_rules! parse_error {
     ($self:ident, $pos:expr, $($arg:tt)*) => { return Err($self.error(format!($($arg)*), $pos)) };
 }
 
+enum ParseContext {
+    Other,
+    Class(String),
+    Call
+}
+
 pub struct Parser<'parser, 'vm> {
     tokens: &'vm mut TokenStream<'vm>,
     ast: &'parser mut AST,
-    current_class: Option<String>
+    ctx: ParseContext
 }
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
@@ -209,7 +218,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut parser = Parser {
             tokens,
             ast: &mut ast,
-            current_class: None
+            ctx: ParseContext::Other
         };
 
         let pos = parser.tokens.peek(0).pos.clone();
@@ -232,6 +241,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(token.lexeme.clone())
     }
 
+    fn parse_identifier_expr(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+        let token = self.tokens.expect(TokenType::Identifier)?;
+        let id = self.ast.add_expr(Expr::Identifier(token.lexeme.clone()), token.pos.clone());
+        Ok(id)
+    }
+
     fn parse_stmt(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
         match self.tokens.peek(0).kind {
             TokenType::Say => self.parse_say(),
@@ -239,6 +254,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Fn => self.parse_fn(),
             TokenType::Class => self.parse_class(),
             TokenType::Return => self.parse_return(),
+            TokenType::Throw => self.parse_throw(),
+            TokenType::Try => self.parse_trycatch(),
             _ => self.parse_expr_stmt()
         }
     }
@@ -283,7 +300,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// The init method may contain a super() call in the body as the first statement.
     fn parse_init(&mut self, has_superclass: bool) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
-        let name = format!("{}.init", self.current_class.as_ref().unwrap());
+        let ParseContext::Class(name) = &self.ctx else { unreachable!() };
+        let name = format!("{}.init", name);
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
         self.tokens.expect(TokenType::LeftBrace)?;
@@ -316,9 +334,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     if params.len() > 0 {
                         self.tokens.expect(TokenType::Comma)?;
                     }
-                    let pos = self.tokens.peek(0).pos.clone();
-                    let id = self.parse_identifier()?;
-                    params.push(self.ast.add_expr(Expr::Identifier(id), pos));
+                    params.push(self.parse_identifier_expr()?);
                 }
                 self.tokens.expect(end_token)?;
                 params
@@ -338,7 +354,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = self.tokens.expect(TokenType::Class)?.pos.clone();
         let name = self.parse_identifier()?;
 
-        let prev_class = self.current_class.replace(name.clone());
+        let prev_ctx = std::mem::replace(&mut self.ctx, ParseContext::Class(name.clone()));
 
         let superclass = match self.tokens.next_if(TokenType::Colon) {
             Some(_) => Some(self.parse_identifier()?),
@@ -446,7 +462,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             methods: method_stmts
         });
 
-        self.current_class = prev_class;
+        self.ctx = prev_ctx;
         Ok(self.ast.add_stmt(Stmt::Class(class_decl), pos))
     }
 
@@ -465,6 +481,51 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
         self.tokens.expect(TokenType::Semicolon)?;
         Ok(self.ast.add_stmt(Stmt::Return(expr), pos))
+    }
+
+    fn parse_throw(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::Throw)?.pos.clone();
+        let expr = self.parse_expr()?;
+        self.tokens.expect(TokenType::Semicolon)?;
+        Ok(self.ast.add_stmt(Stmt::Throw(expr), pos))
+    }
+
+    fn parse_trycatch(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::Try)?.pos.clone();
+        let try_body = self.parse_stmt_body()?;
+
+        let catch = if let Some(token) = self.tokens.next_if(TokenType::Catch) {
+            let pos = token.pos.clone();
+            let param = match self.tokens.peek(0).kind {
+                TokenType::Identifier => Some(self.parse_identifier_expr()?),
+                TokenType::LeftParen => {
+                    self.tokens.expect(TokenType::LeftParen)?;
+                    let params = self.parse_params(TokenType::RightParen)?;
+                    if params.len() != 1 {
+                        parse_error!(self, &pos, "Expected one parameter in catch block")
+                    }
+                    Some(params[0])
+                },
+                _ => None
+            };
+            let body = self.parse_stmt_body()?;
+            Some(self.ast.add_stmt(Stmt::Catch(param, body), pos))
+        } else {
+            None
+        };
+
+        let finally = if let Some(token) = self.tokens.next_if(TokenType::Finally) {
+            let body = self.parse_stmt_body()?;
+            Some(self.ast.add_stmt(Stmt::Finally(body), token.pos.clone()))
+        } else {
+            None
+        };
+
+        if catch.is_none() && finally.is_none() {
+            parse_error!(self, &pos, "Expected catch or finally block")
+        }
+
+        Ok(self.ast.add_stmt(Stmt::Try(try_body, catch, finally), pos))
     }
 
     fn parse_if(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
@@ -586,11 +647,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 right = self.ast.add_expr(kind, pos.clone());
                 Expr::Binary(op, expr, right)
             },
-            Operator::MemberAccess => {
-                let id = self.parse_identifier()?;
-                let member = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                Expr::Index(expr, member)
-            },
+            Operator::MemberAccess => Expr::Index(expr, self.parse_identifier_expr()?),
             Operator::Arrow => {
                 let right = self.parse_expr_precedence(op.infix_precedence().unwrap())?;
                 let params = expr.as_comma_separated(self.ast).iter()
@@ -617,15 +674,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_expr_prefix(&mut self, op: Operator) -> Result<ASTId<Expr>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let kind = match &op {
-            Operator::Inlambda => {
-                let params = self.parse_params(TokenType::Pipe)?;
-                let right = self.parse_expr()?;
-                Expr::Literal(Literal::Inlambda(FnDecl {
-                    name: String::from("inlambda"),
-                    params,
-                    body: right
-                }))
-            },
             Operator::Group => {
                 match self.tokens.next_if(TokenType::RightParen) {
                     Some(_) => {
@@ -670,16 +718,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = self.ast.pos(&expr).clone();
         match op {
             Operator::Call => {
-                let args = match self.tokens.next_if(TokenType::RightParen) {
-                    Some(_) => None,
-                    None => {
-                        let args = self.parse_expr()?;
-                        self.tokens.expect(TokenType::RightParen)?;
-                        Some(args)
-                    }
-                };
-
-
+                let args = self.parse_call_arguments()?;
                 Ok(self.ast.add_expr(Expr::Call(expr, args), pos))
             },
             Operator::Index => {
@@ -726,8 +765,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         match token.kind {
             TokenType::Dot => {
                 let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-                let id = self.parse_identifier()?;
-                let id_expr = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                let id_expr = self.parse_identifier_expr()?;
                 let expr = self.ast.add_expr(Expr::Index(super_expr, id_expr), pos.clone());
                 Ok(expr)
             },
@@ -746,6 +784,15 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_super_call(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Super)?.pos.clone();
         self.tokens.expect(TokenType::LeftParen)?;
+        let args = self.parse_call_arguments()?;
+        self.tokens.expect(TokenType::Semicolon)?;
+        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
+        let expr = self.ast.add_expr(Expr::Call(super_expr, args), pos.clone());
+        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
+    }
+
+    fn parse_call_arguments(&mut self) -> Result<Option<ASTId<Expr>>, anyhow::Error> {
+        let prev_ctx = std::mem::replace(&mut self.ctx, ParseContext::Call);
 
         let args = match self.tokens.next_if(TokenType::RightParen) {
             Some(_) => None,
@@ -756,9 +803,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             }
         };
 
-        self.tokens.expect(TokenType::Semicolon)?;
-        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-        let expr = self.ast.add_expr(Expr::Call(super_expr, args), pos.clone());
-        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
+        self.ctx = prev_ctx;
+
+        Ok(args)
     }
 }

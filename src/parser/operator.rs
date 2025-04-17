@@ -32,7 +32,6 @@ pub enum Operator {
     LogicalNot,
     BitNot,
     Group, // (expr)
-    Inlambda, // |expr| expr
     Array, // [expr, ...]
 
     // Postfix
@@ -53,7 +52,6 @@ impl Operator {
     /// * `min_precedence` - The minimum precedence of the operator to parse
     pub fn parse_prefix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
-            TokenType::Pipe => Operator::Inlambda,
             TokenType::LeftParen => Operator::Group,
             TokenType::LeftBracket => Operator::Array,
             TokenType::Minus => Operator::Negate,
@@ -189,7 +187,7 @@ impl Operator {
     pub fn prefix_precedence(&self) -> Option<u8> {
         let bp = match self {
             Operator::Negate | Operator::LogicalNot | Operator::BitNot => 13,
-            Operator::Group | Operator::Array | Operator::Inlambda => 16,
+            Operator::Group | Operator::Array => 16,
             _ => return None
         };
         Some(bp)
@@ -241,7 +239,6 @@ impl fmt::Display for Operator {
             Operator::LogicalNot => "!",
             Operator::BitNot => "~",
             Operator::Group => "<group>",
-            Operator::Inlambda => "<inlambda>",
             Operator::Call => "<call>",
             Operator::MemberAccess => ".",
             Operator::Comma => ",",

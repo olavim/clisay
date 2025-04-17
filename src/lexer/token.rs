@@ -44,7 +44,15 @@ macro_rules! tokens {
             }
 
             pub fn starts_statement(&self) -> bool {
-                return matches!(self, TokenType::Class | TokenType::Fn | TokenType::While | TokenType::Return | TokenType::Say);
+                return matches!(self,
+                    TokenType::Class |
+                    TokenType::Fn |
+                    TokenType::While |
+                    TokenType::Return |
+                    TokenType::Say |
+                    TokenType::Throw |
+                    TokenType::Try
+                );
             }
         }
     };
@@ -89,12 +97,18 @@ tokens! {
     Super => "super",
 
     Return => "return",
+    Break => "break",
+    Continue => "continue",
     Say => "say",
     Fn => "fn",
     If => "if",
     Else => "else",
     While => "while",
     For => "for",
+    Throw => "throw",
+    Try => "try",
+    Catch => "catch",
+    Finally => "finally",
 
     True => "true",
     False => "false",
