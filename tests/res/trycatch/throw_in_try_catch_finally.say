@@ -1,0 +1,7 @@
+try {
+    throw "error";
+} catch(err) {
+    print(err); // expect: error
+} finally {
+    print("finally"); // expect: finally
+}

@@ -39,6 +39,13 @@ impl<'a> Compiler<'a> {
                 self.emit(opcode::RETURN, stmt_id);
             },
             Stmt::Throw(expr) => {
+                if let Some(TryFrame {
+                    position: TryCatchPosition::Catch,
+                    finally: Some(finally)
+                }) = self.try_frames.last().cloned() {
+                    self.statement(&finally)?;
+                }
+
                 self.expression(expr)?;
                 self.emit(opcode::THROW, stmt_id);
             },
@@ -47,45 +54,60 @@ impl<'a> Compiler<'a> {
                     position: TryCatchPosition::Try,
                     finally: *finally
                 });
-                let frame_idx = self.try_frames.len() - 1;
 
                 if try_body.len() > 0 {
                     let node_id = &try_body[0];
 
                     let push_try_ref = self.emit_jump(opcode::PUSH_TRY, 0, node_id);
+
+                    self.enter_scope();
                     self.statement_body(try_body)?;
+                    self.exit_scope(node_id);
+
                     self.emit(opcode::POP_TRY, node_id);
                     let try_jump = self.emit_jump(opcode::JUMP, 0, node_id);
                     self.patch_jump(push_try_ref)?;
-    
-                    if let Some(Stmt::Catch(param, body)) = catch.map(|c| self.ast.get(&c)) {
-                        if let Some(param) = param {
-                            let Expr::Identifier(name) = self.ast.get(param) else { unreachable!() };
-                            let name = self.gc.intern(name);
-                            self.declare_local(name, false)?;
+
+                    if let Some(catch) = catch {
+                        self.statement(catch)?;
+                    } else {
+                        if let Some(finally) = finally {
+                            self.statement(finally)?;
                         }
-    
-                        self.try_frames[frame_idx].position = TryCatchPosition::Catch;
-                        self.statement_body(body)?;
+                        self.emit(opcode::THROW, node_id);
                     }
-    
+
                     self.patch_jump(try_jump)?;
                 }
 
-
-                if let Some(Stmt::Finally(body)) = finally.map(|c| self.ast.get(&c)) {
-                    if body.len() > 0 {
-                        self.try_frames[frame_idx].position = TryCatchPosition::Finally;
-                        self.statement_body(body)?;
-                        if catch.is_none() {
-                            self.emit(opcode::THROW, &finally.unwrap());
-                        }
-                    }
+                if let Some(finally) = finally {
+                    self.statement(finally)?;
                 }
 
                 self.try_frames.pop();
             },
-            Stmt::Catch(_, _) | Stmt::Finally(_) => unreachable!(),
+            Stmt::Catch(param, body) => {
+                let frame_idx = self.try_frames.len() - 1;
+                self.try_frames[frame_idx].position = TryCatchPosition::Catch;
+
+                self.enter_scope();
+                if let Some(param) = param {
+                    let Expr::Identifier(name) = self.ast.get(param) else { unreachable!() };
+                    let name = self.gc.intern(name);
+                    self.declare_local(name, false)?;
+                }
+
+                self.statement_body(body)?;
+                self.exit_scope(stmt_id);
+            },
+            Stmt::Finally(body) => {
+                let frame_idx = self.try_frames.len() - 1;
+                self.try_frames[frame_idx].position = TryCatchPosition::Finally;
+
+                self.enter_scope();
+                self.statement_body(body)?;
+                self.exit_scope(stmt_id);
+            },
             Stmt::Fn(decl) => {
                 let name = self.gc.intern(&decl.name);
                 self.declare_local(name, false)?;
@@ -115,7 +137,11 @@ impl<'a> Compiler<'a> {
 
                 self.expression(cond)?;
                 let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, stmt_id);
+
+                self.enter_scope();
                 self.statement_body(body)?;
+                self.exit_scope(cond);
+
                 self.emit_jump(opcode::JUMP, pos, stmt_id);
                 self.patch_jump(jump_ref)?;
             }

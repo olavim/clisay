@@ -48,13 +48,14 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
                 Err(err) => eq_or_fail(expected_error, parse_error_message(err))?
             }
         } else if let Err(err) = result {
+            println!("{}", err.backtrace());
             return Err(format!("Unexpected error: {err}").into());
         }
 
-        Output::clear();
-
         let expected_out = parse_expected_output(section);
         eq_or_fail(expected_out.iter().map(|s| String::from(*s)).collect::<Vec<String>>(), out)?;
+
+        Output::clear();
     }
 
     Ok(())

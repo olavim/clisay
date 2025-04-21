@@ -1,0 +1,17 @@
+try {
+    try {
+        throw "error";
+    } catch(err) {
+        throw err;
+    }
+} catch(err) {
+    print(err); // expect: error
+}
+
+try {
+    try {
+        throw "error";
+    } finally {}
+} catch(err) {
+    print(err); // expect: error
+}
