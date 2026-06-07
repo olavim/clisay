@@ -122,3 +122,8 @@ fn numbers(resource: &str) -> Result<(), Failed> {
 fn recursion(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
+
+#[test_resources("tests/res/loops")]
+fn loops(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
