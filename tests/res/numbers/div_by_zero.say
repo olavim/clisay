@@ -1,0 +1,5 @@
+// Division by zero follows f64 semantics: it does not error, it yields infinity.
+print(1 / 0); // expect: inf
+print(-1 / 0); // expect: -inf
+print(10 / 0); // expect: inf
+print(1 / 0 + 1); // expect: inf

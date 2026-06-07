@@ -1,0 +1,9 @@
+// 0/0 produces NaN. Equality follows IEEE 754: NaN is not equal to itself,
+// and all ordering comparisons against NaN are false.
+print(0 / 0); // expect: NaN
+say n = 0 / 0;
+print(n == n); // expect: false
+print(n != n); // expect: true
+print(n < 1); // expect: false
+print(n > 1); // expect: false
+print(n == 0); // expect: false
