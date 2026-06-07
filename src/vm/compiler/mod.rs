@@ -162,6 +162,8 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// Declares a new local variable in the current scope. Returns the slot index of the variable,
+    /// which is relative to the current function's `local_offset` (i.e. the operand for `GET_LOCAL`/`SET_LOCAL`).
     fn declare_local<T: 'static>(&mut self, name: *mut ObjString, is_mutable: bool, node_id: &ASTId<T>) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
@@ -173,7 +175,9 @@ impl<'a> Compiler<'a> {
 
         self.chunk.add_constant(Value::from(name))?;
         self.locals.push(Local { name, depth: self.scope_depth, is_mutable, is_captured: false });
-        Ok((self.locals.len() - 1) as u8)
+
+        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
+        Ok((self.locals.len() - 1) as u8 - local_offset)
     }
 
     fn resolve_local(&self, name: *mut ObjString) -> Option<u8> {

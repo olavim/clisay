@@ -1,21 +1,36 @@
 use crate::compiler_error;
 use crate::parser::{ASTId, Expr, FnDecl};
-use crate::vm::objects::ObjFn;
+use crate::vm::objects::{ObjFn, ObjString};
 use crate::vm::opcode;
 use crate::vm::value::Value;
 
-use super::{Compiler, FnFrame, FnKind};
+use super::{Compiler, FnFrame, FnKind, Local};
 
 impl<'a> Compiler<'a> {
-    pub (super) fn enter_function(&mut self, kind: FnKind) {
+    pub (super) fn enter_function(&mut self, kind: FnKind, self_name: *mut ObjString) {
+        self.scope_depth += 1;
+
+        // Reserve relative slot 0 of the new frame for the callee — at runtime
+        // `stack_start` points at the closure being called (or the instance, for a
+        // method), so the frame's own locals (params, body) must begin at slot 1.
+        // Any enclosing-scope locals (including hoisted sibling fn/class names) sit at
+        // lower indices than this `local_offset`, so they resolve as upvalues rather
+        // than polluting this frame's local range. Naming the callee after the
+        // function lets it refer to itself by name (recursion) as GET_LOCAL 0.
+        let local_offset = self.locals.len() as u8;
+        self.locals.push(Local {
+            name: self_name,
+            depth: self.scope_depth,
+            is_mutable: false,
+            is_captured: false
+        });
+
         self.fn_frames.push(FnFrame {
             upvalues: Vec::new(),
-            local_offset: if self.locals.is_empty() { 0 } else { self.locals.len() as u8 - 1 },
+            local_offset,
             class_frame: self.class_frames.last().map(|_| self.class_frames.len() as u8 - 1),
             kind
         });
-
-        self.scope_depth += 1;
     }
 
     pub (super) fn exit_function(&mut self, body_id: &ASTId<Expr>) -> FnFrame {
@@ -48,7 +63,14 @@ impl<'a> Compiler<'a> {
     }
 
     pub (super) fn function<T: 'static>(&mut self, node_id: &ASTId<T>, decl: &FnDecl, kind: FnKind) -> Result<u8, anyhow::Error> {
-        self.enter_function(kind);
+        // The callee slot is named after the function so recursion resolves to it; for
+        // methods/initializers the callee is the instance (reached via `this`), so use
+        // the `@init` preset as a sentinel that no user identifier can match.
+        let self_name = match kind {
+            FnKind::Function => self.gc.intern(&decl.name),
+            _ => self.gc.preset_identifiers.init
+        };
+        self.enter_function(kind, self_name);
 
         let jump_ref = self.emit_jump(opcode::JUMP, 0, node_id);
         let ip_start = self.chunk.code.len();

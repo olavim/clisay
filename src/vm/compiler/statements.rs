@@ -109,15 +109,25 @@ impl<'a> Compiler<'a> {
             },
             Stmt::Fn(decl) => {
                 let name = self.gc.intern(&decl.name);
-                self.declare_local(name, false, stmt_id)?;
+                
+                // The slot was reserved by `hoist_declarations` before any body in this
+                // scope was compiled, which is what lets forward references resolve.
+                let slot = self.resolve_local(name)
+                    .expect("fn declarations are reserved by hoist_declarations before compilation");
+
                 let const_idx = self.function(stmt_id, decl, FnKind::Function)?;
                 self.emit(opcode::PUSH_CLOSURE, stmt_id);
                 self.emit(const_idx, stmt_id);
+
+                // Store the closure into the reserved slot and discard the placeholder.
+                self.emit(opcode::SET_LOCAL, stmt_id);
+                self.emit(slot, stmt_id);
+                self.emit(opcode::POP, stmt_id);
             },
             Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
             Stmt::Say(FieldInit { name, value }) => {
                 let name = self.gc.intern(name);
-                let local = self.declare_local(name, true, stmt_id)?;
+                let slot = self.declare_local(name, true, stmt_id)?;
 
                 if let Some(expr) = value {
                     self.expression(expr)?;
@@ -125,7 +135,7 @@ impl<'a> Compiler<'a> {
                 } else {
                     self.emit(opcode::GET_LOCAL, stmt_id);
                 }
-                self.emit(local, stmt_id);
+                self.emit(slot, stmt_id);
             },
             Stmt::Expression(expr) => {
                 self.expression(expr)?;
@@ -150,8 +160,27 @@ impl<'a> Compiler<'a> {
     }
 
     fn statement_body(&mut self, body: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
+        self.hoist_declarations(body)?;
         for stmt_id in body {
             self.statement(stmt_id)?;
+        }
+        Ok(())
+    }
+
+    /// Reserve a local slot for every `fn`/`class` declared directly in `body`
+    /// before any statement is compiled, so a declaration can be referenced before
+    /// it appears in source (e.g. mutual recursion). A `PUSH_NULL` placeholder holds
+    /// the slot until the declaration is compiled into it.
+    pub (super) fn hoist_declarations(&mut self, body: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
+        for stmt_id in body {
+            let name = match self.ast.get(stmt_id) {
+                Stmt::Fn(decl) => decl.name.clone(),
+                Stmt::Class(decl) => decl.name.clone(),
+                _ => continue
+            };
+            let name = self.gc.intern(&name);
+            self.declare_local(name, false, stmt_id)?;
+            self.emit(opcode::PUSH_NULL, stmt_id);
         }
         Ok(())
     }
