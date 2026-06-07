@@ -1,21 +1,29 @@
 use crate::compiler_error;
 use crate::parser::{ASTId, Expr, FnDecl};
-use crate::vm::objects::ObjFn;
+use crate::vm::objects::{ObjFn, ObjString};
 use crate::vm::opcode;
 use crate::vm::value::Value;
 
-use super::{Compiler, FnFrame, FnKind};
+use super::{Compiler, FnFrame, FnKind, Local};
 
 impl<'a> Compiler<'a> {
-    pub (super) fn enter_function(&mut self, kind: FnKind) {
+    pub (super) fn enter_function(&mut self, kind: FnKind, self_name: *mut ObjString) {
+        self.scope_depth += 1;
+
+        let local_offset = self.locals.len() as u8;
+        self.locals.push(Local {
+            name: self_name,
+            depth: self.scope_depth,
+            is_mutable: false,
+            is_captured: false
+        });
+
         self.fn_frames.push(FnFrame {
             upvalues: Vec::new(),
-            local_offset: if self.locals.is_empty() { 0 } else { self.locals.len() as u8 - 1 },
+            local_offset,
             class_frame: self.class_frames.last().map(|_| self.class_frames.len() as u8 - 1),
             kind
         });
-
-        self.scope_depth += 1;
     }
 
     pub (super) fn exit_function(&mut self, body_id: &ASTId<Expr>) -> FnFrame {
@@ -48,7 +56,12 @@ impl<'a> Compiler<'a> {
     }
 
     pub (super) fn function<T: 'static>(&mut self, node_id: &ASTId<T>, decl: &FnDecl, kind: FnKind) -> Result<u8, anyhow::Error> {
-        self.enter_function(kind);
+        // The callee slot is named after the function so recursion resolves to it.
+        let self_name = match kind {
+            FnKind::Function => self.gc.intern(&decl.name),
+            _ => self.gc.preset_identifiers.init
+        };
+        self.enter_function(kind, self_name);
 
         let jump_ref = self.emit_jump(opcode::JUMP, 0, node_id);
         let ip_start = self.chunk.code.len();

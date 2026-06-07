@@ -29,6 +29,7 @@ impl<'a> Compiler<'a> {
 
     fn block(&mut self, expr: &ASTId<Expr>, stmts: &Vec<ASTId<Stmt>>, last_expr: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
         self.enter_scope();
+        self.hoist_declarations(stmts)?;
         for stmt in stmts {
             self.statement(stmt)?;
         }

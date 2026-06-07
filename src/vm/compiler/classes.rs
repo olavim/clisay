@@ -9,8 +9,11 @@ use super::{ClassCompilation, ClassFrame, Compiler, FnKind};
 
 impl<'a> Compiler<'a> {
     pub (super) fn class_declaration(&mut self, stmt: &ASTId<Stmt>, decl: &Box<ClassDecl>) -> Result<(), anyhow::Error> {
+        // The slot was reserved by `hoist_declarations` before any body in this scope
+        // was compiled, which is what lets forward references resolve.
         let name = self.gc.intern(&decl.name);
-        self.declare_local(name, false, stmt)?;
+        let slot = self.resolve_local(name)
+            .expect("class declarations are reserved by hoist_declarations before compilation");
         self.enter_scope();
 
         let superclass = match &decl.superclass {
@@ -102,6 +105,11 @@ impl<'a> Compiler<'a> {
         self.emit(opcode::PUSH_CLASS, stmt);
         self.emit(idx, stmt);
         
+        // Store the class into the reserved slot and discard the placeholder.
+        self.emit(opcode::SET_LOCAL, stmt);
+        self.emit(slot, stmt);
+        self.emit(opcode::POP, stmt);
+
         Ok(())
     }
 

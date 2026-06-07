@@ -173,7 +173,9 @@ impl<'a> Compiler<'a> {
 
         self.chunk.add_constant(Value::from(name))?;
         self.locals.push(Local { name, depth: self.scope_depth, is_mutable, is_captured: false });
-        Ok((self.locals.len() - 1) as u8)
+
+        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
+        Ok((self.locals.len() - 1) as u8 - local_offset)
     }
 
     fn resolve_local(&self, name: *mut ObjString) -> Option<u8> {
