@@ -1,0 +1,4 @@
+print(1 / 0); // expect: inf
+print(-1 / 0); // expect: -inf
+print(10 / 0); // expect: inf
+print(1 / 0 + 1); // expect: inf

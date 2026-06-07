@@ -72,6 +72,18 @@ impl Value {
         (self.0 & Self::NAN_MASK) != Self::NAN_MASK
     }
 
+    /// Language-level equality (the `==` / `!=` operators). Distinct from the
+    /// derived `PartialEq`, which compares raw NaN-boxed bits. Numbers are
+    /// compared as `f64` so IEEE 754 holds (`NaN != NaN`, `-0.0 == 0.0`); every
+    /// other kind falls back to bit equality (object identity, bool/null value).
+    pub fn value_eq(self, other: Self) -> bool {
+        if self.is_number() && other.is_number() {
+            self.as_number() == other.as_number()
+        } else {
+            self == other
+        }
+    }
+
     pub fn is_bool(self) -> bool {
         Self(self.0 | 0b01) == Self::FALSE
     }

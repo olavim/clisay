@@ -846,11 +846,11 @@ impl Vm {
     }
     
     fn op_equal(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op(|a, b| Value::from(a == b))
+        self.binary_op(|a, b| Value::from(a.value_eq(b)))
     }
 
     fn op_not_equal(&mut self) -> Result<(), anyhow::Error> {
-        self.binary_op(|a, b| Value::from(a != b))
+        self.binary_op(|a, b| Value::from(!a.value_eq(b)))
     }
     
     fn op_less_than(&mut self) -> Result<(), anyhow::Error> {
