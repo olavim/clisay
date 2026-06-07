@@ -10,7 +10,7 @@ pub struct TokenStream<'a> {
 }
 
 impl<'a> TokenStream<'a> {
-    pub fn new(tokens: &Vec<Token>) -> TokenStream {
+    pub fn new(tokens: &'a Vec<Token>) -> TokenStream<'a> {
         return TokenStream { tokens, pos: 0 };
     }
 

@@ -260,7 +260,10 @@ impl Vm {
     }
 
     fn get_upvalue(&self, idx: usize) -> *mut ObjUpvalue {
-        unsafe { *(*self.frames.top.closure).upvalues.get_unchecked(idx as usize) }
+        unsafe {
+            let closure = &*self.frames.top.closure;
+            *closure.upvalues.get_unchecked(idx as usize)
+        }
     }
 
     fn capture_upvalue(&mut self, location: *mut Value) -> *mut ObjUpvalue {
@@ -288,10 +291,11 @@ impl Vm {
 
     fn create_closure(&mut self, function: *mut ObjFn) -> Object {
         let mut closure = ObjClosure::new(function);
-        let upvalue_count = unsafe { (*function).upvalues.len() };
+        let fn_ref = unsafe { &*function };
+        let upvalue_count = fn_ref.upvalues.len();
 
         for i in 0..upvalue_count {
-            let fn_upval = unsafe { &(*function).upvalues[i] };
+            let fn_upval = &fn_ref.upvalues[i];
             let upvalue = if fn_upval.is_local {
                 self.capture_upvalue(unsafe { self.frames.top.stack_start.add(fn_upval.location as usize) })
             } else {

@@ -34,7 +34,7 @@ fn temp(file: &str) -> Result<(), Failed> {
 }
 
 #[test_resources("tests/res/trycatch")]
-fn results(file: &str) -> Result<(), Failed> {
+fn trycatch(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
