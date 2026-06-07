@@ -1,0 +1,50 @@
+// Regression test for a use-after-free in the GC.
+//
+// When a new closure captures upvalues, it's not yet on the stack. Each capture
+// allocates an upvalue object, which can trigger GC. If GC does not treat upvalues
+// not on the stack as roots (as it once did not), they are swept and the finished
+// closure is left holding dangling pointers.
+//
+// `makeAdder` returns a chain of nested closures that each capture one of its
+// five parameters plus the shared `sum`. Running it many times in a loop
+// repeatedly crosses the GC threshold while closures are mid-capture. If an
+// upvalue were freed and its slot reused, the recomputed total would no longer
+// be 15, or the process would crash dereferencing freed memory.
+
+fn makeAdder(a, b, c, d, e) {
+    say sum = 0;
+    fn addA() {
+        sum = sum + a;
+        fn addB() {
+            sum = sum + b;
+            fn addC() {
+                sum = sum + c;
+                fn addD() {
+                    sum = sum + d;
+                    fn addE() {
+                        sum = sum + e;
+                        return sum;
+                    }
+                    return addE;
+                }
+                return addD;
+            }
+            return addC;
+        }
+        return addB;
+    }
+    return addA;
+}
+
+say ok = true;
+say i = 0;
+while i < 100000 {
+    say total = makeAdder(1, 2, 3, 4, 5)()()()()();
+    if (total != 15) {
+        ok = false;
+    }
+    i = i + 1;
+}
+
+print(ok); // expect: true
+print(i); // expect: 100000
