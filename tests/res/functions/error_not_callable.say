@@ -1,0 +1,2 @@
+say x = 5;
+x(); // error: 5 is not callable

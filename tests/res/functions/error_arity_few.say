@@ -1,0 +1,5 @@
+fn add(a, b) {
+    return a + b;
+}
+
+add(1); // error: add expects 2 arguments, but was called with 1

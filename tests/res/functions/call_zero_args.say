@@ -1,0 +1,5 @@
+fn greet() {
+    return "hello";
+}
+
+print(greet()); // expect: hello
