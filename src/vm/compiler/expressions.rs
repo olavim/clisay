@@ -132,8 +132,19 @@ impl<'a> Compiler<'a> {
                 _ => None,
             };
 
+            if self.class_frames.is_empty() {
+                if matches!(expr_type, Expr::Super) {
+                    compiler_error!(self, expr, "Cannot use 'super' outside of a class method");
+                }
+                compiler_error!(self, expr, "Cannot use 'this' outside of a class method");
+            }
+
             let class = if matches!(expr_type, Expr::Super) {
-                unsafe { &*self.current_class_frame().superclass.unwrap().class }
+                let frame = self.current_class_frame();
+                if frame.superclass.is_none() {
+                    compiler_error!(self, expr, "Cannot use 'super' outside of a child class method");
+                }
+                unsafe { &*frame.superclass.unwrap().class }
             } else {
                 &self.current_class_frame().class
             };
@@ -216,8 +227,12 @@ impl<'a> Compiler<'a> {
     fn call_expression(&mut self, expr: &ASTId<Expr>, args: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
             Expr::Super => {
-                let frame = self.class_frames.last().unwrap();
-                let superclass = frame.superclass.unwrap();
+                let Some(frame) = self.class_frames.last() else {
+                    compiler_error!(self, expr, "Cannot use 'super' outside of a class method");
+                };
+                let Some(superclass) = frame.superclass else {
+                    compiler_error!(self, expr, "Cannot use 'super' outside of a child class method");
+                };
                 let init_str = self.gc.intern("@init");
                 let member_id = unsafe { &*superclass.class }.resolve_id(init_str).unwrap();
 

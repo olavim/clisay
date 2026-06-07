@@ -1,0 +1,1 @@
+print(this); // error: Cannot use 'this' outside of a class method
