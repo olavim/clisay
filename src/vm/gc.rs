@@ -44,6 +44,8 @@ pub struct Gc {
     reachable_refs: Vec<Object>,
     pub bytes_allocated: usize,
     next_gc: usize,
+    /// When true, GC runs on every allocation.
+    pub stress: bool,
     pub preset_identifiers: PresetIdentifiers
 }
 
@@ -55,6 +57,7 @@ impl Gc {
             reachable_refs: Vec::new(),
             bytes_allocated: 0,
             next_gc: 1024 * 1024,
+            stress: false,
             preset_identifiers: PresetIdentifiers::default()
         };
 
@@ -138,6 +141,6 @@ impl Gc {
     }
 
     pub fn should_collect(&self) -> bool {
-        self.bytes_allocated > self.next_gc
+        self.stress || self.bytes_allocated > self.next_gc
     }
 }

@@ -1,0 +1,32 @@
+// Regression test for a use-after-free when building an array literal.
+//
+// The ARRAY opcode popped its elements off the value stack into a Vec and then
+// allocated the array object. Between the pop and the allocation the elements
+// were no longer on the stack, so they were not reachable from any GC root: a
+// collection triggered by the array allocation would free them, leaving the new
+// array holding dangling pointers.
+//
+// `gcStress(true)` forces collection on every allocation, so the array
+// allocation below deterministically collects while its elements are off the
+// stack. The three boxes are then rebuilt as `p1`/`p2`/`p3`, which reuse the
+// freed slots if the elements were wrongly collected — so a buggy build reads
+// back 44/55/66 (or crashes) instead of 11/22/33.
+
+gcStress(true);
+
+class Box {
+    v;
+    init(x) {
+        this.v = x;
+    }
+}
+
+say a = [Box(11), Box(22), Box(33)];
+
+say p1 = Box(44);
+say p2 = Box(55);
+say p3 = Box(66);
+
+print(a[0].v); // expect: 11
+print(a[1].v); // expect: 22
+print(a[2].v); // expect: 33

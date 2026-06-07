@@ -1,0 +1,31 @@
+// Regression test for a use-after-free in the GC's method-binding path.
+//
+// Reading a method off an instance creates a fresh closure, then allocates an
+// ObjBoundMethod that wraps it. The closure is not reachable from any root
+// between those two steps, so a collection triggered by the bound-method
+// allocation would free it and leave the bound method holding a dangling
+// pointer. The same pattern exists when constructing an instance (the init
+// closure is created, then the instance is allocated).
+//
+// Calling a method in a loop repeatedly binds-and-allocates while crossing the
+// GC threshold. If the closure were freed and its slot reused, the call would
+// crash or `n` would stop counting correctly.
+
+class Counter {
+    n;
+    init() {
+        this.n = 0;
+    }
+    fn inc() {
+        this.n = this.n + 1;
+    }
+}
+
+say c = Counter();
+say i = 0;
+while i < 100000 {
+    c.inc();
+    i = i + 1;
+}
+
+print(c.n); // expect: 100000

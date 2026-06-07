@@ -1,0 +1,6 @@
+say i = 0;
+say x = 0;
+while i < 1000000 {
+    x = x + i;
+    i = i + 1;
+}
