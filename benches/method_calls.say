@@ -1,0 +1,16 @@
+class Counter {
+    n;
+    init() {
+        this.n = 0;
+    }
+    fn inc() {
+        this.n = this.n + 1;
+    }
+}
+
+say c = Counter();
+say i = 0;
+while i < 1000000 {
+    c.inc();
+    i = i + 1;
+}

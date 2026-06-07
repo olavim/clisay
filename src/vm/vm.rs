@@ -177,6 +177,12 @@ impl Vm {
             Ok(())
         });
 
+        vm.define_native("gcStress", 1, |vm, _target, args| {
+            vm.gc.stress = args[0].as_bool();
+            vm.stack.push(Value::NULL);
+            Ok(())
+        });
+
         Ok(vm.interpret()?)
     }
 
@@ -319,7 +325,10 @@ impl Vm {
                 match method.tag() {
                     objects::TAG_FUNCTION => {
                         let closure = self.create_closure(method.as_function_ptr());
+                        // Put the closure on the stack since the below alloc may trigger gc.
+                        self.stack.push(Value::from(closure));
                         let bound_method = self.alloc(ObjBoundMethod::new(instance_ptr.into(), closure));
+                        self.stack.pop();
                         return Some(Value::from(bound_method));
                     },
                     objects::TAG_NATIVE_FUNCTION => {
@@ -338,7 +347,10 @@ impl Vm {
         match value.kind() {
             ValueKind::Object(ObjectKind::Function) => {
                 let closure = self.create_closure(value.as_object().as_function_ptr());
+                // Put the closure on the stack since the below alloc may trigger gc.
+                self.stack.push(Value::from(closure));
                 let method = self.alloc(ObjBoundMethod::new(instance_ref.into(), closure));
+                self.stack.pop();
                 Value::from(method)
             },
             _ => value
@@ -420,7 +432,10 @@ impl Vm {
                 check_arity!(self, arg_count, init_method.arity, init_method.name);
                 
                 let closure = self.create_closure(init_method_ref);
+                // Put the closure on the stack since the below alloc may trigger gc.
+                self.stack.push(Value::from(closure));
                 let instance = self.alloc(ObjInstance::new(class_ptr));
+                self.stack.pop();
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure.as_closure_ptr(), stack_start, init_method.ip_start);
                 Ok(())
@@ -666,8 +681,12 @@ impl Vm {
 
     fn op_array(&mut self) {
         let len = self.read_next() as usize;
-        let array = ObjArray::new(self.stack.pop_slice(len));
-        let array = self.alloc(array);
+        let values = unsafe {
+            let start = self.stack.top().sub(len);
+            std::slice::from_raw_parts(start, len).to_vec()
+        };
+        let array = self.alloc(ObjArray::new(values));
+        self.stack.truncate(len);
         self.stack.push(Value::from(array));
     }
 
