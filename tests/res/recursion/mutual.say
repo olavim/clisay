@@ -1,0 +1,19 @@
+fn isEven(n) {
+    if (n == 0) {
+        return true;
+    }
+    return isOdd(n - 1);
+}
+
+fn isOdd(n) {
+    if (n == 0) {
+        return false;
+    }
+    return isEven(n - 1);
+}
+
+print(isEven(0));  // expect: true
+print(isEven(4));  // expect: true
+print(isEven(7));  // expect: false
+print(isOdd(7));   // expect: true
+print(isOdd(10));  // expect: false

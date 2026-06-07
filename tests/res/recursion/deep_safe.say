@@ -1,0 +1,11 @@
+// Recurse to a depth well under MAX_FRAMES = 256, exercising frame
+// push/pop and return-value propagation across many stacked calls.
+fn sum(n) {
+    if (n == 0) {
+        return 0;
+    }
+    return n + sum(n - 1);
+}
+
+print(sum(100)); // expect: 5050
+print(sum(200)); // expect: 20100
