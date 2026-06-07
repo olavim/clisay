@@ -1,0 +1,7 @@
+class A {
+    init() {
+        return 1; // error: Cannot return a value from a class initializer
+    }
+}
+
+A();
