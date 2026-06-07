@@ -1,0 +1,7 @@
+// Whitespace and newlines between tokens are insensitive.
+print(   1   +   2   ); // expect: 3
+print(
+    10
+    +
+    20
+); // expect: 30

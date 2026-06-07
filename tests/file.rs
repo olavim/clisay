@@ -132,3 +132,8 @@ fn loops(resource: &str) -> Result<(), Failed> {
 fn compile_errors(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
+
+#[test_resources("tests/res/lexer")]
+fn lexer(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
