@@ -1,0 +1,4 @@
+// A full-line comment that the lexer must skip entirely.
+print(1); // expect: 1
+//comment-with-no-leading-space
+print(2); // expect: 2

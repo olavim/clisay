@@ -1,0 +1,6 @@
+print("hello world"); // expect: hello world
+
+say a = "foo";
+say b = "bar";
+print(a + b); // expect: foobar
+print("escaped quote: \"x\""); // expect: escaped quote: \"x\"
