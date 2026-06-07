@@ -1,5 +1,3 @@
-use anyhow::bail;
-
 use crate::compiler_error;
 use crate::parser::{ASTId, Expr, FnDecl, Literal, Operator, Stmt};
 use crate::vm::objects::ObjString;
@@ -47,7 +45,7 @@ impl<'a> Compiler<'a> {
 
     fn this(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         if self.class_frames.is_empty() {
-            bail!("Cannot use 'this' outside of a class method");
+            compiler_error!(self, expr, "Cannot use 'this' outside of a class method");
         }
 
         self.emit(opcode::GET_LOCAL, expr);
@@ -57,10 +55,10 @@ impl<'a> Compiler<'a> {
 
     fn super_(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         let Some(frame) = self.class_frames.last() else {
-            bail!("Cannot use 'super' outside of a class method");
+            compiler_error!(self, expr, "Cannot use 'super' outside of a class method");
         };
         if frame.superclass.is_none() {
-            bail!("Cannot use 'super' outside of a child class method");
+            compiler_error!(self, expr, "Cannot use 'super' outside of a child class method");
         }
 
         self.emit(opcode::GET_LOCAL, expr);

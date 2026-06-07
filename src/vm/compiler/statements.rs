@@ -1,5 +1,4 @@
-use anyhow::bail;
-
+use crate::compiler_error;
 use crate::parser::{ASTId, Expr, FieldInit, Stmt};
 use crate::vm::opcode;
 
@@ -25,7 +24,7 @@ impl<'a> Compiler<'a> {
 
                 if let FnKind::Initializer = self.fn_frames.last().unwrap().kind {
                     if expr.is_some() {
-                        bail!("Cannot return a value from a class initializer");
+                        compiler_error!(self, stmt_id, "Cannot return a value from a class initializer");
                     }
 
                     self.emit(opcode::GET_LOCAL, stmt_id);
@@ -94,7 +93,7 @@ impl<'a> Compiler<'a> {
                 if let Some(param) = param {
                     let Expr::Identifier(name) = self.ast.get(param) else { unreachable!() };
                     let name = self.gc.intern(name);
-                    self.declare_local(name, false)?;
+                    self.declare_local(name, false, param)?;
                 }
 
                 self.statement_body(body)?;
@@ -110,7 +109,7 @@ impl<'a> Compiler<'a> {
             },
             Stmt::Fn(decl) => {
                 let name = self.gc.intern(&decl.name);
-                self.declare_local(name, false)?;
+                self.declare_local(name, false, stmt_id)?;
                 let const_idx = self.function(stmt_id, decl, FnKind::Function)?;
                 self.emit(opcode::PUSH_CLOSURE, stmt_id);
                 self.emit(const_idx, stmt_id);
@@ -118,7 +117,7 @@ impl<'a> Compiler<'a> {
             Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
             Stmt::Say(FieldInit { name, value }) => {
                 let name = self.gc.intern(name);
-                let local = self.declare_local(name, true)?;
+                let local = self.declare_local(name, true, stmt_id)?;
 
                 if let Some(expr) = value {
                     self.expression(expr)?;

@@ -34,7 +34,7 @@ fn find_at<'a>(regex: &str, input: &'a str, pos: usize) -> Option<usize> {
     };
 }
 
-fn next_token(input: &str, input_index: usize) -> Result<Token, anyhow::Error> {
+fn next_token(input: &str, input_index: usize, pos: &SourcePosition) -> Result<Token, anyhow::Error> {
     if input_index >= input.len() {
         return Ok(Token::new(TokenType::EOF, ""));
     }
@@ -70,7 +70,7 @@ fn next_token(input: &str, input_index: usize) -> Result<Token, anyhow::Error> {
         return Ok(token);
     }
 
-    bail!("Unexpected character `{}` at pos {}", substr, input_index);
+    bail!("Unexpected character `{}`\n\tat {}", substr, pos);
 }
 
 pub fn tokenize(file_name: String, input: String) -> Result<Vec<Token>, anyhow::Error> {
@@ -79,8 +79,9 @@ pub fn tokenize(file_name: String, input: String) -> Result<Vec<Token>, anyhow::
     let mut line = 1;
 
     while tokens.last().map_or(true, |t| t.kind != TokenType::EOF) {
-        let mut token = next_token(&input, input_index)?;
-        token.pos = SourcePosition { file: file_name.clone(), line };
+        let pos = SourcePosition { file: file_name.clone(), line };
+        let mut token = next_token(&input, input_index, &pos)?;
+        token.pos = pos;
         input_index += token.lexeme.len();
 
         if token.kind == TokenType::Newline {

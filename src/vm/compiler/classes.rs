@@ -10,7 +10,7 @@ use super::{ClassCompilation, ClassFrame, Compiler, FnKind};
 impl<'a> Compiler<'a> {
     pub (super) fn class_declaration(&mut self, stmt: &ASTId<Stmt>, decl: &Box<ClassDecl>) -> Result<(), anyhow::Error> {
         let name = self.gc.intern(&decl.name);
-        self.declare_local(name, false)?;
+        self.declare_local(name, false, stmt)?;
         self.enter_scope();
 
         let superclass = match &decl.superclass {

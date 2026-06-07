@@ -55,11 +55,11 @@ impl<'a> Compiler<'a> {
         let arity = decl.params.len() as u8;
 
         for param in &decl.params {
-            let Expr::Identifier(param) = self.ast.get(param) else {
+            let Expr::Identifier(param_name) = self.ast.get(param) else {
                 compiler_error!(self, node_id, "Invalid parameter: Expected identifier");
             };
-            let param = self.gc.intern(param);
-            self.declare_local(param, true)?;
+            let param_name = self.gc.intern(param_name);
+            self.declare_local(param_name, true, param)?;
         }
 
         self.expression(&decl.body)?;

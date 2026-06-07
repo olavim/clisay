@@ -162,13 +162,13 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn declare_local(&mut self, name: *mut ObjString, is_mutable: bool) -> Result<u8, anyhow::Error> {
+    fn declare_local<T: 'static>(&mut self, name: *mut ObjString, is_mutable: bool, node_id: &ASTId<T>) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
         }
 
         if self.locals.iter().rev().any(|local| local.depth == self.scope_depth && local.name == name) {
-            bail!("Variable '{}' already declared in this scope", unsafe { &(*name).value });
+            compiler_error!(self, node_id, "Variable '{}' already declared in this scope", unsafe { &(*name).value });
         }
 
         self.chunk.add_constant(Value::from(name))?;
