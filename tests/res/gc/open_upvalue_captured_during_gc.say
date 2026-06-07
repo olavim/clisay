@@ -1,0 +1,39 @@
+// Regression test for a use-after-free in the GC.
+
+fn makeAdder(a, b, c, d, e) {
+    say sum = 0;
+    fn addA() {
+        sum = sum + a;
+        fn addB() {
+            sum = sum + b;
+            fn addC() {
+                sum = sum + c;
+                fn addD() {
+                    sum = sum + d;
+                    fn addE() {
+                        sum = sum + e;
+                        return sum;
+                    }
+                    return addE;
+                }
+                return addD;
+            }
+            return addC;
+        }
+        return addB;
+    }
+    return addA;
+}
+
+say ok = true;
+say i = 0;
+while i < 100000 {
+    say total = makeAdder(1, 2, 3, 4, 5)()()()()();
+    if (total != 15) {
+        ok = false;
+    }
+    i = i + 1;
+}
+
+print(ok); // expect: true
+print(i); // expect: 100000
