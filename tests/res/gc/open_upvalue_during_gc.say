@@ -1,0 +1,14 @@
+// Exercise the OPEN upvalue path: the inner closure captures `x` while the
+// outer frame is still live, and forces collection from inside the closure.
+// At that moment `upvalue.location` still points into the live stack.
+
+fn outer() {
+    say x = "fo" + "o";
+    fn inner() {
+        gcCollect();
+        print(x); // expect: foo
+    }
+    inner();
+}
+
+outer();

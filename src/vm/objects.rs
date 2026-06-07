@@ -539,7 +539,7 @@ impl GcTraceable for ObjInstance {
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<ObjClass>() + self.values.capacity() * mem::size_of::<(MemberId, Value)>()
+        mem::size_of::<ObjInstance>() + self.values.capacity() * mem::size_of::<(MemberId, Value)>()
     }
 }
 

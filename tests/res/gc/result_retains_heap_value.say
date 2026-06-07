@@ -1,0 +1,16 @@
+// An Ok result wraps a runtime-built (non-interned) heap string. The result
+// object itself is kept alive by the local `r`, but the wrapped string is
+// reachable only through ObjResult::mark walking `self.value`.
+//
+// After collection we build fresh strings so that, if the inner value were
+// wrongly freed, its slot would be reused and `r.unwrap()` would read back
+// garbage instead of "foo".
+
+say r = Ok("fo" + "o");
+gcCollect();
+
+say pad1 = "aa" + "bb";
+say pad2 = "cc" + "dd";
+say pad3 = "ee" + "ff";
+
+print(r.unwrap()); // expect: foo

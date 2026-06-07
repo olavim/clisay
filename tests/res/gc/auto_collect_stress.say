@@ -1,0 +1,17 @@
+// Allocate many short-lived arrays in a loop WITHOUT ever calling gcCollect().
+// Each iteration builds a fresh 8-element array (~96 bytes) that becomes garbage
+// at the end of the block. Over 100000 iterations that is ~9 MiB of cumulative
+// allocation, which repeatedly crosses the gc threshold.
+
+say i = 0;
+while i < 100000 {
+    say garbage = [i, i, i, i, i, i, i, i];
+    i = i + 1;
+}
+
+// The counter proves the program ran to completion through the implicit GCs.
+print(i); // expect: 100000
+
+// If automatic collection had never fired, ~9 MiB would still be live here. The
+// fact that the heap stayed well under 2 MiB proves auto-GC ran at least once.
+print(gcHeapSize() < 2097152); // expect: true

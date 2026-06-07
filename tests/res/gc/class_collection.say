@@ -1,0 +1,25 @@
+// A class declared inside a block becomes unreachable once the block exits.
+// After collection the heap must return to the pre-block baseline, proving
+// ObjClass (and its method/field graph) is actually freed.
+
+say bytesStart = gcHeapSize();
+
+{
+    class Local {
+        a;
+        b;
+        init() {
+            this.a = "a";
+            this.b = "b";
+        }
+        fn first() {
+            return this.a;
+        }
+        fn second() {
+            return this.b;
+        }
+    }
+}
+
+gcCollect();
+print(gcHeapSize() - bytesStart); // expect: 0

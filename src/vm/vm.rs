@@ -232,10 +232,7 @@ impl Vm {
             value.mark(&mut self.gc);
         }
 
-        for &upvalue in &self.open_upvalues {
-            self.gc.mark_object(upvalue);
-        }
-
+        // Open upvalues are always on the stack, so they don't need separate marking
         for value in self.stack.iter() {
             value.mark(&mut self.gc);
         }

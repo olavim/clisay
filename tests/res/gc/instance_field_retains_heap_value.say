@@ -1,0 +1,23 @@
+// An instance field holds a runtime-built (non-interned) heap string. The
+// instance itself is kept alive by the local `b`, but the field's string is
+// reachable only through ObjInstance::mark walking its field values.
+//
+// After collection we build fresh strings so that, if the field value were
+// wrongly freed, its slot would be reused and `b.v` would read back garbage
+// instead of "foo".
+
+class Box {
+    v;
+    init(v) {
+        this.v = v;
+    }
+}
+
+say b = Box("fo" + "o");
+gcCollect();
+
+say pad1 = "aa" + "bb";
+say pad2 = "cc" + "dd";
+say pad3 = "ee" + "ff";
+
+print(b.v); // expect: foo
