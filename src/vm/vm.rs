@@ -839,8 +839,13 @@ impl Vm {
     fn op_add(&mut self) -> Result<(), anyhow::Error> {
         let b = self.stack.pop();
         let a = self.stack.pop();
+
+        if a.is_number() && b.is_number() {
+            self.stack.push(Value::from(a.as_number() + b.as_number()));
+            return Ok(());
+        }
+
         let result = match (a.kind(), b.kind()) {
-            (ValueKind::Number, ValueKind::Number) => Value::from(a.as_number() + b.as_number()),
             (ValueKind::Object(ObjectKind::String), ValueKind::Object(ObjectKind::String)) => {
                 let a = a.as_object();
                 let b = b.as_object();
@@ -851,6 +856,7 @@ impl Vm {
                 return self.error(format!("Operator '+' cannot be applied to operands {} and {}", a, b))
             }
         };
+
         self.stack.push(result);
         Ok(())
     }
