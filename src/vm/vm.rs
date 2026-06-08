@@ -569,68 +569,167 @@ impl Vm {
     }
 
     fn interpret(mut self) -> Result<Vec<String>, anyhow::Error> {
+        let code_base = self.chunk.code.as_ptr();
+        let mut ip = self.ip;
+
+        macro_rules! read_byte {
+            () => {{ let b = unsafe { *ip }; ip = unsafe { ip.add(1) }; b }}
+        }
+        macro_rules! read_short {
+            () => {{ let lo = read_byte!(); let hi = read_byte!(); as_short!(lo, hi) }}
+        }
+        macro_rules! peek_short {
+            () => {{ let lo = unsafe { *ip }; let hi = unsafe { *ip.add(1) }; as_short!(lo, hi) }}
+        }
+
+        // Run a handler that relies on `self.ip` (operand reads, jumps, errors,
+        // GC source positions): publish the local cursor, run, then reload it.
+        macro_rules! delegate {
+            ($call:expr) => {{ self.ip = ip; $call; ip = self.ip; }}
+        }
+
+        // Numeric binary op with the slow path (strings / type error) delegated.
+        macro_rules! num_binop {
+            ($op:tt, $slow:ident) => {{
+                let b = self.stack.peek(0);
+                let a = self.stack.peek(1);
+                if a.is_number() && b.is_number() {
+                    self.stack.truncate(2);
+                    self.stack.push(Value::from(a.as_number() $op b.as_number()));
+                } else {
+                    delegate!(self.$slow()?);
+                }
+            }}
+        }
+
+        // Fused numeric compare-and-branch; branches when `cmp(a, b)` holds.
+        macro_rules! cmp_jump {
+            ($op:tt, $token:literal) => {{
+                let offset = read_short!() as usize;
+                let b = self.stack.pop();
+                let a = self.stack.pop();
+                if !a.is_number() || !b.is_number() {
+                    self.ip = ip;
+                    self.error(format!("Operator '{}' cannot be applied to operands {} and {}", $token, a, b))?;
+                } else if a.as_number() $op b.as_number() {
+                    ip = unsafe { code_base.add(offset) };
+                }
+            }}
+        }
+
         loop {
-            let op = self.read_next();
+            let op = read_byte!();
             match op {
-                opcode::CALL => self.op_call()?,
-                opcode::JUMP => self.op_jump(),
-                opcode::JUMP_IF_FALSE => self.op_jump_if_false(),
-                opcode::JUMP_IF_GE => self.jump_if_number(|a, b| a >= b, "<")?,
-                opcode::JUMP_IF_GT => self.jump_if_number(|a, b| a > b, "<=")?,
-                opcode::JUMP_IF_LE => self.jump_if_number(|a, b| a <= b, ">")?,
-                opcode::JUMP_IF_LT => self.jump_if_number(|a, b| a < b, ">=")?,
-                opcode::JUMP_IF_EQ => self.jump_if_eq(true),
-                opcode::JUMP_IF_NEQ => self.jump_if_eq(false),
-                opcode::CLOSE_UPVALUE => self.op_close_upvalue(),
-                opcode::ARRAY => self.op_array(),
+                // ---- inlined hot ops (operate on the register-resident `ip`) ----
+                opcode::GET_LOCAL => {
+                    let idx = read_byte!() as usize;
+                    let value = unsafe { *self.frames.top.stack_start.add(idx) };
+                    self.stack.push(value);
+                },
+                opcode::SET_LOCAL => {
+                    let idx = read_byte!() as usize;
+                    unsafe { *self.frames.top.stack_start.add(idx) = self.stack.peek(0) };
+                },
+                opcode::SET_LOCAL_POP => {
+                    let idx = read_byte!() as usize;
+                    let value = self.stack.pop();
+                    unsafe { *self.frames.top.stack_start.add(idx) = value };
+                },
+                opcode::GET_UPVALUE => {
+                    let idx = read_byte!() as usize;
+                    let upvalue = self.get_upvalue(idx);
+                    self.stack.push(unsafe { *(*upvalue).location });
+                },
+                opcode::SET_UPVALUE => {
+                    let idx = read_byte!() as usize;
+                    let upvalue = self.get_upvalue(idx);
+                    unsafe { *(*upvalue).location = self.stack.peek(0) };
+                },
+                opcode::SET_UPVALUE_POP => {
+                    let idx = read_byte!() as usize;
+                    let upvalue = self.get_upvalue(idx);
+                    let value = self.stack.pop();
+                    unsafe { *(*upvalue).location = value };
+                },
+                opcode::PUSH_CONSTANT => {
+                    let idx = read_byte!() as usize;
+                    self.stack.push(self.chunk.constants[idx]);
+                },
+                opcode::PUSH_NULL => self.stack.push(Value::NULL),
+                opcode::PUSH_TRUE => self.stack.push(Value::TRUE),
+                opcode::PUSH_FALSE => self.stack.push(Value::FALSE),
+                opcode::POP => self.stack.truncate(1),
+                opcode::JUMP => {
+                    let offset = peek_short!() as usize;
+                    ip = unsafe { code_base.add(offset) };
+                },
+                opcode::JUMP_IF_FALSE => {
+                    let offset = read_short!() as usize;
+                    let value = self.stack.pop();
+                    if value.is_bool() && !value.as_bool() {
+                        ip = unsafe { code_base.add(offset) };
+                    }
+                },
+                opcode::JUMP_IF_GE => cmp_jump!(>=, "<"),
+                opcode::JUMP_IF_GT => cmp_jump!(>, "<="),
+                opcode::JUMP_IF_LE => cmp_jump!(<=, ">"),
+                opcode::JUMP_IF_LT => cmp_jump!(<, ">="),
+                opcode::JUMP_IF_EQ => {
+                    let offset = read_short!() as usize;
+                    let b = self.stack.pop();
+                    let a = self.stack.pop();
+                    if a.value_eq(b) { ip = unsafe { code_base.add(offset) }; }
+                },
+                opcode::JUMP_IF_NEQ => {
+                    let offset = read_short!() as usize;
+                    let b = self.stack.pop();
+                    let a = self.stack.pop();
+                    if !a.value_eq(b) { ip = unsafe { code_base.add(offset) }; }
+                },
+                opcode::ADD => num_binop!(+, op_add),
+                opcode::SUBTRACT => num_binop!(-, op_subtract),
+                opcode::MULTIPLY => num_binop!(*, op_multiply),
+                opcode::DIVIDE => num_binop!(/, op_divide),
+
+                // ---- control flow / cold ops: sync, delegate, reload ----
+                opcode::CALL => delegate!(self.op_call()?),
                 opcode::RETURN => {
+                    self.ip = ip;
                     if !self.op_return() {
                         return Ok(self.out);
                     }
+                    ip = self.ip;
                 },
-                opcode::THROW => self.op_throw()?,
-                opcode::PUSH_TRY => self.op_push_try(),
+                opcode::THROW => delegate!(self.op_throw()?),
+                opcode::PUSH_TRY => delegate!(self.op_push_try()),
                 opcode::POP_TRY => self.op_pop_try(),
-                opcode::POP => self.op_pop(),
-                opcode::PUSH_CONSTANT => self.op_push_constant(),
-                opcode::PUSH_NULL => self.op_push_null(),
-                opcode::PUSH_TRUE => self.op_push_true(),
-                opcode::PUSH_FALSE => self.op_push_false(),
-                opcode::PUSH_CLOSURE => self.op_push_closure()?,
-                opcode::PUSH_CLASS => self.op_push_class(),
-                opcode::GET_GLOBAL => self.op_get_global()?,
+                opcode::CLOSE_UPVALUE => delegate!(self.op_close_upvalue()),
+                opcode::ARRAY => delegate!(self.op_array()),
+                opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
+                opcode::PUSH_CLASS => delegate!(self.op_push_class()),
+                opcode::GET_GLOBAL => delegate!(self.op_get_global()?),
                 opcode::SET_GLOBAL => unsafe { std::hint::unreachable_unchecked() },
-                opcode::GET_LOCAL => self.op_get_local(),
-                opcode::SET_LOCAL => self.op_set_local(),
-                opcode::GET_UPVALUE => self.op_get_upvalue(),
-                opcode::SET_UPVALUE => self.op_set_upvalue(),
-                opcode::GET_INDEX => self.op_get_index()?,
-                opcode::SET_INDEX => self.op_set_index()?,
-                opcode::GET_PROPERTY_ID => self.op_get_property_by_id()?,
-                opcode::SET_PROPERTY_ID => self.op_set_property_by_id()?,
-                opcode::ADD => self.op_add()?,
-                opcode::SUBTRACT => self.op_subtract()?,
-                opcode::MULTIPLY => self.op_multiply()?,
-                opcode::DIVIDE => self.op_divide()?,
-                opcode::NEGATE => self.op_negate()?,
-                opcode::LEFT_SHIFT => self.op_left_shift()?,
-                opcode::RIGHT_SHIFT => self.op_right_shift()?,
-                opcode::BIT_AND => self.op_bit_and()?,
-                opcode::BIT_OR => self.op_bit_or()?,
-                opcode::BIT_XOR => self.op_bit_xor()?,
-                opcode::BIT_NOT => self.op_bit_not()?,
-                opcode::EQUAL => self.op_equal()?,
-                opcode::NOT_EQUAL => self.op_not_equal()?,
-                opcode::LESS_THAN => self.op_less_than()?,
-                opcode::LESS_THAN_EQUAL => self.op_less_than_equal()?,
-                opcode::GREATER_THAN => self.op_greater_than()?,
-                opcode::GREATER_THAN_EQUAL => self.op_greater_than_equal()?,
-                opcode::NOT => self.op_not()?,
-                opcode::AND => self.op_and()?,
-                opcode::OR => self.op_or()?,
-                opcode::SET_LOCAL_POP => self.op_set_local_pop(),
-                opcode::SET_UPVALUE_POP => self.op_set_upvalue_pop(),
-                opcode::SET_PROPERTY_ID_POP => self.op_set_property_by_id_pop()?,
+                opcode::GET_INDEX => delegate!(self.op_get_index()?),
+                opcode::SET_INDEX => delegate!(self.op_set_index()?),
+                opcode::GET_PROPERTY_ID => delegate!(self.op_get_property_by_id()?),
+                opcode::SET_PROPERTY_ID => delegate!(self.op_set_property_by_id()?),
+                opcode::SET_PROPERTY_ID_POP => delegate!(self.op_set_property_by_id_pop()?),
+                opcode::NEGATE => delegate!(self.op_negate()?),
+                opcode::LEFT_SHIFT => delegate!(self.op_left_shift()?),
+                opcode::RIGHT_SHIFT => delegate!(self.op_right_shift()?),
+                opcode::BIT_AND => delegate!(self.op_bit_and()?),
+                opcode::BIT_OR => delegate!(self.op_bit_or()?),
+                opcode::BIT_XOR => delegate!(self.op_bit_xor()?),
+                opcode::BIT_NOT => delegate!(self.op_bit_not()?),
+                opcode::EQUAL => delegate!(self.op_equal()?),
+                opcode::NOT_EQUAL => delegate!(self.op_not_equal()?),
+                opcode::LESS_THAN => delegate!(self.op_less_than()?),
+                opcode::LESS_THAN_EQUAL => delegate!(self.op_less_than_equal()?),
+                opcode::GREATER_THAN => delegate!(self.op_greater_than()?),
+                opcode::GREATER_THAN_EQUAL => delegate!(self.op_greater_than_equal()?),
+                opcode::NOT => delegate!(self.op_not()?),
+                opcode::AND => delegate!(self.op_and()?),
+                opcode::OR => delegate!(self.op_or()?),
                 _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }
@@ -680,10 +779,6 @@ impl Vm {
         self.try_frames.pop();
     }
 
-    fn op_pop(&mut self) {
-        self.stack.truncate(1);
-    }
-
     fn op_close_upvalue(&mut self) {
         let location = self.read_next() as usize;
         let p = unsafe { self.frames.top.stack_start.add(location) };
@@ -724,64 +819,6 @@ impl Vm {
 
         self.call(arg_count, value)
     }
-    
-    fn op_jump(&mut self) {
-        let offset = as_short!(self.read_next(), self.read_next()) as usize;
-        self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
-    }
-
-    fn op_jump_if_false(&mut self) {
-        let offset = as_short!(self.read_next(), self.read_next()) as usize;
-        let value = self.stack.pop();
-        if value.is_bool() && !value.as_bool() {
-            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
-        }
-    }
-
-    /// Fused comparison-and-branch for numeric operands. `cmp` is the *negated*
-    /// source condition (the branch is taken when the original comparison is
-    /// false), and `token` is the source operator for the type-error message.
-    fn jump_if_number<F: Fn(f64, f64) -> bool>(&mut self, cmp: F, token: &str) -> Result<(), anyhow::Error> {
-        let offset = as_short!(self.read_next(), self.read_next()) as usize;
-        let b = self.stack.pop();
-        let a = self.stack.pop();
-        if !a.is_number() || !b.is_number() {
-            return self.error(format!("Operator '{}' cannot be applied to operands {} and {}", token, a, b));
-        }
-        if cmp(a.as_number(), b.as_number()) {
-            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
-        }
-        Ok(())
-    }
-
-    /// Fused equality-and-branch. Branches when `a.value_eq(b) == take_on_eq`,
-    /// i.e. the negation of the source `==`/`!=` condition.
-    fn jump_if_eq(&mut self, take_on_eq: bool) {
-        let offset = as_short!(self.read_next(), self.read_next()) as usize;
-        let b = self.stack.pop();
-        let a = self.stack.pop();
-        if a.value_eq(b) == take_on_eq {
-            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
-        }
-    }
-
-    fn op_push_constant(&mut self) {
-        let const_idx = self.read_next() as usize;
-        let value = self.chunk.constants[const_idx];
-        self.stack.push(value);
-    }
-
-    fn op_push_null(&mut self) {
-        self.stack.push(Value::NULL)
-    }
-
-    fn op_push_true(&mut self) {
-        self.stack.push(Value::TRUE)
-    }
-
-    fn op_push_false(&mut self) {
-        self.stack.push(Value::FALSE)
-    }
 
     fn op_push_closure(&mut self) -> Result<(), anyhow::Error> {
         let const_idx = self.read_next() as usize;
@@ -807,44 +844,6 @@ impl Vm {
         };
         self.stack.push(value);
         Ok(())
-    }
-
-    fn op_get_local(&mut self) {
-        let idx = self.read_next() as usize;
-        let value = unsafe { *self.frames.top.stack_start.add(idx) };
-        self.stack.push(value);
-    }
-
-    fn op_set_local(&mut self) {
-        let idx = self.read_next() as usize;
-        unsafe {
-            *self.frames.top.stack_start.add(idx) = self.stack.peek(0);
-        };
-    }
-
-    fn op_get_upvalue(&mut self) {
-        let idx = self.read_next() as usize;
-        let upvalue = self.get_upvalue(idx);
-        self.stack.push(unsafe { *(*upvalue).location });
-    }
-
-    fn op_set_upvalue(&mut self) {
-        let idx = self.read_next() as usize;
-        let upvalue = self.get_upvalue(idx);
-        unsafe { *(*upvalue).location = self.stack.peek(0) };
-    }
-
-    fn op_set_local_pop(&mut self) {
-        let idx = self.read_next() as usize;
-        let value = self.stack.pop();
-        unsafe { *self.frames.top.stack_start.add(idx) = value };
-    }
-
-    fn op_set_upvalue_pop(&mut self) {
-        let idx = self.read_next() as usize;
-        let upvalue = self.get_upvalue(idx);
-        let value = self.stack.pop();
-        unsafe { *(*upvalue).location = value };
     }
 
     fn op_set_property_by_id_pop(&mut self) -> Result<(), anyhow::Error> {
