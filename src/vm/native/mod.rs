@@ -4,7 +4,6 @@ use super::gc::Gc;
 use super::objects::{ClassMember, ObjClass, ObjNativeFn, ObjString};
 
 pub mod array;
-pub mod result;
 
 pub trait NativeType {
     fn get_name(&self) -> &'static str;

@@ -113,11 +113,6 @@ fn gc(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
-#[test_resources("tests/res/result")]
-fn result(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
 #[test_resources("tests/res/numbers")]
 fn numbers(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
