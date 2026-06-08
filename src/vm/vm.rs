@@ -622,6 +622,9 @@ impl Vm {
                 opcode::NOT => self.op_not()?,
                 opcode::AND => self.op_and()?,
                 opcode::OR => self.op_or()?,
+                opcode::SET_LOCAL_POP => self.op_set_local_pop(),
+                opcode::SET_UPVALUE_POP => self.op_set_upvalue_pop(),
+                opcode::SET_PROPERTY_ID_POP => self.op_set_property_by_id_pop()?,
                 _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }
@@ -782,6 +785,32 @@ impl Vm {
         let idx = self.read_next() as usize;
         let upvalue = self.get_upvalue(idx);
         unsafe { *(*upvalue).location = self.stack.peek(0) };
+    }
+
+    fn op_set_local_pop(&mut self) {
+        let idx = self.read_next() as usize;
+        let value = self.stack.pop();
+        unsafe { *self.frames.top.stack_start.add(idx) = value };
+    }
+
+    fn op_set_upvalue_pop(&mut self) {
+        let idx = self.read_next() as usize;
+        let upvalue = self.get_upvalue(idx);
+        let value = self.stack.pop();
+        unsafe { *(*upvalue).location = value };
+    }
+
+    fn op_set_property_by_id_pop(&mut self) -> Result<(), anyhow::Error> {
+        let member_id = self.read_next();
+        let target = self.stack.pop();
+        if !matches!(target.kind(), ValueKind::Object(ObjectKind::Instance)) {
+            return self.error(format!("Invalid property access: {}", target.fmt()));
+        }
+
+        let value = self.stack.pop();
+        let instance = unsafe { &mut *target.as_object().as_instance_ptr() };
+        instance.set(member_id, value);
+        Ok(())
     }
 
     fn op_get_index(&mut self) -> Result<(), anyhow::Error> {

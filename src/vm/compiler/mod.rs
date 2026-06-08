@@ -76,7 +76,8 @@ pub struct Compiler<'a> {
     fn_frames: Vec<FnFrame>,
     try_frames: Vec<TryFrame>,
     class_frames: Vec<ClassFrame>,
-    classes: FnvHashMap<*mut ObjString, ClassCompilation>
+    classes: FnvHashMap<*mut ObjString, ClassCompilation>,
+    setter_pos: Option<usize>
 }
 
 #[macro_export]
@@ -95,7 +96,8 @@ impl<'a> Compiler<'a> {
             fn_frames: Vec::new(),
             try_frames: Vec::new(),
             class_frames: Vec::new(),
-            classes: FnvHashMap::default()
+            classes: FnvHashMap::default(),
+            setter_pos: None
         };
 
         let stmt_id = compiler.ast.get_root();

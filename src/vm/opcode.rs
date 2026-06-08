@@ -47,12 +47,15 @@ ops! {
     SET_GLOBAL,
     GET_LOCAL,
     SET_LOCAL,
+    SET_LOCAL_POP,
     GET_UPVALUE,
     SET_UPVALUE,
+    SET_UPVALUE_POP,
     GET_INDEX,
     SET_INDEX,
     GET_PROPERTY_ID,
     SET_PROPERTY_ID,
+    SET_PROPERTY_ID_POP,
 
     // Arithmetic
     ADD,
