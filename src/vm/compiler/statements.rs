@@ -138,20 +138,7 @@ impl<'a> Compiler<'a> {
                 self.emit(slot, stmt_id);
             },
             Stmt::Expression(expr) => {
-                self.setter_pos = None;
-                self.expression(expr)?;
-
-                match self.setter_pos.take() {
-                    Some(pos) if pos == self.chunk.code.len() - 2 => {
-                        self.chunk.code[pos] = match self.chunk.code[pos] {
-                            opcode::SET_LOCAL => opcode::SET_LOCAL_POP,
-                            opcode::SET_UPVALUE => opcode::SET_UPVALUE_POP,
-                            opcode::SET_PROPERTY_ID => opcode::SET_PROPERTY_ID_POP,
-                            _ => unreachable!()
-                        };
-                    },
-                    _ => self.emit(opcode::POP, stmt_id)
-                }
+                self.expression_for_effect(expr)?;
             },
             Stmt::While(cond, body) => {
                 let pos = self.chunk.code.len() as u16;

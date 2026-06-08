@@ -1,0 +1,27 @@
+say a = 0;
+if (true) { a = 1; }
+print(a); // expect: 1
+
+say b = 0;
+if (false) { b = 1; }
+print(b); // expect: 0
+
+say c = 0;
+if (false) { c = 1; } else { c = 2; }
+print(c); // expect: 2
+
+say d = 0;
+{ d = 5; }
+print(d); // expect: 5
+
+say e = if (true) { 10 } else { 20 };
+print(e); // expect: 10
+
+say f = if (false) { 10 } else { 20 };
+print(f); // expect: 20
+
+say g = if (false) { 1 };
+print(g); // expect: null
+
+say h = { 3 + 4 };
+print(h); // expect: 7

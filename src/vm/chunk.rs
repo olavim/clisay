@@ -88,6 +88,7 @@ impl GcTraceable for BytecodeChunk {
                 opcode::JUMP_IF_EQ => push_fmt!("JUMP_EQ <{}>", short!()),
                 opcode::JUMP_IF_NEQ => push_fmt!("JUMP_NEQ <{}>", short!()),
                 opcode::CLOSE_UPVALUE => push_fmt!("CLOSE_UPVALUE <{}>", byte!()),
+                opcode::END_SCOPE => push_fmt!("END_SCOPE <{}>", byte!()),
                 opcode::ARRAY => push_fmt!("ARRAY <{}>", byte!()),
                 opcode::PUSH_NULL => push_fmt!("NULL"),
                 opcode::PUSH_TRUE => push_fmt!("TRUE"),

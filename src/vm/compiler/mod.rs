@@ -194,6 +194,21 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    fn exit_scope_with_value<T: 'static>(&mut self, node_id: &ASTId<T>) {
+        self.scope_depth -= 1;
+        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
+        let mut base_slot: Option<u8> = None;
+        while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
+            base_slot = Some((self.locals.len() - 1) as u8 - local_offset);
+            self.locals.pop();
+        }
+
+        if let Some(base_slot) = base_slot {
+            self.emit(opcode::END_SCOPE, node_id);
+            self.emit(base_slot, node_id);
+        }
+    }
+
     fn declare_local<T: 'static>(&mut self, name: *mut ObjString, is_mutable: bool, node_id: &ASTId<T>) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
