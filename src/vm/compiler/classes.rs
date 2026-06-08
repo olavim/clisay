@@ -96,7 +96,8 @@ impl<'a> Compiler<'a> {
             frame.class.methods.insert(id, function_ptr.into());
         }
 
-        let class = self.class_frames.pop().unwrap().class;
+        let mut class = self.class_frames.pop().unwrap().class;
+        class.member_count = next_member_id;
         self.exit_scope(stmt);
 
         let class = self.gc.alloc(class);

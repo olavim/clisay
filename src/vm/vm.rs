@@ -23,6 +23,14 @@ use super::compiler::Compiler;
 
 const MAX_STACK: usize = 16384;
 const MAX_FRAMES: usize = 256;
+const INDEX_CACHE_SIZE: usize = 2048;
+
+#[derive(Clone, Copy)]
+struct IndexCache {
+    site: usize,
+    class: *mut ObjClass,
+    member: ClassMember
+}
 
 struct NativeTypes {
     array: *mut ObjClass
@@ -66,6 +74,7 @@ pub struct Vm {
     try_frames: Vec<TryFrame>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
+    index_cache: Box<[IndexCache]>,
     out: Vec<String>
 }
 
@@ -119,6 +128,7 @@ impl Vm {
             try_frames: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
+            index_cache: vec![IndexCache { site: 0, class: std::ptr::null_mut(), member: ClassMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
             out: Vec::new()
         };
 
@@ -308,11 +318,24 @@ impl Vm {
         self.gc.alloc_closure(name, arity, ip_start, &upvalues).into()
     }
 
+    #[inline]
+    fn resolve_cached_class_property(&mut self, class_ptr: *mut ObjClass, prop: *mut ObjString) -> Option<ClassMember> {
+        let site = self.ip as usize;
+        let slot = (site >> 4) & (INDEX_CACHE_SIZE - 1);
+        let entry = unsafe { self.index_cache.get_unchecked_mut(slot) };
+        if entry.site == site && entry.class == class_ptr {
+            return Some(entry.member);
+        }
+        let member = unsafe { &*class_ptr }.resolve(prop)?;
+        *entry = IndexCache { site, class: class_ptr, member };
+        Some(member)
+    }
+
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
         let instance = unsafe { &*instance_ptr };
         let class = unsafe { &*instance.class };
 
-        match class.resolve(prop) {
+        match self.resolve_cached_class_property(instance.class, prop) {
             Some(ClassMember::Field(id)) => Some(unsafe { (*instance_ptr).get(id) }),
             Some(ClassMember::Method(id)) => {
                 let method = class.get_method(id);
@@ -523,7 +546,7 @@ impl Vm {
             if let Some(member) = member {
                 if let ClassMember::Field(id) = member {
                     let value = self.stack.peek(0);
-                    instance.values.insert(id, value);
+                    instance.set(id, value);
                     return Ok(());
                 }
     
