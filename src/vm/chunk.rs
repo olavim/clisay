@@ -121,8 +121,10 @@ impl GcTraceable for BytecodeChunk {
                 opcode::OR => push_fmt!("OR"),
                 opcode::GET_LOCAL => push_fmt!("GET_LOCAL <{}>", byte!()),
                 opcode::SET_LOCAL => push_fmt!("SET_LOCAL <{}>", byte!()),
+                opcode::SET_LOCAL_POP => push_fmt!("SET_LOCAL_POP <{}>", byte!()),
                 opcode::GET_UPVALUE => push_fmt!("GET_UPVAL <{}>", byte!()),
                 opcode::SET_UPVALUE => push_fmt!("SET_UPVAL <{}>", byte!()),
+                opcode::SET_UPVALUE_POP => push_fmt!("SET_UPVAL_POP <{}>", byte!()),
                 opcode::GET_INDEX => push_fmt!("GET_INDEX"),
                 opcode::SET_INDEX => push_fmt!("SET_INDEX"),
                 opcode::GET_PROPERTY_ID => {
@@ -130,6 +132,9 @@ impl GcTraceable for BytecodeChunk {
                 },
                 opcode::SET_PROPERTY_ID => {
                     push_fmt!("SET_PROP_ID <{}>", byte!())
+                },
+                opcode::SET_PROPERTY_ID_POP => {
+                    push_fmt!("SET_PROP_ID_POP <{}>", byte!())
                 },
                 opcode::GET_GLOBAL => {
                     push_fmt!("GET_GLOBAL {}", self.constants[byte!() as usize].fmt());

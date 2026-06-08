@@ -197,6 +197,8 @@ impl<'a> Compiler<'a> {
             Some(assign_expr) => {
                 self.expression(assign_expr)?;
                 self.expression(target_expr)?;
+
+                self.setter_pos = Some(self.chunk.code.len());
                 self.emit(opcode::SET_PROPERTY_ID, target_expr);
                 self.emit(member_id, target_expr);
             }
@@ -312,6 +314,11 @@ impl<'a> Compiler<'a> {
         };
 
         let op = if assign { set_op } else { get_op };
+
+        if assign && matches!(op, opcode::SET_LOCAL | opcode::SET_UPVALUE | opcode::SET_PROPERTY_ID) {
+            self.setter_pos = Some(self.chunk.code.len());
+        }
+
         self.emit(op, expr);
         self.emit(operand, expr);
         return Ok(());
