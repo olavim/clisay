@@ -159,8 +159,7 @@ impl<'a> Compiler<'a> {
             Stmt::While(cond, body) => {
                 let pos = self.chunk.code.len() as u16;
 
-                self.expression(cond)?;
-                let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, stmt_id);
+                let jump_ref = self.emit_conditional_jump(cond, stmt_id)?;
 
                 self.enter_scope();
                 self.statement_body(body)?;

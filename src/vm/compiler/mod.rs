@@ -132,6 +132,36 @@ impl<'a> Compiler<'a> {
         self.emit(expr.as_comma_separated(self.ast).len() as u8, expr);
     }
 
+    fn binary_jump_op(op: &crate::parser::Operator) -> Option<OpCode> {
+        use crate::parser::Operator;
+        Some(match op {
+            Operator::LessThan => opcode::JUMP_IF_GE,
+            Operator::LessThanEqual => opcode::JUMP_IF_GT,
+            Operator::GreaterThan => opcode::JUMP_IF_LE,
+            Operator::GreaterThanEqual => opcode::JUMP_IF_LT,
+            Operator::LogicalEqual => opcode::JUMP_IF_NEQ,
+            Operator::LogicalNotEqual => opcode::JUMP_IF_EQ,
+            _ => return None
+        })
+    }
+
+    fn emit_conditional_jump<T: 'static>(&mut self, cond: &ASTId<Expr>, node_id: &ASTId<T>) -> Result<u16, anyhow::Error> {
+        let jump_op = if let Expr::Binary(op, left, right) = self.ast.get(cond) {
+            Self::binary_jump_op(op).map(|f| (f, *left, *right))
+        } else {
+            None
+        };
+
+        if let Some((op, left, right)) = jump_op {
+            self.expression(&left)?;
+            self.expression(&right)?;
+            return Ok(self.emit_jump(op, 0, node_id));
+        }
+
+        self.expression(cond)?;
+        Ok(self.emit_jump(opcode::JUMP_IF_FALSE, 0, node_id))
+    }
+
     fn patch_jump(&mut self, jump_ref: u16) -> Result<(), anyhow::Error> {
         if self.chunk.code.len() > u16::MAX as usize {
             bail!("Jump too large");

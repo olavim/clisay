@@ -68,8 +68,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn if_expression(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
-        self.expression(cond)?;
-        let jump_ref = self.emit_jump(opcode::JUMP_IF_FALSE, 0, cond);
+        let jump_ref = self.emit_conditional_jump(cond, cond)?;
         self.expression(then)?;
         let else_jump_ref = self.emit_jump(opcode::JUMP, 0, then);
         self.patch_jump(jump_ref)?;

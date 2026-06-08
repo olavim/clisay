@@ -575,6 +575,12 @@ impl Vm {
                 opcode::CALL => self.op_call()?,
                 opcode::JUMP => self.op_jump(),
                 opcode::JUMP_IF_FALSE => self.op_jump_if_false(),
+                opcode::JUMP_IF_GE => self.jump_if_number(|a, b| a >= b, "<")?,
+                opcode::JUMP_IF_GT => self.jump_if_number(|a, b| a > b, "<=")?,
+                opcode::JUMP_IF_LE => self.jump_if_number(|a, b| a <= b, ">")?,
+                opcode::JUMP_IF_LT => self.jump_if_number(|a, b| a < b, ">=")?,
+                opcode::JUMP_IF_EQ => self.jump_if_eq(true),
+                opcode::JUMP_IF_NEQ => self.jump_if_eq(false),
                 opcode::CLOSE_UPVALUE => self.op_close_upvalue(),
                 opcode::ARRAY => self.op_array(),
                 opcode::RETURN => {
@@ -714,6 +720,33 @@ impl Vm {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
         let value = self.stack.pop();
         if value.is_bool() && !value.as_bool() {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        }
+    }
+
+    /// Fused comparison-and-branch for numeric operands. `cmp` is the *negated*
+    /// source condition (the branch is taken when the original comparison is
+    /// false), and `token` is the source operator for the type-error message.
+    fn jump_if_number<F: Fn(f64, f64) -> bool>(&mut self, cmp: F, token: &str) -> Result<(), anyhow::Error> {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+        if !a.is_number() || !b.is_number() {
+            return self.error(format!("Operator '{}' cannot be applied to operands {} and {}", token, a, b));
+        }
+        if cmp(a.as_number(), b.as_number()) {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        }
+        Ok(())
+    }
+
+    /// Fused equality-and-branch. Branches when `a.value_eq(b) == take_on_eq`,
+    /// i.e. the negation of the source `==`/`!=` condition.
+    fn jump_if_eq(&mut self, take_on_eq: bool) {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+        if a.value_eq(b) == take_on_eq {
             self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
         }
     }
