@@ -32,6 +32,10 @@ ops! {
     JUMP_IF_LT,
     JUMP_IF_EQ,
     JUMP_IF_NEQ,
+    JUMP_IF_GE_LOCAL_CONST,
+    JUMP_IF_GT_LOCAL_CONST,
+    JUMP_IF_LE_LOCAL_CONST,
+    JUMP_IF_LT_LOCAL_CONST,
     CLOSE_UPVALUE,
     END_SCOPE,
     ARRAY,
@@ -66,7 +70,10 @@ ops! {
 
     // Arithmetic
     ADD,
+    ADD_LOCAL,
+    ADD_LOCAL_CONST,
     SUBTRACT,
+    SUB_LOCAL_CONST,
     MULTIPLY,
     DIVIDE,
     NEGATE,
