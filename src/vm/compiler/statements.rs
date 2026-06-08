@@ -138,23 +138,10 @@ impl<'a> Compiler<'a> {
                 self.emit(slot, stmt_id);
             },
             Stmt::Expression(expr) => {
-                self.setter_pos = None;
-                self.expression(expr)?;
-
-                // If the statement is an assignment whose setter is the final
-                // instruction emitted, fuse the trailing POP into a popping setter.
-                // The assigned value would otherwise be pushed only to be discarded.
-                match self.setter_pos.take() {
-                    Some(pos) if pos == self.chunk.code.len() - 2 => {
-                        self.chunk.code[pos] = match self.chunk.code[pos] {
-                            opcode::SET_LOCAL => opcode::SET_LOCAL_POP,
-                            opcode::SET_UPVALUE => opcode::SET_UPVALUE_POP,
-                            opcode::SET_PROPERTY_ID => opcode::SET_PROPERTY_ID_POP,
-                            _ => unreachable!()
-                        };
-                    },
-                    _ => self.emit(opcode::POP, stmt_id)
-                }
+                // Compile in discard context: the value is dropped, so `if`/block
+                // expressions emit no result and other expressions are popped
+                // (with store-and-pop setter fusion).
+                self.expression_for_effect(expr)?;
             },
             Stmt::While(cond, body) => {
                 let pos = self.chunk.code.len() as u16;

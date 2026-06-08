@@ -135,14 +135,17 @@ impl<'a, T: Copy, const N: usize> ExactSizeIterator for StackIter<'a, T, N> {}
 
 pub struct CachedStack<T, const N: usize> {
     stack: Stack<T, N>,
-    pub top: T
+    // Pointer to the current top element (last pushed). Caching a pointer rather
+    // than a copy of the element keeps push/pop to pointer arithmetic instead of
+    // copying `T` (a 24-byte CallFrame) on every call and return.
+    top: *mut T
 }
 
 impl<'a, T: Copy, const N: usize> CachedStack<T, N> {
     pub fn new() -> Self {
         Self {
             stack: Stack::new(),
-            top: unsafe { std::mem::zeroed() }
+            top: std::ptr::null_mut()
         }
     }
 
@@ -150,22 +153,32 @@ impl<'a, T: Copy, const N: usize> CachedStack<T, N> {
         self.stack.init();
     }
 
+    #[inline]
     pub fn push(&mut self, value: T) {
         self.stack.push(value);
-        self.top = value;
+        self.top = unsafe { self.stack.top.sub(1) };
     }
 
+    #[inline]
     pub fn pop(&mut self) -> T {
+        let value = unsafe { *self.top };
         self.stack.truncate(1);
-        let value = self.top;
-        self.top = self.stack.peek(0);
+        self.top = unsafe { self.stack.top.sub(1) };
         value
+    }
+
+    /// Pointer to the current top element (last pushed). Valid while the stack
+    /// is non-empty, which holds throughout interpretation (the base frame is
+    /// never popped).
+    #[inline]
+    pub fn top(&self) -> *mut T {
+        self.top
     }
 
     #[inline]
     pub fn set_top(&mut self, top: *mut T) {
         self.stack.set_top(top);
-        self.top = self.stack.peek(0);
+        self.top = unsafe { self.stack.top.sub(1) };
     }
 
     #[inline]

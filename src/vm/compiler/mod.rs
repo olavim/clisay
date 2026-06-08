@@ -194,6 +194,27 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// Exits a scope whose result value is on top of the stack (a value-context
+    /// block). The block's locals sit *below* that value, so the plain `POP`/
+    /// `CLOSE_UPVALUE` cleanup of `exit_scope` would discard the result. Instead
+    /// emit a single `END_SCOPE` that collapses the locals while preserving the
+    /// result (mirroring the function-return epilogue). Emits nothing when the
+    /// block declared no locals (the value is already in the right place).
+    fn exit_scope_with_value<T: 'static>(&mut self, node_id: &ASTId<T>) {
+        self.scope_depth -= 1;
+        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
+        let mut base_slot: Option<u8> = None;
+        while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
+            base_slot = Some((self.locals.len() - 1) as u8 - local_offset);
+            self.locals.pop();
+        }
+
+        if let Some(base_slot) = base_slot {
+            self.emit(opcode::END_SCOPE, node_id);
+            self.emit(base_slot, node_id);
+        }
+    }
+
     /// Declares a new local variable in the current scope. Returns the slot index of the variable,
     /// which is relative to the current function's `local_offset` (i.e. the operand for `GET_LOCAL`/`SET_LOCAL`).
     fn declare_local<T: 'static>(&mut self, name: *mut ObjString, is_mutable: bool, node_id: &ASTId<T>) -> Result<u8, anyhow::Error> {

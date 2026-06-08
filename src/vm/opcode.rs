@@ -33,6 +33,7 @@ ops! {
     JUMP_IF_EQ,
     JUMP_IF_NEQ,
     CLOSE_UPVALUE,
+    END_SCOPE,
     ARRAY,
     RETURN,
     THROW,

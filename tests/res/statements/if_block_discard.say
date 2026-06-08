@@ -1,0 +1,38 @@
+// `if` and block expressions are value-producing (Rust-style), but in statement
+// position the value is discarded. The compiler then compiles their branches
+// "for effect" — emitting no result value and no trailing POP. These cases pin
+// down that branch side effects still run and that value context is unaffected.
+
+// if-statement, no else: then runs / is skipped, value not materialized.
+say a = 0;
+if (true) { a = 1; }
+print(a); // expect: 1
+
+say b = 0;
+if (false) { b = 1; }
+print(b); // expect: 0
+
+// if-statement with else in discard position.
+say c = 0;
+if (false) { c = 1; } else { c = 2; }
+print(c); // expect: 2
+
+// Block statement with side effects, value discarded.
+say d = 0;
+{ d = 5; }
+print(d); // expect: 5
+
+// if as an expression still returns its value.
+say e = if (true) { 10 } else { 20 };
+print(e); // expect: 10
+
+say f = if (false) { 10 } else { 20 };
+print(f); // expect: 20
+
+// if-expression with no else yields null in value context.
+say g = if (false) { 1 };
+print(g); // expect: null
+
+// Block as a value (no inner locals) returns its tail expression.
+say h = { 3 + 4 };
+print(h); // expect: 7

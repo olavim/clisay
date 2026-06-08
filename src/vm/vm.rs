@@ -267,7 +267,7 @@ impl Vm {
 
     fn get_upvalue(&self, idx: usize) -> *mut ObjUpvalue {
         unsafe {
-            let closure = &*self.frames.top.closure;
+            let closure = &*(*self.frames.top()).closure;
             *closure.upvalues.get_unchecked(idx as usize)
         }
     }
@@ -303,7 +303,7 @@ impl Vm {
         for i in 0..upvalue_count {
             let fn_upval = &fn_ref.upvalues[i];
             let upvalue = if fn_upval.is_local {
-                self.capture_upvalue(unsafe { self.frames.top.stack_start.add(fn_upval.location as usize) })
+                self.capture_upvalue(unsafe { (*self.frames.top()).stack_start.add(fn_upval.location as usize) })
             } else {
                 self.get_upvalue(fn_upval.location as usize)
             };
@@ -623,17 +623,17 @@ impl Vm {
                 // ---- inlined hot ops (operate on the register-resident `ip`) ----
                 opcode::GET_LOCAL => {
                     let idx = read_byte!() as usize;
-                    let value = unsafe { *self.frames.top.stack_start.add(idx) };
+                    let value = unsafe { *(*self.frames.top()).stack_start.add(idx) };
                     self.stack.push(value);
                 },
                 opcode::SET_LOCAL => {
                     let idx = read_byte!() as usize;
-                    unsafe { *self.frames.top.stack_start.add(idx) = self.stack.peek(0) };
+                    unsafe { *(*self.frames.top()).stack_start.add(idx) = self.stack.peek(0) };
                 },
                 opcode::SET_LOCAL_POP => {
                     let idx = read_byte!() as usize;
                     let value = self.stack.pop();
-                    unsafe { *self.frames.top.stack_start.add(idx) = value };
+                    unsafe { *(*self.frames.top()).stack_start.add(idx) = value };
                 },
                 opcode::GET_UPVALUE => {
                     let idx = read_byte!() as usize;
@@ -704,6 +704,7 @@ impl Vm {
                 opcode::PUSH_TRY => delegate!(self.op_push_try()),
                 opcode::POP_TRY => self.op_pop_try(),
                 opcode::CLOSE_UPVALUE => delegate!(self.op_close_upvalue()),
+                opcode::END_SCOPE => delegate!(self.op_end_scope()),
                 opcode::ARRAY => delegate!(self.op_array()),
                 opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
                 opcode::PUSH_CLASS => delegate!(self.op_push_class()),
@@ -781,9 +782,22 @@ impl Vm {
 
     fn op_close_upvalue(&mut self) {
         let location = self.read_next() as usize;
-        let p = unsafe { self.frames.top.stack_start.add(location) };
+        let p = unsafe { (*self.frames.top()).stack_start.add(location) };
         self.close_upvalues(p);
         self.stack.truncate(1);
+    }
+
+    /// Closes a value-producing block's scope: the block's result is on top of
+    /// the stack, above the block's locals (which start at relative slot `base`).
+    /// Mirrors the function-return epilogue — close any upvalues the locals were
+    /// captured into, then collapse the locals while keeping the result at `base`.
+    fn op_end_scope(&mut self) {
+        let base = self.read_next() as usize;
+        let p = unsafe { (*self.frames.top()).stack_start.add(base) };
+        self.close_upvalues(p);
+        let value = self.stack.pop();
+        self.stack.set_top(p);
+        self.stack.push(value);
     }
 
     fn op_array(&mut self) {

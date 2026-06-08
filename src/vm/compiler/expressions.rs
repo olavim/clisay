@@ -40,7 +40,71 @@ impl<'a> Compiler<'a> {
             self.emit(opcode::PUSH_NULL, expr);
         }
 
+        self.exit_scope_with_value(expr);
+        Ok(())
+    }
+
+    /// Compiles an expression in statement position, where its value is
+    /// discarded. `if`/block expressions are value-producing (Rust-style), so in
+    /// value context (assignment, return, argument, block tail) they still leave
+    /// a value via `expression`/`if_expression`/`block`. Here, in discard
+    /// context, we compile their branches for effect — emitting no result value
+    /// (no else `NULL`, no block tail `NULL`) and no trailing `POP`. Any other
+    /// expression is compiled for value and its result popped (with the
+    /// store-and-pop setter fusion when applicable).
+    pub (super) fn expression_for_effect(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+        match self.ast.get(expr) {
+            Expr::Block(stmts, last_expr) => self.block_for_effect(expr, stmts, last_expr)?,
+            Expr::If(cond, then, otherwise) => self.if_for_effect(cond, then, otherwise)?,
+            _ => {
+                self.setter_pos = None;
+                self.expression(expr)?;
+                match self.setter_pos.take() {
+                    Some(pos) if pos + 2 == self.chunk.code.len() => {
+                        self.chunk.code[pos] = match self.chunk.code[pos] {
+                            opcode::SET_LOCAL => opcode::SET_LOCAL_POP,
+                            opcode::SET_UPVALUE => opcode::SET_UPVALUE_POP,
+                            opcode::SET_PROPERTY_ID => opcode::SET_PROPERTY_ID_POP,
+                            _ => unreachable!()
+                        };
+                    },
+                    _ => self.emit(opcode::POP, expr)
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn block_for_effect(&mut self, expr: &ASTId<Expr>, stmts: &Vec<ASTId<Stmt>>, last_expr: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
+        self.enter_scope();
+        self.hoist_declarations(stmts)?;
+        for stmt in stmts {
+            self.statement(stmt)?;
+        }
+
+        // The block's value is discarded: compile a tail expression for effect
+        // and emit no `PUSH_NULL` placeholder when there is none.
+        if let Some(last_expr) = last_expr {
+            self.expression_for_effect(last_expr)?;
+        }
+
         self.exit_scope(expr);
+        Ok(())
+    }
+
+    fn if_for_effect(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
+        let jump_ref = self.emit_conditional_jump(cond, cond)?;
+        self.expression_for_effect(then)?;
+        if let Some(otherwise) = otherwise {
+            let else_jump_ref = self.emit_jump(opcode::JUMP, 0, then);
+            self.patch_jump(jump_ref)?;
+            self.expression_for_effect(otherwise)?;
+            self.patch_jump(else_jump_ref)?;
+        } else {
+            // No else and no value: when the condition is false, jump past the
+            // then-branch to here, leaving nothing on the stack.
+            self.patch_jump(jump_ref)?;
+        }
         Ok(())
     }
 
