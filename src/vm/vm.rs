@@ -708,6 +708,20 @@ impl Vm {
     fn op_call(&mut self) -> Result<(), anyhow::Error> {
         let arg_count = self.read_next() as usize;
         let value = self.stack.peek(arg_count);
+
+        // Fast path: a direct closure call with exact arity
+        if value.is_callable() {
+            let object = value.as_object();
+            if object.tag() == objects::TAG_CLOSURE {
+                let closure_ptr = object.as_closure_ptr();
+                let closure = unsafe { &*closure_ptr };
+                if arg_count == closure.arity as usize {
+                    self.push_frame(closure_ptr, self.stack.offset(arg_count), closure.ip_start);
+                    return Ok(());
+                }
+            }
+        }
+
         self.call(arg_count, value)
     }
     

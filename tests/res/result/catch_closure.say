@@ -1,0 +1,14 @@
+// `result["catch"](closure)` invokes a closure callback through `Vm::call`
+// (the native `catch` method calls `vm.call(1, callback)`). After the closure
+// call fast path was added to `op_call`, this is the only script-reachable
+// route that still exercises the SUCCESS branch of the `TAG_CLOSURE` arm in
+// `call()` (`call_closure` -> `push_frame`), so it guards against that path
+// regressing. (`.catch` can't be written directly because `catch` is a keyword.)
+
+// Error result: the callback runs and its value replaces the error.
+say recovered = Error("boom")["catch"](err => "recovered");
+print(recovered); // expect: recovered
+
+// Ok result: the callback is not invoked and the wrapped value passes through.
+say passthrough = Ok(42)["catch"](err => 0);
+print(passthrough); // expect: 42
