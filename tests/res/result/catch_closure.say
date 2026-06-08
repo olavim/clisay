@@ -1,0 +1,4 @@
+say recovered = Error("boom")["catch"](err => "recovered");
+print(recovered); // expect: recovered
+say passthrough = Ok(42)["catch"](err => 0);
+print(passthrough); // expect: 42
