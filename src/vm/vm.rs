@@ -3,6 +3,7 @@ use std::hash::BuildHasherDefault;
 
 use anyhow::bail;
 use rustc_hash::FxHasher;
+use smallvec::SmallVec;
 
 use crate::Output;
 use crate::parser::Parser;
@@ -254,7 +255,7 @@ impl Vm {
     fn get_upvalue(&self, idx: usize) -> *mut ObjUpvalue {
         unsafe {
             let closure = &*(*self.frames.top()).closure;
-            *closure.upvalues.get_unchecked(idx as usize)
+            closure.upvalue_at(idx)
         }
     }
 
@@ -282,10 +283,13 @@ impl Vm {
     }
 
     fn create_closure(&mut self, function: *mut ObjFn) -> Object {
-        let mut closure = ObjClosure::new(function);
         let fn_ref = unsafe { &*function };
         let upvalue_count = fn_ref.upvalues.len();
 
+        // Gather the captured upvalues into a stack-resident scratch buffer first,
+        // then allocate the exact-sized closure in one shot. Capturing must happen
+        // before allocation since capturing can trigger GC.
+        let mut upvalues: SmallVec<[*mut ObjUpvalue; 8]> = SmallVec::with_capacity(upvalue_count);
         for i in 0..upvalue_count {
             let fn_upval = &fn_ref.upvalues[i];
             let upvalue = if fn_upval.is_local {
@@ -294,10 +298,14 @@ impl Vm {
                 self.get_upvalue(fn_upval.location as usize)
             };
 
-            closure.upvalues.push(upvalue);
+            upvalues.push(upvalue);
         }
 
-        self.alloc(closure).into()
+        let (name, arity, ip_start) = (fn_ref.name, fn_ref.arity, fn_ref.ip_start);
+        if self.gc.should_collect() {
+            self.start_gc();
+        }
+        self.gc.alloc_closure(name, arity, ip_start, &upvalues).into()
     }
 
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
@@ -775,8 +783,6 @@ impl Vm {
 
     /// Closes a value-producing block's scope: the block's result is on top of
     /// the stack, above the block's locals (which start at relative slot `base`).
-    /// Mirrors the function-return epilogue — close any upvalues the locals were
-    /// captured into, then collapse the locals while keeping the result at `base`.
     fn op_end_scope(&mut self) {
         let base = self.read_next() as usize;
         let p = unsafe { (*self.frames.top()).stack_start.add(base) };
@@ -789,8 +795,7 @@ impl Vm {
     fn op_array(&mut self) {
         let len = self.read_next() as usize;
         // Copy the elements without popping them first: they must stay on the stack
-        // (and thus remain GC roots) because the allocation below can trigger a
-        // collection.
+        // and remain GC roots because the allocation below can trigger a collection.
         let values = unsafe {
             let start = self.stack.top().sub(len);
             std::slice::from_raw_parts(start, len).to_vec()

@@ -102,7 +102,13 @@ impl Object {
 
         match self.tag() {
             TAG_FUNCTION => free_object!(self.as_function_ptr(), ObjFn),
-            TAG_CLOSURE => free_object!(self.as_closure_ptr(), ObjClosure),
+            // A closure's backing block is sized for its trailing upvalue array,
+            // not `size_of::<ObjClosure>`, so its layout size comes from `size()`.
+            // It owns no separate heap, so no destructor needs to run.
+            TAG_CLOSURE => {
+                let size = unsafe { (*self.as_closure_ptr()).size() };
+                (size, size)
+            },
             TAG_NATIVE_FUNCTION => free_object!(self.as_native_function_ptr(), ObjNativeFn),
             TAG_BOUND_METHOD => free_object!(self.as_bound_method_ptr(), ObjBoundMethod),
             TAG_CLASS => free_object!(self.as_class_ptr(), ObjClass),
@@ -335,26 +341,42 @@ impl GcTraceable for ObjNativeFn {
     }
 }
 
+/// A closure's captured upvalues are stored as a trailing array in the same
+/// allocation as the struct, sized to the exact capture count.
 #[repr(align(8))]
 #[repr(C)]
 pub struct ObjClosure {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
     pub arity: u8,
-    pub ip_start: usize,
-    pub upvalues: Vec<*mut ObjUpvalue>
+    pub upvalue_count: u8,
+    pub ip_start: usize
 }
 
 impl ObjClosure {
-    pub fn new(function: *mut ObjFn) -> ObjClosure {
-        let func = unsafe { &*function };
-        return ObjClosure {
-            header: ObjectHeader::new(ObjectKind::Closure),
-            name: func.name,
-            arity: func.arity,
-            ip_start: func.ip_start, 
-            upvalues: Vec::new() 
-        };
+    /// Byte offset of the trailing upvalue array.
+    const UPVALUES_OFFSET: usize = mem::size_of::<ObjClosure>();
+
+    #[inline]
+    pub fn alloc_size(count: usize) -> usize {
+        Self::UPVALUES_OFFSET + count * mem::size_of::<*mut ObjUpvalue>()
+    }
+
+    #[inline]
+    fn upvalues_ptr(&self) -> *mut *mut ObjUpvalue {
+        unsafe { (self as *const ObjClosure as *mut u8).add(Self::UPVALUES_OFFSET) as *mut *mut ObjUpvalue }
+    }
+
+    #[inline]
+    pub fn upvalues(&self) -> &[*mut ObjUpvalue] {
+        unsafe { std::slice::from_raw_parts(self.upvalues_ptr(), self.upvalue_count as usize) }
+    }
+
+    /// Reads the captured upvalue at `idx`.
+    /// Safety: callers must guarantee `idx < upvalue_count`.
+    #[inline]
+    pub unsafe fn upvalue_at(&self, idx: usize) -> *mut ObjUpvalue {
+        unsafe { *self.upvalues_ptr().add(idx) }
     }
 }
 
@@ -366,13 +388,14 @@ impl GcTraceable for ObjClosure {
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.name);
 
-        for &upvalue in &self.upvalues {
+        for &upvalue in self.upvalues() {
             gc.mark_object(upvalue);
         }
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<ObjClosure>() + self.upvalues.capacity() * mem::size_of::<*mut ObjUpvalue>()
+        // The trailing upvalue array shares the struct's allocation.
+        Self::alloc_size(self.upvalue_count as usize)
     }
 }
 

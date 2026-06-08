@@ -3,7 +3,7 @@ use std::mem;
 
 use fnv::FnvHashMap;
 
-use super::objects::{ObjString, Object};
+use super::objects::{ObjClosure, ObjString, ObjUpvalue, ObjectHeader, ObjectKind, Object};
 
 /// Every heap object is `repr(align(8))`, so a freed block can back any later
 /// object of the same size regardless of its concrete type. Blocks are bucketed
@@ -48,10 +48,8 @@ pub struct Gc {
     refs: Vec<Object>,
     strings: FnvHashMap<String, *mut ObjString>,
     reachable_refs: Vec<Object>,
-    /// Recycled object blocks, bucketed by allocation size (alignment is always
-    /// `OBJ_ALIGN`). Sweeping pushes here instead of returning memory to the
-    /// system allocator; `alloc` reuses a block before requesting a new one,
-    /// eliminating the malloc/free churn of allocation-heavy programs.
+    /// Recycled object blocks, bucketed by allocation size.
+    /// Alignment is always `OBJ_ALIGN`.
     free_lists: FnvHashMap<usize, Vec<*mut u8>>,
     pub bytes_allocated: usize,
     next_gc: usize,
@@ -82,30 +80,62 @@ impl Gc {
     pub fn alloc<T: GcTraceable>(&mut self, obj: T) -> *mut T
         where *mut T: Into<Object>
     {
+        debug_assert_eq!(mem::align_of::<T>(), OBJ_ALIGN);
         self.bytes_allocated += obj.size();
 
-        let size = mem::size_of::<T>();
-        let obj_ptr = match self.free_lists.get_mut(&size).and_then(Vec::pop) {
-            // Reuse a recycled block of matching size (uniform alignment).
-            Some(block) => {
-                let ptr = block as *mut T;
-                unsafe { std::ptr::write(ptr, obj) };
-                ptr
-            },
-            None => {
-                let layout = Layout::new::<T>();
-                debug_assert_eq!(layout.align(), OBJ_ALIGN);
-                let ptr = unsafe { alloc::alloc(layout) as *mut T };
-                if ptr.is_null() {
-                    alloc::handle_alloc_error(layout);
-                }
-                unsafe { std::ptr::write(ptr, obj) };
-                ptr
-            }
-        };
-
+        let obj_ptr = self.take_block(mem::size_of::<T>()) as *mut T;
+        unsafe { std::ptr::write(obj_ptr, obj) };
         self.refs.push(obj_ptr.into());
         obj_ptr
+    }
+
+    /// Allocates a closure with its upvalues stored inline in a trailing array.
+    /// The block is sized to the exact capture count. Closures of equal capture
+    /// count recycle each other's blocks and no separate upvalue buffer is ever
+    /// allocated.
+    pub fn alloc_closure(
+        &mut self,
+        name: *mut ObjString,
+        arity: u8,
+        ip_start: usize,
+        upvalues: &[*mut ObjUpvalue]
+    ) -> *mut ObjClosure {
+        let count = upvalues.len();
+        let size = ObjClosure::alloc_size(count);
+        self.bytes_allocated += size;
+
+        let closure_ptr = self.take_block(size) as *mut ObjClosure;
+        unsafe {
+            std::ptr::write(closure_ptr, ObjClosure {
+                header: ObjectHeader::new(ObjectKind::Closure),
+                name,
+                arity,
+                upvalue_count: count as u8,
+                ip_start
+            });
+            std::ptr::copy_nonoverlapping(
+                upvalues.as_ptr(),
+                (*closure_ptr).upvalues().as_ptr() as *mut *mut ObjUpvalue,
+                count
+            );
+        }
+        self.refs.push(closure_ptr.into());
+        closure_ptr
+    }
+
+    /// Returns a block of `size` bytes (alignment `OBJ_ALIGN`), reusing a recycled
+    /// one if available. The block is uninitialized; callers must write a valid
+    /// object before it can be marked or freed.
+    fn take_block(&mut self, size: usize) -> *mut u8 {
+        if let Some(block) = self.free_lists.get_mut(&size).and_then(Vec::pop) {
+            return block;
+        }
+        let layout = unsafe { Layout::from_size_align_unchecked(size, OBJ_ALIGN) };
+        let ptr = unsafe { alloc::alloc(layout) };
+        if ptr.is_null() {
+            alloc::handle_alloc_error(layout);
+        }
+        ptr
     }
 
     pub fn intern(&mut self, name: impl Into<String>) -> *mut ObjString {
@@ -170,8 +200,7 @@ impl Gc {
         let block = obj.as_header_ptr() as *mut u8;
         let (accounted, layout_size) = obj.free();
         self.bytes_allocated -= accounted;
-        // Retain the backing block for reuse rather than handing it back to the
-        // system allocator.
+        // Retain the block for reuse rather than handing it back to the system allocator.
         self.free_lists.entry(layout_size).or_default().push(block);
         self.refs.swap_remove(idx);
     }
@@ -183,13 +212,13 @@ impl Gc {
 
 impl Drop for Gc {
     fn drop(&mut self) {
-        // Release every still-live object (drop its contents, then its block)...
+        // Drop all live objects
         for &obj in &self.refs {
             let block = obj.as_header_ptr() as *mut u8;
             let (_, layout_size) = obj.free();
             unsafe { alloc::dealloc(block, Layout::from_size_align_unchecked(layout_size, OBJ_ALIGN)) };
         }
-        // ...and every recycled block (already dropped; just free the memory).
+        // Free memory of recycled blocks
         for (&size, blocks) in &self.free_lists {
             for &block in blocks {
                 unsafe { alloc::dealloc(block, Layout::from_size_align_unchecked(size, OBJ_ALIGN)) };
