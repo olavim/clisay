@@ -447,7 +447,8 @@ pub struct ObjClass {
     pub name: *mut ObjString,
     pub members: FnvHashMap<*mut ObjString, ClassMember>,
     pub fields: IntSet<MemberId>,
-    pub methods: IntMap<MemberId, Object>
+    pub methods: IntMap<MemberId, Object>,
+    pub member_count: u8
 }
 
 impl ObjClass {
@@ -457,7 +458,8 @@ impl ObjClass {
             name,
             members: FnvHashMap::default(),
             fields: IntSet::default(),
-            methods: IntMap::default()
+            methods: IntMap::default(),
+            member_count: 0
         }
     }
 
@@ -511,35 +513,34 @@ impl GcTraceable for ObjClass {
 pub struct ObjInstance {
     pub header: ObjectHeader,
     pub class: *mut ObjClass,
-    pub values: IntMap<MemberId, Value>
+    /// Member values indexed directly by member id.
+    pub values: Box<[Value]>
 }
 
 impl ObjInstance {
-    pub fn new(class: *mut ObjClass) -> ObjInstance {
-        let mut values = IntMap::default();
-        for field in unsafe { &(*class).fields } {
-            values.insert(*field, Value::NULL);
+    pub fn new(class_ptr: *mut ObjClass) -> ObjInstance {
+        let class = unsafe { &*class_ptr };
+        let mut values = vec![Value::NULL; class.member_count as usize].into_boxed_slice();
+
+        for (&id, &method) in &class.methods {
+            values[id as usize] = Value::from(method);
         }
-        
+
         ObjInstance {
             header: ObjectHeader::new(ObjectKind::Instance),
-            class,
+            class: class_ptr,
             values
         }
     }
 
+    #[inline]
     pub fn get(&self, id: MemberId) -> Value {
-        match self.values.get(&id) {
-            Some(value) => *value,
-            None => {
-                let class = unsafe { &*self.class };
-                Value::from(class.get_method(id))
-            }
-        }
+        self.values[id as usize]
     }
 
+    #[inline]
     pub fn set(&mut self, id: MemberId, value: Value) {
-        self.values.insert(id, value);
+        self.values[id as usize] = value;
     }
 }
 
@@ -551,13 +552,13 @@ impl GcTraceable for ObjInstance {
 
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.class);
-        for (_, value) in &self.values {
+        for value in self.values.iter() {
             value.mark(gc);
         }
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<ObjInstance>() + self.values.capacity() * mem::size_of::<(MemberId, Value)>()
+        mem::size_of::<ObjInstance>() + self.values.len() * mem::size_of::<Value>()
     }
 }
 

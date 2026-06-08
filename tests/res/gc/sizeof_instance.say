@@ -2,4 +2,4 @@ class Empty {}
 say bytesStart = gcHeapSize();
 say obj = Empty();
 gcCollect();
-print(gcHeapSize() - bytesStart); // expect: 48
+print(gcHeapSize() - bytesStart); // expect: 40
