@@ -120,7 +120,6 @@ tokens! {
     RightParen => ")",
     LeftBracket => "[",
     RightBracket => "]",
-    Question => "?",
     Exclamation => "!",
     Semicolon => ";",
     Colon => ":",

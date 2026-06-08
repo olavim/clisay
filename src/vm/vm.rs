@@ -12,7 +12,6 @@ use crate::lexer::{tokenize, SourcePosition, TokenStream};
 
 use super::chunk::BytecodeChunk;
 use super::native::array::NativeArray;
-use super::native::result::{NativeError, NativeOk, NativeResult};
 use super::native::NativeType;
 use super::opcode::{self, OpCode};
 use super::stack::{CachedStack, Stack};
@@ -25,18 +24,12 @@ const MAX_STACK: usize = 16384;
 const MAX_FRAMES: usize = 256;
 
 struct NativeTypes {
-    array: *mut ObjClass,
-    result: *mut ObjClass,
-    ok_result: *mut ObjClass,
-    error_result: *mut ObjClass
+    array: *mut ObjClass
 }
 
 impl GcTraceable for NativeTypes {
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.array);
-        gc.mark_object(self.result);
-        gc.mark_object(self.ok_result);
-        gc.mark_object(self.error_result);
     }
     
     fn fmt(&self) -> String {
@@ -112,10 +105,7 @@ impl Vm {
         }
 
         let native_types = NativeTypes {
-            array: build_native_type(&mut gc, NativeArray),
-            result: build_native_type(&mut gc, NativeResult),
-            ok_result: build_native_type(&mut gc, NativeOk),
-            error_result: build_native_type(&mut gc, NativeError)
+            array: build_native_type(&mut gc, NativeArray)
         };
 
         let mut vm = Vm {
@@ -130,10 +120,6 @@ impl Vm {
             native_types,
             out: Vec::new()
         };
-
-        // Define initializable native types
-        vm.globals.insert(vm.gc.intern("Error"), vm.native_types.error_result.into());
-        vm.globals.insert(vm.gc.intern("Ok"), vm.native_types.ok_result.into());
 
         vm.stack.init();
         vm.frames.init();
@@ -883,7 +869,6 @@ impl Vm {
         match object_kind {
             ObjectKind::Instance => self.get_instance_index(target, prop),
             ObjectKind::Array => self.get_native_type_index(self.native_types.array, target, prop),
-            ObjectKind::Result => self.get_native_type_index(self.native_types.result, target, prop),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
     }

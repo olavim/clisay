@@ -1,8 +1,14 @@
+use std::alloc::{self, Layout};
 use std::mem;
 
 use fnv::FnvHashMap;
 
 use super::objects::{ObjString, Object};
+
+/// Every heap object is `repr(align(8))`, so a freed block can back any later
+/// object of the same size regardless of its concrete type. Blocks are bucketed
+/// by size alone with this fixed alignment.
+const OBJ_ALIGN: usize = 8;
 
 pub trait GcTraceable {
     fn fmt(&self) -> String;
@@ -42,6 +48,11 @@ pub struct Gc {
     refs: Vec<Object>,
     strings: FnvHashMap<String, *mut ObjString>,
     reachable_refs: Vec<Object>,
+    /// Recycled object blocks, bucketed by allocation size (alignment is always
+    /// `OBJ_ALIGN`). Sweeping pushes here instead of returning memory to the
+    /// system allocator; `alloc` reuses a block before requesting a new one,
+    /// eliminating the malloc/free churn of allocation-heavy programs.
+    free_lists: FnvHashMap<usize, Vec<*mut u8>>,
     pub bytes_allocated: usize,
     next_gc: usize,
     /// When true, GC runs on every allocation.
@@ -55,6 +66,7 @@ impl Gc {
             refs: Vec::new(),
             strings: FnvHashMap::default(),
             reachable_refs: Vec::new(),
+            free_lists: FnvHashMap::default(),
             bytes_allocated: 0,
             next_gc: 1024 * 1024,
             stress: false,
@@ -71,9 +83,28 @@ impl Gc {
         where *mut T: Into<Object>
     {
         self.bytes_allocated += obj.size();
-        let obj_ptr = Box::into_raw(Box::new(obj));
-        let obj = obj_ptr.into();
-        self.refs.push(obj);
+
+        let size = mem::size_of::<T>();
+        let obj_ptr = match self.free_lists.get_mut(&size).and_then(Vec::pop) {
+            // Reuse a recycled block of matching size (uniform alignment).
+            Some(block) => {
+                let ptr = block as *mut T;
+                unsafe { std::ptr::write(ptr, obj) };
+                ptr
+            },
+            None => {
+                let layout = Layout::new::<T>();
+                debug_assert_eq!(layout.align(), OBJ_ALIGN);
+                let ptr = unsafe { alloc::alloc(layout) as *mut T };
+                if ptr.is_null() {
+                    alloc::handle_alloc_error(layout);
+                }
+                unsafe { std::ptr::write(ptr, obj) };
+                ptr
+            }
+        };
+
+        self.refs.push(obj_ptr.into());
         obj_ptr
     }
 
@@ -135,12 +166,34 @@ impl Gc {
     }
 
     fn free(&mut self, idx: usize) {
-        self.bytes_allocated -= self.refs[idx].free();
+        let obj = self.refs[idx];
+        let block = obj.as_header_ptr() as *mut u8;
+        let (accounted, layout_size) = obj.free();
+        self.bytes_allocated -= accounted;
+        // Retain the backing block for reuse rather than handing it back to the
+        // system allocator.
+        self.free_lists.entry(layout_size).or_default().push(block);
         self.refs.swap_remove(idx);
-        // println!("gc:free: {}", obj.unwrap().data.fmt(self));
     }
 
     pub fn should_collect(&self) -> bool {
         self.stress || self.bytes_allocated > self.next_gc
+    }
+}
+
+impl Drop for Gc {
+    fn drop(&mut self) {
+        // Release every still-live object (drop its contents, then its block)...
+        for &obj in &self.refs {
+            let block = obj.as_header_ptr() as *mut u8;
+            let (_, layout_size) = obj.free();
+            unsafe { alloc::dealloc(block, Layout::from_size_align_unchecked(layout_size, OBJ_ALIGN)) };
+        }
+        // ...and every recycled block (already dropped; just free the memory).
+        for (&size, blocks) in &self.free_lists {
+            for &block in blocks {
+                unsafe { alloc::dealloc(block, Layout::from_size_align_unchecked(size, OBJ_ALIGN)) };
+            }
+        }
     }
 }

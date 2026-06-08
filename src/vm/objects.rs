@@ -17,8 +17,7 @@ pub enum ObjectKind {
     Function,
     Instance,
     Upvalue,
-    Array,
-    Result
+    Array
 }
 
 impl fmt::Display for ObjectKind {
@@ -32,8 +31,7 @@ impl fmt::Display for ObjectKind {
             ObjectKind::Class => "class",
             ObjectKind::Instance => "object",
             ObjectKind::Upvalue => "upvalue",
-            ObjectKind::Array => "array",
-            ObjectKind::Result => "result"
+            ObjectKind::Array => "array"
         };
         write!(f, "{}", kind)
     }
@@ -64,12 +62,10 @@ pub union Object {
     pub class: *mut ObjClass,
     pub instance: *mut ObjInstance,
     pub upvalue: *mut ObjUpvalue,
-    pub array: *mut ObjArray,
-    pub result: *mut ObjResult
+    pub array: *mut ObjArray
 }
 
 pub const TAG_HEADER: u8 = 0;
-pub const TAG_RESULT: u8 = 1;
 pub const TAG_CLOSURE: u8 = 3;
 pub const TAG_FUNCTION: u8 = 4;
 pub const TAG_NATIVE_FUNCTION: u8 = 5;
@@ -89,27 +85,32 @@ impl Object {
         unsafe { (self.header as u8) & PTR_TAG_U8 }
     }
 
-    pub fn free(self) -> usize {
+    /// Drops the object's owned data in place but does **not** deallocate the
+    /// backing block — that is left to the GC's free list so the allocation can
+    /// be recycled. Returns `(accounted_bytes, layout_size)`: the first is the
+    /// byte count for GC accounting (struct + owned heap capacity), the second
+    /// is `size_of` the struct itself, used to bucket the freed block for reuse.
+    pub fn free(self) -> (usize, usize) {
         macro_rules! free_object {
-            ($ptr:expr) => {{
-                let size = unsafe { (*$ptr).size() };
-                let _ = unsafe { Box::from_raw($ptr) };
-                size
+            ($ptr:expr, $t:ty) => {{
+                let ptr = $ptr;
+                let accounted = unsafe { (*ptr).size() };
+                unsafe { std::ptr::drop_in_place(ptr) };
+                (accounted, mem::size_of::<$t>())
             }};
         }
 
         match self.tag() {
-            TAG_RESULT => free_object!(self.as_result_ptr()),
-            TAG_FUNCTION => free_object!(self.as_function_ptr()),
-            TAG_CLOSURE => free_object!(self.as_closure_ptr()),
-            TAG_NATIVE_FUNCTION => free_object!(self.as_native_function_ptr()),
-            TAG_BOUND_METHOD => free_object!(self.as_bound_method_ptr()),
-            TAG_CLASS => free_object!(self.as_class_ptr()),
+            TAG_FUNCTION => free_object!(self.as_function_ptr(), ObjFn),
+            TAG_CLOSURE => free_object!(self.as_closure_ptr(), ObjClosure),
+            TAG_NATIVE_FUNCTION => free_object!(self.as_native_function_ptr(), ObjNativeFn),
+            TAG_BOUND_METHOD => free_object!(self.as_bound_method_ptr(), ObjBoundMethod),
+            TAG_CLASS => free_object!(self.as_class_ptr(), ObjClass),
             _ => match unsafe { (*self.as_header_ptr()).kind } {
-                ObjectKind::String => free_object!(self.as_string_ptr()),
-                ObjectKind::Instance => free_object!(self.as_instance_ptr()),
-                ObjectKind::Upvalue => free_object!(self.as_upvalue_ptr()),
-                ObjectKind::Array => free_object!(self.as_array_ptr()),
+                ObjectKind::String => free_object!(self.as_string_ptr(), ObjString),
+                ObjectKind::Instance => free_object!(self.as_instance_ptr(), ObjInstance),
+                ObjectKind::Upvalue => free_object!(self.as_upvalue_ptr(), ObjUpvalue),
+                ObjectKind::Array => free_object!(self.as_array_ptr(), ObjArray),
                 _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }
@@ -118,7 +119,6 @@ impl Object {
     fn as_traceable(&self) -> &dyn GcTraceable {
         unsafe { 
             match self.tag() {
-                TAG_RESULT => &*self.as_result_ptr(),
                 TAG_FUNCTION => &*self.as_function_ptr(),
                 TAG_CLOSURE => &*self.as_closure_ptr(),
                 TAG_NATIVE_FUNCTION => &*self.as_native_function_ptr(),
@@ -190,10 +190,6 @@ impl Object {
         unsafe { without_tag(self.array) }
     }
 
-    #[inline]
-    pub fn as_result_ptr(&self) -> *mut ObjResult {
-        unsafe { without_tag(self.result) }
-    }
 }
 
 impl GcTraceable for Object {
@@ -227,7 +223,6 @@ impl_from_for_object!(instance, ObjInstance, TAG_HEADER);
 impl_from_for_object!(upvalue, ObjUpvalue, TAG_HEADER);
 impl_from_for_object!(array, ObjArray, TAG_HEADER);
 
-impl_from_for_object!(result, ObjResult, TAG_RESULT);
 impl_from_for_object!(function, ObjFn, TAG_FUNCTION);
 impl_from_for_object!(native_function, ObjNativeFn, TAG_NATIVE_FUNCTION);
 impl_from_for_object!(bound_method, ObjBoundMethod, TAG_BOUND_METHOD);
@@ -609,37 +604,5 @@ impl GcTraceable for ObjArray {
 
     fn size(&self) -> usize {
         mem::size_of::<ObjArray>() + self.values.capacity() * mem::size_of::<Value>()
-    }
-}
-
-#[repr(align(8))]
-#[repr(C)]
-pub struct ObjResult {
-    pub header: ObjectHeader,
-    pub value: Value,
-    pub error: bool
-}
-
-impl ObjResult {
-    pub fn new(value: Value, error: bool) -> ObjResult {
-        ObjResult {
-            header: ObjectHeader::new(ObjectKind::Result),
-            value,
-            error
-        }
-    }
-}
-
-impl GcTraceable for ObjResult {
-    fn fmt(&self) -> String {
-        format!("<result {}>", if self.error { "error" } else { "ok" })
-    }
-
-    fn mark(&self, gc: &mut Gc) {
-        self.value.mark(gc);
-    }
-
-    fn size(&self) -> usize {
-        mem::size_of::<ObjResult>()
     }
 }

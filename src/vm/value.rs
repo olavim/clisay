@@ -170,8 +170,7 @@ impl fmt::Display for Value {
             ValueKind::Object(ObjectKind::Instance) => format!("instance"),
             ValueKind::Object(ObjectKind::String) => format!("string"),
             ValueKind::Object(ObjectKind::Upvalue) => format!("upvalue"),
-            ValueKind::Object(ObjectKind::Array) => format!("array"),
-            ValueKind::Object(ObjectKind::Result) => format!("result")
+            ValueKind::Object(ObjectKind::Array) => format!("array")
         })
     }
 }
