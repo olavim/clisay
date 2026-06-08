@@ -642,6 +642,23 @@ impl Vm {
             }}
         }
 
+        // Fused `local <cmp> const` compare-and-branch.
+        macro_rules! cmp_jump_local_const {
+            ($op:tt, $token:literal) => {{
+                let offset = read_short!() as usize;
+                let a_idx = read_byte!() as usize;
+                let b_idx = read_byte!() as usize;
+                let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
+                let b = self.chunk.constants[b_idx];
+                if !a.is_number() {
+                    self.ip = ip;
+                    self.error(format!("Operator '{}' cannot be applied to operands {} and {}", $token, a, b))?;
+                } else if a.as_number() $op b.as_number() {
+                    ip = unsafe { code_base.add(offset) };
+                }
+            }}
+        }
+
         loop {
             let op = read_byte!();
             match op {
@@ -699,6 +716,10 @@ impl Vm {
                 opcode::JUMP_IF_GT => cmp_jump!(>, "<="),
                 opcode::JUMP_IF_LE => cmp_jump!(<=, ">"),
                 opcode::JUMP_IF_LT => cmp_jump!(<, ">="),
+                opcode::JUMP_IF_GE_LOCAL_CONST => cmp_jump_local_const!(>=, "<"),
+                opcode::JUMP_IF_GT_LOCAL_CONST => cmp_jump_local_const!(>, "<="),
+                opcode::JUMP_IF_LE_LOCAL_CONST => cmp_jump_local_const!(<=, ">"),
+                opcode::JUMP_IF_LT_LOCAL_CONST => cmp_jump_local_const!(<, ">="),
                 opcode::JUMP_IF_EQ => {
                     let offset = read_short!() as usize;
                     let b = self.stack.pop();
@@ -711,13 +732,97 @@ impl Vm {
                     let a = self.stack.pop();
                     if !a.value_eq(b) { ip = unsafe { code_base.add(offset) }; }
                 },
+                // Fused `dst = a + b` (both locals). Number fast path writes the
+                // frame slot directly; otherwise reuse `op_add` (string concat /
+                // type error) by staging the operands on the value stack.
+                opcode::ADD_LOCAL => {
+                    let dst = read_byte!() as usize;
+                    let a_idx = read_byte!() as usize;
+                    let b_idx = read_byte!() as usize;
+                    let frame = unsafe { (*self.frames.top()).stack_start };
+                    let a = unsafe { *frame.add(a_idx) };
+                    let b = unsafe { *frame.add(b_idx) };
+                    if a.is_number() && b.is_number() {
+                        unsafe { *frame.add(dst) = Value::from(a.as_number() + b.as_number()) };
+                    } else {
+                        self.stack.push(a);
+                        self.stack.push(b);
+                        self.ip = ip;
+                        self.op_add()?;
+                        ip = self.ip;
+                        let result = self.stack.pop();
+                        unsafe { *frame.add(dst) = result };
+                    }
+                },
+                // Fused `dst = a + const` (const is a numeric literal by emission).
+                opcode::ADD_LOCAL_CONST => {
+                    let dst = read_byte!() as usize;
+                    let a_idx = read_byte!() as usize;
+                    let b_idx = read_byte!() as usize;
+                    let frame = unsafe { (*self.frames.top()).stack_start };
+                    let a = unsafe { *frame.add(a_idx) };
+                    let b = self.chunk.constants[b_idx];
+                    if a.is_number() {
+                        unsafe { *frame.add(dst) = Value::from(a.as_number() + b.as_number()) };
+                    } else {
+                        self.stack.push(a);
+                        self.stack.push(b);
+                        self.ip = ip;
+                        self.op_add()?;
+                        ip = self.ip;
+                        let result = self.stack.pop();
+                        unsafe { *frame.add(dst) = result };
+                    }
+                },
                 opcode::ADD => num_binop!(+, op_add),
+                // Fused value-producing `local - const` (const is numeric by emission).
+                opcode::SUB_LOCAL_CONST => {
+                    let a_idx = read_byte!() as usize;
+                    let b_idx = read_byte!() as usize;
+                    let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
+                    let b = self.chunk.constants[b_idx];
+                    if a.is_number() {
+                        self.stack.push(Value::from(a.as_number() - b.as_number()));
+                    } else {
+                        self.stack.push(a);
+                        self.stack.push(b);
+                        self.ip = ip;
+                        self.op_subtract()?;
+                        ip = self.ip;
+                    }
+                },
                 opcode::SUBTRACT => num_binop!(-, op_subtract),
                 opcode::MULTIPLY => num_binop!(*, op_multiply),
                 opcode::DIVIDE => num_binop!(/, op_divide),
 
                 // ---- control flow / cold ops: sync, delegate, reload ----
-                opcode::CALL => delegate!(self.op_call()?),
+                opcode::CALL => {
+                    let arg_count = read_byte!() as usize;
+                    let value = self.stack.peek(arg_count);
+                    // Fast path: monomorphic closure call with exact arity, inlined
+                    // so the common case never leaves the dispatch loop.
+                    if value.is_callable() {
+                        let object = value.as_object();
+                        if object.tag() == objects::TAG_CLOSURE {
+                            let closure_ptr = object.as_closure_ptr();
+                            let closure = unsafe { &*closure_ptr };
+                            if arg_count == closure.arity as usize {
+                                let stack_start = self.stack.offset(arg_count);
+                                self.frames.push(CallFrame {
+                                    closure: closure_ptr,
+                                    return_ip: ip,
+                                    stack_start
+                                });
+                                ip = unsafe { code_base.add(closure.ip_start) };
+                                continue;
+                            }
+                        }
+                    }
+                    // Slow path: native fns, bound methods, classes, arity errors.
+                    self.ip = ip;
+                    self.call(arg_count, value)?;
+                    ip = self.ip;
+                },
                 opcode::RETURN => {
                     self.ip = ip;
                     if !self.op_return() {
@@ -834,26 +939,6 @@ impl Vm {
         let array = self.alloc(ObjArray::new(values));
         self.stack.truncate(len);
         self.stack.push(Value::from(array));
-    }
-
-    fn op_call(&mut self) -> Result<(), anyhow::Error> {
-        let arg_count = self.read_next() as usize;
-        let value = self.stack.peek(arg_count);
-
-        // Fast path: a direct closure call with exact arity
-        if value.is_callable() {
-            let object = value.as_object();
-            if object.tag() == objects::TAG_CLOSURE {
-                let closure_ptr = object.as_closure_ptr();
-                let closure = unsafe { &*closure_ptr };
-                if arg_count == closure.arity as usize {
-                    self.push_frame(closure_ptr, self.stack.offset(arg_count), closure.ip_start);
-                    return Ok(());
-                }
-            }
-        }
-
-        self.call(arg_count, value)
     }
 
     fn op_push_closure(&mut self) -> Result<(), anyhow::Error> {

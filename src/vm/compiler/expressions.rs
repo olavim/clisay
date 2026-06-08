@@ -4,7 +4,7 @@ use crate::vm::objects::ObjString;
 use crate::vm::opcode;
 use crate::vm::value::Value;
 
-use super::{Compiler, FnKind};
+use super::{AddLocalFusion, Compiler, FnKind};
 
 impl<'a> Compiler<'a> {
     pub (super) fn expression(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
@@ -44,21 +44,33 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles an expression in statement position, where its value is
-    /// discarded. `if`/block expressions are value-producing (Rust-style), so in
-    /// value context (assignment, return, argument, block tail) they still leave
-    /// a value via `expression`/`if_expression`/`block`. Here, in discard
-    /// context, we compile their branches for effect — emitting no result value
-    /// (no else `NULL`, no block tail `NULL`) and no trailing `POP`. Any other
-    /// expression is compiled for value and its result popped (with the
-    /// store-and-pop setter fusion when applicable).
+    /// Compiles an expression in statement position, where its value is discarded.
     pub (super) fn expression_for_effect(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
             Expr::Block(stmts, last_expr) => self.block_for_effect(expr, stmts, last_expr)?,
             Expr::If(cond, then, otherwise) => self.if_for_effect(cond, then, otherwise)?,
             _ => {
                 self.setter_pos = None;
+                self.add_local_fusion = None;
                 self.expression(expr)?;
+
+                // Collapse `dst = a + b` into a single store-and-discard op.
+                if let Some(f) = self.add_local_fusion.take() {
+                    let is_tail = matches!(self.setter_pos, Some(pos)
+                        if pos + 2 == self.chunk.code.len() && self.chunk.code[pos] == opcode::SET_LOCAL);
+                    if is_tail {
+                        self.chunk.code.truncate(f.start);
+                        self.chunk.code_pos.truncate(f.start);
+                        let op = if f.is_const { opcode::ADD_LOCAL_CONST } else { opcode::ADD_LOCAL };
+                        self.emit(op, expr);
+                        self.emit(f.dst, expr);
+                        self.emit(f.a, expr);
+                        self.emit(f.b, expr);
+                        self.setter_pos = None;
+                        return Ok(());
+                    }
+                }
+
                 match self.setter_pos.take() {
                     Some(pos) if pos + 2 == self.chunk.code.len() => {
                         self.chunk.code[pos] = match self.chunk.code[pos] {
@@ -151,6 +163,32 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Resolves `expr` to a local slot if it is a bare identifier bound to one.
+    fn local_operand(&mut self, expr: &ASTId<Expr>) -> Option<u8> {
+        let Expr::Identifier(name) = self.ast.get(expr) else { return None };
+        let name = self.gc.intern(name);
+        self.resolve_local(name)
+    }
+
+    /// For `dst = <right>`, detects whether `right` is `a + b` with `a` a local and
+    /// `b` a local or numeric literal, returning the operands for an `ADD_LOCAL`
+    /// fusion. `dst` is the already-resolved target local slot.
+    fn detect_add_local_fusion(&mut self, dst: u8, right: &ASTId<Expr>) -> Result<Option<AddLocalFusion>, anyhow::Error> {
+        let Expr::Binary(Operator::Add, l, r) = self.ast.get(right) else { return Ok(None) };
+        let (l, r) = (*l, *r);
+
+        let Some(a) = self.local_operand(&l) else { return Ok(None) };
+
+        if let Some(b) = self.local_operand(&r) {
+            return Ok(Some(AddLocalFusion { start: 0, dst, a, b, is_const: false }));
+        }
+        if let Expr::Literal(Literal::Number(num)) = self.ast.get(&r) {
+            let const_idx = self.chunk.add_constant(Value::from(*num))?;
+            return Ok(Some(AddLocalFusion { start: 0, dst, a, b: const_idx, is_const: true }));
+        }
+        Ok(None)
+    }
+
     fn binary_expression(&mut self, op: &Operator, left: &ASTId<Expr>, right: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         if let Operator::Assign(_) = op {
             match self.ast.get(left) {
@@ -162,8 +200,19 @@ impl<'a> Compiler<'a> {
                         }
                     }
 
+                    // Record a potential `dst = a + b` fusion: emit the normal
+                    // sequence (correct in value context), then let effect context
+                    // collapse the tail. `start` marks where it began.
+                    let fusion = match self.resolve_local(intern_name) {
+                        Some(dst) => self.detect_add_local_fusion(dst, right)?,
+                        None => None
+                    };
+                    let start = self.chunk.code.len();
+
                     self.expression(right)?;
                     self.identifier(left, intern_name, true)?;
+
+                    self.add_local_fusion = fusion.map(|f| AddLocalFusion { start, ..f });
                     return Ok(());
                 },
                 Expr::Index(obj, member) => {
@@ -177,6 +226,20 @@ impl<'a> Compiler<'a> {
         if let Operator::MemberAccess = op {
             self.index(left, right, None)?;
             return Ok(());
+        }
+
+        // Value-producing `local - number` fusion (call args like `func(n - 1)`):
+        // load the slot, subtract the constant, push the result — one op for three.
+        if matches!(op, Operator::Subtract) {
+            if let Some(a) = self.local_operand(left) {
+                if let Expr::Literal(Literal::Number(num)) = self.ast.get(right) {
+                    let const_idx = self.chunk.add_constant(Value::from(*num))?;
+                    self.emit(opcode::SUB_LOCAL_CONST, right);
+                    self.emit(a, right);
+                    self.emit(const_idx, right);
+                    return Ok(());
+                }
+            }
         }
 
         self.expression(left)?;

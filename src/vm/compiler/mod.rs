@@ -77,7 +77,19 @@ pub struct Compiler<'a> {
     try_frames: Vec<TryFrame>,
     class_frames: Vec<ClassFrame>,
     classes: FnvHashMap<*mut ObjString, ClassCompilation>,
-    setter_pos: Option<usize>
+    setter_pos: Option<usize>,
+    add_local_fusion: Option<AddLocalFusion>
+}
+
+/// A pending `dst = a + b` assignment, where `dst` and `a` are locals
+/// and `b` is a local or numeric-constant operand.
+#[derive(Clone, Copy)]
+struct AddLocalFusion {
+    start: usize,
+    dst: u8,
+    a: u8,
+    b: u8,
+    is_const: bool
 }
 
 #[macro_export]
@@ -97,7 +109,8 @@ impl<'a> Compiler<'a> {
             try_frames: Vec::new(),
             class_frames: Vec::new(),
             classes: FnvHashMap::default(),
-            setter_pos: None
+            setter_pos: None,
+            add_local_fusion: None
         };
 
         let stmt_id = compiler.ast.get_root();
@@ -145,17 +158,51 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn emit_conditional_jump<T: 'static>(&mut self, cond: &ASTId<Expr>, node_id: &ASTId<T>) -> Result<u16, anyhow::Error> {
-        let jump_op = if let Expr::Binary(op, left, right) = self.ast.get(cond) {
-            Self::binary_jump_op(op).map(|f| (f, *left, *right))
-        } else {
-            None
-        };
+    /// Fused compare-and-branch variant for the common `local <cmp> number`.
+    fn local_const_jump_op(op: &crate::parser::Operator) -> Option<OpCode> {
+        use crate::parser::Operator;
+        Some(match op {
+            Operator::LessThan => opcode::JUMP_IF_GE_LOCAL_CONST,
+            Operator::LessThanEqual => opcode::JUMP_IF_GT_LOCAL_CONST,
+            Operator::GreaterThan => opcode::JUMP_IF_LE_LOCAL_CONST,
+            Operator::GreaterThanEqual => opcode::JUMP_IF_LT_LOCAL_CONST,
+            _ => return None
+        })
+    }
 
-        if let Some((op, left, right)) = jump_op {
-            self.expression(&left)?;
-            self.expression(&right)?;
-            return Ok(self.emit_jump(op, 0, node_id));
+    /// If `left` resolves to a local and `right` is a numeric literal, returns
+    /// `(local_slot, const_idx)` so the caller can emit a fused LOCAL_CONST op.
+    fn local_const_operands(&mut self, left: &ASTId<Expr>, right: &ASTId<Expr>) -> Result<Option<(u8, u8)>, anyhow::Error> {
+        let Expr::Identifier(name) = self.ast.get(left) else { return Ok(None) };
+        let name = self.gc.intern(name);
+        let Some(local_idx) = self.resolve_local(name) else { return Ok(None) };
+
+        let Expr::Literal(crate::parser::Literal::Number(num)) = self.ast.get(right) else { return Ok(None) };
+        let const_idx = self.chunk.add_constant(Value::from(*num))?;
+        Ok(Some((local_idx, const_idx)))
+    }
+
+    fn emit_conditional_jump<T: 'static>(&mut self, cond: &ASTId<Expr>, node_id: &ASTId<T>) -> Result<u16, anyhow::Error> {
+        if let Expr::Binary(op, left, right) = self.ast.get(cond) {
+            let (op, left, right) = (op.clone(), *left, *right);
+
+            // Fused `local <cmp> number`: operands live in the instruction, so the
+            // jump's 2-byte offset stays at +1/+2 (emitted first) and `patch_jump`
+            // works unchanged; the slot/const bytes trail it.
+            if let Some(fused_op) = Self::local_const_jump_op(&op) {
+                if let Some((local_idx, const_idx)) = self.local_const_operands(&left, &right)? {
+                    let jump_ref = self.emit_jump(fused_op, 0, node_id);
+                    self.emit(local_idx, node_id);
+                    self.emit(const_idx, node_id);
+                    return Ok(jump_ref);
+                }
+            }
+
+            if let Some(jump_op) = Self::binary_jump_op(&op) {
+                self.expression(&left)?;
+                self.expression(&right)?;
+                return Ok(self.emit_jump(jump_op, 0, node_id));
+            }
         }
 
         self.expression(cond)?;
@@ -194,12 +241,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Exits a scope whose result value is on top of the stack (a value-context
-    /// block). The block's locals sit *below* that value, so the plain `POP`/
-    /// `CLOSE_UPVALUE` cleanup of `exit_scope` would discard the result. Instead
-    /// emit a single `END_SCOPE` that collapses the locals while preserving the
-    /// result (mirroring the function-return epilogue). Emits nothing when the
-    /// block declared no locals (the value is already in the right place).
+    /// Exits a scope whose result value is on top of the stack.
     fn exit_scope_with_value<T: 'static>(&mut self, node_id: &ASTId<T>) {
         self.scope_depth -= 1;
         let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
