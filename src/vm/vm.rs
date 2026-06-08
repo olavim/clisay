@@ -3,6 +3,7 @@ use std::hash::BuildHasherDefault;
 
 use anyhow::bail;
 use rustc_hash::FxHasher;
+use smallvec::SmallVec;
 
 use crate::Output;
 use crate::parser::Parser;
@@ -254,7 +255,7 @@ impl Vm {
     fn get_upvalue(&self, idx: usize) -> *mut ObjUpvalue {
         unsafe {
             let closure = &*(*self.frames.top()).closure;
-            *closure.upvalues.get_unchecked(idx as usize)
+            closure.upvalue_at(idx)
         }
     }
 
@@ -282,10 +283,13 @@ impl Vm {
     }
 
     fn create_closure(&mut self, function: *mut ObjFn) -> Object {
-        let mut closure = ObjClosure::new(function);
         let fn_ref = unsafe { &*function };
         let upvalue_count = fn_ref.upvalues.len();
 
+        // Gather the captured upvalues into a stack-resident scratch buffer first,
+        // then allocate the exact-sized closure in one shot. Capturing must happen
+        // before allocation since capturing can trigger GC.
+        let mut upvalues: SmallVec<[*mut ObjUpvalue; 8]> = SmallVec::with_capacity(upvalue_count);
         for i in 0..upvalue_count {
             let fn_upval = &fn_ref.upvalues[i];
             let upvalue = if fn_upval.is_local {
@@ -294,10 +298,14 @@ impl Vm {
                 self.get_upvalue(fn_upval.location as usize)
             };
 
-            closure.upvalues.push(upvalue);
+            upvalues.push(upvalue);
         }
 
-        self.alloc(closure).into()
+        let (name, arity, ip_start) = (fn_ref.name, fn_ref.arity, fn_ref.ip_start);
+        if self.gc.should_collect() {
+            self.start_gc();
+        }
+        self.gc.alloc_closure(name, arity, ip_start, &upvalues).into()
     }
 
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
