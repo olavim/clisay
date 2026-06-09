@@ -15,10 +15,10 @@ mod output {
 
 mod lexer;
 mod parser;
-mod vm;
+mod runtime;
 
 pub use output::Output;
 
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
-    vm::run(file_name, src)
+    runtime::run(file_name, src)
 }

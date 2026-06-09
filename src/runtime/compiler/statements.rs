@@ -1,6 +1,6 @@
 use crate::compiler_error;
 use crate::parser::{ASTId, CatchClause, Expr, FieldInit, Stmt};
-use crate::vm::opcode;
+use crate::runtime::opcode;
 
 use super::{Compiler, FnKind, TryCatchPosition, TryFrame};
 

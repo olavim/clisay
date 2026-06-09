@@ -3,7 +3,7 @@ use std::mem;
 use anyhow::bail;
 
 use crate::lexer::SourcePosition;
-use crate::vm::opcode;
+use crate::runtime::opcode;
 
 use super::gc::{Gc, GcTraceable};
 use super::opcode::{OpCode, Operand};

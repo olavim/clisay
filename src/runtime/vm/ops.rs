@@ -1,0 +1,190 @@
+use super::*;
+
+/// Generates the cold numeric binary-op handlers: pop two operands, require both
+/// to be numbers (else a typed error naming `$token`), apply `$body`, push it.
+macro_rules! num_binop_methods {
+    ( $( $name:ident => |$a:ident, $b:ident| $body:expr, $token:literal );+ $(;)? ) => {
+        $(
+            pub(super) fn $name(&mut self) -> Result<(), anyhow::Error> {
+                self.binary_op_number(|$a, $b| Value::from($body), $token)
+            }
+        )+
+    };
+}
+
+/// Generates the cold value binary-op handlers (no numeric coercion): pop two
+/// values, apply `$body`, push the result.
+macro_rules! value_binop_methods {
+    ( $( $name:ident => |$a:ident, $b:ident| $body:expr );+ $(;)? ) => {
+        $(
+            pub(super) fn $name(&mut self) -> Result<(), anyhow::Error> {
+                self.binary_op(|$a, $b| Value::from($body))
+            }
+        )+
+    };
+}
+
+/// Generates the cold unary-op handlers: pop one value (must satisfy `$check`,
+/// else an "Invalid operand" error), apply `$body`, push the result.
+macro_rules! unary_op_methods {
+    ( $( $name:ident => |$v:ident| $check:ident => $body:expr );+ $(;)? ) => {
+        $(
+            pub(super) fn $name(&mut self) -> Result<(), anyhow::Error> {
+                let $v = self.stack.pop();
+                if !$v.$check() {
+                    bail!("Invalid operand")
+                }
+                self.stack.push(Value::from($body));
+                Ok(())
+            }
+        )+
+    };
+}
+
+impl Vm {
+    pub(super) fn op_return(&mut self) -> bool {
+        if self.frames.len() == 1 {
+            return false;
+        }
+
+        let frame = self.frames.pop();
+
+        self.ip = frame.return_ip;
+        self.close_upvalues(frame.stack_start);
+
+        let value = self.stack.pop();
+        self.stack.set_top(frame.stack_start);
+        self.stack.push(value);
+        true
+    }
+    
+    pub(super) fn op_throw(&mut self) -> Result<(), anyhow::Error> {
+        let value = self.stack.pop();
+
+        if self.try_frames.len() == 0 {
+            return self.error(format!("Uncaught exception: {}", value.fmt()));
+        }
+
+        let frame = self.try_frames.pop().unwrap();
+        self.frames.set_top(frame.origin);
+        self.stack.set_top(frame.stack_start);
+        self.ip = frame.handler_ip;
+        self.stack.push(value);
+        Ok(())
+    }
+
+    pub(super) fn op_push_try(&mut self) {
+        let handler_pos = as_short!(self.read_next(), self.read_next()) as usize;
+        self.try_frames.push(TryFrame {
+            origin: self.frames.top_ptr(),
+            handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
+            stack_start: self.stack.top()
+        });
+    }
+
+    pub(super) fn op_pop_try(&mut self) {
+        self.try_frames.pop();
+    }
+
+    pub(super) fn op_array(&mut self) {
+        let len = self.read_next() as usize;
+        // Copy the elements without popping them first: they must stay on the stack
+        // and remain GC roots because the allocation below can trigger a collection.
+        let values = unsafe {
+            let start = self.stack.top().sub(len);
+            std::slice::from_raw_parts(start, len).to_vec()
+        };
+        let array = self.alloc(ObjArray::new(values));
+        self.stack.truncate(len);
+        self.stack.push(Value::from(array));
+    }
+
+    pub(super) fn op_push_class(&mut self) {
+        let const_idx = self.read_next() as usize;
+        let value = self.chunk.constants[const_idx];
+        self.stack.push(value);
+    }
+
+    pub(super) fn op_get_global(&mut self) -> Result<(), anyhow::Error> {
+        let const_idx = self.read_next() as usize;
+        let constant = &self.chunk.constants[const_idx];
+        let string = constant.as_object().as_string_ptr();
+        let Some(&value) = self.globals.get(&string) else {
+            return self.error(format!("Undefined variable '{}'", unsafe { &*string }.value));
+        };
+        self.stack.push(value);
+        Ok(())
+    }
+
+    pub(super) fn op_add(&mut self) -> Result<(), anyhow::Error> {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+
+        if a.is_number() && b.is_number() {
+            self.stack.push(Value::from(a.as_number() + b.as_number()));
+            return Ok(());
+        }
+
+        let result = match (a.kind(), b.kind()) {
+            (ValueKind::Object(ObjectKind::String), ValueKind::Object(ObjectKind::String)) => {
+                let a = a.as_object();
+                let b = b.as_object();
+                let s = [a.as_string().as_str(), b.as_string().as_str()].concat();
+                Value::from(self.intern(s))
+            },
+            _ => {
+                return self.error(format!("Operator '+' cannot be applied to operands {} and {}", a, b))
+            }
+        };
+
+        self.stack.push(result);
+        Ok(())
+    }
+
+    num_binop_methods! {
+        op_subtract           => |a, b| a - b,  "-";
+        op_multiply           => |a, b| a * b,  "*";
+        op_divide             => |a, b| a / b,  "/";
+        op_less_than          => |a, b| a < b,  "<";
+        op_less_than_equal    => |a, b| a <= b, "<=";
+        op_greater_than       => |a, b| a > b,  ">";
+        op_greater_than_equal => |a, b| a >= b, ">=";
+        op_left_shift         => |a, b| ((a as i64) << (b as i64)) as f64, "<<";
+        op_right_shift        => |a, b| ((a as i64) >> (b as i64)) as f64, ">>";
+        op_bit_and            => |a, b| ((a as i64) & (b as i64)) as f64, "&&";
+        op_bit_or             => |a, b| ((a as i64) | (b as i64)) as f64, "||";
+        op_bit_xor            => |a, b| ((a as i64) ^ (b as i64)) as f64, "^";
+    }
+
+    value_binop_methods! {
+        op_equal     => |a, b| a.value_eq(b);
+        op_not_equal => |a, b| !a.value_eq(b);
+        op_and       => |a, b| a.as_bool() && b.as_bool();
+        op_or        => |a, b| a.as_bool() || b.as_bool();
+    }
+
+    unary_op_methods! {
+        op_negate  => |v| is_number => -v.as_number();
+        op_not     => |v| is_bool   => !v.as_bool();
+        op_bit_not => |v| is_number => !(v.as_number() as i64) as f64;
+    }
+
+    fn binary_op_number<F: Fn(f64, f64) -> Value>(&mut self, func: F, token: impl Into<String>) -> Result<(), anyhow::Error> {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+
+        if !a.is_number() || !b.is_number() {
+            return self.error(format!("Operator '{}' cannot be applied to operands {} and {}", token.into(), a, b));
+        }
+
+        self.stack.push(func(a.as_number(), b.as_number()));
+        Ok(())
+    }
+
+    fn binary_op<F: Fn(Value, Value) -> Value>(&mut self, func: F) -> Result<(), anyhow::Error> {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+        self.stack.push(func(a, b));
+        Ok(())
+    }
+}

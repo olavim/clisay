@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 use anyhow::bail;
 
-use crate::vm::gc::{Gc, GcTraceable};
-use crate::vm::objects::{NativeFn, ObjNativeFn, ObjString};
-use crate::vm::value::{Value, ValueKind};
-use crate::vm::vm::Vm;
+use crate::runtime::gc::{Gc, GcTraceable};
+use crate::runtime::objects::{NativeFn, ObjNativeFn, ObjString};
+use crate::runtime::value::{Value, ValueKind};
+use crate::runtime::vm::Vm;
 
 use super::NativeType;
 
