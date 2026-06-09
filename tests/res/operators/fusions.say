@@ -1,0 +1,11 @@
+say a = 0;
+say b = a + 1;
+// expect asm:
+// 0: CONST 0
+// 2: SET_LOCAL <0>
+// 4: ADD_LOCAL_CONST L<0> + 1
+// 7: SET_LOCAL <1>
+// 9: POP
+// 10: POP
+// 11: NULL
+// 12: RETURN

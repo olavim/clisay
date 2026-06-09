@@ -1,5 +1,5 @@
 use crate::compiler_error;
-use crate::parser::{ASTId, Expr, FieldInit, Stmt};
+use crate::parser::{ASTId, CatchClause, Expr, FieldInit, Stmt};
 use crate::vm::opcode;
 
 use super::{Compiler, FnKind, TryCatchPosition, TryFrame};
@@ -18,8 +18,10 @@ impl<'a> Compiler<'a> {
                         self.emit(opcode::POP_TRY, stmt_id);
                     }
 
-                    let Stmt::Finally(finally) = self.ast.get(&finally) else { unreachable!() };
-                    self.statement_body(finally)?;
+                    let idx = self.try_frames.len() - 1;
+                    self.try_frames[idx].position = TryCatchPosition::Finally;
+                    self.inline_block(&finally)?;
+                    self.try_frames[idx].position = pos;
                 }
 
                 if let FnKind::Initializer = self.fn_frames.last().unwrap().kind {
@@ -27,8 +29,7 @@ impl<'a> Compiler<'a> {
                         compiler_error!(self, stmt_id, "Cannot return a value from a class initializer");
                     }
 
-                    self.emit(opcode::GET_LOCAL, stmt_id);
-                    self.emit(0, stmt_id);
+                    self.emit_operand(opcode::GET_LOCAL, 0, stmt_id);
                 } else if let Some(expr) = expr {
                     self.expression(expr)?;
                 } else {
@@ -42,7 +43,7 @@ impl<'a> Compiler<'a> {
                     position: TryCatchPosition::Catch,
                     finally: Some(finally)
                 }) = self.try_frames.last().cloned() {
-                    self.statement(&finally)?;
+                    self.compile_finally(&finally)?;
                 }
 
                 self.expression(expr)?;
@@ -54,24 +55,22 @@ impl<'a> Compiler<'a> {
                     finally: *finally
                 });
 
-                if try_body.len() > 0 {
-                    let node_id = &try_body[0];
-
+                let Expr::Block(stmts) = self.ast.get(try_body) else { unreachable!() };
+                if !stmts.is_empty() {
+                    let node_id = &stmts[0];
                     let push_try_ref = self.emit_jump(opcode::PUSH_TRY, 0, node_id);
 
-                    self.enter_scope();
-                    self.statement_body(try_body)?;
-                    self.exit_scope(node_id);
+                    self.expression_for_effect(try_body)?;
 
                     self.emit(opcode::POP_TRY, node_id);
                     let try_jump = self.emit_jump(opcode::JUMP, 0, node_id);
                     self.patch_jump(push_try_ref)?;
 
                     if let Some(catch) = catch {
-                        self.statement(catch)?;
+                        self.compile_catch(catch)?;
                     } else {
                         if let Some(finally) = finally {
-                            self.statement(finally)?;
+                            self.compile_finally(finally)?;
                         }
                         self.emit(opcode::THROW, node_id);
                     }
@@ -80,32 +79,10 @@ impl<'a> Compiler<'a> {
                 }
 
                 if let Some(finally) = finally {
-                    self.statement(finally)?;
+                    self.compile_finally(finally)?;
                 }
 
                 self.try_frames.pop();
-            },
-            Stmt::Catch(param, body) => {
-                let frame_idx = self.try_frames.len() - 1;
-                self.try_frames[frame_idx].position = TryCatchPosition::Catch;
-
-                self.enter_scope();
-                if let Some(param) = param {
-                    let Expr::Identifier(name) = self.ast.get(param) else { unreachable!() };
-                    let name = self.gc.intern(name);
-                    self.declare_local(name, false, param)?;
-                }
-
-                self.statement_body(body)?;
-                self.exit_scope(stmt_id);
-            },
-            Stmt::Finally(body) => {
-                let frame_idx = self.try_frames.len() - 1;
-                self.try_frames[frame_idx].position = TryCatchPosition::Finally;
-
-                self.enter_scope();
-                self.statement_body(body)?;
-                self.exit_scope(stmt_id);
             },
             Stmt::Fn(decl) => {
                 let name = self.gc.intern(&decl.name);
@@ -116,12 +93,10 @@ impl<'a> Compiler<'a> {
                     .expect("fn declarations are reserved by hoist_declarations before compilation");
 
                 let const_idx = self.function(stmt_id, decl, FnKind::Function)?;
-                self.emit(opcode::PUSH_CLOSURE, stmt_id);
-                self.emit(const_idx, stmt_id);
+                self.emit_operand(opcode::PUSH_CLOSURE, const_idx, stmt_id);
 
                 // Store the closure into the reserved slot and discard the placeholder.
-                self.emit(opcode::SET_LOCAL, stmt_id);
-                self.emit(slot, stmt_id);
+                self.emit_operand(opcode::SET_LOCAL, slot, stmt_id);
                 self.emit(opcode::POP, stmt_id);
             },
             Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
@@ -129,13 +104,13 @@ impl<'a> Compiler<'a> {
                 let name = self.gc.intern(name);
                 let slot = self.declare_local(name, true, stmt_id)?;
 
-                if let Some(expr) = value {
+                let op = if let Some(expr) = value {
                     self.expression(expr)?;
-                    self.emit(opcode::SET_LOCAL, stmt_id);
+                    opcode::SET_LOCAL
                 } else {
-                    self.emit(opcode::GET_LOCAL, stmt_id);
-                }
-                self.emit(slot, stmt_id);
+                    opcode::GET_LOCAL
+                };
+                self.emit_operand(op, slot, stmt_id);
             },
             Stmt::Expression(expr) => {
                 self.expression_for_effect(expr)?;
@@ -145,9 +120,7 @@ impl<'a> Compiler<'a> {
 
                 let jump_ref = self.emit_conditional_jump(cond, stmt_id)?;
 
-                self.enter_scope();
-                self.statement_body(body)?;
-                self.exit_scope(cond);
+                self.expression_for_effect(body)?;
 
                 self.emit_jump(opcode::JUMP, pos, stmt_id);
                 self.patch_jump(jump_ref)?;
@@ -155,9 +128,7 @@ impl<'a> Compiler<'a> {
             Stmt::If(cond, then, otherwise) => {
                 let jump_ref = self.emit_conditional_jump(cond, stmt_id)?;
 
-                self.enter_scope();
-                self.statement_body(then)?;
-                self.exit_scope(stmt_id);
+                self.expression_for_effect(then)?;
 
                 if let Some(otherwise) = otherwise {
                     let else_jump_ref = self.emit_jump(opcode::JUMP, 0, stmt_id);
@@ -169,9 +140,7 @@ impl<'a> Compiler<'a> {
                 }
             },
             Stmt::Block(body) => {
-                self.enter_scope();
-                self.statement_body(body)?;
-                self.exit_scope(stmt_id);
+                self.expression_for_effect(body)?;
             }
         };
 
@@ -184,6 +153,39 @@ impl<'a> Compiler<'a> {
             self.statement(stmt_id)?;
         }
         Ok(())
+    }
+
+    pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<ASTId<Stmt>>, node_id: &ASTId<T>) -> Result<(), anyhow::Error> {
+        self.enter_scope();
+        self.statement_body(body)?;
+        self.exit_scope(node_id);
+        Ok(())
+    }
+
+    fn inline_block(&mut self, body: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+        let Expr::Block(stmts) = self.ast.get(body) else { unreachable!() };
+        self.statement_body(stmts)
+    }
+
+    fn compile_catch(&mut self, catch: &CatchClause) -> Result<(), anyhow::Error> {
+        let idx = self.try_frames.len() - 1;
+        self.try_frames[idx].position = TryCatchPosition::Catch;
+
+        self.enter_scope();
+        if let Some(param) = &catch.param {
+            let Expr::Identifier(name) = self.ast.get(param) else { unreachable!() };
+            let name = self.gc.intern(name);
+            self.declare_local(name, false, param)?;
+        }
+        self.inline_block(&catch.body)?;
+        self.exit_scope(&catch.body);
+        Ok(())
+    }
+
+    fn compile_finally(&mut self, finally: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+        let idx = self.try_frames.len() - 1;
+        self.try_frames[idx].position = TryCatchPosition::Finally;
+        self.expression_for_effect(finally)
     }
 
     pub (super) fn hoist_declarations(&mut self, body: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
