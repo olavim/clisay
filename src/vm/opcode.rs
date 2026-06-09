@@ -2,7 +2,6 @@ use crate::parser::Operator;
 
 pub type OpCode = u8;
 
-/// One operand of an instruction.
 #[derive(Clone, Copy)]
 pub enum Operand {
     /// A raw `u8`.

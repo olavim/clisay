@@ -13,6 +13,9 @@ pub trait GcTraceable {
     fn fmt(&self) -> String;
     fn mark(&self, gc: &mut Gc);
     fn size(&self) -> usize;
+    fn layout_size(&self) -> usize {
+        mem::size_of_val(self)
+    }
 }
 
 impl GcTraceable for String {
@@ -119,9 +122,7 @@ impl Gc {
         closure_ptr
     }
 
-    /// Returns a block of `size` bytes (alignment `OBJ_ALIGN`), reusing a recycled
-    /// one if available. The block is uninitialized; callers must write a valid
-    /// object before it can be marked or freed.
+    /// Returns a block of `size` bytes, reusing a recycled one if available.
     fn take_block(&mut self, size: usize) -> *mut u8 {
         if let Some(block) = self.free_lists.get_mut(&size).and_then(Vec::pop) {
             return block;

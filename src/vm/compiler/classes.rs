@@ -74,14 +74,12 @@ impl<'a> Compiler<'a> {
             self.install_method(stmt_id, self.gc.preset_identifiers.set)?;
         }
 
-        // Compile and assign class initializer function
         let init_func_ptr = self.compile_fn(&decl.init, FnKind::Initializer)?;
         let frame = self.class_frames.last_mut().unwrap();
         frame.class.members.insert(self.gc.preset_identifiers.init, ClassMember::Method(next_member_id));
         frame.class.methods.insert(next_member_id, init_func_ptr.into());
         next_member_id += 1;
 
-        // Compile and add methods to class object
         for stmt_id in &decl.methods {
             let Stmt::Fn(method) = self.ast.get(stmt_id) else { unreachable!(); };
             let name = self.gc.intern(&method.name);

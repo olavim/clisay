@@ -50,7 +50,6 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
         }
     }
 
-    /// Pops a slice of `count` elements from the stack and copies them into a new `Vec<T>`.
     #[inline]
     pub fn pop_slice(&mut self, count: usize) -> Vec<T> {
         unsafe {
@@ -90,7 +89,6 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
     
     #[inline]
     pub fn len(&self) -> usize {
-        // unsafe { self.top.offset_from(self.bottom) as usize }
         (self.top as isize - self.bottom as isize) as usize / std::mem::size_of::<T>()
     }
 }
