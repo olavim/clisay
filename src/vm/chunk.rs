@@ -6,7 +6,7 @@ use crate::lexer::SourcePosition;
 use crate::vm::opcode;
 
 use super::gc::{Gc, GcTraceable};
-use super::opcode::OpCode;
+use super::opcode::{OpCode, Operand};
 use super::value::Value;
 
 
@@ -45,125 +45,39 @@ impl BytecodeChunk {
 impl GcTraceable for BytecodeChunk {
     fn fmt(&self) -> String {
         let mut string = String::new();
-
-        macro_rules! push_fmt {
-            ($($t:tt)*) => {{
-                string.push_str(&format!($($t)*));
-            }};
-        }
-
         let mut pos = 0;
 
         macro_rules! byte {
-            () => {{
-                pos += 1;
-                self.code[pos - 1]
-            }};
+            () => {{ pos += 1; self.code[pos - 1] }};
         }
-
         macro_rules! short {
-            () => {{
-                pos += 2;
-                (self.code[pos - 2] as u16) | ((self.code[pos - 1] as u16) << 8)
-            }};
+            () => {{ pos += 2; (self.code[pos - 2] as u16) | ((self.code[pos - 1] as u16) << 8) }};
         }
 
+        // Generic disassembly: print the opcode's mnemonic, then render each
+        // operand per the layout declared alongside the opcode in `opcode.rs`.
+        // Adding or changing an opcode never requires touching this loop.
         while pos < self.code.len() {
-            push_fmt!("{pos}: ");
+            let op_pos = pos;
             let op = byte!();
+            string.push_str(&format!("{op_pos}: {}", opcode::name(op)));
 
-            match op {
-                opcode::RETURN => push_fmt!("RETURN"),
-                opcode::THROW => push_fmt!("THROW"),
-                opcode::PUSH_TRY => push_fmt!("TRY {}", short!()),
-                opcode::POP_TRY => push_fmt!("POP_TRY"),
-                opcode::POP => push_fmt!("POP"),
-                opcode::CALL => push_fmt!("CALL {}", byte!()),
-                opcode::JUMP => push_fmt!("JUMP <{}>", short!()),
-                opcode::JUMP_IF_FALSE => push_fmt!("JUMP_F <{}>", short!()),
-                opcode::JUMP_IF_GE => push_fmt!("JUMP_GE <{}>", short!()),
-                opcode::JUMP_IF_GT => push_fmt!("JUMP_GT <{}>", short!()),
-                opcode::JUMP_IF_LE => push_fmt!("JUMP_LE <{}>", short!()),
-                opcode::JUMP_IF_LT => push_fmt!("JUMP_LT <{}>", short!()),
-                opcode::JUMP_IF_EQ => push_fmt!("JUMP_EQ <{}>", short!()),
-                opcode::JUMP_IF_NEQ => push_fmt!("JUMP_NEQ <{}>", short!()),
-                opcode::JUMP_IF_GE_LOCAL_CONST => push_fmt!("JUMP_GE_LC <{}> L<{}> {}", short!(), byte!(), self.constants[byte!() as usize].fmt()),
-                opcode::JUMP_IF_GT_LOCAL_CONST => push_fmt!("JUMP_GT_LC <{}> L<{}> {}", short!(), byte!(), self.constants[byte!() as usize].fmt()),
-                opcode::JUMP_IF_LE_LOCAL_CONST => push_fmt!("JUMP_LE_LC <{}> L<{}> {}", short!(), byte!(), self.constants[byte!() as usize].fmt()),
-                opcode::JUMP_IF_LT_LOCAL_CONST => push_fmt!("JUMP_LT_LC <{}> L<{}> {}", short!(), byte!(), self.constants[byte!() as usize].fmt()),
-                opcode::CLOSE_UPVALUE => push_fmt!("CLOSE_UPVALUE <{}>", byte!()),
-                opcode::ARRAY => push_fmt!("ARRAY <{}>", byte!()),
-                opcode::PUSH_NULL => push_fmt!("NULL"),
-                opcode::PUSH_TRUE => push_fmt!("TRUE"),
-                opcode::PUSH_FALSE => push_fmt!("FALSE"),
-                opcode::PUSH_CONSTANT => {
-                    push_fmt!("CONST {}", self.constants[byte!() as usize].fmt());
-                },
-                opcode::PUSH_CLOSURE => {
-                    let func_const = self.constants[byte!() as usize];
-                    let func = func_const.as_object().as_function_ptr();
-                    push_fmt!("CLOSURE {}", unsafe { (*func).fmt() });
-                },
-                opcode::PUSH_CLASS => {
-                    let class_const = self.constants[byte!() as usize];
-                    let class = class_const.as_object().as_class_ptr();
-                    push_fmt!("CLASS {}", unsafe { (*class).fmt() });
-                },
-                opcode::ADD => push_fmt!("ADD"),
-                opcode::SET_LOCAL_ADD_LOCAL_LOCAL => push_fmt!("ADD_LOCAL <{}> = L<{}> + L<{}>", byte!(), byte!(), byte!()),
-                opcode::ADD_LOCAL_CONST => push_fmt!("ADD_LOCAL_CONST L<{}> + {}", byte!(), self.constants[byte!() as usize].fmt()),
-                opcode::SUB_LOCAL_CONST => push_fmt!("SUB_LOCAL_CONST L<{}> - {}", byte!(), self.constants[byte!() as usize].fmt()),
-                opcode::SUB_CONST_LOCAL => push_fmt!("SUB_CONST_LOCAL {} - L<{}>", self.constants[byte!() as usize].fmt(), byte!()),
-                opcode::SUBTRACT => push_fmt!("SUB"),
-                opcode::MULTIPLY => push_fmt!("MUL"),
-                opcode::DIVIDE => push_fmt!("DIV"),
-                opcode::NEGATE => push_fmt!("NEG"),
-                opcode::EQUAL => push_fmt!("EQ"),
-                opcode::NOT_EQUAL => push_fmt!("NEQ"),
-                opcode::LESS_THAN => push_fmt!("LT"),
-                opcode::LESS_THAN_EQUAL => push_fmt!("LTE"),
-                opcode::GREATER_THAN => push_fmt!("GT"),
-                opcode::GREATER_THAN_EQUAL => push_fmt!("GTE"),
-                opcode::NOT => push_fmt!("NOT"),
-                opcode::LEFT_SHIFT => push_fmt!("LSH"),
-                opcode::RIGHT_SHIFT => push_fmt!("RSH"),
-                opcode::BIT_AND => push_fmt!("AND"),
-                opcode::BIT_OR => push_fmt!("OR"),
-                opcode::BIT_XOR => push_fmt!("XOR"),
-                opcode::BIT_NOT => push_fmt!("BIT_NOT"),
-                opcode::AND => push_fmt!("AND"),
-                opcode::OR => push_fmt!("OR"),
-                opcode::GET_LOCAL => push_fmt!("GET_LOCAL <{}>", byte!()),
-                opcode::SET_LOCAL => push_fmt!("SET_LOCAL <{}>", byte!()),
-                opcode::SET_LOCAL_POP => push_fmt!("SET_LOCAL_POP <{}>", byte!()),
-                opcode::GET_UPVALUE => push_fmt!("GET_UPVAL <{}>", byte!()),
-                opcode::SET_UPVALUE => push_fmt!("SET_UPVAL <{}>", byte!()),
-                opcode::SET_UPVALUE_POP => push_fmt!("SET_UPVAL_POP <{}>", byte!()),
-                opcode::GET_INDEX => push_fmt!("GET_INDEX"),
-                opcode::SET_INDEX => push_fmt!("SET_INDEX"),
-                opcode::GET_PROPERTY_ID => {
-                    push_fmt!("GET_PROP_ID <{}>", byte!())
-                },
-                opcode::SET_PROPERTY_ID => {
-                    push_fmt!("SET_PROP_ID <{}>", byte!())
-                },
-                opcode::SET_PROPERTY_ID_POP => {
-                    push_fmt!("SET_PROP_ID_POP <{}>", byte!())
-                },
-                opcode::GET_GLOBAL => {
-                    push_fmt!("GET_GLOBAL {}", self.constants[byte!() as usize].fmt());
-                },
-                opcode::SET_GLOBAL => {
-                    push_fmt!("SET_GLOBAL {}", self.constants[byte!() as usize].fmt());
-                },
-                _ => panic!("Unknown opcode {}", op)
+            for operand in opcode::operands(op) {
+                let rendered = match operand {
+                    Operand::Byte => format!("<{}>", byte!()),
+                    Operand::Local => format!("L{}", byte!()),
+                    Operand::Const => self.constants[byte!() as usize].fmt(),
+                    Operand::Jump => format!("<{}>", short!()),
+                };
+                string.push(' ');
+                string.push_str(&rendered);
             }
 
             if pos < self.code.len() {
-                push_fmt!("\n");
+                string.push('\n');
             }
         }
-        
+
         string
     }
 

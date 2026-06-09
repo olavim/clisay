@@ -23,16 +23,8 @@ use super::compiler::Compiler;
 
 const MAX_STACK: usize = 16384;
 const MAX_FRAMES: usize = 256;
-
-/// Number of monomorphic inline-cache slots for instance property resolution.
-/// Power of two; call sites map into it by instruction pointer.
 const INDEX_CACHE_SIZE: usize = 2048;
 
-/// One monomorphic inline-cache slot: at a given `GET_INDEX` call site (`site`,
-/// the instruction pointer just past the opcode), the last instance class seen
-/// resolved `prop` to `member`. A hit skips the `members` hashmap lookup. Classes
-/// are interned in `chunk.constants` for the whole run and never collected, so a
-/// cached `class` pointer can neither dangle nor be reused for another object.
 #[derive(Clone, Copy)]
 struct IndexCache {
     site: usize,
