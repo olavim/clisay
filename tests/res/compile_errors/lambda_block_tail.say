@@ -1,0 +1,2 @@
+// A block-bodied lambda does not implicitly return its tail expression either.
+say f = () => { "x" }; // error: Unexpected token: Expected ';' but found '}'

@@ -1,0 +1,5 @@
+// Expression-bodied arrows return their expression implicitly; block-bodied
+// lambdas are statement blocks that require an explicit `return` (else null).
+print((() => "hello")());           // expect: hello
+print((() => { return "hi"; })());  // expect: hi
+print((() => { "x"; })());          // expect: null

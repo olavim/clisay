@@ -37,7 +37,6 @@ ops! {
     JUMP_IF_LE_LOCAL_CONST,
     JUMP_IF_LT_LOCAL_CONST,
     CLOSE_UPVALUE,
-    END_SCOPE,
     ARRAY,
     RETURN,
     THROW,

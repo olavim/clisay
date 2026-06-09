@@ -10,13 +10,10 @@ impl<'a> Compiler<'a> {
     pub (super) fn enter_function(&mut self, kind: FnKind, self_name: *mut ObjString) {
         self.scope_depth += 1;
 
-        // Reserve relative slot 0 of the new frame for the callee — at runtime
-        // `stack_start` points at the closure being called (or the instance, for a
-        // method), so the frame's own locals (params, body) must begin at slot 1.
-        // Any enclosing-scope locals (including hoisted sibling fn/class names) sit at
-        // lower indices than this `local_offset`, so they resolve as upvalues rather
-        // than polluting this frame's local range. Naming the callee after the
-        // function lets it refer to itself by name (recursion) as GET_LOCAL 0.
+        /* Reserve relative slot 0 of the new frame for the callee. At runtime
+         * the stack start points at the closure or instance being called, so
+         * the frame's own locals (params, body) must begin at slot 1.
+         */
         let local_offset = self.locals.len() as u8;
         self.locals.push(Local {
             name: self_name,
@@ -41,21 +38,17 @@ impl<'a> Compiler<'a> {
             self.locals.pop();
         }
 
-        let has_last_expr = match self.ast.get(body_id) {
-            Expr::Block(_, last_expr) => last_expr.is_some(),
-            _ => true
-        };
-
-        // Make sure there is a return statement at the end of the function
-        if has_last_expr {
-            self.emit(opcode::RETURN, body_id);
-        } else if self.chunk.code[self.chunk.code.len() - 1] != opcode::RETURN {
-            if let FnKind::Initializer = frame.kind {
-                self.emit(opcode::GET_LOCAL, body_id);
-                self.emit(0, body_id);
-            } else {
-                self.emit(opcode::PUSH_NULL, body_id);
+        if matches!(self.ast.get(body_id), Expr::Block(_)) {
+            if self.chunk.code[self.chunk.code.len() - 1] != opcode::RETURN {
+                if let FnKind::Initializer = frame.kind {
+                    self.emit(opcode::GET_LOCAL, body_id);
+                    self.emit(0, body_id);
+                } else {
+                    self.emit(opcode::PUSH_NULL, body_id);
+                }
+                self.emit(opcode::RETURN, body_id);
             }
+        } else {
             self.emit(opcode::RETURN, body_id);
         }
 
@@ -63,9 +56,7 @@ impl<'a> Compiler<'a> {
     }
 
     pub (super) fn function<T: 'static>(&mut self, node_id: &ASTId<T>, decl: &FnDecl, kind: FnKind) -> Result<u8, anyhow::Error> {
-        // The callee slot is named after the function so recursion resolves to it; for
-        // methods/initializers the callee is the instance (reached via `this`), so use
-        // the `@init` preset as a sentinel that no user identifier can match.
+        // The callee slot is named after the function so recursion resolves to it.
         let self_name = match kind {
             FnKind::Function => self.gc.intern(&decl.name),
             _ => self.gc.preset_identifiers.init

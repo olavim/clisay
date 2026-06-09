@@ -1,0 +1,2 @@
+// `if` is a statement, not an expression: it cannot appear in value position.
+say x = if true { 1 } else { 2 }; // error: Unexpected token if

@@ -9,8 +9,7 @@ use super::{AddLocalFusion, Compiler, FnKind};
 impl<'a> Compiler<'a> {
     pub (super) fn expression(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
-            Expr::Block(stmts, last_expr) => self.block(expr, stmts, last_expr)?,
-            Expr::If(cond, then, otherwise) => self.if_expression(cond, then, otherwise)?,
+            Expr::Block(stmts) => self.block(expr, stmts)?,
             Expr::Unary(op, expr) => self.unary_expression(op, expr)?,
             Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
             Expr::Call(expr, args) => self.call_expression(expr, args)?,
@@ -26,29 +25,21 @@ impl<'a> Compiler<'a> {
 
         Ok(())
     }
-
-    fn block(&mut self, expr: &ASTId<Expr>, stmts: &Vec<ASTId<Stmt>>, last_expr: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
+    
+    fn block(&mut self, expr: &ASTId<Expr>, stmts: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
         self.enter_scope();
         self.hoist_declarations(stmts)?;
         for stmt in stmts {
             self.statement(stmt)?;
         }
-
-        if let Some(last_expr) = last_expr {
-            self.expression(last_expr)?;
-        } else {
-            self.emit(opcode::PUSH_NULL, expr);
-        }
-
-        self.exit_scope_with_value(expr);
+        self.exit_scope(expr);
         Ok(())
     }
 
     /// Compiles an expression in statement position, where its value is discarded.
     pub (super) fn expression_for_effect(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
-            Expr::Block(stmts, last_expr) => self.block_for_effect(expr, stmts, last_expr)?,
-            Expr::If(cond, then, otherwise) => self.if_for_effect(cond, then, otherwise)?,
+            Expr::Block(stmts) => self.block(expr, stmts)?,
             _ => {
                 self.setter_pos = None;
                 self.add_local_fusion = None;
@@ -87,39 +78,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn block_for_effect(&mut self, expr: &ASTId<Expr>, stmts: &Vec<ASTId<Stmt>>, last_expr: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
-        self.enter_scope();
-        self.hoist_declarations(stmts)?;
-        for stmt in stmts {
-            self.statement(stmt)?;
-        }
-
-        // The block's value is discarded: compile a tail expression for effect
-        // and emit no `PUSH_NULL` placeholder when there is none.
-        if let Some(last_expr) = last_expr {
-            self.expression_for_effect(last_expr)?;
-        }
-
-        self.exit_scope(expr);
-        Ok(())
-    }
-
-    fn if_for_effect(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
-        let jump_ref = self.emit_conditional_jump(cond, cond)?;
-        self.expression_for_effect(then)?;
-        if let Some(otherwise) = otherwise {
-            let else_jump_ref = self.emit_jump(opcode::JUMP, 0, then);
-            self.patch_jump(jump_ref)?;
-            self.expression_for_effect(otherwise)?;
-            self.patch_jump(else_jump_ref)?;
-        } else {
-            // No else and no value: when the condition is false, jump past the
-            // then-branch to here, leaving nothing on the stack.
-            self.patch_jump(jump_ref)?;
-        }
-        Ok(())
-    }
-
     fn this(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         if self.class_frames.is_empty() {
             compiler_error!(self, expr, "Cannot use 'this' outside of a class method");
@@ -143,20 +101,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn if_expression(&mut self, cond: &ASTId<Expr>, then: &ASTId<Expr>, otherwise: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
-        let jump_ref = self.emit_conditional_jump(cond, cond)?;
-        self.expression(then)?;
-        let else_jump_ref = self.emit_jump(opcode::JUMP, 0, then);
-        self.patch_jump(jump_ref)?;
-        if let Some(otherwise) = otherwise {
-            self.expression(otherwise)?;
-        } else {
-            self.emit(opcode::PUSH_NULL, cond);
-        }
-        self.patch_jump(else_jump_ref)?;
-        Ok(())
-    }
-    
     fn unary_expression(&mut self, op: &Operator, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         self.expression(expr)?;
         self.emit(opcode::from_operator(op), expr);

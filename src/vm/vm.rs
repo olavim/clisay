@@ -834,7 +834,6 @@ impl Vm {
                 opcode::PUSH_TRY => delegate!(self.op_push_try()),
                 opcode::POP_TRY => self.op_pop_try(),
                 opcode::CLOSE_UPVALUE => delegate!(self.op_close_upvalue()),
-                opcode::END_SCOPE => delegate!(self.op_end_scope()),
                 opcode::ARRAY => delegate!(self.op_array()),
                 opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
                 opcode::PUSH_CLASS => delegate!(self.op_push_class()),
@@ -915,17 +914,6 @@ impl Vm {
         let p = unsafe { (*self.frames.top()).stack_start.add(location) };
         self.close_upvalues(p);
         self.stack.truncate(1);
-    }
-
-    /// Closes a value-producing block's scope: the block's result is on top of
-    /// the stack, above the block's locals (which start at relative slot `base`).
-    fn op_end_scope(&mut self) {
-        let base = self.read_next() as usize;
-        let p = unsafe { (*self.frames.top()).stack_start.add(base) };
-        self.close_upvalues(p);
-        let value = self.stack.pop();
-        self.stack.set_top(p);
-        self.stack.push(value);
     }
 
     fn op_array(&mut self) {

@@ -42,18 +42,6 @@ macro_rules! tokens {
                     _ => None
                 };
             }
-
-            pub fn starts_statement(&self) -> bool {
-                return matches!(self,
-                    TokenType::Class |
-                    TokenType::Fn |
-                    TokenType::While |
-                    TokenType::Return |
-                    TokenType::Say |
-                    TokenType::Throw |
-                    TokenType::Try
-                );
-            }
         }
     };
 }

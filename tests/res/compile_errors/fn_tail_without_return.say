@@ -1,0 +1,2 @@
+// A brace block never implicitly returns its last expression; `return` is required.
+fn f() { 1 } // error: Unexpected token: Expected ';' but found '}'

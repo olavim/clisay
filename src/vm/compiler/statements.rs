@@ -138,9 +138,6 @@ impl<'a> Compiler<'a> {
                 self.emit(slot, stmt_id);
             },
             Stmt::Expression(expr) => {
-                // Compile in discard context: the value is dropped, so `if`/block
-                // expressions emit no result and other expressions are popped
-                // (with store-and-pop setter fusion).
                 self.expression_for_effect(expr)?;
             },
             Stmt::While(cond, body) => {
@@ -154,6 +151,27 @@ impl<'a> Compiler<'a> {
 
                 self.emit_jump(opcode::JUMP, pos, stmt_id);
                 self.patch_jump(jump_ref)?;
+            },
+            Stmt::If(cond, then, otherwise) => {
+                let jump_ref = self.emit_conditional_jump(cond, stmt_id)?;
+
+                self.enter_scope();
+                self.statement_body(then)?;
+                self.exit_scope(stmt_id);
+
+                if let Some(otherwise) = otherwise {
+                    let else_jump_ref = self.emit_jump(opcode::JUMP, 0, stmt_id);
+                    self.patch_jump(jump_ref)?;
+                    self.statement(otherwise)?;
+                    self.patch_jump(else_jump_ref)?;
+                } else {
+                    self.patch_jump(jump_ref)?;
+                }
+            },
+            Stmt::Block(body) => {
+                self.enter_scope();
+                self.statement_body(body)?;
+                self.exit_scope(stmt_id);
             }
         };
 

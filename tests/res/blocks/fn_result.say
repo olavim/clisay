@@ -1,2 +1,2 @@
-fn expr() { "hello" }
+fn expr() { return "hello"; }
 print(expr()); // expect: hello

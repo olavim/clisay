@@ -1,0 +1,2 @@
+// A `{ … }` block is a statement, not an expression: it cannot produce a value.
+print({ 1 }); // error: Unexpected token {
