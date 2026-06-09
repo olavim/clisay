@@ -1,0 +1,1 @@
+say f = () => { "x" }; // error: Unexpected token: Expected ';' but found '}'

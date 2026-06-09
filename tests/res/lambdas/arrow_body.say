@@ -1,0 +1,3 @@
+print((() => "hello")());           // expect: hello
+print((() => { return "hi"; })());  // expect: hi
+print((() => { "x"; })());          // expect: null

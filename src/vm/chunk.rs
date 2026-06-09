@@ -92,7 +92,6 @@ impl GcTraceable for BytecodeChunk {
                 opcode::JUMP_IF_LE_LOCAL_CONST => push_fmt!("JUMP_LE_LC <{}> L<{}> {}", short!(), byte!(), self.constants[byte!() as usize].fmt()),
                 opcode::JUMP_IF_LT_LOCAL_CONST => push_fmt!("JUMP_LT_LC <{}> L<{}> {}", short!(), byte!(), self.constants[byte!() as usize].fmt()),
                 opcode::CLOSE_UPVALUE => push_fmt!("CLOSE_UPVALUE <{}>", byte!()),
-                opcode::END_SCOPE => push_fmt!("END_SCOPE <{}>", byte!()),
                 opcode::ARRAY => push_fmt!("ARRAY <{}>", byte!()),
                 opcode::PUSH_NULL => push_fmt!("NULL"),
                 opcode::PUSH_TRUE => push_fmt!("TRUE"),

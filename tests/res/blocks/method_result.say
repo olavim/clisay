@@ -1,4 +1,4 @@
 class A {
-    fn foo() { 42 }
+    fn foo() { return 42; }
 }
 print(A().foo()); // expect: 42
