@@ -10,6 +10,7 @@ use regex::Regex;
 const REGEX_SKIP: &str = r"^\s*//.*//";
 const REGEX_EXPECTED_ERROR: &str = r"//[ ]*error[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
 const REGEX_EXPECTED_OUT: &str = r"//[ ]*expect[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
+const REGEX_EXPECTED_ASM: &str = r"//[ ]*expect asm[ ]*:[ ]*(\r\n|\n|\r)(//[ ]*[^\n\r]+[ ]*(\r\n|\n|\r|$))*";
 const REGEX_ERROR_MESSAGE: &str = r"(.*)(\s*at .*:(\d+))+";
 const REGEX_SPLIT: &str = r"// @split(\r\n|\r|\n)";
 
@@ -35,11 +36,17 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
     for section in sections {
         let result = run(file, section);
         let out = Output::get_output();
-        let out = if out.len() > 0 && out[0] == "=== Bytecode ===" {
-            let end = out.iter().position(|s| s == "================").unwrap() + 1;
-            out[end..].to_vec()
+        let asm_end_pos = if out.len() > 0 && out[0] == "=== Bytecode ===" {
+            Some(out.iter().position(|s| s == "================").unwrap() + 1)
         } else {
-            out
+            None
+        };
+        let asm = asm_end_pos
+            .map(|pos| out[1..pos - 1].to_vec())
+            .map(|v| v.iter().flat_map(|line| line.lines()).map(String::from).collect());
+        let out = match asm_end_pos {
+             Some(pos) => out[pos..].to_vec(),
+             None => out
         };
 
         if let Some(expected_error) = parse_expected_error(section) {
@@ -53,7 +60,11 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
         }
 
         let expected_out = parse_expected_output(section);
-        eq_or_fail(expected_out.iter().map(|s| String::from(*s)).collect::<Vec<String>>(), out)?;
+        eq_or_fail(expected_out.into_iter().map(String::from).collect::<Vec<String>>(), out)?;
+
+        if let Some(expected_asm) = parse_expected_asm(section) {
+            eq_or_fail(expected_asm.into_iter().map(String::from).collect::<Vec<String>>(), asm.unwrap())?;
+        }
 
         Output::clear();
     }
@@ -106,5 +117,18 @@ fn parse_expected_error(src: &str) -> Option<String> {
 
 fn parse_expected_output(src: &str) -> Vec<&str> {
     let expected_regex = Regex::new(REGEX_EXPECTED_OUT).unwrap();
-    expected_regex.captures_iter(src).map(|c| c.get(1).unwrap().as_str()).collect::<Vec<&str>>()
+    expected_regex.captures_iter(src)
+        .map(|c| c.get(1).unwrap().as_str())
+        .collect::<Vec<&str>>()
+}
+
+fn parse_expected_asm(src: &str) -> Option<Vec<&str>> {
+    let expected_regex = Regex::new(REGEX_EXPECTED_ASM).unwrap();
+    return expected_regex.captures(src)
+        .map(|c| c.get(0).unwrap().as_str()
+            .lines()
+            .skip(1)
+            .map(|l| l.strip_prefix("//").unwrap_or(l).trim())
+            .filter(|l| l.len() > 0)
+            .collect::<Vec<&str>>());
 }

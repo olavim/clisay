@@ -1,15 +1,15 @@
 use crate::compiler_error;
-use crate::parser::{ASTId, Expr, FnDecl, Literal, Operator, Stmt};
+use crate::parser::{ASTId, Expr, FnDecl, Literal, Operator};
 use crate::vm::objects::ObjString;
 use crate::vm::opcode;
 use crate::vm::value::Value;
 
-use super::{AddLocalFusion, Compiler, FnKind};
+use super::{Compiler, FnKind};
 
 impl<'a> Compiler<'a> {
     pub (super) fn expression(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
-            Expr::Block(stmts) => self.block(expr, stmts)?,
+            Expr::Block(stmts) => self.scoped_body(stmts, expr)?,
             Expr::Unary(op, expr) => self.unary_expression(op, expr)?,
             Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
             Expr::Call(expr, args) => self.call_expression(expr, args)?,
@@ -26,41 +26,13 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
     
-    fn block(&mut self, expr: &ASTId<Expr>, stmts: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
-        self.enter_scope();
-        self.hoist_declarations(stmts)?;
-        for stmt in stmts {
-            self.statement(stmt)?;
-        }
-        self.exit_scope(expr);
-        Ok(())
-    }
-
     /// Compiles an expression in statement position, where its value is discarded.
     pub (super) fn expression_for_effect(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
-            Expr::Block(stmts) => self.block(expr, stmts)?,
+            Expr::Block(stmts) => self.scoped_body(stmts, expr)?,
             _ => {
                 self.setter_pos = None;
-                self.add_local_fusion = None;
                 self.expression(expr)?;
-
-                // Collapse `dst = a + b` into a single store-and-discard op.
-                if let Some(f) = self.add_local_fusion.take() {
-                    let is_tail = matches!(self.setter_pos, Some(pos)
-                        if pos + 2 == self.chunk.code.len() && self.chunk.code[pos] == opcode::SET_LOCAL);
-                    if is_tail {
-                        self.chunk.code.truncate(f.start);
-                        self.chunk.code_pos.truncate(f.start);
-                        let op = if f.is_const { opcode::ADD_LOCAL_CONST } else { opcode::ADD_LOCAL };
-                        self.emit(op, expr);
-                        self.emit(f.dst, expr);
-                        self.emit(f.a, expr);
-                        self.emit(f.b, expr);
-                        self.setter_pos = None;
-                        return Ok(());
-                    }
-                }
 
                 match self.setter_pos.take() {
                     Some(pos) if pos + 2 == self.chunk.code.len() => {
@@ -83,8 +55,7 @@ impl<'a> Compiler<'a> {
             compiler_error!(self, expr, "Cannot use 'this' outside of a class method");
         }
 
-        self.emit(opcode::GET_LOCAL, expr);
-        self.emit(0, expr);
+        self.emit_operand(opcode::GET_LOCAL, 0, expr);
         Ok(())
     }
 
@@ -96,8 +67,7 @@ impl<'a> Compiler<'a> {
             compiler_error!(self, expr, "Cannot use 'super' outside of a child class method");
         }
 
-        self.emit(opcode::GET_LOCAL, expr);
-        self.emit(0, expr);
+        self.emit_operand(opcode::GET_LOCAL, 0, expr);
         Ok(())
     }
 
@@ -114,25 +84,6 @@ impl<'a> Compiler<'a> {
         self.resolve_local(name)
     }
 
-    /// For `dst = <right>`, detects whether `right` is `a + b` with `a` a local and
-    /// `b` a local or numeric literal, returning the operands for an `ADD_LOCAL`
-    /// fusion. `dst` is the already-resolved target local slot.
-    fn detect_add_local_fusion(&mut self, dst: u8, right: &ASTId<Expr>) -> Result<Option<AddLocalFusion>, anyhow::Error> {
-        let Expr::Binary(Operator::Add, l, r) = self.ast.get(right) else { return Ok(None) };
-        let (l, r) = (*l, *r);
-
-        let Some(a) = self.local_operand(&l) else { return Ok(None) };
-
-        if let Some(b) = self.local_operand(&r) {
-            return Ok(Some(AddLocalFusion { start: 0, dst, a, b, is_const: false }));
-        }
-        if let Expr::Literal(Literal::Number(num)) = self.ast.get(&r) {
-            let const_idx = self.chunk.add_constant(Value::from(*num))?;
-            return Ok(Some(AddLocalFusion { start: 0, dst, a, b: const_idx, is_const: true }));
-        }
-        Ok(None)
-    }
-
     fn binary_expression(&mut self, op: &Operator, left: &ASTId<Expr>, right: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         if let Operator::Assign(_) = op {
             match self.ast.get(left) {
@@ -144,19 +95,8 @@ impl<'a> Compiler<'a> {
                         }
                     }
 
-                    // Record a potential `dst = a + b` fusion: emit the normal
-                    // sequence (correct in value context), then let effect context
-                    // collapse the tail. `start` marks where it began.
-                    let fusion = match self.resolve_local(intern_name) {
-                        Some(dst) => self.detect_add_local_fusion(dst, right)?,
-                        None => None
-                    };
-                    let start = self.chunk.code.len();
-
                     self.expression(right)?;
                     self.identifier(left, intern_name, true)?;
-
-                    self.add_local_fusion = fusion.map(|f| AddLocalFusion { start, ..f });
                     return Ok(());
                 },
                 Expr::Index(obj, member) => {
@@ -172,8 +112,24 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
-        // Value-producing `local - number` fusion (call args like `func(n - 1)`):
-        // load the slot, subtract the constant, push the result — one op for three.
+        if let (Some(a), Expr::Literal(Literal::Number(num))) = (
+            self.local_operand(left),
+            self.ast.get(right),
+        ) {
+            let opcode = match op {
+                Operator::Subtract => Some(opcode::SUB_LOCAL_CONST),
+                Operator::Add => Some(opcode::ADD_LOCAL_CONST),
+                _ => None
+            };
+            if let Some(opcode) = opcode {
+                let const_idx = self.chunk.add_constant(Value::from(*num))?;
+                self.emit(opcode, right);
+                self.emit(a, right);
+                self.emit(const_idx, right);
+                return Ok(());
+            }
+        }
+
         if matches!(op, Operator::Subtract) {
             if let Some(a) = self.local_operand(left) {
                 if let Expr::Literal(Literal::Number(num)) = self.ast.get(right) {
@@ -261,16 +217,14 @@ impl<'a> Compiler<'a> {
         match assign_expr {
             None => {
                 self.expression(target_expr)?;
-                self.emit(opcode::GET_PROPERTY_ID, target_expr);
-                self.emit(member_id, target_expr);
+                self.emit_operand(opcode::GET_PROPERTY_ID, member_id, target_expr);
             },
             Some(assign_expr) => {
                 self.expression(assign_expr)?;
                 self.expression(target_expr)?;
 
                 self.setter_pos = Some(self.chunk.code.len());
-                self.emit(opcode::SET_PROPERTY_ID, target_expr);
-                self.emit(member_id, target_expr);
+                self.emit_operand(opcode::SET_PROPERTY_ID, member_id, target_expr);
             }
         }
 
@@ -279,8 +233,7 @@ impl<'a> Compiler<'a> {
 
     fn index_class_member_by_accessor(&mut self, target_expr: &ASTId<Expr>, accessor_id: u8, member_expr_id: &ASTId<Expr>, assign_expr_id: Option<&ASTId<Expr>>) -> Result<(), anyhow::Error> {
         self.expression(target_expr)?;
-        self.emit(opcode::GET_PROPERTY_ID, target_expr);
-        self.emit(accessor_id, target_expr);
+        self.emit_operand(opcode::GET_PROPERTY_ID, accessor_id, target_expr);
 
         let args = if let Some(assign_expr_id) = assign_expr_id {
             vec![member_expr_id, assign_expr_id]
@@ -291,8 +244,7 @@ impl<'a> Compiler<'a> {
         for arg in &args {
             self.expression(arg)?;
         }
-        self.emit(opcode::CALL, target_expr);
-        self.emit(args.len() as u8, target_expr);
+        self.emit_operand(opcode::CALL, args.len() as u8, target_expr);
         Ok(())
     }
     
@@ -308,11 +260,8 @@ impl<'a> Compiler<'a> {
                 let init_str = self.gc.intern("@init");
                 let member_id = unsafe { &*superclass.class }.resolve_id(init_str).unwrap();
 
-                self.emit(opcode::GET_LOCAL, expr);
-                self.emit(0, expr);
-
-                self.emit(opcode::GET_PROPERTY_ID, expr);
-                self.emit(member_id, expr);
+                self.emit_operand(opcode::GET_LOCAL, 0, expr);
+                self.emit_operand(opcode::GET_PROPERTY_ID, member_id, expr);
             },
             _ => { self.expression(expr)? }
         };
@@ -322,8 +271,7 @@ impl<'a> Compiler<'a> {
             self.emit(opcode::CALL, expr);
             self.emit_count(args);
         } else {
-            self.emit(opcode::CALL, expr);
-            self.emit(0, expr);
+            self.emit_operand(opcode::CALL, 0, expr);
         }
 
         Ok(())
@@ -331,8 +279,7 @@ impl<'a> Compiler<'a> {
 
     fn lambda(&mut self, expr: &ASTId<Expr>, decl: &FnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
         let const_idx = self.function(expr, decl, kind)?;
-        self.emit(opcode::PUSH_CLOSURE, expr);
-        self.emit(const_idx, expr);
+        self.emit_operand(opcode::PUSH_CLOSURE, const_idx, expr);
         return Ok(());
     }
     
@@ -340,14 +287,12 @@ impl<'a> Compiler<'a> {
         match literal {
             Literal::Number(num) => {
                 let idx = self.chunk.add_constant(Value::from(*num))?;
-                self.emit(opcode::PUSH_CONSTANT, expr);
-                self.emit(idx, expr);
+                self.emit_operand(opcode::PUSH_CONSTANT, idx, expr);
             },
             Literal::String(str) => {
                 let str = self.gc.intern(str);
                 let idx = self.chunk.add_constant(Value::from(str))?;
-                self.emit(opcode::PUSH_CONSTANT, expr);
-                self.emit(idx, expr);
+                self.emit_operand(opcode::PUSH_CONSTANT, idx, expr);
             },
             Literal::Null => { self.emit(opcode::PUSH_NULL, expr); },
             Literal::Boolean(true) => { self.emit(opcode::PUSH_TRUE, expr); },
@@ -358,8 +303,7 @@ impl<'a> Compiler<'a> {
                     self.emit(opcode::ARRAY, expr);
                     self.emit_count(list);
                 } else {
-                    self.emit(opcode::ARRAY, expr);
-                    self.emit(0, expr);
+                    self.emit_operand(opcode::ARRAY, 0, expr);
                 }
             },
             Literal::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
@@ -375,8 +319,7 @@ impl<'a> Compiler<'a> {
             (upvalue_idx, opcode::GET_UPVALUE, opcode::SET_UPVALUE)
         } else if let Some(id) = self.class_frames.last().and_then(|f| f.class.resolve_id(name)) {
             // Implicit 'this'
-            self.emit(opcode::GET_LOCAL, expr);
-            self.emit(0, expr);
+            self.emit_operand(opcode::GET_LOCAL, 0, expr);
             (id, opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
         } else {
             let const_idx = self.chunk.add_constant(Value::from(name))?;
@@ -389,8 +332,7 @@ impl<'a> Compiler<'a> {
             self.setter_pos = Some(self.chunk.code.len());
         }
 
-        self.emit(op, expr);
-        self.emit(operand, expr);
+        self.emit_operand(op, operand, expr);
         return Ok(());
     }
 }

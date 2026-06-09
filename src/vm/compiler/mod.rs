@@ -13,8 +13,8 @@ use super::opcode;
 use super::opcode::OpCode;
 use crate::parser::ASTId;
 use crate::parser::Expr;
-use crate::parser::Stmt;
 use crate::parser::AST;
+use crate::parser::Literal;
 use super::value::Value;
 
 mod expressions;
@@ -64,7 +64,7 @@ enum TryCatchPosition {
 #[derive(Clone)]
 struct TryFrame {
     position: TryCatchPosition,
-    finally: Option<ASTId<Stmt>>
+    finally: Option<ASTId<Expr>>
 }
 
 pub struct Compiler<'a> {
@@ -77,19 +77,7 @@ pub struct Compiler<'a> {
     try_frames: Vec<TryFrame>,
     class_frames: Vec<ClassFrame>,
     classes: FnvHashMap<*mut ObjString, ClassCompilation>,
-    setter_pos: Option<usize>,
-    add_local_fusion: Option<AddLocalFusion>
-}
-
-/// A pending `dst = a + b` assignment, where `dst` and `a` are locals
-/// and `b` is a local or numeric-constant operand.
-#[derive(Clone, Copy)]
-struct AddLocalFusion {
-    start: usize,
-    dst: u8,
-    a: u8,
-    b: u8,
-    is_const: bool
+    setter_pos: Option<usize>
 }
 
 #[macro_export]
@@ -109,8 +97,7 @@ impl<'a> Compiler<'a> {
             try_frames: Vec::new(),
             class_frames: Vec::new(),
             classes: FnvHashMap::default(),
-            setter_pos: None,
-            add_local_fusion: None
+            setter_pos: None
         };
 
         let stmt_id = compiler.ast.get_root();
@@ -132,6 +119,12 @@ impl<'a> Compiler<'a> {
     fn emit<T: 'static>(&mut self, byte: u8, node_id: &ASTId<T>) {
         let pos = self.ast.pos(node_id);
         self.chunk.write(byte, pos);
+    }
+
+    /// Emits a two-byte instruction: an opcode followed by a single operand byte.
+    fn emit_operand<T: 'static>(&mut self, op: OpCode, operand: u8, node_id: &ASTId<T>) {
+        self.emit(op, node_id);
+        self.emit(operand, node_id);
     }
 
     fn emit_jump<T: 'static>(&mut self, op: OpCode, pos: u16, node_id: &ASTId<T>) -> u16 {
@@ -177,7 +170,7 @@ impl<'a> Compiler<'a> {
         let name = self.gc.intern(name);
         let Some(local_idx) = self.resolve_local(name) else { return Ok(None) };
 
-        let Expr::Literal(crate::parser::Literal::Number(num)) = self.ast.get(right) else { return Ok(None) };
+        let Expr::Literal(Literal::Number(num)) = self.ast.get(right) else { return Ok(None) };
         let const_idx = self.chunk.add_constant(Value::from(*num))?;
         Ok(Some((local_idx, const_idx)))
     }
@@ -189,13 +182,11 @@ impl<'a> Compiler<'a> {
             // Fused `local <cmp> number`: operands live in the instruction, so the
             // jump's 2-byte offset stays at +1/+2 (emitted first) and `patch_jump`
             // works unchanged; the slot/const bytes trail it.
-            if let Some(fused_op) = Self::local_const_jump_op(&op) {
-                if let Some((local_idx, const_idx)) = self.local_const_operands(&left, &right)? {
-                    let jump_ref = self.emit_jump(fused_op, 0, node_id);
-                    self.emit(local_idx, node_id);
-                    self.emit(const_idx, node_id);
-                    return Ok(jump_ref);
-                }
+            if let (Some(fused_op), Some((local_idx, const_idx))) = (Self::local_const_jump_op(&op), self.local_const_operands(&left, &right)?) {
+                let jump_ref = self.emit_jump(fused_op, 0, node_id);
+                self.emit(local_idx, node_id);
+                self.emit(const_idx, node_id);
+                return Ok(jump_ref);
             }
 
             if let Some(jump_op) = Self::binary_jump_op(&op) {
@@ -232,8 +223,7 @@ impl<'a> Compiler<'a> {
         self.scope_depth -= 1;
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
             if self.locals.last().unwrap().is_captured {
-                self.emit(opcode::CLOSE_UPVALUE, node_id);
-                self.emit(self.locals.len() as u8 - 1, node_id);
+                self.emit_operand(opcode::CLOSE_UPVALUE, self.locals.len() as u8 - 1, node_id);
             } else {
                 self.emit(opcode::POP, node_id);
             }

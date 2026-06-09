@@ -111,7 +111,7 @@ impl GcTraceable for BytecodeChunk {
                 },
                 opcode::ADD => push_fmt!("ADD"),
                 opcode::ADD_LOCAL => push_fmt!("ADD_LOCAL <{}> = L<{}> + L<{}>", byte!(), byte!(), byte!()),
-                opcode::ADD_LOCAL_CONST => push_fmt!("ADD_LOCAL_CONST <{}> = L<{}> + {}", byte!(), byte!(), self.constants[byte!() as usize].fmt()),
+                opcode::ADD_LOCAL_CONST => push_fmt!("ADD_LOCAL_CONST L<{}> + {}", byte!(), self.constants[byte!() as usize].fmt()),
                 opcode::SUB_LOCAL_CONST => push_fmt!("SUB_LOCAL_CONST L<{}> - {}", byte!(), self.constants[byte!() as usize].fmt()),
                 opcode::SUBTRACT => push_fmt!("SUB"),
                 opcode::MULTIPLY => push_fmt!("MUL"),

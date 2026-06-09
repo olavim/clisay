@@ -41,8 +41,7 @@ impl<'a> Compiler<'a> {
         if matches!(self.ast.get(body_id), Expr::Block(_)) {
             if self.chunk.code[self.chunk.code.len() - 1] != opcode::RETURN {
                 if let FnKind::Initializer = frame.kind {
-                    self.emit(opcode::GET_LOCAL, body_id);
-                    self.emit(0, body_id);
+                    self.emit_operand(opcode::GET_LOCAL, 0, body_id);
                 } else {
                     self.emit(opcode::PUSH_NULL, body_id);
                 }

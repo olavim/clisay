@@ -756,22 +756,18 @@ impl Vm {
                 },
                 // Fused `dst = a + const` (const is a numeric literal by emission).
                 opcode::ADD_LOCAL_CONST => {
-                    let dst = read_byte!() as usize;
                     let a_idx = read_byte!() as usize;
                     let b_idx = read_byte!() as usize;
-                    let frame = unsafe { (*self.frames.top()).stack_start };
-                    let a = unsafe { *frame.add(a_idx) };
+                    let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
                     let b = self.chunk.constants[b_idx];
                     if a.is_number() {
-                        unsafe { *frame.add(dst) = Value::from(a.as_number() + b.as_number()) };
+                        self.stack.push(Value::from(a.as_number() + b.as_number()));
                     } else {
                         self.stack.push(a);
                         self.stack.push(b);
                         self.ip = ip;
                         self.op_add()?;
                         ip = self.ip;
-                        let result = self.stack.pop();
-                        unsafe { *frame.add(dst) = result };
                     }
                 },
                 opcode::ADD => num_binop!(+, op_add),

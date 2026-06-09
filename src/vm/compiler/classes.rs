@@ -1,5 +1,5 @@
 use crate::parser::{ASTId, ClassDecl, Stmt};
-use crate::vm::objects::{ClassMember, ObjClass, ObjFn};
+use crate::vm::objects::{ClassMember, ObjClass, ObjFn, ObjString};
 use crate::vm::opcode;
 use crate::vm::value::Value;
 
@@ -9,7 +9,7 @@ use super::{ClassCompilation, ClassFrame, Compiler, FnKind};
 
 impl<'a> Compiler<'a> {
     pub (super) fn class_declaration(&mut self, stmt: &ASTId<Stmt>, decl: &Box<ClassDecl>) -> Result<(), anyhow::Error> {
-        // The slot was reserved by `hoist_declarations` before any body in this scope
+        // The slot was reserved by declaration hoisting before any body in this scope
         // was compiled, which is what lets forward references resolve.
         let name = self.gc.intern(&decl.name);
         let slot = self.resolve_local(name)
@@ -67,21 +67,15 @@ impl<'a> Compiler<'a> {
         self.class_frames.push(frame);
 
         if let Some(stmt_id) = &decl.getter {
-            let function_ptr = self.class_method(stmt_id)?;
-            let frame = self.class_frames.last_mut().unwrap();
-            let ClassMember::Method(id) = frame.class.resolve(self.gc.preset_identifiers.get).unwrap() else { unreachable!(); };
-            frame.class.methods.insert(id, function_ptr.into());
+            self.install_method(stmt_id, self.gc.preset_identifiers.get)?;
         }
 
         if let Some(stmt_id) = &decl.setter {
-            let function_ptr = self.class_method(stmt_id)?;
-            let frame = self.class_frames.last_mut().unwrap();
-            let ClassMember::Method(id) = frame.class.resolve(self.gc.preset_identifiers.set).unwrap() else { unreachable!(); };
-            frame.class.methods.insert(id, function_ptr.into());
+            self.install_method(stmt_id, self.gc.preset_identifiers.set)?;
         }
 
         // Compile and assign class initializer function
-        let init_func_ptr = self.initializer(&decl.init)?;
+        let init_func_ptr = self.compile_fn(&decl.init, FnKind::Initializer)?;
         let frame = self.class_frames.last_mut().unwrap();
         frame.class.members.insert(self.gc.preset_identifiers.init, ClassMember::Method(next_member_id));
         frame.class.methods.insert(next_member_id, init_func_ptr.into());
@@ -89,11 +83,9 @@ impl<'a> Compiler<'a> {
 
         // Compile and add methods to class object
         for stmt_id in &decl.methods {
-            let Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
-            let function_ptr = self.class_method(stmt_id)?;
-            let frame = self.class_frames.last_mut().unwrap();
-            let ClassMember::Method(id) = frame.class.resolve(self.gc.intern(&decl.name)).unwrap() else { unreachable!(); };
-            frame.class.methods.insert(id, function_ptr.into());
+            let Stmt::Fn(method) = self.ast.get(stmt_id) else { unreachable!(); };
+            let name = self.gc.intern(&method.name);
+            self.install_method(stmt_id, name)?;
         }
 
         let mut class = self.class_frames.pop().unwrap().class;
@@ -103,28 +95,28 @@ impl<'a> Compiler<'a> {
         let class = self.gc.alloc(class);
         let idx = self.chunk.add_constant(Value::from(class))?;
         self.classes.insert(self.gc.intern(&decl.name), ClassCompilation { class, next_member_id });
-        self.emit(opcode::PUSH_CLASS, stmt);
-        self.emit(idx, stmt);
-        
+        self.emit_operand(opcode::PUSH_CLASS, idx, stmt);
+
         // Store the class into the reserved slot and discard the placeholder.
-        self.emit(opcode::SET_LOCAL, stmt);
-        self.emit(slot, stmt);
+        self.emit_operand(opcode::SET_LOCAL, slot, stmt);
         self.emit(opcode::POP, stmt);
 
         Ok(())
     }
 
-    fn initializer(&mut self, stmt: &ASTId<Stmt>) -> Result<*mut ObjFn, anyhow::Error> {
-        let Stmt::Fn(decl) = self.ast.get(&stmt) else { unreachable!(); };
-        let const_idx = self.function(stmt, decl, FnKind::Initializer)?;
+    fn compile_fn(&mut self, stmt: &ASTId<Stmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {
+        let Stmt::Fn(decl) = self.ast.get(stmt) else { unreachable!(); };
+        let const_idx = self.function(stmt, decl, kind)?;
         let func_const = self.chunk.constants[const_idx as usize];
         Ok(func_const.as_object().as_function_ptr())
     }
 
-    fn class_method(&mut self, stmt: &ASTId<Stmt>) -> Result<*mut ObjFn, anyhow::Error> {
-        let Stmt::Fn(decl) = self.ast.get(stmt) else { unreachable!(); };
-        let const_idx = self.function(stmt, decl, FnKind::Method)?;
-        let func_const = self.chunk.constants[const_idx as usize];
-        Ok(func_const.as_object().as_function_ptr())
+    /// Compiles a method and installs it into the current class frame.
+    fn install_method(&mut self, stmt: &ASTId<Stmt>, name: *mut ObjString) -> Result<(), anyhow::Error> {
+        let function_ptr = self.compile_fn(stmt, FnKind::Method)?;
+        let frame = self.class_frames.last_mut().unwrap();
+        let ClassMember::Method(id) = frame.class.resolve(name).unwrap() else { unreachable!(); };
+        frame.class.methods.insert(id, function_ptr.into());
+        Ok(())
     }
 }
