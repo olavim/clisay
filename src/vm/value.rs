@@ -158,19 +158,8 @@ impl GcTraceable for Value {
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", match self.kind() {
-            ValueKind::Null => format!("null"),
-            ValueKind::Number => format!("number"),
-            ValueKind::Boolean => format!("boolean"),
-            ValueKind::Object(ObjectKind::Function) => format!("function"),
-            ValueKind::Object(ObjectKind::BoundMethod) => format!("function"),
-            ValueKind::Object(ObjectKind::NativeFunction) => format!("function"),
-            ValueKind::Object(ObjectKind::Closure) => format!("function"),
-            ValueKind::Object(ObjectKind::Class) => format!("class"),
-            ValueKind::Object(ObjectKind::Instance) => format!("instance"),
-            ValueKind::Object(ObjectKind::String) => format!("string"),
-            ValueKind::Object(ObjectKind::Upvalue) => format!("upvalue"),
-            ValueKind::Object(ObjectKind::Array) => format!("array")
-        })
+        // The type name; `ValueKind: Display` delegates object kinds to
+        // `ObjectKind: Display`, so there's one place per kind.
+        write!(f, "{}", self.kind())
     }
 }

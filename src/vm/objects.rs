@@ -7,36 +7,6 @@ use super::gc::{Gc, GcTraceable};
 use super::value::Value;
 use super::vm::Vm;
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum ObjectKind {
-    Closure,
-    NativeFunction,
-    Class,
-    BoundMethod,
-    String,
-    Function,
-    Instance,
-    Upvalue,
-    Array
-}
-
-impl fmt::Display for ObjectKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let kind = match self {
-            ObjectKind::String => "string",
-            ObjectKind::Function => "function",
-            ObjectKind::NativeFunction => "function",
-            ObjectKind::BoundMethod => "function",
-            ObjectKind::Closure => "function",
-            ObjectKind::Class => "class",
-            ObjectKind::Instance => "object",
-            ObjectKind::Upvalue => "upvalue",
-            ObjectKind::Array => "array"
-        };
-        write!(f, "{}", kind)
-    }
-}
-
 #[repr(C)]
 pub struct ObjectHeader {
     pub kind: ObjectKind,
@@ -49,22 +19,11 @@ impl ObjectHeader {
     }
 }
 
-#[derive(Clone, Copy)]
-#[repr(align(8))]
-#[repr(C)]
-pub union Object {
-    pub header: *mut ObjectHeader,
-    pub string: *mut ObjString,
-    pub function: *mut ObjFn,
-    pub native_function: *mut ObjNativeFn,
-    pub bound_method: *mut ObjBoundMethod,
-    pub closure: *mut ObjClosure,
-    pub class: *mut ObjClass,
-    pub instance: *mut ObjInstance,
-    pub upvalue: *mut ObjUpvalue,
-    pub array: *mut ObjArray
-}
-
+/// A tagged pointer to a heap object. Objects are 8-aligned, so the low 3 bits of
+/// the pointer hold a `tag` that lets the hot call path classify callables without
+/// dereferencing the object; non-callables share `TAG_HEADER` and are distinguished
+/// by the header's `ObjectKind`. The tag is purely a hot-path shortcut — every
+/// object also carries its `ObjectKind` in its header.
 pub const TAG_HEADER: u8 = 0;
 pub const TAG_CLOSURE: u8 = 3;
 pub const TAG_FUNCTION: u8 = 4;
@@ -79,66 +38,96 @@ fn without_tag<T>(ptr: *mut T) -> *mut T {
     ((ptr as usize) & !PTR_TAG) as *mut T
 }
 
+/// The single source of truth for the set of heap object types. Each row is
+/// `Kind => Struct, union_field, accessor, pointer_tag, display_name` and drives
+/// everything that must enumerate the object kinds.
+macro_rules! objects {
+    ( $( $kind:ident => $ty:ty, $field:ident, $accessor:ident, $tag:ident, $display:literal );+ $(;)? ) => {
+        #[derive(Clone, Copy, PartialEq)]
+        pub enum ObjectKind {
+            $( $kind ),+
+        }
+
+        impl fmt::Display for ObjectKind {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}", match self {
+                    $( ObjectKind::$kind => $display ),+
+                })
+            }
+        }
+
+        #[derive(Clone, Copy)]
+        #[repr(align(8))]
+        #[repr(C)]
+        pub union Object {
+            pub header: *mut ObjectHeader,
+            $( pub $field: *mut $ty ),+
+        }
+
+        impl Object {
+            $(
+                #[inline]
+                pub fn $accessor(&self) -> *mut $ty {
+                    without_tag(unsafe { self.$field })
+                }
+            )+
+
+            #[inline]
+            pub fn kind(&self) -> ObjectKind {
+                unsafe { (*self.as_header_ptr()).kind }
+            }
+
+            fn as_traceable(&self) -> &dyn GcTraceable {
+                match self.kind() {
+                    $( ObjectKind::$kind => unsafe { &*self.$accessor() }, )+
+                }
+            }
+
+            /// Drops the object's owned data in place but does **not** deallocate
+            /// the backing block — that is left to the GC's free list so the
+            /// allocation can be recycled.
+            pub fn free(self) -> (usize, usize) {
+                match self.kind() {
+                    $(
+                        ObjectKind::$kind => {
+                            let ptr = self.$accessor();
+                            let accounted = unsafe { (*ptr).size() };
+                            let layout = unsafe { (*ptr).layout_size() };
+                            unsafe { std::ptr::drop_in_place(ptr) };
+                            (accounted, layout)
+                        }
+                    ),+
+                }
+            }
+        }
+
+        $(
+            impl From<*mut $ty> for Object {
+                #[inline]
+                fn from(ptr: *mut $ty) -> Self {
+                    Object { header: (ptr as u64 | $tag as u64) as *mut ObjectHeader }
+                }
+            }
+        )+
+    };
+}
+
+objects! {
+    String         => ObjString,      string,          as_string_ptr,           TAG_HEADER,          "string";
+    Instance       => ObjInstance,    instance,        as_instance_ptr,         TAG_HEADER,          "instance";
+    Upvalue        => ObjUpvalue,     upvalue,         as_upvalue_ptr,          TAG_HEADER,          "upvalue";
+    Array          => ObjArray,       array,           as_array_ptr,            TAG_HEADER,          "array";
+    Function       => ObjFn,          function,        as_function_ptr,         TAG_FUNCTION,        "function";
+    NativeFunction => ObjNativeFn,    native_function, as_native_function_ptr,  TAG_NATIVE_FUNCTION, "function";
+    BoundMethod    => ObjBoundMethod, bound_method,    as_bound_method_ptr,     TAG_BOUND_METHOD,    "function";
+    Closure        => ObjClosure,     closure,         as_closure_ptr,          TAG_CLOSURE,         "function";
+    Class          => ObjClass,       class,           as_class_ptr,            TAG_CLASS,           "class";
+}
+
 impl Object {
     #[inline]
     pub fn tag(self) -> u8 {
         unsafe { (self.header as u8) & PTR_TAG_U8 }
-    }
-
-    /// Drops the object's owned data in place but does **not** deallocate the
-    /// backing block — that is left to the GC's free list so the allocation can
-    /// be recycled. Returns `(accounted_bytes, layout_size)`: the first is the
-    /// byte count for GC accounting (struct + owned heap capacity), the second
-    /// is `size_of` the struct itself, used to bucket the freed block for reuse.
-    pub fn free(self) -> (usize, usize) {
-        macro_rules! free_object {
-            ($ptr:expr, $t:ty) => {{
-                let ptr = $ptr;
-                let accounted = unsafe { (*ptr).size() };
-                unsafe { std::ptr::drop_in_place(ptr) };
-                (accounted, mem::size_of::<$t>())
-            }};
-        }
-
-        match self.tag() {
-            TAG_FUNCTION => free_object!(self.as_function_ptr(), ObjFn),
-            // A closure's backing block is sized for its trailing upvalue array,
-            // not `size_of::<ObjClosure>`, so its layout size comes from `size()`.
-            // It owns no separate heap, so no destructor needs to run.
-            TAG_CLOSURE => {
-                let size = unsafe { (*self.as_closure_ptr()).size() };
-                (size, size)
-            },
-            TAG_NATIVE_FUNCTION => free_object!(self.as_native_function_ptr(), ObjNativeFn),
-            TAG_BOUND_METHOD => free_object!(self.as_bound_method_ptr(), ObjBoundMethod),
-            TAG_CLASS => free_object!(self.as_class_ptr(), ObjClass),
-            _ => match unsafe { (*self.as_header_ptr()).kind } {
-                ObjectKind::String => free_object!(self.as_string_ptr(), ObjString),
-                ObjectKind::Instance => free_object!(self.as_instance_ptr(), ObjInstance),
-                ObjectKind::Upvalue => free_object!(self.as_upvalue_ptr(), ObjUpvalue),
-                ObjectKind::Array => free_object!(self.as_array_ptr(), ObjArray),
-                _ => unsafe { std::hint::unreachable_unchecked() }
-            }
-        }
-    }
-
-    fn as_traceable(&self) -> &dyn GcTraceable {
-        unsafe { 
-            match self.tag() {
-                TAG_FUNCTION => &*self.as_function_ptr(),
-                TAG_CLOSURE => &*self.as_closure_ptr(),
-                TAG_NATIVE_FUNCTION => &*self.as_native_function_ptr(),
-                TAG_BOUND_METHOD => &*self.as_bound_method_ptr(),
-                TAG_CLASS => &*self.as_class_ptr(),
-                _ => match (*self.as_header_ptr()).kind  {
-                    ObjectKind::String => &*self.as_string_ptr(),
-                    ObjectKind::Instance => &*self.as_instance_ptr(),
-                    ObjectKind::Upvalue => &*self.as_upvalue_ptr(),
-                    ObjectKind::Array => &*self.as_array_ptr(),
-                    _ => std::hint::unreachable_unchecked()
-                }
-            }
-        }
     }
 
     #[inline]
@@ -147,55 +136,9 @@ impl Object {
     }
 
     #[inline]
-    pub fn as_string_ptr(&self) -> *mut ObjString {
-        unsafe { without_tag(self.string) }
-    }
-
-    #[inline]
     pub fn as_string(&self) -> &String {
         unsafe { &(*self.as_string_ptr()).value }
     }
-
-    #[inline]
-    pub fn as_function_ptr(&self) -> *mut ObjFn {
-        unsafe { without_tag(self.function) }
-    }
-
-    #[inline]
-    pub fn as_native_function_ptr(&self) -> *mut ObjNativeFn {
-        unsafe { without_tag(self.native_function) }
-    }
-
-    #[inline]
-    pub fn as_bound_method_ptr(&self) -> *mut ObjBoundMethod {
-        unsafe { without_tag(self.bound_method) }
-    }
-
-    #[inline]
-    pub fn as_closure_ptr(&self) -> *mut ObjClosure {
-        unsafe { without_tag(self.closure) }
-    }
-
-    #[inline]
-    pub fn as_class_ptr(&self) -> *mut ObjClass {
-        unsafe { without_tag(self.class) }
-    }
-
-    #[inline]
-    pub fn as_instance_ptr(&self) -> *mut ObjInstance {
-        unsafe { without_tag(self.instance) }
-    }
-
-    #[inline]
-    pub fn as_upvalue_ptr(&self) -> *mut ObjUpvalue {
-        unsafe { without_tag(self.upvalue) }
-    }
-
-    #[inline]
-    pub fn as_array_ptr(&self) -> *mut ObjArray {
-        unsafe { without_tag(self.array) }
-    }
-
 }
 
 impl GcTraceable for Object {
@@ -212,28 +155,6 @@ impl GcTraceable for Object {
         self.as_traceable().size()
     }
 }
-
-macro_rules! impl_from_for_object {
-    ($name:ident, $kind:tt, $tag:ident) => {
-        impl From<*mut $kind> for Object {
-            fn from($name: *mut $kind) -> Self {
-                let $name = ($name as u64 | $tag as u64) as *mut $kind;
-                Object { $name }
-            }
-        }
-    };
-}
-
-impl_from_for_object!(string, ObjString, TAG_HEADER);
-impl_from_for_object!(instance, ObjInstance, TAG_HEADER);
-impl_from_for_object!(upvalue, ObjUpvalue, TAG_HEADER);
-impl_from_for_object!(array, ObjArray, TAG_HEADER);
-
-impl_from_for_object!(function, ObjFn, TAG_FUNCTION);
-impl_from_for_object!(native_function, ObjNativeFn, TAG_NATIVE_FUNCTION);
-impl_from_for_object!(bound_method, ObjBoundMethod, TAG_BOUND_METHOD);
-impl_from_for_object!(closure, ObjClosure, TAG_CLOSURE);
-impl_from_for_object!(class, ObjClass, TAG_CLASS);
 
 #[repr(align(8))]
 #[repr(C)]
@@ -395,6 +316,10 @@ impl GcTraceable for ObjClosure {
 
     fn size(&self) -> usize {
         // The trailing upvalue array shares the struct's allocation.
+        Self::alloc_size(self.upvalue_count as usize)
+    }
+
+    fn layout_size(&self) -> usize {
         Self::alloc_size(self.upvalue_count as usize)
     }
 }

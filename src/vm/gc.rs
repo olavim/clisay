@@ -13,7 +13,17 @@ const OBJ_ALIGN: usize = 8;
 pub trait GcTraceable {
     fn fmt(&self) -> String;
     fn mark(&self, gc: &mut Gc);
+
+    /// Bytes attributed to this object for GC accounting: the struct plus any heap
+    /// it owns separately (e.g. a `Vec`/`String`'s capacity).
     fn size(&self) -> usize;
+
+    /// Size of the object's own allocation block, used to bucket it on the free
+    /// list. Defaults to the struct size; types whose allocation includes a
+    /// trailing array (e.g. `ObjClosure`) override this.
+    fn layout_size(&self) -> usize {
+        mem::size_of_val(self)
+    }
 }
 
 impl GcTraceable for String {
