@@ -58,6 +58,7 @@ ops! {
     GET_LOCAL,
     SET_LOCAL,
     SET_LOCAL_POP,
+    SET_LOCAL_ADD_LOCAL_LOCAL,
     GET_UPVALUE,
     SET_UPVALUE,
     SET_UPVALUE_POP,
@@ -69,10 +70,10 @@ ops! {
 
     // Arithmetic
     ADD,
-    ADD_LOCAL,
     ADD_LOCAL_CONST,
     SUBTRACT,
     SUB_LOCAL_CONST,
+    SUB_CONST_LOCAL,
     MULTIPLY,
     DIVIDE,
     NEGATE,
