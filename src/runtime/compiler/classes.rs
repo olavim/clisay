@@ -1,7 +1,7 @@
 use crate::parser::{ASTId, ClassDecl, Stmt};
-use crate::vm::objects::{ClassMember, ObjClass, ObjFn, ObjString};
-use crate::vm::opcode;
-use crate::vm::value::Value;
+use crate::runtime::objects::{ClassMember, ObjClass, ObjFn, ObjString};
+use crate::runtime::opcode;
+use crate::runtime::value::Value;
 
 use anyhow::anyhow;
 

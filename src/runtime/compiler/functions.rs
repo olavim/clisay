@@ -1,8 +1,8 @@
 use crate::compiler_error;
 use crate::parser::{ASTId, Expr, FnDecl};
-use crate::vm::objects::{ObjFn, ObjString};
-use crate::vm::opcode;
-use crate::vm::value::Value;
+use crate::runtime::objects::{ObjFn, ObjString};
+use crate::runtime::opcode;
+use crate::runtime::value::Value;
 
 use super::{Compiler, FnFrame, FnKind, Local};
 
