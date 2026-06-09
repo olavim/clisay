@@ -110,9 +110,10 @@ impl GcTraceable for BytecodeChunk {
                     push_fmt!("CLASS {}", unsafe { (*class).fmt() });
                 },
                 opcode::ADD => push_fmt!("ADD"),
-                opcode::ADD_LOCAL => push_fmt!("ADD_LOCAL <{}> = L<{}> + L<{}>", byte!(), byte!(), byte!()),
+                opcode::SET_LOCAL_ADD_LOCAL_LOCAL => push_fmt!("ADD_LOCAL <{}> = L<{}> + L<{}>", byte!(), byte!(), byte!()),
                 opcode::ADD_LOCAL_CONST => push_fmt!("ADD_LOCAL_CONST L<{}> + {}", byte!(), self.constants[byte!() as usize].fmt()),
                 opcode::SUB_LOCAL_CONST => push_fmt!("SUB_LOCAL_CONST L<{}> - {}", byte!(), self.constants[byte!() as usize].fmt()),
+                opcode::SUB_CONST_LOCAL => push_fmt!("SUB_CONST_LOCAL {} - L<{}>", self.constants[byte!() as usize].fmt(), byte!()),
                 opcode::SUBTRACT => push_fmt!("SUB"),
                 opcode::MULTIPLY => push_fmt!("MUL"),
                 opcode::DIVIDE => push_fmt!("DIV"),

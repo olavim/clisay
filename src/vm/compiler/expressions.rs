@@ -6,6 +6,26 @@ use crate::vm::value::Value;
 
 use super::{Compiler, FnKind};
 
+/// A resolved assignable binding that a bare identifier denotes.
+#[derive(Clone, Copy)]
+enum Place {
+    Local(u8),
+    Upvalue(u8),
+    /// An implicit-`this` class field, by member id.
+    Field(u8),
+    /// A global, by name-constant index.
+    Global(u8),
+}
+
+/// How an index / property expression (`a.b`, `a[b]`) is being accessed.
+#[derive(Clone, Copy)]
+enum IndexOp {
+    /// Read the value.
+    Load,
+    /// Assign `rhs`. `discarded` is true in statement position (the value should be dropped).
+    Store { rhs: ASTId<Expr>, discarded: bool },
+}
+
 impl<'a> Compiler<'a> {
     pub (super) fn expression(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
@@ -13,11 +33,12 @@ impl<'a> Compiler<'a> {
             Expr::Unary(op, expr) => self.unary_expression(op, expr)?,
             Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
             Expr::Call(expr, args) => self.call_expression(expr, args)?,
-            Expr::Index(expr, id) => self.index(expr, id, None)?,
+            Expr::Index(expr, id) => self.index(expr, id, IndexOp::Load)?,
             Expr::Literal(lit) => self.literal(expr, lit)?,
             Expr::Identifier(name) => {
                 let name = self.gc.intern(name);
-                self.identifier(expr, name, false)?
+                let place = self.resolve_place(name)?;
+                self.emit_load(place, expr);
             },
             Expr::This => self.this(expr)?,
             Expr::Super => self.super_(expr)?
@@ -25,29 +46,20 @@ impl<'a> Compiler<'a> {
 
         Ok(())
     }
-    
-    /// Compiles an expression in statement position, where its value is discarded.
-    pub (super) fn expression_for_effect(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
-        match self.ast.get(expr) {
-            Expr::Block(stmts) => self.scoped_body(stmts, expr)?,
-            _ => {
-                self.setter_pos = None;
-                self.expression(expr)?;
 
-                match self.setter_pos.take() {
-                    Some(pos) if pos + 2 == self.chunk.code.len() => {
-                        self.chunk.code[pos] = match self.chunk.code[pos] {
-                            opcode::SET_LOCAL => opcode::SET_LOCAL_POP,
-                            opcode::SET_UPVALUE => opcode::SET_UPVALUE_POP,
-                            opcode::SET_PROPERTY_ID => opcode::SET_PROPERTY_ID_POP,
-                            _ => unreachable!()
-                        };
-                    },
-                    _ => self.emit(opcode::POP, expr)
-                }
+    /// Compiles an expression in statement position, where its value is discarded.
+    pub (super) fn expression_stmt(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+        match self.ast.get(expr) {
+            Expr::Block(stmts) => self.scoped_body(stmts, expr),
+            // An assignment statement stores in discard context, so the store op itself drops the value.
+            Expr::Binary(Operator::Assign(_), left, right) => self.compile_assign(left, right, true),
+            // Any other expression leaves a value that the statement discards.
+            _ => {
+                self.expression(expr)?;
+                self.emit(opcode::POP, expr);
+                Ok(())
             }
         }
-        Ok(())
     }
 
     fn this(&mut self, expr: &ASTId<Expr>) -> Result<(), anyhow::Error> {
@@ -77,6 +89,57 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Resolves a bare identifier to the binding it denotes.
+    fn resolve_place(&mut self, name: *mut ObjString) -> Result<Place, anyhow::Error> {
+        let place = if let Some(slot) = self.resolve_local(name) {
+            Place::Local(slot)
+        } else if let Some(idx) = self.resolve_upvalue(name)? {
+            Place::Upvalue(idx)
+        } else if let Some(id) = self.class_frames.last().and_then(|f| f.class.resolve_id(name)) {
+            Place::Field(id)
+        } else {
+            Place::Global(self.chunk.add_constant(Value::from(name))?)
+        };
+        Ok(place)
+    }
+
+    /// Emits a read of `place`, pushing its value.
+    fn emit_load(&mut self, place: Place, node: &ASTId<Expr>) {
+        match place {
+            Place::Local(slot) => self.emit_operand(opcode::GET_LOCAL, slot, node),
+            Place::Upvalue(idx) => self.emit_operand(opcode::GET_UPVALUE, idx, node),
+            Place::Field(id) => {
+                self.emit_operand(opcode::GET_LOCAL, 0, node);
+                self.emit_operand(opcode::GET_PROPERTY_ID, id, node);
+            },
+            Place::Global(idx) => self.emit_operand(opcode::GET_GLOBAL, idx, node),
+        }
+    }
+
+    /// Emits a store into `place`; the value to store is already on top of the
+    /// stack. When `discarded` (statement position) the store also drops the value.
+    fn emit_store(&mut self, place: Place, discarded: bool, node: &ASTId<Expr>) {
+        match place {
+            Place::Local(slot) => {
+                let op = if discarded { opcode::SET_LOCAL_POP } else { opcode::SET_LOCAL };
+                self.emit_operand(op, slot, node);
+            },
+            Place::Upvalue(idx) => {
+                let op = if discarded { opcode::SET_UPVALUE_POP } else { opcode::SET_UPVALUE };
+                self.emit_operand(op, idx, node);
+            },
+            Place::Field(id) => {
+                self.emit_operand(opcode::GET_LOCAL, 0, node); // push `this` (the target)
+                let op = if discarded { opcode::SET_PROPERTY_ID_POP } else { opcode::SET_PROPERTY_ID };
+                self.emit_operand(op, id, node);
+            },
+            Place::Global(idx) => {
+                self.emit_operand(opcode::SET_GLOBAL, idx, node);
+                if discarded { self.emit(opcode::POP, node); }
+            }
+        }
+    }
+
     /// Resolves `expr` to a local slot if it is a bare identifier bound to one.
     fn local_operand(&mut self, expr: &ASTId<Expr>) -> Option<u8> {
         let Expr::Identifier(name) = self.ast.get(expr) else { return None };
@@ -84,62 +147,104 @@ impl<'a> Compiler<'a> {
         self.resolve_local(name)
     }
 
-    fn binary_expression(&mut self, op: &Operator, left: &ASTId<Expr>, right: &ASTId<Expr>) -> Result<(), anyhow::Error> {
-        if let Operator::Assign(_) = op {
-            match self.ast.get(left) {
-                Expr::Identifier(name) => {
-                    let intern_name = self.gc.intern(name);
-                    if let Some(local) = self.locals.iter().rev().find(|local| local.name == intern_name) {
-                        if !local.is_mutable {
-                            compiler_error!(self, left, "Invalid assignment: '{name}' is immutable");
+    /// `(local_slot, const_idx)` when `local_side` is a local and `const_side` is a
+    /// numeric literal. The constant is interned only on a full match, so callers
+    /// can probe operand orders cheaply.
+    pub (super) fn try_local_const(&mut self, local_side: &ASTId<Expr>, const_side: &ASTId<Expr>) -> Result<Option<(u8, u8)>, anyhow::Error> {
+        let Some(local) = self.local_operand(local_side) else { return Ok(None) };
+        let Expr::Literal(Literal::Number(num)) = self.ast.get(const_side) else { return Ok(None) };
+        let const_idx = self.chunk.add_constant(Value::from(*num))?;
+        Ok(Some((local, const_idx)))
+    }
+
+    /// Like `try_local_const`, but also accepts the constant on the left.
+    fn try_local_const_commutative(&mut self, left: &ASTId<Expr>, right: &ASTId<Expr>) -> Result<Option<(u8, u8)>, anyhow::Error> {
+        if let Some(pair) = self.try_local_const(left, right)? {
+            return Ok(Some(pair));
+        }
+        return self.try_local_const(right, left);
+    }
+
+    /// If `rhs` is `a + b` with both operands locals, returns their slots.
+    fn local_add_operands(&mut self, rhs: &ASTId<Expr>) -> Option<(u8, u8)> {
+        let Expr::Binary(Operator::Add, a, b) = self.ast.get(rhs) else { return None };
+        let (a, b) = (*a, *b);
+        Some((self.local_operand(&a)?, self.local_operand(&b)?))
+    }
+
+    /// Compiles `lhs = rhs`. `discarded` is true in statement position, which lets
+    /// the store drop its own value (and enables the `dst = a + b` store fusion).
+    fn compile_assign(&mut self, lhs: &ASTId<Expr>, rhs: &ASTId<Expr>, discarded: bool) -> Result<(), anyhow::Error> {
+        match self.ast.get(lhs) {
+            Expr::Identifier(name) => {
+                let interned = self.gc.intern(name);
+                if let Some(local) = self.locals.iter().rev().find(|local| local.name == interned) {
+                    if !local.is_mutable {
+                        compiler_error!(self, lhs, "Invalid assignment: '{name}' is immutable");
+                    }
+                }
+
+                let place = self.resolve_place(interned)?;
+
+                // Store fusion: `dst = a + b` (all locals, value discarded) → one op.
+                if discarded {
+                    if let Place::Local(dst) = place {
+                        if let Some((a, b)) = self.local_add_operands(rhs) {
+                            self.emit(opcode::SET_LOCAL_ADD_LOCAL_LOCAL, lhs);
+                            self.emit(dst, lhs);
+                            self.emit(a, lhs);
+                            self.emit(b, lhs);
+                            return Ok(());
                         }
                     }
+                }
 
-                    self.expression(right)?;
-                    self.identifier(left, intern_name, true)?;
-                    return Ok(());
-                },
-                Expr::Index(obj, member) => {
-                    self.index(obj, member, Some(right))?;
-                    return Ok(());
-                },
-                _ => compiler_error!(self, left, "Invalid assignment")
-            }
+                self.expression(rhs)?;
+                self.emit_store(place, discarded, lhs);
+                Ok(())
+            },
+            Expr::Index(obj, member) => {
+                let (obj, member) = (*obj, *member);
+                self.index(&obj, &member, IndexOp::Store { rhs: *rhs, discarded })
+            },
+            _ => compiler_error!(self, lhs, "Invalid assignment")
+        }
+    }
+
+    fn binary_expression(&mut self, op: &Operator, left: &ASTId<Expr>, right: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+        // A value-context assignment: its result is used, so it is never discarded.
+        if let Operator::Assign(_) = op {
+            return self.compile_assign(left, right, false);
         }
 
         if let Operator::MemberAccess = op {
-            self.index(left, right, None)?;
-            return Ok(());
+            return self.index(left, right, IndexOp::Load);
         }
 
-        if let (Some(a), Expr::Literal(Literal::Number(num))) = (
-            self.local_operand(left),
-            self.ast.get(right),
-        ) {
-            let opcode = match op {
-                Operator::Subtract => Some(opcode::SUB_LOCAL_CONST),
-                Operator::Add => Some(opcode::ADD_LOCAL_CONST),
-                _ => None
-            };
-            if let Some(opcode) = opcode {
-                let const_idx = self.chunk.add_constant(Value::from(*num))?;
-                self.emit(opcode, right);
-                self.emit(a, right);
-                self.emit(const_idx, right);
-                return Ok(());
-            }
-        }
-
-        if matches!(op, Operator::Subtract) {
-            if let Some(a) = self.local_operand(left) {
-                if let Expr::Literal(Literal::Number(num)) = self.ast.get(right) {
-                    let const_idx = self.chunk.add_constant(Value::from(*num))?;
-                    self.emit(opcode::SUB_LOCAL_CONST, right);
-                    self.emit(a, right);
+        match op {
+            Operator::Add => {
+                if let Some((local, const_idx)) = self.try_local_const_commutative(left, right)? {
+                    self.emit(opcode::ADD_LOCAL_CONST, right);
+                    self.emit(local, right);
                     self.emit(const_idx, right);
                     return Ok(());
                 }
-            }
+            },
+            Operator::Subtract => {
+                let block = if let Some((local, const_idx)) = self.try_local_const(left, right)? {
+                    Some((opcode::SUB_LOCAL_CONST, local, const_idx))
+                } else if let Some((local, const_idx)) = self.try_local_const(right, left)? {
+                    Some((opcode::SUB_CONST_LOCAL, const_idx, local))
+                } else { None };
+
+                if let Some((opcode, lhs, rhs)) = block {
+                    self.emit(opcode, right);
+                    self.emit(lhs, right);
+                    self.emit(rhs, right);
+                    return Ok(());
+                }
+            },
+            _ => {}
         }
 
         self.expression(left)?;
@@ -150,7 +255,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn index(&mut self, expr: &ASTId<Expr>, member_expr_id: &ASTId<Expr>, assign_expr: Option<&ASTId<Expr>>) -> Result<(), anyhow::Error> {
+    fn index(&mut self, expr: &ASTId<Expr>, member_expr_id: &ASTId<Expr>, op: IndexOp) -> Result<(), anyhow::Error> {
         let expr_type = self.ast.get(expr);
         if matches!(expr_type, Expr::This | Expr::Super) {
             let member_name = match self.ast.get(member_expr_id) {
@@ -176,21 +281,22 @@ impl<'a> Compiler<'a> {
             };
 
             if let Some(member_id) = member_name.and_then(|name| class.resolve_id(name)) {
-                return self.index_class_member_by_id(expr, member_id, assign_expr);
+                return self.index_class_member_by_id(expr, member_id, op);
             }
 
-            let accessor_id = if assign_expr.is_some() {
+            let is_store = matches!(op, IndexOp::Store { .. });
+            let accessor_id = if is_store {
                 class.resolve_id(self.gc.preset_identifiers.set)
             } else {
                 class.resolve_id(self.gc.preset_identifiers.get)
             };
 
             if let Some(accessor_id) = accessor_id {
-                return self.index_class_member_by_accessor(expr, accessor_id, member_expr_id, assign_expr);
+                return self.index_class_member_by_accessor(expr, accessor_id, member_expr_id, op);
             }
 
             let class_name = unsafe { &(*class.name).value };
-            let accessor_name = if assign_expr.is_some() { "setter" } else { "getter" };
+            let accessor_name = if is_store { "setter" } else { "getter" };
             if let Some(member_name) = member_name {
                 let member_name = unsafe { &(*member_name).value };
                 compiler_error!(self, expr, "Invalid index: {class_name} doesn't have member {member_name} and doesn't have a {accessor_name}")
@@ -199,55 +305,62 @@ impl<'a> Compiler<'a> {
             };
         }
 
-        if let Some(assign_expr) = assign_expr {
-            self.expression(assign_expr)?;
+        match op {
+            IndexOp::Load => {
+                self.expression(expr)?;
+                self.expression(member_expr_id)?;
+                self.emit(opcode::GET_INDEX, expr);
+            },
+            IndexOp::Store { rhs, discarded } => {
+                self.expression(&rhs)?;
+                self.expression(expr)?;
+                self.expression(member_expr_id)?;
+                self.emit(opcode::SET_INDEX, expr);
+                if discarded {
+                    self.emit(opcode::POP, expr);
+                }
+            }
         }
-
-        self.expression(expr)?;
-        self.expression(member_expr_id)?;
-
-        self.emit(
-            if assign_expr.is_some() { opcode::SET_INDEX } else { opcode::GET_INDEX },
-            expr,
-        );
         Ok(())
     }
 
-    fn index_class_member_by_id(&mut self, target_expr: &ASTId<Expr>, member_id: u8, assign_expr: Option<&ASTId<Expr>>) -> Result<(), anyhow::Error> {
-        match assign_expr {
-            None => {
+    fn index_class_member_by_id(&mut self, target_expr: &ASTId<Expr>, member_id: u8, op: IndexOp) -> Result<(), anyhow::Error> {
+        match op {
+            IndexOp::Load => {
                 self.expression(target_expr)?;
                 self.emit_operand(opcode::GET_PROPERTY_ID, member_id, target_expr);
             },
-            Some(assign_expr) => {
-                self.expression(assign_expr)?;
+            IndexOp::Store { rhs, discarded } => {
+                self.expression(&rhs)?;
                 self.expression(target_expr)?;
-
-                self.setter_pos = Some(self.chunk.code.len());
-                self.emit_operand(opcode::SET_PROPERTY_ID, member_id, target_expr);
+                let store = if discarded { opcode::SET_PROPERTY_ID_POP } else { opcode::SET_PROPERTY_ID };
+                self.emit_operand(store, member_id, target_expr);
             }
         }
-
         Ok(())
     }
 
-    fn index_class_member_by_accessor(&mut self, target_expr: &ASTId<Expr>, accessor_id: u8, member_expr_id: &ASTId<Expr>, assign_expr_id: Option<&ASTId<Expr>>) -> Result<(), anyhow::Error> {
+    fn index_class_member_by_accessor(&mut self, target_expr: &ASTId<Expr>, accessor_id: u8, member_expr_id: &ASTId<Expr>, op: IndexOp) -> Result<(), anyhow::Error> {
         self.expression(target_expr)?;
         self.emit_operand(opcode::GET_PROPERTY_ID, accessor_id, target_expr);
 
-        let args = if let Some(assign_expr_id) = assign_expr_id {
-            vec![member_expr_id, assign_expr_id]
-        } else {
-            vec![member_expr_id]
+        self.expression(member_expr_id)?;
+        let arg_count = match op {
+            IndexOp::Load => 1,
+            IndexOp::Store { rhs, .. } => {
+                self.expression(&rhs)?;
+                2
+            }
         };
+        self.emit_operand(opcode::CALL, arg_count, target_expr);
 
-        for arg in &args {
-            self.expression(arg)?;
+        // A setter call returns a value; drop it in statement position.
+        if let IndexOp::Store { discarded: true, .. } = op {
+            self.emit(opcode::POP, target_expr);
         }
-        self.emit_operand(opcode::CALL, args.len() as u8, target_expr);
         Ok(())
     }
-    
+
     fn call_expression(&mut self, expr: &ASTId<Expr>, args: &Option<ASTId<Expr>>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
             Expr::Super => {
@@ -282,7 +395,7 @@ impl<'a> Compiler<'a> {
         self.emit_operand(opcode::PUSH_CLOSURE, const_idx, expr);
         return Ok(());
     }
-    
+
     fn literal(&mut self, expr: &ASTId<Expr>, literal: &Literal) -> Result<(), anyhow::Error> {
         match literal {
             Literal::Number(num) => {
@@ -309,30 +422,6 @@ impl<'a> Compiler<'a> {
             Literal::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };
 
-        return Ok(());
-    }
-    
-    fn identifier(&mut self, expr: &ASTId<Expr>, name: *mut ObjString, assign: bool) -> Result<(), anyhow::Error> {
-        let (operand, get_op, set_op) = if let Some(local_idx) = self.resolve_local(name) {
-            (local_idx, opcode::GET_LOCAL, opcode::SET_LOCAL)
-        } else if let Some(upvalue_idx) = self.resolve_upvalue(name)? {
-            (upvalue_idx, opcode::GET_UPVALUE, opcode::SET_UPVALUE)
-        } else if let Some(id) = self.class_frames.last().and_then(|f| f.class.resolve_id(name)) {
-            // Implicit 'this'
-            self.emit_operand(opcode::GET_LOCAL, 0, expr);
-            (id, opcode::GET_PROPERTY_ID, opcode::SET_PROPERTY_ID)
-        } else {
-            let const_idx = self.chunk.add_constant(Value::from(name))?;
-            (const_idx, opcode::GET_GLOBAL, opcode::SET_GLOBAL)
-        };
-
-        let op = if assign { set_op } else { get_op };
-
-        if assign && matches!(op, opcode::SET_LOCAL | opcode::SET_UPVALUE | opcode::SET_PROPERTY_ID) {
-            self.setter_pos = Some(self.chunk.code.len());
-        }
-
-        self.emit_operand(op, operand, expr);
         return Ok(());
     }
 }

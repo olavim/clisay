@@ -732,10 +732,7 @@ impl Vm {
                     let a = self.stack.pop();
                     if !a.value_eq(b) { ip = unsafe { code_base.add(offset) }; }
                 },
-                // Fused `dst = a + b` (both locals). Number fast path writes the
-                // frame slot directly; otherwise reuse `op_add` (string concat /
-                // type error) by staging the operands on the value stack.
-                opcode::ADD_LOCAL => {
+                opcode::SET_LOCAL_ADD_LOCAL_LOCAL => {
                     let dst = read_byte!() as usize;
                     let a_idx = read_byte!() as usize;
                     let b_idx = read_byte!() as usize;
@@ -754,7 +751,6 @@ impl Vm {
                         unsafe { *frame.add(dst) = result };
                     }
                 },
-                // Fused `dst = a + const` (const is a numeric literal by emission).
                 opcode::ADD_LOCAL_CONST => {
                     let a_idx = read_byte!() as usize;
                     let b_idx = read_byte!() as usize;
@@ -771,13 +767,28 @@ impl Vm {
                     }
                 },
                 opcode::ADD => num_binop!(+, op_add),
-                // Fused value-producing `local - const` (const is numeric by emission).
                 opcode::SUB_LOCAL_CONST => {
                     let a_idx = read_byte!() as usize;
                     let b_idx = read_byte!() as usize;
                     let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
                     let b = self.chunk.constants[b_idx];
                     if a.is_number() {
+                        self.stack.push(Value::from(a.as_number() - b.as_number()));
+                    } else {
+                        self.stack.push(a);
+                        self.stack.push(b);
+                        self.ip = ip;
+                        self.op_subtract()?;
+                        ip = self.ip;
+                    }
+                },
+                // Fused value-producing `const - local` (const is numeric by emission).
+                opcode::SUB_CONST_LOCAL => {
+                    let a_idx = read_byte!() as usize;
+                    let b_idx = read_byte!() as usize;
+                    let a = self.chunk.constants[a_idx];
+                    let b = unsafe { *(*self.frames.top()).stack_start.add(b_idx) };
+                    if b.is_number() {
                         self.stack.push(Value::from(a.as_number() - b.as_number()));
                     } else {
                         self.stack.push(a);

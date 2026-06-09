@@ -14,7 +14,6 @@ use super::opcode::OpCode;
 use crate::parser::ASTId;
 use crate::parser::Expr;
 use crate::parser::AST;
-use crate::parser::Literal;
 use super::value::Value;
 
 mod expressions;
@@ -76,8 +75,7 @@ pub struct Compiler<'a> {
     fn_frames: Vec<FnFrame>,
     try_frames: Vec<TryFrame>,
     class_frames: Vec<ClassFrame>,
-    classes: FnvHashMap<*mut ObjString, ClassCompilation>,
-    setter_pos: Option<usize>
+    classes: FnvHashMap<*mut ObjString, ClassCompilation>
 }
 
 #[macro_export]
@@ -96,8 +94,7 @@ impl<'a> Compiler<'a> {
             fn_frames: Vec::new(),
             try_frames: Vec::new(),
             class_frames: Vec::new(),
-            classes: FnvHashMap::default(),
-            setter_pos: None
+            classes: FnvHashMap::default()
         };
 
         let stmt_id = compiler.ast.get_root();
@@ -163,26 +160,37 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// If `left` resolves to a local and `right` is a numeric literal, returns
-    /// `(local_slot, const_idx)` so the caller can emit a fused LOCAL_CONST op.
-    fn local_const_operands(&mut self, left: &ASTId<Expr>, right: &ASTId<Expr>) -> Result<Option<(u8, u8)>, anyhow::Error> {
-        let Expr::Identifier(name) = self.ast.get(left) else { return Ok(None) };
-        let name = self.gc.intern(name);
-        let Some(local_idx) = self.resolve_local(name) else { return Ok(None) };
-
-        let Expr::Literal(Literal::Number(num)) = self.ast.get(right) else { return Ok(None) };
-        let const_idx = self.chunk.add_constant(Value::from(*num))?;
-        Ok(Some((local_idx, const_idx)))
+    /// The comparison with its operands swapped (`a < b` ⇔ `b > a`), letting a
+    /// `const <cmp> local` condition reuse the `local <cmp> const` fused ops.
+    fn flip_cmp(op: &crate::parser::Operator) -> crate::parser::Operator {
+        use crate::parser::Operator;
+        match op {
+            Operator::LessThan => Operator::GreaterThan,
+            Operator::LessThanEqual => Operator::GreaterThanEqual,
+            Operator::GreaterThan => Operator::LessThan,
+            Operator::GreaterThanEqual => Operator::LessThanEqual,
+            other => other.clone()
+        }
     }
 
     fn emit_conditional_jump<T: 'static>(&mut self, cond: &ASTId<Expr>, node_id: &ASTId<T>) -> Result<u16, anyhow::Error> {
         if let Expr::Binary(op, left, right) = self.ast.get(cond) {
             let (op, left, right) = (op.clone(), *left, *right);
 
-            // Fused `local <cmp> number`: operands live in the instruction, so the
-            // jump's 2-byte offset stays at +1/+2 (emitted first) and `patch_jump`
-            // works unchanged; the slot/const bytes trail it.
-            if let (Some(fused_op), Some((local_idx, const_idx))) = (Self::local_const_jump_op(&op), self.local_const_operands(&left, &right)?) {
+            // Fused `local <cmp> number`: the constant lives in the instruction, so
+            // the jump's 2-byte offset (emitted first) stays at +1/+2 for `patch_jump`
+            // and the slot/const bytes trail it. Operands may be in either order —
+            // `const <cmp> local` reuses the same ops with the comparison flipped.
+            let mut fused = None;
+            if let Some(fused_op) = Self::local_const_jump_op(&op) {
+                fused = self.try_local_const(&left, &right)?.map(|(l, c)| (fused_op, l, c));
+            }
+            if fused.is_none() {
+                if let Some(fused_op) = Self::local_const_jump_op(&Self::flip_cmp(&op)) {
+                    fused = self.try_local_const(&right, &left)?.map(|(l, c)| (fused_op, l, c));
+                }
+            }
+            if let Some((fused_op, local_idx, const_idx)) = fused {
                 let jump_ref = self.emit_jump(fused_op, 0, node_id);
                 self.emit(local_idx, node_id);
                 self.emit(const_idx, node_id);

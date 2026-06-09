@@ -65,7 +65,7 @@ impl<'a> Compiler<'a> {
                     let node_id = &stmts[0];
                     let push_try_ref = self.emit_jump(opcode::PUSH_TRY, 0, node_id);
 
-                    self.expression_for_effect(try_body)?;
+                    self.expression_stmt(try_body)?;
 
                     self.emit(opcode::POP_TRY, node_id);
                     let try_jump = self.emit_jump(opcode::JUMP, 0, node_id);
@@ -118,14 +118,14 @@ impl<'a> Compiler<'a> {
                 self.emit_operand(op, slot, stmt_id);
             },
             Stmt::Expression(expr) => {
-                self.expression_for_effect(expr)?;
+                self.expression_stmt(expr)?;
             },
             Stmt::While(cond, body) => {
                 let pos = self.chunk.code.len() as u16;
 
                 let jump_ref = self.emit_conditional_jump(cond, stmt_id)?;
 
-                self.expression_for_effect(body)?;
+                self.expression_stmt(body)?;
 
                 self.emit_jump(opcode::JUMP, pos, stmt_id);
                 self.patch_jump(jump_ref)?;
@@ -133,7 +133,7 @@ impl<'a> Compiler<'a> {
             Stmt::If(cond, then, otherwise) => {
                 let jump_ref = self.emit_conditional_jump(cond, stmt_id)?;
 
-                self.expression_for_effect(then)?;
+                self.expression_stmt(then)?;
 
                 if let Some(otherwise) = otherwise {
                     let else_jump_ref = self.emit_jump(opcode::JUMP, 0, stmt_id);
@@ -145,7 +145,7 @@ impl<'a> Compiler<'a> {
                 }
             },
             Stmt::Block(body) => {
-                self.expression_for_effect(body)?;
+                self.expression_stmt(body)?;
             }
         };
 
@@ -198,7 +198,7 @@ impl<'a> Compiler<'a> {
     fn compile_finally(&mut self, finally: &ASTId<Expr>) -> Result<(), anyhow::Error> {
         let idx = self.try_frames.len() - 1;
         self.try_frames[idx].position = TryCatchPosition::Finally;
-        self.expression_for_effect(finally)
+        self.expression_stmt(finally)
     }
 
     /// Reserve a local slot for every `fn`/`class` declared directly in `body`
