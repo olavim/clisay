@@ -6,11 +6,9 @@ use rustc_hash::FxHasher;
 use smallvec::SmallVec;
 
 use crate::Output;
-use crate::middle::codegen::Compiler;
-use crate::frontend::parse::Parser;
 use crate::core::objects::{ObjBoundMethod, ObjInstance};
 use crate::core::value::ValueKind;
-use crate::frontend::lex::{tokenize, SourcePosition, TokenStream};
+use crate::frontend::lex::SourcePosition;
 
 use crate::core::native::array::NativeArray;
 use crate::core::native::NativeType;
@@ -101,8 +99,9 @@ fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjClass
     gc.alloc(class)
 }
 
-pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
-    Vm::run(file_name, src)
+/// Executes a compiled `chunk`, returning captured output.
+pub fn execute(chunk: BytecodeChunk, gc: Gc) -> Result<Vec<String>, anyhow::Error> {
+    Vm::execute(chunk, gc)
 }
 
 impl Host for Vm {
@@ -125,12 +124,7 @@ impl Host for Vm {
 }
 
 impl Vm {
-    pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
-        let mut gc = Gc::new();
-        let tokens = tokenize(String::from(file_name), String::from(src))?;
-        let ast = Parser::parse(&mut TokenStream::new(&tokens))?;
-        let chunk = Compiler::compile(&ast, &mut gc)?;
-
+    pub fn execute(chunk: BytecodeChunk, mut gc: Gc) -> Result<Vec<String>, anyhow::Error> {
         #[cfg(debug_assertions)] {
             disassemble(&chunk);
         }
