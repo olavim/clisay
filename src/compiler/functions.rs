@@ -1,4 +1,4 @@
-use crate::parser::{AstId, Expr, FnDecl};
+use crate::ast::{AstId, Expr, FnDecl};
 use crate::core::objects::{ObjFn, ObjString};
 use crate::backend::bytecode::opcode;
 use crate::core::value::Value;

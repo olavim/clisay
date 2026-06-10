@@ -2,7 +2,7 @@ use std::mem;
 
 use anyhow::bail;
 
-use crate::lexer::SourcePosition;
+use crate::frontend::lex::SourcePosition;
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::value::Value;
 

@@ -7,10 +7,10 @@ use smallvec::SmallVec;
 
 use crate::Output;
 use crate::compiler::Compiler;
-use crate::parser::Parser;
+use crate::frontend::parse::Parser;
 use crate::core::objects::{ObjBoundMethod, ObjInstance};
 use crate::core::value::ValueKind;
-use crate::lexer::{tokenize, SourcePosition, TokenStream};
+use crate::frontend::lex::{tokenize, SourcePosition, TokenStream};
 
 use crate::core::native::array::NativeArray;
 use crate::core::native::NativeType;

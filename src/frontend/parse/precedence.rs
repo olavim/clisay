@@ -1,55 +1,11 @@
-use std::fmt;
+//! Operator precedence, associativity, and parsing.
 
-use crate::lexer::{TokenStream, TokenType};
-
-#[derive(Clone, Debug)]
-pub enum Operator {
-    // Infix
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    LeftShift,
-    RightShift,
-    LessThan,
-    LessThanEqual,
-    GreaterThan,
-    GreaterThanEqual,
-    LogicalEqual,
-    LogicalNotEqual,
-    LogicalAnd,
-    LogicalOr,
-    BitAnd,
-    BitOr,
-    BitXor,
-    MemberAccess, // expr.member
-    Comma, // expr, expr
-    Arrow, // expr => expr
-    Assign(Option<Box<Operator>>),
-
-    // Prefix
-    Negate,
-    LogicalNot,
-    BitNot,
-    Group, // (expr)
-    Array, // [expr, ...]
-
-    // Postfix
-    Call,  // expr(expr, ...)
-    Index  // expr[expr]
-}
+use crate::ast::Operator;
+use crate::frontend::lex::{TokenStream, TokenType};
 
 impl Operator {
-    pub fn assign(op: Operator) -> Operator {
-        return Operator::Assign(Some(Box::new(op)));
-    }
-
     /// Parses a prefix operator on top of the token stream.
     /// The token stream is advanced only if a valid prefix operator is found.
-    /// 
-    /// ## Arguments
-    /// * `stream` - The token stream to parse
-    /// * `min_precedence` - The minimum precedence of the operator to parse
     pub fn parse_prefix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
             TokenType::LeftParen => Operator::Group,
@@ -59,21 +15,17 @@ impl Operator {
             TokenType::Tilde => Operator::BitNot,
             _ => return None
         };
-    
+
         if op.has_lower_prefix_precedence(min_precedence) {
             return None;
         }
-    
+
         stream.next();
         return Some(op.clone());
     }
-    
+
     /// Parses an infix operator on top of the token stream.
     /// The token stream is advanced only if a valid infix operator is found.
-    /// 
-    /// ## Arguments
-    /// * `stream` - The token stream to parse
-    /// * `min_precedence` - The minimum precedence of the operator to parse
     pub fn parse_infix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let mut current_op: Option<Operator> = None;
         let mut peek = 0;
@@ -94,13 +46,13 @@ impl Operator {
                 (None, TokenType::Dot) => Some(Operator::MemberAccess),
                 (None, TokenType::LeftBracket) => Some(Operator::Index),
                 (None, TokenType::Comma) => Some(Operator::Comma),
-        
+
                 (Some(Operator::LessThan), TokenType::LessThan) => Some(Operator::LeftShift),
                 (Some(Operator::GreaterThan), TokenType::GreaterThan) => Some(Operator::RightShift),
                 (Some(Operator::BitAnd), TokenType::Amp) => Some(Operator::LogicalAnd),
                 (Some(Operator::BitOr), TokenType::Pipe) => Some(Operator::LogicalOr),
                 (Some(Operator::LogicalNot), TokenType::Equal) => Some(Operator::LogicalNotEqual),
-        
+
                 (Some(assign_op @ (
                     Operator::LogicalOr | Operator::LogicalAnd |
                     Operator::Add | Operator::Subtract |
@@ -108,7 +60,7 @@ impl Operator {
                     Operator::BitAnd | Operator::BitOr | Operator::BitXor |
                     Operator::LeftShift | Operator::RightShift
                 )), TokenType::Equal) => Some(Operator::assign(assign_op.clone())),
-        
+
                 (Some(Operator::Assign(None)), TokenType::GreaterThan) => Some(Operator::Arrow),
                 (Some(Operator::Assign(None)), TokenType::Equal) => Some(Operator::LogicalEqual),
                 (Some(Operator::LessThan), TokenType::Equal) => Some(Operator::LessThanEqual),
@@ -118,32 +70,28 @@ impl Operator {
             };
             peek += 1;
         };
-    
+
         if op.has_lower_infix_precedence(min_precedence) {
             return None;
         }
-    
+
         stream.advance(peek);
         return Some(op.clone());
     }
-    
+
     /// Parses a postfix operator on top of the token stream.
     /// The token stream is advanced only if a valid postfix operator is found.
-    /// 
-    /// ## Arguments
-    /// * `stream` - The token stream to parse
-    /// * `min_precedence` - The minimum precedence of the operator to parse
     pub fn parse_postfix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
         let op = match &stream.peek(0).kind {
             TokenType::LeftParen => Operator::Call,
             TokenType::LeftBracket => Operator::Index,
             _ => return None
         };
-    
+
         if op.has_lower_postfix_precedence(min_precedence) {
             return None;
         }
-    
+
         stream.next();
         return Some(op.clone());
     }
@@ -212,54 +160,5 @@ impl Operator {
             Operator::Array => false,
             _ => true
         };
-    }
-}
-
-impl fmt::Display for Operator {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        return write!(f, "{}", match self {
-            Operator::Add => "+",
-            Operator::Subtract => "-",
-            Operator::Multiply => "*",
-            Operator::Divide => "/",
-            Operator::LeftShift => "<<",
-            Operator::RightShift => ">>",
-            Operator::LessThan => "<",
-            Operator::LessThanEqual => "<=",
-            Operator::GreaterThan => ">",
-            Operator::GreaterThanEqual => ">=",
-            Operator::LogicalEqual => "==",
-            Operator::LogicalNotEqual => "!=",
-            Operator::LogicalAnd => "&&",
-            Operator::LogicalOr => "||",
-            Operator::BitAnd => "&",
-            Operator::BitOr => "|",
-            Operator::BitXor => "^",
-            Operator::Negate => "-",
-            Operator::LogicalNot => "!",
-            Operator::BitNot => "~",
-            Operator::Group => "<group>",
-            Operator::Call => "<call>",
-            Operator::MemberAccess => ".",
-            Operator::Comma => ",",
-            Operator::Array => "<array>",
-            Operator::Arrow => "=>",
-            Operator::Index => "<index>",
-            Operator::Assign(None) => "=",
-            Operator::Assign(Some(op)) => match **op {
-                Operator::Add => "+=",
-                Operator::Subtract => "-=",
-                Operator::LeftShift => "<<=",
-                Operator::RightShift => ">>=",
-                Operator::Multiply => "*=",
-                Operator::Divide => "/=",
-                Operator::BitAnd => "&=",
-                Operator::BitOr => "|=",
-                Operator::BitXor => "^=",
-                Operator::LogicalAnd => "&&=",
-                Operator::LogicalOr => "||=",
-                _ => panic!("Invalid assignment operator")
-            }
-        });
     }
 }

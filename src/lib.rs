@@ -14,12 +14,12 @@ mod output {
 }
 
 mod core;
-mod lexer;
-mod parser;
+mod frontend;
 mod compiler;
 mod backend;
 mod runtime;
 
+pub(crate) use frontend::ast;
 pub use output::Output;
 
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {

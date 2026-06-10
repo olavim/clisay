@@ -1,5 +1,5 @@
 use crate::compiler_error;
-use crate::parser::{AstId, CatchClause, Expr, FieldInit, Stmt};
+use crate::ast::{AstId, CatchClause, Expr, FieldInit, Stmt};
 use crate::backend::bytecode::opcode;
 
 use super::{Compiler, FnKind, TryCatchPosition, TryFrame};
