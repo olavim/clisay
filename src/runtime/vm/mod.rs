@@ -20,8 +20,8 @@ use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
 use crate::core::objects::{self, ClassMember, NativeFn, ObjArray, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
 
-use super::chunk::BytecodeChunk;
-use super::opcode::{self, OpCode};
+use crate::backend::bytecode::chunk::BytecodeChunk;
+use crate::backend::bytecode::opcode::{self, OpCode};
 
 const MAX_STACK: usize = 16384;
 const MAX_FRAMES: usize = 256;

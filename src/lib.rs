@@ -17,6 +17,7 @@ mod core;
 mod lexer;
 mod parser;
 mod compiler;
+mod backend;
 mod runtime;
 
 pub use output::Output;
