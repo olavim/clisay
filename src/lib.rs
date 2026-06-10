@@ -15,7 +15,7 @@ mod output {
 
 mod core;
 mod frontend;
-mod compiler;
+mod middle;
 mod backend;
 mod runtime;
 
