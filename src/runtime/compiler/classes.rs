@@ -48,8 +48,8 @@ impl<'a> Compiler<'a> {
         }
 
         for stmt_id in &decl.methods {
-            let Stmt::Fn(decl) = self.ast.get(stmt_id) else { unreachable!(); };
-            frame.class.members.insert(self.gc.intern(&decl.name), ClassMember::Method(next_member_id));
+            let method = self.fn_decl(stmt_id);
+            frame.class.members.insert(self.gc.intern(&method.name), ClassMember::Method(next_member_id));
             next_member_id += 1;
         }
 
@@ -83,8 +83,7 @@ impl<'a> Compiler<'a> {
 
         // Compile and add methods to class object
         for stmt_id in &decl.methods {
-            let Stmt::Fn(method) = self.ast.get(stmt_id) else { unreachable!(); };
-            let name = self.gc.intern(&method.name);
+            let name = self.gc.intern(&self.fn_decl(stmt_id).name);
             self.install_method(stmt_id, name)?;
         }
 
@@ -105,7 +104,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_fn(&mut self, stmt: &AstId<Stmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {
-        let Stmt::Fn(decl) = self.ast.get(stmt) else { unreachable!(); };
+        let decl = self.fn_decl(stmt);
         let const_idx = self.function(stmt, decl, kind)?;
         let func_const = self.chunk.constants[const_idx as usize];
         Ok(func_const.as_object().as_function_ptr())

@@ -4,7 +4,7 @@ use crate::runtime::objects::ObjString;
 use crate::runtime::opcode;
 use crate::runtime::value::Value;
 
-use super::{Compiler, FnKind};
+use super::{ClassCompilation, Compiler, FnKind};
 
 /// A resolved assignable binding that a bare identifier denotes.
 #[derive(Clone, Copy)]
@@ -62,23 +62,34 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn this(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
+    /// Errors unless we are compiling inside a class method (where `this` is bound).
+    fn require_class(&self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
         if self.class_frames.is_empty() {
             compiler_error!(self, expr, "Cannot use 'this' outside of a class method");
         }
+        Ok(())
+    }
 
+    /// Returns the enclosing class's superclass, erroring if we are not inside a
+    /// class method, or the class has no superclass.
+    fn require_superclass(&self, expr: &AstId<Expr>) -> Result<ClassCompilation, anyhow::Error> {
+        let Some(frame) = self.class_frames.last() else {
+            compiler_error!(self, expr, "Cannot use 'super' outside of a class method");
+        };
+        let Some(superclass) = frame.superclass else {
+            compiler_error!(self, expr, "Cannot use 'super' outside of a child class method");
+        };
+        Ok(superclass)
+    }
+
+    fn this(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
+        self.require_class(expr)?;
         self.emit_operand(opcode::GET_LOCAL, 0, expr);
         Ok(())
     }
 
     fn super_(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        let Some(frame) = self.class_frames.last() else {
-            compiler_error!(self, expr, "Cannot use 'super' outside of a class method");
-        };
-        if frame.superclass.is_none() {
-            compiler_error!(self, expr, "Cannot use 'super' outside of a child class method");
-        }
-
+        self.require_superclass(expr)?;
         self.emit_operand(opcode::GET_LOCAL, 0, expr);
         Ok(())
     }
@@ -265,20 +276,11 @@ impl<'a> Compiler<'a> {
                 _ => None,
             };
 
-            if self.class_frames.is_empty() {
-                if matches!(expr_type, Expr::Super) {
-                    compiler_error!(self, expr, "Cannot use 'super' outside of a class method");
-                }
-                compiler_error!(self, expr, "Cannot use 'this' outside of a class method");
-            }
-
             let class = if matches!(expr_type, Expr::Super) {
-                let frame = self.current_class_frame();
-                if frame.superclass.is_none() {
-                    compiler_error!(self, expr, "Cannot use 'super' outside of a child class method");
-                }
-                unsafe { &*frame.superclass.unwrap().class }
+                let superclass = self.require_superclass(expr)?;
+                unsafe { &*superclass.class }
             } else {
+                self.require_class(expr)?;
                 &self.current_class_frame().class
             };
 
@@ -366,14 +368,9 @@ impl<'a> Compiler<'a> {
     fn call_expression(&mut self, expr: &AstId<Expr>, args: &Vec<AstId<Expr>>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
             Expr::Super => {
-                let Some(frame) = self.class_frames.last() else {
-                    compiler_error!(self, expr, "Cannot use 'super' outside of a class method");
-                };
-                let Some(superclass) = frame.superclass else {
-                    compiler_error!(self, expr, "Cannot use 'super' outside of a child class method");
-                };
-                let init_str = self.gc.intern("@init");
-                let member_id = unsafe { &*superclass.class }.resolve_id(init_str).unwrap();
+                let superclass = self.require_superclass(expr)?;
+                let init = self.gc.preset_identifiers.init;
+                let member_id = unsafe { &*superclass.class }.resolve_id(init).unwrap();
 
                 self.emit_operand(opcode::GET_LOCAL, 0, expr);
                 self.emit_operand(opcode::GET_PROPERTY_ID, member_id, expr);

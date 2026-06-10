@@ -455,7 +455,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
                 let body = self.arena.add_expr(Expr::Block(stmts), pos.clone());
                 let fn_decl = FnDecl {
-                    name: name.clone(),
+                    name: format!("{}.init", name),
                     params: Vec::new(),
                     body
                 };
