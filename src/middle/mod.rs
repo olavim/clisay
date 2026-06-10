@@ -1,4 +1,3 @@
-//! The middle end: turns the `frontend` AST into back-end `ir`/bytecode.
-//!   `codegen` — AST → bytecode (lowering and emission)
+//! The middle end: turns the AST into back-end `ir`/bytecode.
 
 pub mod codegen;

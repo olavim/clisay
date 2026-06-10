@@ -1,7 +1,5 @@
 use super::*;
 
-/// Generates the cold numeric binary-op handlers: pop two operands, require both
-/// to be numbers (else a typed error naming `$token`), apply `$body`, push it.
 macro_rules! num_binop_methods {
     ( $( $name:ident => |$a:ident, $b:ident| $body:expr, $token:literal );+ $(;)? ) => {
         $(
@@ -12,8 +10,6 @@ macro_rules! num_binop_methods {
     };
 }
 
-/// Generates the cold value binary-op handlers (no numeric coercion): pop two
-/// values, apply `$body`, push the result.
 macro_rules! value_binop_methods {
     ( $( $name:ident => |$a:ident, $b:ident| $body:expr );+ $(;)? ) => {
         $(
@@ -24,8 +20,6 @@ macro_rules! value_binop_methods {
     };
 }
 
-/// Generates the cold unary-op handlers: pop one value (must satisfy `$check`,
-/// else an "Invalid operand" error), apply `$body`, push the result.
 macro_rules! unary_op_methods {
     ( $( $name:ident => |$v:ident| $check:ident => $body:expr );+ $(;)? ) => {
         $(
