@@ -4,8 +4,8 @@ use fnv::FnvHashMap;
 use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
+use super::host::Host;
 use super::value::Value;
-use super::vm::Vm;
 
 #[repr(C)]
 pub struct ObjectHeader {
@@ -226,7 +226,7 @@ impl GcTraceable for ObjFn {
     }
 }
 
-pub type NativeFn = fn(vm: &mut Vm, target: Value, args: Vec<Value>) -> Result<(), anyhow::Error>;
+pub type NativeFn = fn(host: &mut dyn Host, target: Value, args: Vec<Value>) -> Result<(), anyhow::Error>;
 
 #[repr(align(8))]
 #[repr(C)]

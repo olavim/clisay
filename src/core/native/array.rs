@@ -2,17 +2,17 @@ use std::collections::HashMap;
 
 use anyhow::bail;
 
-use crate::runtime::gc::{Gc, GcTraceable};
-use crate::runtime::objects::{NativeFn, ObjNativeFn, ObjString};
-use crate::runtime::value::{Value, ValueKind};
-use crate::runtime::vm::Vm;
+use crate::core::gc::{Gc, GcTraceable};
+use crate::core::host::Host;
+use crate::core::objects::{NativeFn, ObjNativeFn, ObjString};
+use crate::core::value::{Value, ValueKind};
 
 use super::NativeType;
 
 pub struct NativeArray;
 
 impl NativeArray {
-    fn get(vm: &mut Vm, target: Value, prop: Value) -> Result<(), anyhow::Error> {
+    fn get(host: &mut dyn Host, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         if !matches!(prop.kind(), ValueKind::Number) {
             bail!("Invalid array index: {}", prop.fmt());
         };
@@ -29,21 +29,21 @@ impl NativeArray {
             bail!("Array index out of bounds: {}", prop.fmt());
         }
 
-        vm.stack.push(array.values[index as usize]);
+        host.push(array.values[index as usize]);
         Ok(())
     }
 
-    fn set(vm: &mut Vm, target: Value, index: Value, value: Value) -> Result<(), anyhow::Error> {
+    fn set(host: &mut dyn Host, target: Value, index: Value, value: Value) -> Result<(), anyhow::Error> {
         let target = unsafe { &mut *target.as_object().as_array_ptr() };
         let index = index.as_number() as usize;
         target.values[index] = value;
-        vm.stack.push(value);
+        host.push(value);
         Ok(())
     }
 
-    fn length(vm: &mut Vm, target: Value) -> Result<(), anyhow::Error> {
+    fn length(host: &mut dyn Host, target: Value) -> Result<(), anyhow::Error> {
         let target = unsafe { &*target.as_object().as_array_ptr() };
-        vm.stack.push(Value::from(target.values.len() as f64));
+        host.push(Value::from(target.values.len() as f64));
         Ok(())
     }
 }
@@ -55,9 +55,9 @@ impl NativeType for NativeArray {
 
     fn instance_methods(&self, gc: &mut Gc) -> HashMap<*mut ObjString, ObjNativeFn> {
         let methods = vec![
-            (gc.intern("length"), 0, (|vm, target, _args| Self::length(vm, target)) as NativeFn),
-            (gc.preset_identifiers.get, 1, (|vm, target, args| Self::get(vm, target, args[0])) as NativeFn),
-            (gc.preset_identifiers.set, 2, (|vm, target, args| Self::set(vm, target, args[0], args[1])) as NativeFn),
+            (gc.intern("length"), 0, (|host, target, _args| Self::length(host, target)) as NativeFn),
+            (gc.preset_identifiers.get, 1, (|host, target, args| Self::get(host, target, args[0])) as NativeFn),
+            (gc.preset_identifiers.set, 2, (|host, target, args| Self::set(host, target, args[0], args[1])) as NativeFn),
         ]
             .into_iter()
             .map(|(name, arity, function)| (name, ObjNativeFn::new(name, arity, function)))

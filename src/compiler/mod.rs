@@ -5,13 +5,13 @@ use anyhow::bail;
 use fnv::FnvHashMap;
 
 use crate::runtime::chunk::BytecodeChunk;
-use crate::runtime::gc::Gc;
-use crate::runtime::objects::ObjClass;
-use crate::runtime::objects::ObjString;
-use crate::runtime::objects::UpvalueLocation;
+use crate::core::gc::Gc;
+use crate::core::objects::ObjClass;
+use crate::core::objects::ObjString;
+use crate::core::objects::UpvalueLocation;
 use crate::runtime::opcode;
 use crate::runtime::opcode::OpCode;
-use crate::runtime::value::Value;
+use crate::core::value::Value;
 use crate::parser::AstId;
 use crate::parser::Expr;
 use crate::parser::FnDecl;

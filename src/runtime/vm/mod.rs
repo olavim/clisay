@@ -8,18 +8,20 @@ use smallvec::SmallVec;
 use crate::Output;
 use crate::compiler::Compiler;
 use crate::parser::Parser;
-use crate::runtime::objects::{ObjBoundMethod, ObjInstance};
-use crate::runtime::value::ValueKind;
+use crate::core::objects::{ObjBoundMethod, ObjInstance};
+use crate::core::value::ValueKind;
 use crate::lexer::{tokenize, SourcePosition, TokenStream};
 
+use crate::core::native::array::NativeArray;
+use crate::core::native::NativeType;
+use crate::core::stack::{CachedStack, Stack};
+use crate::core::value::Value;
+use crate::core::gc::{Gc, GcTraceable};
+use crate::core::host::Host;
+use crate::core::objects::{self, ClassMember, NativeFn, ObjArray, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
+
 use super::chunk::BytecodeChunk;
-use super::native::array::NativeArray;
-use super::native::NativeType;
 use super::opcode::{self, OpCode};
-use super::stack::{CachedStack, Stack};
-use super::value::Value;
-use super::gc::{Gc, GcTraceable};
-use super::objects::{self, ClassMember, NativeFn, ObjArray, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
 
 const MAX_STACK: usize = 16384;
 const MAX_FRAMES: usize = 256;
@@ -99,6 +101,25 @@ fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjClass
     gc.alloc(class)
 }
 
+impl Host for Vm {
+    fn push(&mut self, value: Value) {
+        self.stack.push(value);
+    }
+
+    fn gc(&mut self) -> &mut Gc {
+        &mut self.gc
+    }
+
+    fn collect(&mut self) {
+        self.start_gc();
+    }
+
+    fn print(&mut self, text: String) {
+        self.out.push(text.clone());
+        Output::println(text);
+    }
+}
+
 impl Vm {
     pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
         let mut gc = Gc::new();
@@ -147,32 +168,32 @@ impl Vm {
                 ValueKind::Object(ObjectKind::String) => format!("{}", value.as_object().as_string()),
                 ValueKind::Object(_) => format!("{}", value.as_object().fmt())
             };
-            vm.out.push(value_str.clone());
-            Output::println(value_str);
-            vm.stack.push(Value::NULL);
+            vm.print(value_str);
+            vm.push(Value::NULL);
             Ok(())
         });
 
         vm.define_native("time", 0, |vm, _target, _args| {
             let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as f64;
-            vm.stack.push(Value::from(time));
+            vm.push(Value::from(time));
             Ok(())
         });
 
         vm.define_native("gcHeapSize", 0, |vm, _target, _args| {
-            vm.stack.push(Value::from(vm.gc.bytes_allocated as f64));
+            let bytes = vm.gc().bytes_allocated as f64;
+            vm.push(Value::from(bytes));
             Ok(())
         });
 
         vm.define_native("gcCollect", 0, |vm, _target, _args| {
-            vm.start_gc();
-            vm.stack.push(Value::NULL);
+            vm.collect();
+            vm.push(Value::NULL);
             Ok(())
         });
 
         vm.define_native("gcStress", 1, |vm, _target, args| {
-            vm.gc.stress = args[0].as_bool();
-            vm.stack.push(Value::NULL);
+            vm.gc().stress = args[0].as_bool();
+            vm.push(Value::NULL);
             Ok(())
         });
 

@@ -13,6 +13,7 @@ mod output {
     }
 }
 
+mod core;
 mod lexer;
 mod parser;
 mod compiler;
