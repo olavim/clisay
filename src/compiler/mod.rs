@@ -4,19 +4,19 @@ use anyhow::anyhow;
 use anyhow::bail;
 use fnv::FnvHashMap;
 
-use super::chunk::BytecodeChunk;
-use super::gc::Gc;
-use super::objects::ObjClass;
-use super::objects::ObjString;
-use super::objects::UpvalueLocation;
-use super::opcode;
-use super::opcode::OpCode;
+use crate::runtime::chunk::BytecodeChunk;
+use crate::runtime::gc::Gc;
+use crate::runtime::objects::ObjClass;
+use crate::runtime::objects::ObjString;
+use crate::runtime::objects::UpvalueLocation;
+use crate::runtime::opcode;
+use crate::runtime::opcode::OpCode;
+use crate::runtime::value::Value;
 use crate::parser::AstId;
 use crate::parser::Expr;
 use crate::parser::FnDecl;
 use crate::parser::Stmt;
 use crate::parser::AstArena;
-use super::value::Value;
 
 mod expressions;
 mod statements;

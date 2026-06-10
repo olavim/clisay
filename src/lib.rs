@@ -15,6 +15,7 @@ mod output {
 
 mod lexer;
 mod parser;
+mod compiler;
 mod runtime;
 
 pub use output::Output;
