@@ -14,7 +14,7 @@ pub enum Literal {
     Boolean(bool),
     Number(f64),
     String(String),
-    Array(Option<AstId<Expr>>),
+    Array(Vec<AstId<Expr>>),
     Lambda(FnDecl)
 }
 
@@ -41,8 +41,8 @@ pub enum Expr {
     /// A binary expression: Binary(operator, left, right)
     Binary(Operator, AstId<Expr>, AstId<Expr>),
 
-    /// A function call: Call(callee, List(...arguments))
-    Call(AstId<Expr>, Option<AstId<Expr>>),
+    /// A function call: Call(callee, arguments)
+    Call(AstId<Expr>, Vec<AstId<Expr>>),
 
     /// An index expression: Index(target, index)
     Index(AstId<Expr>, AstId<Expr>),
@@ -138,9 +138,9 @@ pub struct AstId<T> {
     _marker: PhantomData<T>
 }
 
-impl Copy for AstId<Stmt> {}
-impl Clone for AstId<Stmt> {
-    fn clone(&self) -> AstId<Stmt> {
+impl<T> Copy for AstId<T> {}
+impl<T> Clone for AstId<T> {
+    fn clone(&self) -> AstId<T> {
         *self
     }
 }
@@ -162,13 +162,6 @@ impl AstId<Expr> {
         }
 
         vec
-    }
-}
-
-impl Copy for AstId<Expr> {}
-impl Clone for AstId<Expr> {
-    fn clone(&self) -> AstId<Expr> {
-        *self
     }
 }
 
@@ -211,16 +204,10 @@ macro_rules! parse_error {
     ($self:ident, $pos:expr, $($arg:tt)*) => { return Err($self.error(format!($($arg)*), $pos)) };
 }
 
-enum ParseContext {
-    Other,
-    Class(String),
-    Call
-}
-
 pub struct Parser<'parser, 'vm> {
     tokens: &'vm mut TokenStream<'vm>,
     arena: &'parser mut AstArena,
-    ctx: ParseContext
+    current_class: Option<String>
 }
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
@@ -232,7 +219,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut parser = Parser {
             tokens,
             arena: &mut arena,
-            ctx: ParseContext::Other
+            current_class: None
         };
 
         let pos = parser.tokens.peek(0).pos.clone();
@@ -340,7 +327,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_init(&mut self, has_superclass: bool) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
-        let ParseContext::Class(name) = &self.ctx else { unreachable!() };
+        let Some(name) = &self.current_class else { unreachable!() };
         let name = format!("{}.init", name);
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
@@ -386,7 +373,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn virtual_super_call(&mut self, pos: SourcePosition) -> Result<AstId<Stmt>, anyhow::Error> {
         let super_expr = self.arena.add_expr(Expr::Super, pos.clone());
-        let expr = self.arena.add_expr(Expr::Call(super_expr, None), pos.clone());
+        let expr = self.arena.add_expr(Expr::Call(super_expr, Vec::new()), pos.clone());
         Ok(self.arena.add_stmt(Stmt::Expression(expr), pos.clone()))
     }
 
@@ -394,7 +381,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = self.tokens.expect(TokenType::Class)?.pos.clone();
         let name = self.parse_identifier()?;
 
-        let prev_ctx = std::mem::replace(&mut self.ctx, ParseContext::Class(name.clone()));
+        let prev_class = std::mem::replace(&mut self.current_class, Some(name.clone()));
 
         let superclass = match self.tokens.next_if(TokenType::Colon) {
             Some(_) => Some(self.parse_identifier()?),
@@ -490,7 +477,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             methods: method_stmts
         });
 
-        self.ctx = prev_ctx;
+        self.current_class = prev_class;
         Ok(self.arena.add_stmt(Stmt::Class(class_decl), pos))
     }
 
@@ -684,16 +671,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 }
             },
             Operator::Array => {
-                let expr = match self.tokens.next_if(TokenType::RightBracket) {
-                    Some(_) => None,
+                let elements = match self.tokens.next_if(TokenType::RightBracket) {
+                    Some(_) => Vec::new(),
                     None => {
                         let expr = self.parse_expr()?;
                         self.tokens.expect(TokenType::RightBracket)?;
-                        Some(expr)
+                        expr.as_comma_separated(self.arena)
                     }
                 };
 
-                return Ok(self.arena.add_expr(Expr::Literal(Literal::Array(expr)), pos));
+                return Ok(self.arena.add_expr(Expr::Literal(Literal::Array(elements)), pos));
             },
             _ => {
                 let right = self.parse_expr_precedence(op.prefix_precedence().unwrap())?;
@@ -779,20 +766,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.arena.add_stmt(Stmt::Expression(expr), pos))
     }
 
-    fn parse_call_arguments(&mut self) -> Result<Option<AstId<Expr>>, anyhow::Error> {
-        let prev_ctx = std::mem::replace(&mut self.ctx, ParseContext::Call);
-
-        let args = match self.tokens.next_if(TokenType::RightParen) {
-            Some(_) => None,
+    fn parse_call_arguments(&mut self) -> Result<Vec<AstId<Expr>>, anyhow::Error> {
+        match self.tokens.next_if(TokenType::RightParen) {
+            Some(_) => Ok(Vec::new()),
             None => {
                 let args = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightParen)?;
-                Some(args)
+                Ok(args.as_comma_separated(self.arena))
             }
-        };
-
-        self.ctx = prev_ctx;
-
-        Ok(args)
+        }
     }
 }

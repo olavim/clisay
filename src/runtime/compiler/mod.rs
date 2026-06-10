@@ -131,10 +131,6 @@ impl<'a> Compiler<'a> {
         return self.chunk.code.len() as u16 - 3;
     }
     
-    fn emit_count(&mut self, expr: &AstId<Expr>) {
-        self.emit(expr.as_comma_separated(self.ast).len() as u8, expr);
-    }
-
     fn binary_jump_op(op: &crate::parser::Operator) -> Option<OpCode> {
         use crate::parser::Operator;
         Some(match op {
