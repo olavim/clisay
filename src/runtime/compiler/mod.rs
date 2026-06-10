@@ -13,6 +13,8 @@ use super::opcode;
 use super::opcode::OpCode;
 use crate::parser::AstId;
 use crate::parser::Expr;
+use crate::parser::FnDecl;
+use crate::parser::Stmt;
 use crate::parser::AstArena;
 use super::value::Value;
 
@@ -210,6 +212,13 @@ impl<'a> Compiler<'a> {
 
     fn current_class_frame(&self) -> &ClassFrame {
         self.class_frames.last().unwrap()
+    }
+
+    fn fn_decl(&self, stmt: &AstId<Stmt>) -> &'a FnDecl {
+        let Stmt::Fn(decl) = self.ast.get(stmt) else {
+            unreachable!("expected a function statement");
+        };
+        decl
     }
 
     fn enter_scope(&mut self) {
