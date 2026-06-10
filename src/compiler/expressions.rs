@@ -1,5 +1,5 @@
 use crate::compiler_error;
-use crate::parser::{AstId, Expr, FnDecl, Literal, Operator};
+use crate::ast::{AstId, Expr, FnDecl, Literal, Operator};
 use crate::core::objects::ObjString;
 use crate::backend::bytecode::opcode;
 use crate::core::value::Value;

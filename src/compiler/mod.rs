@@ -12,11 +12,11 @@ use crate::core::objects::UpvalueLocation;
 use crate::backend::bytecode::opcode;
 use crate::backend::bytecode::opcode::OpCode;
 use crate::core::value::Value;
-use crate::parser::AstId;
-use crate::parser::Expr;
-use crate::parser::FnDecl;
-use crate::parser::Stmt;
-use crate::parser::AstArena;
+use crate::ast::AstId;
+use crate::ast::Expr;
+use crate::ast::FnDecl;
+use crate::ast::Stmt;
+use crate::ast::Ast;
 
 mod expressions;
 mod statements;
@@ -70,7 +70,7 @@ struct TryFrame {
 
 pub struct Compiler<'a> {
     chunk: BytecodeChunk,
-    ast: &'a AstArena,
+    ast: &'a Ast,
     gc: &'a mut Gc,
     locals: Vec<Local>,
     scope_depth: u8,
@@ -86,7 +86,7 @@ macro_rules! compiler_error {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn compile<'b>(ast: &'b AstArena, gc: &'b mut Gc) -> Result<BytecodeChunk, anyhow::Error> {
+    pub fn compile<'b>(ast: &'b Ast, gc: &'b mut Gc) -> Result<BytecodeChunk, anyhow::Error> {
         let mut compiler = Compiler {
             chunk: BytecodeChunk::new(),
             ast,
@@ -120,6 +120,7 @@ impl<'a> Compiler<'a> {
         self.chunk.write(byte, pos);
     }
 
+    /// Emits a two-byte instruction: an opcode followed by a single operand byte.
     fn emit_operand<T: 'static>(&mut self, op: OpCode, operand: u8, node_id: &AstId<T>) {
         self.emit(op, node_id);
         self.emit(operand, node_id);
@@ -132,8 +133,8 @@ impl<'a> Compiler<'a> {
         return self.chunk.code.len() as u16 - 3;
     }
     
-    fn binary_jump_op(op: &crate::parser::Operator) -> Option<OpCode> {
-        use crate::parser::Operator;
+    fn binary_jump_op(op: &crate::ast::Operator) -> Option<OpCode> {
+        use crate::ast::Operator;
         Some(match op {
             Operator::LessThan => opcode::JUMP_IF_GE,
             Operator::LessThanEqual => opcode::JUMP_IF_GT,
@@ -145,8 +146,9 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    fn local_const_jump_op(op: &crate::parser::Operator) -> Option<OpCode> {
-        use crate::parser::Operator;
+    /// Fused compare-and-branch variant for the common `local <cmp> number`.
+    fn local_const_jump_op(op: &crate::ast::Operator) -> Option<OpCode> {
+        use crate::ast::Operator;
         Some(match op {
             Operator::LessThan => opcode::JUMP_IF_GE_LOCAL_CONST,
             Operator::LessThanEqual => opcode::JUMP_IF_GT_LOCAL_CONST,
@@ -157,8 +159,8 @@ impl<'a> Compiler<'a> {
     }
 
     /// The comparison with its operands swapped (`a < b` to `b > a`).
-    fn flip_cmp(op: &crate::parser::Operator) -> crate::parser::Operator {
-        use crate::parser::Operator;
+    fn flip_cmp(op: &crate::ast::Operator) -> crate::ast::Operator {
+        use crate::ast::Operator;
         match op {
             Operator::LessThan => Operator::GreaterThan,
             Operator::LessThanEqual => Operator::GreaterThanEqual,
@@ -172,6 +174,8 @@ impl<'a> Compiler<'a> {
         if let Expr::Binary(op, left, right) = self.ast.get(cond) {
             let (op, left, right) = (op.clone(), *left, *right);
 
+            // Fused `local <cmp> number`. Operands may be in either order:
+            // `const <cmp> local` reuses the same ops with the comparison flipped.
             let mut fused = None;
             if let Some(fused_op) = Self::local_const_jump_op(&op) {
                 fused = self.try_local_const(&left, &right)?.map(|(l, c)| (fused_op, l, c));
@@ -237,6 +241,8 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// Declares a new local variable in the current scope. Returns the slot index of the variable,
+    /// which is relative to the current function's `local_offset` (i.e. the operand for `GET_LOCAL`/`SET_LOCAL`).
     fn declare_local<T: 'static>(&mut self, name: *mut ObjString, is_mutable: bool, node_id: &AstId<T>) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");

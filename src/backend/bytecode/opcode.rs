@@ -1,4 +1,4 @@
-use crate::parser::Operator;
+use crate::ast::Operator;
 
 pub type OpCode = u8;
 

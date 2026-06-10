@@ -1,6 +1,6 @@
 use anyhow::bail;
 
-use crate::lexer::{Token, TokenType};
+use crate::frontend::lex::{Token, TokenType};
 
 type TokenResult<T> = Result<T, anyhow::Error>;
 
