@@ -6,6 +6,7 @@ use rustc_hash::FxHasher;
 use smallvec::SmallVec;
 
 use crate::Output;
+use crate::compiler::Compiler;
 use crate::parser::Parser;
 use crate::runtime::objects::{ObjBoundMethod, ObjInstance};
 use crate::runtime::value::ValueKind;
@@ -19,7 +20,6 @@ use super::stack::{CachedStack, Stack};
 use super::value::Value;
 use super::gc::{Gc, GcTraceable};
 use super::objects::{self, ClassMember, NativeFn, ObjArray, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
-use super::compiler::Compiler;
 
 const MAX_STACK: usize = 16384;
 const MAX_FRAMES: usize = 256;

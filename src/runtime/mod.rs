@@ -1,12 +1,12 @@
 mod stack;
-mod opcode;
-mod chunk;
-mod objects;
 mod native;
 mod vm;
-mod gc;
-mod value;
-mod compiler;
+
+pub mod gc;
+pub mod chunk;
+pub mod opcode;
+pub mod objects;
+pub mod value;
 
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
     vm::Vm::run(file_name, src)
