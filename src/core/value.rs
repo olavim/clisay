@@ -21,30 +21,26 @@ impl fmt::Display for ValueKind {
     }
 }
 
-/** NaN boxed value */
+/// NaN boxed value
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Value(u64);
 
 impl Value {
-    /**
-     * 0x7FF8000000000000 is the QNaN representation of a 64-bit float.
-     * A value represents a number if its QNaN bits are not set.
-     * 
-     * We also reserve an additional bit to differentiate between NaNs and
-     * other value types in Clisay, like booleans and objects.
-     * 
-     * If these bits are set, the value does not represent an f64.
-     */
+     /// 0x7FF8000000000000 is the QNaN representation of a 64-bit float.
+     /// A value represents a number if its QNaN bits are not set.
+     /// 
+     /// We also reserve an additional bit to differentiate between NaNs and
+     /// other value types in Clisay, like booleans and objects.
+     /// 
+     /// If these bits are set, the value does not represent an f64.
     const NAN_MASK: u64 = 0x7FFC000000000000;
     const SIGN: u64 = 1 << 63; // 0x8000000000000000;
 
-    /**
-     * The sign and QNaN bits are set for object values. 
-     * This takes 14 bits, leaving room for a 50-bit pointer.
-     * 
-     * Technically 64-bit architectures have 64-bit pointers, but in practice
-     * common architectures only use the first 48 bits.
-     */
+    /// The sign and QNaN bits are set for object values. 
+    /// This takes 14 bits, leaving room for a 50-bit pointer.
+    /// 
+    /// Technically 64-bit architectures have 64-bit pointers, but in practice
+    /// common architectures only use the first 48 bits.
     const OBJECT_MASK: u64 = Self::SIGN | Self::NAN_MASK;
     const PTR_MASK: u64 = 0x0000FFFFFFFFFFFF;
     

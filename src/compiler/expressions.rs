@@ -1,7 +1,7 @@
 use crate::compiler_error;
 use crate::parser::{AstId, Expr, FnDecl, Literal, Operator};
 use crate::core::objects::ObjString;
-use crate::runtime::opcode;
+use crate::backend::bytecode::opcode;
 use crate::core::value::Value;
 
 use super::{ClassCompilation, Compiler, FnKind};

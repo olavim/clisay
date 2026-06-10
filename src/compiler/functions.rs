@@ -1,6 +1,6 @@
 use crate::parser::{AstId, Expr, FnDecl};
 use crate::core::objects::{ObjFn, ObjString};
-use crate::runtime::opcode;
+use crate::backend::bytecode::opcode;
 use crate::core::value::Value;
 
 use super::{Compiler, FnFrame, FnKind, Local};

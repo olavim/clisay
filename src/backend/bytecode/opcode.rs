@@ -4,22 +4,19 @@ pub type OpCode = u8;
 
 /// One operand of an instruction. The VM reads operands directly in its dispatch
 /// loop; this metadata exists so the disassembler can render any opcode without a
-/// per-opcode arm — each opcode declares its operand layout in `opcodes!` below.
+/// per-opcode arm.
 #[derive(Clone, Copy)]
 pub enum Operand {
-    /// A raw `u8` (upvalue index, member id, arg count, …), shown as `<n>`.
+    /// A raw `u8` (upvalue index, member id, arg count, …).
     Byte,
-    /// A `u8` local slot, shown as `L<n>`.
+    /// A `u8` local slot.
     Local,
-    /// A `u8` index into the constant pool, shown as the constant's value.
+    /// A `u8` index into the constant pool.
     Const,
-    /// A `u16` bytecode offset (jump target), shown as `<n>`.
+    /// A `u16` bytecode offset (jump target).
     Jump,
 }
 
-/// Declares the opcodes. Each entry is `NAME` or `NAME(Operand, …)`; the operand
-/// list is the single source of truth for disassembly. Generates the sequential
-/// `OpCode` constants plus `name()` and `operands()` lookups.
 macro_rules! opcodes {
     ( $( $name:ident $( ( $( $operand:ident ),* ) )? ),+ $(,)? ) => {
         opcodes!(@consts 0u8 ; $( $name ),+ );

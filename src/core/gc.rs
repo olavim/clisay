@@ -20,7 +20,7 @@ pub trait GcTraceable {
 
     /// Size of the object's own allocation block, used to bucket it on the free
     /// list. Defaults to the struct size; types whose allocation includes a
-    /// trailing array (e.g. `ObjClosure`) override this.
+    /// trailing array override this.
     fn layout_size(&self) -> usize {
         mem::size_of_val(self)
     }
