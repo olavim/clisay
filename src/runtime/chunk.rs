@@ -5,9 +5,9 @@ use anyhow::bail;
 use crate::lexer::SourcePosition;
 use crate::runtime::opcode;
 
-use super::gc::{Gc, GcTraceable};
+use crate::core::gc::{Gc, GcTraceable};
+use crate::core::value::Value;
 use super::opcode::{OpCode, Operand};
-use super::value::Value;
 
 
 
