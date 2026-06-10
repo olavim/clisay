@@ -232,11 +232,13 @@ impl<'a> Compiler<'a> {
             _ => {}
         }
 
+        if let Operator::Comma = op {
+            compiler_error!(self, right, "Unexpected ','");
+        }
+
         self.expression(left)?;
         self.expression(right)?;
-        if !matches!(op, Operator::Comma) {
-            self.emit(opcode::from_operator(op), right);
-        }
+        self.emit(opcode::from_operator(op), right);
         Ok(())
     }
 
@@ -346,7 +348,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn call_expression(&mut self, expr: &AstId<Expr>, args: &Option<AstId<Expr>>) -> Result<(), anyhow::Error> {
+    fn call_expression(&mut self, expr: &AstId<Expr>, args: &Vec<AstId<Expr>>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
             Expr::Super => {
                 let Some(frame) = self.class_frames.last() else {
@@ -364,13 +366,10 @@ impl<'a> Compiler<'a> {
             _ => { self.expression(expr)? }
         };
 
-        if let Some(args) = args {
-            self.expression(args)?;
-            self.emit(opcode::CALL, expr);
-            self.emit_count(args);
-        } else {
-            self.emit_operand(opcode::CALL, 0, expr);
+        for arg in args {
+            self.expression(arg)?;
         }
+        self.emit_operand(opcode::CALL, args.len() as u8, expr);
 
         Ok(())
     }
@@ -395,14 +394,11 @@ impl<'a> Compiler<'a> {
             Literal::Null => { self.emit(opcode::PUSH_NULL, expr); },
             Literal::Boolean(true) => { self.emit(opcode::PUSH_TRUE, expr); },
             Literal::Boolean(false) => { self.emit(opcode::PUSH_FALSE, expr); },
-            Literal::Array(list) => {
-                if let Some(list) = list {
-                    self.expression(list)?;
-                    self.emit(opcode::ARRAY, expr);
-                    self.emit_count(list);
-                } else {
-                    self.emit_operand(opcode::ARRAY, 0, expr);
+            Literal::Array(elements) => {
+                for element in elements {
+                    self.expression(element)?;
                 }
+                self.emit_operand(opcode::ARRAY, elements.len() as u8, expr);
             },
             Literal::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };

@@ -1,4 +1,3 @@
-use crate::compiler_error;
 use crate::parser::{AstId, Expr, FnDecl};
 use crate::runtime::objects::{ObjFn, ObjString};
 use crate::runtime::opcode;
@@ -64,7 +63,7 @@ impl<'a> Compiler<'a> {
 
         for param in &decl.params {
             let Expr::Identifier(param_name) = self.ast.get(param) else {
-                compiler_error!(self, node_id, "Invalid parameter: Expected identifier");
+                unreachable!("parser guarantees parameters are identifiers");
             };
             let param_name = self.gc.intern(param_name);
             self.declare_local(param_name, true, param)?;
