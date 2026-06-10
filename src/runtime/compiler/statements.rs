@@ -1,15 +1,16 @@
 use crate::compiler_error;
-use crate::parser::{ASTId, CatchClause, Expr, FieldInit, Stmt};
+use crate::parser::{AstId, CatchClause, Expr, FieldInit, Stmt};
 use crate::runtime::opcode;
 
 use super::{Compiler, FnKind, TryCatchPosition, TryFrame};
 
 
 impl<'a> Compiler<'a> {
-    pub (super) fn statement(&mut self, stmt_id: &ASTId<Stmt>) -> Result<(), anyhow::Error> {
+    pub (super) fn statement(&mut self, stmt_id: &AstId<Stmt>) -> Result<(), anyhow::Error> {
         match self.ast.get(stmt_id) {
             Stmt::Return(expr) => {
-                // If returning from a try or catch block with a finally block, inline the finally block before returning.
+                // If returning from a try or catch block with a finally block,
+                // inline the finally block before returning.
                 if let Some(TryFrame {
                     position: pos @ (TryCatchPosition::Try | TryCatchPosition::Catch),
                     finally: Some(finally)
@@ -18,6 +19,8 @@ impl<'a> Compiler<'a> {
                         self.emit(opcode::POP_TRY, stmt_id);
                     }
 
+                    // Mark the frame as inside its finally so a `return` within the
+                    // inlined finally doesn't recurse back here.
                     let idx = self.try_frames.len() - 1;
                     self.try_frames[idx].position = TryCatchPosition::Finally;
                     self.inline_block(&finally)?;
@@ -87,15 +90,11 @@ impl<'a> Compiler<'a> {
             Stmt::Fn(decl) => {
                 let name = self.gc.intern(&decl.name);
                 
-                // The slot was reserved by `hoist_declarations` before any body in this
-                // scope was compiled, which is what lets forward references resolve.
                 let slot = self.resolve_local(name)
                     .expect("fn declarations are reserved by hoist_declarations before compilation");
 
                 let const_idx = self.function(stmt_id, decl, FnKind::Function)?;
                 self.emit_operand(opcode::PUSH_CLOSURE, const_idx, stmt_id);
-
-                // Store the closure into the reserved slot and discard the placeholder.
                 self.emit_operand(opcode::SET_LOCAL, slot, stmt_id);
                 self.emit(opcode::POP, stmt_id);
             },
@@ -147,7 +146,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn statement_body(&mut self, body: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
+    fn statement_body(&mut self, body: &Vec<AstId<Stmt>>) -> Result<(), anyhow::Error> {
         self.hoist_declarations(body)?;
         for stmt_id in body {
             self.statement(stmt_id)?;
@@ -155,14 +154,14 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<ASTId<Stmt>>, node_id: &ASTId<T>) -> Result<(), anyhow::Error> {
+    pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<AstId<Stmt>>, node_id: &AstId<T>) -> Result<(), anyhow::Error> {
         self.enter_scope();
         self.statement_body(body)?;
         self.exit_scope(node_id);
         Ok(())
     }
 
-    fn inline_block(&mut self, body: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn inline_block(&mut self, body: &AstId<Expr>) -> Result<(), anyhow::Error> {
         let Expr::Block(stmts) = self.ast.get(body) else { unreachable!() };
         self.statement_body(stmts)
     }
@@ -182,13 +181,13 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_finally(&mut self, finally: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn compile_finally(&mut self, finally: &AstId<Expr>) -> Result<(), anyhow::Error> {
         let idx = self.try_frames.len() - 1;
         self.try_frames[idx].position = TryCatchPosition::Finally;
         self.expression_stmt(finally)
     }
 
-    pub (super) fn hoist_declarations(&mut self, body: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
+    pub (super) fn hoist_declarations(&mut self, body: &Vec<AstId<Stmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
             let name = match self.ast.get(stmt_id) {
                 Stmt::Fn(decl) => decl.name.clone(),

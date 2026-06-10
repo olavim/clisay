@@ -11,9 +11,9 @@ use super::objects::ObjString;
 use super::objects::UpvalueLocation;
 use super::opcode;
 use super::opcode::OpCode;
-use crate::parser::ASTId;
+use crate::parser::AstId;
 use crate::parser::Expr;
-use crate::parser::AST;
+use crate::parser::AstArena;
 use super::value::Value;
 
 mod expressions;
@@ -63,12 +63,12 @@ enum TryCatchPosition {
 #[derive(Clone)]
 struct TryFrame {
     position: TryCatchPosition,
-    finally: Option<ASTId<Expr>>
+    finally: Option<AstId<Expr>>
 }
 
 pub struct Compiler<'a> {
     chunk: BytecodeChunk,
-    ast: &'a AST,
+    ast: &'a AstArena,
     gc: &'a mut Gc,
     locals: Vec<Local>,
     scope_depth: u8,
@@ -84,7 +84,7 @@ macro_rules! compiler_error {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn compile<'b>(ast: &'b AST, gc: &'b mut Gc) -> Result<BytecodeChunk, anyhow::Error> {
+    pub fn compile<'b>(ast: &'b AstArena, gc: &'b mut Gc) -> Result<BytecodeChunk, anyhow::Error> {
         let mut compiler = Compiler {
             chunk: BytecodeChunk::new(),
             ast,
@@ -102,7 +102,7 @@ impl<'a> Compiler<'a> {
         Ok(compiler.finish())
     }
 
-    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &ASTId<T>) -> anyhow::Error {
+    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &AstId<T>) -> anyhow::Error {
         let pos = self.ast.pos(node_id);
         anyhow!("{}\n\tat {}", msg.into(), pos)
     }
@@ -113,24 +113,24 @@ impl<'a> Compiler<'a> {
         self.chunk
     }
 
-    fn emit<T: 'static>(&mut self, byte: u8, node_id: &ASTId<T>) {
+    fn emit<T: 'static>(&mut self, byte: u8, node_id: &AstId<T>) {
         let pos = self.ast.pos(node_id);
         self.chunk.write(byte, pos);
     }
 
-    fn emit_operand<T: 'static>(&mut self, op: OpCode, operand: u8, node_id: &ASTId<T>) {
+    fn emit_operand<T: 'static>(&mut self, op: OpCode, operand: u8, node_id: &AstId<T>) {
         self.emit(op, node_id);
         self.emit(operand, node_id);
     }
 
-    fn emit_jump<T: 'static>(&mut self, op: OpCode, pos: u16, node_id: &ASTId<T>) -> u16 {
+    fn emit_jump<T: 'static>(&mut self, op: OpCode, pos: u16, node_id: &AstId<T>) -> u16 {
         self.emit(op, node_id);
         self.emit(pos as u8, node_id);
         self.emit((pos >> 8) as u8, node_id);
         return self.chunk.code.len() as u16 - 3;
     }
     
-    fn emit_count(&mut self, expr: &ASTId<Expr>) {
+    fn emit_count(&mut self, expr: &AstId<Expr>) {
         self.emit(expr.as_comma_separated(self.ast).len() as u8, expr);
     }
 
@@ -170,7 +170,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_conditional_jump<T: 'static>(&mut self, cond: &ASTId<Expr>, node_id: &ASTId<T>) -> Result<u16, anyhow::Error> {
+    fn emit_conditional_jump<T: 'static>(&mut self, cond: &AstId<Expr>, node_id: &AstId<T>) -> Result<u16, anyhow::Error> {
         if let Expr::Binary(op, left, right) = self.ast.get(cond) {
             let (op, left, right) = (op.clone(), *left, *right);
 
@@ -220,7 +220,7 @@ impl<'a> Compiler<'a> {
         self.scope_depth += 1;
     }
 
-    fn exit_scope<T: 'static>(&mut self, node_id: &ASTId<T>) {
+    fn exit_scope<T: 'static>(&mut self, node_id: &AstId<T>) {
         self.scope_depth -= 1;
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
             if self.locals.last().unwrap().is_captured {
@@ -232,7 +232,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn declare_local<T: 'static>(&mut self, name: *mut ObjString, is_mutable: bool, node_id: &ASTId<T>) -> Result<u8, anyhow::Error> {
+    fn declare_local<T: 'static>(&mut self, name: *mut ObjString, is_mutable: bool, node_id: &AstId<T>) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
         }
