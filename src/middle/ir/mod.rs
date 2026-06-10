@@ -1,0 +1,186 @@
+//! The intermediate representation.
+
+use anyhow::bail;
+
+use crate::ast::Operator;
+use crate::core::objects::ObjFn;
+use crate::core::value::Value;
+use crate::frontend::lex::SourcePosition;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Label(usize);
+
+/// A single IR instruction.
+pub enum Inst {
+    // Control flow
+    Call(u8),
+    Jump(Label),
+    JumpIfFalse(Label),
+    JumpIfGe(Label),
+    JumpIfGt(Label),
+    JumpIfLe(Label),
+    JumpIfLt(Label),
+    JumpIfEq(Label),
+    JumpIfNeq(Label),
+    // Fused compare-and-branch: `local <cmp> const`
+    JumpIfGeLocalConst(Label, u8, u8),
+    JumpIfGtLocalConst(Label, u8, u8),
+    JumpIfLeLocalConst(Label, u8, u8),
+    JumpIfLtLocalConst(Label, u8, u8),
+    Return,
+    Throw,
+    PushTry(Label),
+    PopTry,
+
+    // Stack / constants
+    Pop,
+    PushConstant(u8),
+    PushNull,
+    PushTrue,
+    PushFalse,
+    PushClosure(u8),
+    PushClass(u8),
+
+    // Variables and properties
+    GetGlobal(u8),
+    SetGlobal(u8),
+    GetLocal(u8),
+    SetLocal(u8),
+    SetLocalPop(u8),
+    SetLocalAddLocalLocal(u8, u8, u8), // dst = a + b
+    GetUpvalue(u8),
+    SetUpvalue(u8),
+    SetUpvaluePop(u8),
+    CloseUpvalue(u8),
+    GetIndex,
+    SetIndex,
+    GetPropertyId(u8),
+    SetPropertyId(u8),
+    SetPropertyIdPop(u8),
+    Array(u8),
+
+    // Arithmetic
+    Add,
+    AddLocalConst(u8, u8),   // local + const
+    Subtract,
+    SubLocalConst(u8, u8),   // local - const
+    SubConstLocal(u8, u8),   // const - local
+    Multiply,
+    Divide,
+    Negate,
+    LeftShift,
+    RightShift,
+    BitAnd,
+    BitOr,
+    BitXor,
+    BitNot,
+
+    // Logical / comparison
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanEqual,
+    GreaterThan,
+    GreaterThanEqual,
+    And,
+    Or,
+}
+
+impl Inst {
+    pub fn from_operator(op: &Operator) -> Inst {
+        match op {
+            Operator::Add => Inst::Add,
+            Operator::Subtract => Inst::Subtract,
+            Operator::Multiply => Inst::Multiply,
+            Operator::Divide => Inst::Divide,
+            Operator::LeftShift => Inst::LeftShift,
+            Operator::RightShift => Inst::RightShift,
+            Operator::LessThan => Inst::LessThan,
+            Operator::LessThanEqual => Inst::LessThanEqual,
+            Operator::GreaterThan => Inst::GreaterThan,
+            Operator::GreaterThanEqual => Inst::GreaterThanEqual,
+            Operator::LogicalEqual => Inst::Equal,
+            Operator::LogicalNotEqual => Inst::NotEqual,
+            Operator::LogicalAnd => Inst::And,
+            Operator::LogicalOr => Inst::Or,
+            Operator::BitAnd => Inst::BitAnd,
+            Operator::BitOr => Inst::BitOr,
+            Operator::BitXor => Inst::BitXor,
+            Operator::BitNot => Inst::BitNot,
+            Operator::Negate => Inst::Negate,
+            _ => unreachable!("Invalid operator")
+        }
+    }
+}
+
+pub struct Ir {
+    code: Vec<Inst>,
+    positions: Vec<SourcePosition>,
+    constants: Vec<Value>,
+    labels: Vec<Option<usize>>,
+    /// Function entry points.
+    entries: Vec<(*mut ObjFn, Label)>,
+}
+
+impl Ir {
+    pub fn new() -> Ir {
+        Ir {
+            code: Vec::new(),
+            positions: Vec::new(),
+            constants: Vec::new(),
+            labels: Vec::new(),
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn emit(&mut self, inst: Inst, pos: &SourcePosition) {
+        self.code.push(inst);
+        self.positions.push(pos.clone());
+    }
+
+    pub fn new_label(&mut self) -> Label {
+        self.labels.push(None);
+        Label(self.labels.len() - 1)
+    }
+
+    /// Pins `label` to the next instruction to be emitted.
+    pub fn bind(&mut self, label: Label) {
+        self.labels[label.0] = Some(self.code.len());
+    }
+
+    pub fn record_entry(&mut self, func: *mut ObjFn, label: Label) {
+        self.entries.push((func, label));
+    }
+
+    pub fn entries(&self) -> &[(*mut ObjFn, Label)] {
+        &self.entries
+    }
+
+    /// Interns a constant, returning its pool index.
+    pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
+        if self.constants.len() >= u8::MAX as usize {
+            bail!("Too many constants");
+        }
+
+        self.constants.push(value);
+        Ok((self.constants.len() - 1) as u8)
+    }
+
+    pub fn code(&self) -> &[Inst] {
+        &self.code
+    }
+
+    pub fn positions(&self) -> &[SourcePosition] {
+        &self.positions
+    }
+
+    pub fn constants(&self) -> &[Value] {
+        &self.constants
+    }
+
+    pub fn label_target(&self, label: Label) -> usize {
+        let target = self.labels[label.0].expect("label was never bound");
+        debug_assert!(target < self.code.len(), "jump target past end of instruction stream");
+        target
+    }
+}
