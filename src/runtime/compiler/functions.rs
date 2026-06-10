@@ -1,5 +1,5 @@
 use crate::compiler_error;
-use crate::parser::{ASTId, Expr, FnDecl};
+use crate::parser::{AstId, Expr, FnDecl};
 use crate::runtime::objects::{ObjFn, ObjString};
 use crate::runtime::opcode;
 use crate::runtime::value::Value;
@@ -30,7 +30,7 @@ impl<'a> Compiler<'a> {
         });
     }
 
-    pub (super) fn exit_function(&mut self, body_id: &ASTId<Expr>) -> FnFrame {
+    pub (super) fn exit_function(&mut self, body_id: &AstId<Expr>) -> FnFrame {
         let frame = self.fn_frames.pop().unwrap();
         self.scope_depth -= 1;
 
@@ -54,7 +54,7 @@ impl<'a> Compiler<'a> {
         frame
     }
 
-    pub (super) fn function<T: 'static>(&mut self, node_id: &ASTId<T>, decl: &FnDecl, kind: FnKind) -> Result<u8, anyhow::Error> {
+    pub (super) fn function<T: 'static>(&mut self, node_id: &AstId<T>, decl: &FnDecl, kind: FnKind) -> Result<u8, anyhow::Error> {
         // The callee slot is named after the function so recursion resolves to it.
         let self_name = match kind {
             FnKind::Function => self.gc.intern(&decl.name),

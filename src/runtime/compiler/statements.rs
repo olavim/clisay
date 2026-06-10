@@ -1,12 +1,12 @@
 use crate::compiler_error;
-use crate::parser::{ASTId, CatchClause, Expr, FieldInit, Stmt};
+use crate::parser::{AstId, CatchClause, Expr, FieldInit, Stmt};
 use crate::runtime::opcode;
 
 use super::{Compiler, FnKind, TryCatchPosition, TryFrame};
 
 
 impl<'a> Compiler<'a> {
-    pub (super) fn statement(&mut self, stmt_id: &ASTId<Stmt>) -> Result<(), anyhow::Error> {
+    pub (super) fn statement(&mut self, stmt_id: &AstId<Stmt>) -> Result<(), anyhow::Error> {
         match self.ast.get(stmt_id) {
             Stmt::Return(expr) => {
                 // If returning from a try or catch block with a finally block, inline the finally block before returning.
@@ -152,7 +152,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn statement_body(&mut self, body: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
+    fn statement_body(&mut self, body: &Vec<AstId<Stmt>>) -> Result<(), anyhow::Error> {
         self.hoist_declarations(body)?;
         for stmt_id in body {
             self.statement(stmt_id)?;
@@ -162,7 +162,7 @@ impl<'a> Compiler<'a> {
 
     /// Compiles `body` in its own lexical scope: enter a scope, compile the
     /// statements (with declaration hoisting), then exit and clean up locals.
-    pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<ASTId<Stmt>>, node_id: &ASTId<T>) -> Result<(), anyhow::Error> {
+    pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<AstId<Stmt>>, node_id: &AstId<T>) -> Result<(), anyhow::Error> {
         self.enter_scope();
         self.statement_body(body)?;
         self.exit_scope(node_id);
@@ -171,7 +171,7 @@ impl<'a> Compiler<'a> {
 
     /// Compiles the statements of an `Expr::Block` body directly into the current
     /// scope, without opening a new one.
-    fn inline_block(&mut self, body: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn inline_block(&mut self, body: &AstId<Expr>) -> Result<(), anyhow::Error> {
         let Expr::Block(stmts) = self.ast.get(body) else { unreachable!() };
         self.statement_body(stmts)
     }
@@ -195,7 +195,7 @@ impl<'a> Compiler<'a> {
 
     /// Compiles a `finally` block (scoped, value discarded), marking the enclosing
     /// try frame as being inside its finally so a nested return/throw won't re-run it.
-    fn compile_finally(&mut self, finally: &ASTId<Expr>) -> Result<(), anyhow::Error> {
+    fn compile_finally(&mut self, finally: &AstId<Expr>) -> Result<(), anyhow::Error> {
         let idx = self.try_frames.len() - 1;
         self.try_frames[idx].position = TryCatchPosition::Finally;
         self.expression_stmt(finally)
@@ -205,7 +205,7 @@ impl<'a> Compiler<'a> {
     /// before any statement is compiled, so a declaration can be referenced before
     /// it appears in source (e.g. mutual recursion). A `PUSH_NULL` placeholder holds
     /// the slot until the declaration is compiled into it.
-    pub (super) fn hoist_declarations(&mut self, body: &Vec<ASTId<Stmt>>) -> Result<(), anyhow::Error> {
+    pub (super) fn hoist_declarations(&mut self, body: &Vec<AstId<Stmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
             let name = match self.ast.get(stmt_id) {
                 Stmt::Fn(decl) => decl.name.clone(),

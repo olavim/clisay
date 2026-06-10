@@ -2,7 +2,7 @@ mod operator;
 
 use core::fmt;
 use std::collections::HashSet;
-use std::{any::Any, marker::PhantomData};
+use std::marker::PhantomData;
 
 use anyhow::anyhow;
 pub use operator::Operator;
@@ -14,7 +14,7 @@ pub enum Literal {
     Boolean(bool),
     Number(f64),
     String(String),
-    Array(Option<ASTId<Expr>>),
+    Array(Option<AstId<Expr>>),
     Lambda(FnDecl)
 }
 
@@ -31,26 +31,21 @@ impl fmt::Display for Literal {
     }
 }
 
-pub trait ASTKind {
-    fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-}
-
 pub enum Expr {
     /// A block body (function/method/lambda/program)
-    Block(Vec<ASTId<Stmt>>),
+    Block(Vec<AstId<Stmt>>),
 
     /// A unary expression: Unary(operator, operand)
-    Unary(Operator, ASTId<Expr>),
+    Unary(Operator, AstId<Expr>),
 
     /// A binary expression: Binary(operator, left, right)
-    Binary(Operator, ASTId<Expr>, ASTId<Expr>),
+    Binary(Operator, AstId<Expr>, AstId<Expr>),
 
     /// A function call: Call(callee, List(...arguments))
-    Call(ASTId<Expr>, Option<ASTId<Expr>>),
+    Call(AstId<Expr>, Option<AstId<Expr>>),
 
     /// An index expression: Index(target, index)
-    Index(ASTId<Expr>, ASTId<Expr>),
+    Index(AstId<Expr>, AstId<Expr>),
 
     Literal(Literal),
     Identifier(String),
@@ -58,88 +53,100 @@ pub enum Expr {
     Super
 }
 
-impl ASTKind for Expr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
-
 pub struct FieldInit {
     pub name: String,
-    pub value: Option<ASTId<Expr>>
+    pub value: Option<AstId<Expr>>
 }
 
 pub struct FnDecl {
     pub name: String,
-    pub params: Vec<ASTId<Expr>>,
-    pub body: ASTId<Expr>
+    pub params: Vec<AstId<Expr>>,
+    pub body: AstId<Expr>
 }
 
 /// A `catch (param) { … }` clause of a try statement.
 pub struct CatchClause {
-    pub param: Option<ASTId<Expr>>,
-    pub body: ASTId<Expr>
+    pub param: Option<AstId<Expr>>,
+    pub body: AstId<Expr>
 }
 
 pub struct ClassDecl {
     pub name: String,
     pub superclass: Option<String>,
-    pub init: ASTId<Stmt>,
-    pub getter: Option<ASTId<Stmt>>,
-    pub setter: Option<ASTId<Stmt>>,
+    pub init: AstId<Stmt>,
+    pub getter: Option<AstId<Stmt>>,
+    pub setter: Option<AstId<Stmt>>,
     pub fields: HashSet<String>,
-    pub methods: Vec<ASTId<Stmt>>
+    pub methods: Vec<AstId<Stmt>>
 }
 
 pub enum Stmt {
-    Expression(ASTId<Expr>),
-    Return(Option<ASTId<Expr>>),
-    Throw(ASTId<Expr>),
+    Expression(AstId<Expr>),
+    Return(Option<AstId<Expr>>),
+    Throw(AstId<Expr>),
     /// A try statement: Try(body block, optional catch clause, optional finally block).
-    Try(ASTId<Expr>, Option<CatchClause>, Option<ASTId<Expr>>),
-    While(ASTId<Expr>, ASTId<Expr>),
+    Try(AstId<Expr>, Option<CatchClause>, Option<AstId<Expr>>),
+    While(AstId<Expr>, AstId<Expr>),
     /// An if statement: If(condition, then block, else body). The bodies are
     /// `Expr::Block`s; the else branch is a `Stmt::If` (else-if) or `Stmt::Block`.
-    If(ASTId<Expr>, ASTId<Expr>, Option<ASTId<Stmt>>),
+    If(AstId<Expr>, AstId<Expr>, Option<AstId<Stmt>>),
     /// A bare `{ … }` statement block (wraps an `Expr::Block`).
-    Block(ASTId<Expr>),
+    Block(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
     Class(Box<ClassDecl>)
 }
 
-impl ASTKind for Stmt {
-    fn as_any(&self) -> &dyn Any {
-        self
+pub enum NodeKind {
+    Expr(Expr),
+    Stmt(Stmt)
+}
+
+pub trait AstNode: Sized {
+    fn wrap(self) -> NodeKind;
+    fn unwrap(node: &NodeKind) -> &Self;
+    fn unwrap_mut(node: &mut NodeKind) -> &mut Self;
+}
+
+impl AstNode for Expr {
+    fn wrap(self) -> NodeKind { NodeKind::Expr(self) }
+    fn unwrap(node: &NodeKind) -> &Expr {
+        match node { NodeKind::Expr(expr) => expr, _ => unreachable!() }
     }
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
+    fn unwrap_mut(node: &mut NodeKind) -> &mut Expr {
+        match node { NodeKind::Expr(expr) => expr, _ => unreachable!() }
     }
 }
 
-pub struct ASTNode {
+impl AstNode for Stmt {
+    fn wrap(self) -> NodeKind { NodeKind::Stmt(self) }
+    fn unwrap(node: &NodeKind) -> &Stmt {
+        match node { NodeKind::Stmt(stmt) => stmt, _ => unreachable!() }
+    }
+    fn unwrap_mut(node: &mut NodeKind) -> &mut Stmt {
+        match node { NodeKind::Stmt(stmt) => stmt, _ => unreachable!() }
+    }
+}
+
+pub struct Node {
     pub pos: SourcePosition,
-    pub value: Box<dyn ASTKind>
+    pub kind: NodeKind
 }
 
-pub struct ASTId<T> {
+pub struct AstId<T> {
     id: usize,
     _marker: PhantomData<T>
 }
 
-impl Copy for ASTId<Stmt> {}
-impl Clone for ASTId<Stmt> {
-    fn clone(&self) -> ASTId<Stmt> {
+impl Copy for AstId<Stmt> {}
+impl Clone for AstId<Stmt> {
+    fn clone(&self) -> AstId<Stmt> {
         *self
     }
 }
 
-impl ASTId<Expr> {
-    pub fn as_comma_separated(&self, ast: &AST) -> Vec<ASTId<Expr>> {
+impl AstId<Expr> {
+    pub fn as_comma_separated(&self, ast: &AstArena) -> Vec<AstId<Expr>> {
         let mut vec = Vec::new();
         let mut q = vec![*self];
 
@@ -158,44 +165,45 @@ impl ASTId<Expr> {
     }
 }
 
-impl Copy for ASTId<Expr> {}
-impl Clone for ASTId<Expr> {
-    fn clone(&self) -> ASTId<Expr> {
+impl Copy for AstId<Expr> {}
+impl Clone for AstId<Expr> {
+    fn clone(&self) -> AstId<Expr> {
         *self
     }
 }
 
-pub struct AST {
-    nodes: Vec<ASTNode>
+pub struct AstArena {
+    nodes: Vec<Node>
 }
 
-impl AST {
-    pub fn get<T: 'static>(&self, id: &ASTId<T>) -> &T {
-        self.nodes[id.id].value.as_any().downcast_ref::<T>().unwrap()
+impl AstArena {
+    pub fn get<T: AstNode>(&self, id: &AstId<T>) -> &T {
+        T::unwrap(&self.nodes[id.id].kind)
     }
 
-    pub fn get_mut<T: 'static>(&mut self, id: &ASTId<T>) -> &mut T {
-        self.nodes[id.id].value.as_any_mut().downcast_mut::<T>().unwrap()
+    pub fn get_mut<T: AstNode>(&mut self, id: &AstId<T>) -> &mut T {
+        T::unwrap_mut(&mut self.nodes[id.id].kind)
     }
 
-    pub fn pos<T: 'static>(&self, id: &ASTId<T>) -> &SourcePosition {
+    pub fn pos<T>(&self, id: &AstId<T>) -> &SourcePosition {
         &self.nodes[id.id].pos
     }
 
-    pub fn get_root(&self) -> ASTId<Stmt> {
-        ASTId { id: self.nodes.len() - 1, _marker: PhantomData }
+    pub fn get_root(&self) -> AstId<Stmt> {
+        AstId { id: self.nodes.len() - 1, _marker: PhantomData }
     }
 
-    fn add_stmt(&mut self, kind: Stmt, pos: SourcePosition) -> ASTId<Stmt> {
-        let node = ASTNode { value: Box::new(kind), pos };
-        self.nodes.push(node);
-        return ASTId { id: self.nodes.len() - 1, _marker: PhantomData };
+    fn add<T: AstNode>(&mut self, kind: T, pos: SourcePosition) -> AstId<T> {
+        self.nodes.push(Node { kind: kind.wrap(), pos });
+        AstId { id: self.nodes.len() - 1, _marker: PhantomData }
     }
 
-    fn add_expr(&mut self, kind: Expr, pos: SourcePosition) -> ASTId<Expr> {
-        let node = ASTNode { value: Box::new(kind), pos };
-        self.nodes.push(node);
-        return ASTId { id: self.nodes.len() - 1, _marker: PhantomData };
+    fn add_stmt(&mut self, kind: Stmt, pos: SourcePosition) -> AstId<Stmt> {
+        self.add(kind, pos)
+    }
+
+    fn add_expr(&mut self, kind: Expr, pos: SourcePosition) -> AstId<Expr> {
+        self.add(kind, pos)
     }
 }
 
@@ -211,31 +219,31 @@ enum ParseContext {
 
 pub struct Parser<'parser, 'vm> {
     tokens: &'vm mut TokenStream<'vm>,
-    ast: &'parser mut AST,
+    arena: &'parser mut AstArena,
     ctx: ParseContext
 }
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
-    pub fn parse(tokens: &'vm mut TokenStream<'vm>) -> Result<AST, anyhow::Error> {
-        let mut ast = AST {
+    pub fn parse(tokens: &'vm mut TokenStream<'vm>) -> Result<AstArena, anyhow::Error> {
+        let mut arena = AstArena {
             nodes: Vec::new()
         };
 
         let mut parser = Parser {
             tokens,
-            ast: &mut ast,
+            arena: &mut arena,
             ctx: ParseContext::Other
         };
 
         let pos = parser.tokens.peek(0).pos.clone();
-        let mut stmts: Vec<ASTId<Stmt>> = Vec::new();
+        let mut stmts: Vec<AstId<Stmt>> = Vec::new();
         while parser.tokens.has_next() {
             stmts.push(parser.parse_stmt()?);
         }
-        let block = parser.ast.add_expr(Expr::Block(stmts), pos.clone());
-        ast.add_stmt(Stmt::Expression(block), pos);
+        let block = parser.arena.add_expr(Expr::Block(stmts), pos.clone());
+        arena.add_stmt(Stmt::Expression(block), pos);
 
-        Ok(ast)
+        Ok(arena)
     }
 
     fn error(&self, message: impl Into<String>, pos: &SourcePosition) -> anyhow::Error {
@@ -247,13 +255,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(token.lexeme.clone())
     }
 
-    fn parse_identifier_expr(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+    fn parse_identifier_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         let token = self.tokens.expect(TokenType::Identifier)?;
-        let id = self.ast.add_expr(Expr::Identifier(token.lexeme.clone()), token.pos.clone());
+        let id = self.arena.add_expr(Expr::Identifier(token.lexeme.clone()), token.pos.clone());
         Ok(id)
     }
 
-    fn parse_stmt(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         match self.tokens.peek(0).kind {
             TokenType::Say => self.parse_say(),
             TokenType::While => self.parse_while(),
@@ -268,10 +276,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
     }
 
-    /// Parses an `if`/`else` statement. The then- and else-bodies are statement
-    /// bodies (a brace block or a single statement); `else if` chains nest as a
-    /// `Stmt::If` in the `otherwise` slot.
-    fn parse_if_stmt(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_if_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::If)?.pos.clone();
         let condition = self.parse_expr()?;
         let then = self.parse_block_or_stmt()?;
@@ -282,18 +287,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             },
             None => None
         };
-        Ok(self.ast.add_stmt(Stmt::If(condition, then, otherwise), pos))
+        Ok(self.arena.add_stmt(Stmt::If(condition, then, otherwise), pos))
     }
 
-    /// Parses a bare block statement. A `{ … }` brace block or a single statement
-    /// (e.g. the body of `else x = 1;`) collapses into a `Stmt::Block`.
-    fn parse_block_stmt(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_block_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let body = self.parse_block_or_stmt()?;
-        Ok(self.ast.add_stmt(Stmt::Block(body), pos))
+        Ok(self.arena.add_stmt(Stmt::Block(body), pos))
     }
 
-    fn parse_say(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_say(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Say)?.pos.clone();
         let name = self.parse_identifier()?;
 
@@ -305,18 +308,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         self.tokens.expect(TokenType::Semicolon)?;
         let field_init = FieldInit { name, value: expr };
-        Ok(self.ast.add_stmt(Stmt::Say(field_init), pos))
+        Ok(self.arena.add_stmt(Stmt::Say(field_init), pos))
     }
 
-    /// Parses an fn statement, which includes the `fn` keyword and a function declaration.
-    fn parse_fn(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_fn(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Fn)?.pos.clone();
         let name = self.parse_identifier()?;
         let fn_decl = self.parse_fn_decl(name)?;
-        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
+        Ok(self.arena.add_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    /// Parses a function declaration, including the function name, parameters, and body.
     fn parse_fn_decl(&mut self, name: String) -> Result<FnDecl, anyhow::Error> {
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
@@ -328,19 +329,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         })
     }
 
-    /// Parses a class `get`/`set` accessor, enforcing its exact parameter arity.
-    fn parse_accessor(&mut self, name: String, arity: usize, arity_error: &str) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_accessor(&mut self, name: String, arity: usize, arity_error: &str) -> Result<AstId<Stmt>, anyhow::Error> {
         let token = self.tokens.peek(0).clone();
         let fn_decl = self.parse_fn_decl(name)?;
         if fn_decl.params.len() != arity {
             parse_error!(self, &token.pos, "{}", arity_error)
         }
-        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), token.pos))
+        Ok(self.arena.add_stmt(Stmt::Fn(fn_decl), token.pos))
     }
 
-    /// Parses a class initializer method.
-    /// The init method may contain a super() call in the body as the first statement.
-    fn parse_init(&mut self, has_superclass: bool) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_init(&mut self, has_superclass: bool) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let ParseContext::Class(name) = &self.ctx else { unreachable!() };
         let name = format!("{}.init", name);
@@ -362,12 +360,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         stmts.extend(self.parse_stmts()?);
         self.tokens.expect(TokenType::RightBrace)?;
 
-        let body = self.ast.add_expr(Expr::Block(stmts), pos.clone());
+        let body = self.arena.add_expr(Expr::Block(stmts), pos.clone());
         let fn_decl = FnDecl { name, params, body };
-        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
+        Ok(self.arena.add_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    fn parse_params(&mut self, end_token: TokenType) -> Result<Vec<ASTId<Expr>>, anyhow::Error> {
+    fn parse_params(&mut self, end_token: TokenType) -> Result<Vec<AstId<Expr>>, anyhow::Error> {
         let params = match self.tokens.next_if(end_token) {
             Some(_) => Vec::new(),
             None => {
@@ -386,13 +384,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(params)
     }
 
-    fn virtual_super_call(&mut self, pos: SourcePosition) -> Result<ASTId<Stmt>, anyhow::Error> {
-        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-        let expr = self.ast.add_expr(Expr::Call(super_expr, None), pos.clone());
-        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos.clone()))
+    fn virtual_super_call(&mut self, pos: SourcePosition) -> Result<AstId<Stmt>, anyhow::Error> {
+        let super_expr = self.arena.add_expr(Expr::Super, pos.clone());
+        let expr = self.arena.add_expr(Expr::Call(super_expr, None), pos.clone());
+        Ok(self.arena.add_stmt(Stmt::Expression(expr), pos.clone()))
     }
 
-    fn parse_class(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_class(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Class)?.pos.clone();
         let name = self.parse_identifier()?;
 
@@ -406,8 +404,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.tokens.expect(TokenType::LeftBrace)?;
 
         let mut fields: HashSet<String> = HashSet::default();
-        let mut field_stmts: Vec<ASTId<Stmt>> = Vec::new();
-        let mut method_stmts: Vec<ASTId<Stmt>> = Vec::new();
+        let mut field_stmts: Vec<AstId<Stmt>> = Vec::new();
+        let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
         let mut init = None;
         let mut getter = None;
         let mut setter = None;
@@ -444,9 +442,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             fields.insert(name.clone());
 
                             if let Some(value) = value {
-                                let id = self.ast.add_expr(Expr::Identifier(name), pos.clone());
-                                let assign = self.ast.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
-                                field_stmts.push(self.ast.add_stmt(Stmt::Expression(assign), pos.clone()));
+                                let id = self.arena.add_expr(Expr::Identifier(name), pos.clone());
+                                let assign = self.arena.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
+                                field_stmts.push(self.arena.add_stmt(Stmt::Expression(assign), pos.clone()));
                             }
                         }
                     }
@@ -468,18 +466,18 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     Vec::new()
                 };
 
-                let body = self.ast.add_expr(Expr::Block(stmts), pos.clone());
+                let body = self.arena.add_expr(Expr::Block(stmts), pos.clone());
                 let fn_decl = FnDecl {
                     name: name.clone(),
                     params: Vec::new(),
                     body
                 };
-                self.ast.add_stmt(Stmt::Fn(fn_decl), pos.clone())
+                self.arena.add_stmt(Stmt::Fn(fn_decl), pos.clone())
             }
         };
 
-        let Stmt::Fn(fn_decl) = self.ast.get(&init) else { unreachable!() };
-        let Expr::Block(body) = self.ast.get_mut(&fn_decl.body.clone()) else { unreachable!() };
+        let Stmt::Fn(fn_decl) = self.arena.get(&init) else { unreachable!() };
+        let Expr::Block(body) = self.arena.get_mut(&fn_decl.body.clone()) else { unreachable!() };
         body.splice(0..0, field_stmts.iter().cloned());
 
         let class_decl = Box::new(ClassDecl {
@@ -493,40 +491,40 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         });
 
         self.ctx = prev_ctx;
-        Ok(self.ast.add_stmt(Stmt::Class(class_decl), pos))
+        Ok(self.arena.add_stmt(Stmt::Class(class_decl), pos))
     }
 
-    fn parse_while(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::While)?.pos.clone();
         let condition = self.parse_expr()?;
         let body = self.parse_block_or_stmt()?;
-        Ok(self.ast.add_stmt(Stmt::While(condition, body), pos))
+        Ok(self.arena.add_stmt(Stmt::While(condition, body), pos))
     }
 
-    fn parse_return(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_return(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Return)?.pos.clone();
         let expr = match self.tokens.match_next(TokenType::Semicolon) {
             true => None,
             false => Some(self.parse_expr()?)
         };
         self.tokens.expect(TokenType::Semicolon)?;
-        Ok(self.ast.add_stmt(Stmt::Return(expr), pos))
+        Ok(self.arena.add_stmt(Stmt::Return(expr), pos))
     }
 
-    fn parse_throw(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_throw(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Throw)?.pos.clone();
         let expr = self.parse_expr_semi()?;
-        Ok(self.ast.add_stmt(Stmt::Throw(expr), pos))
+        Ok(self.arena.add_stmt(Stmt::Throw(expr), pos))
     }
 
     /// Parses an expression terminated by a required semicolon.
-    fn parse_expr_semi(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+    fn parse_expr_semi(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         let expr = self.parse_expr()?;
         self.tokens.expect(TokenType::Semicolon)?;
         Ok(expr)
     }
 
-    fn parse_trycatch(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_trycatch(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Try)?.pos.clone();
         let try_body = self.parse_block_or_stmt()?;
 
@@ -560,28 +558,28 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             parse_error!(self, &pos, "Expected catch or finally block")
         }
 
-        Ok(self.ast.add_stmt(Stmt::Try(try_body, catch, finally), pos))
+        Ok(self.arena.add_stmt(Stmt::Try(try_body, catch, finally), pos))
     }
 
-    fn parse_block(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+    fn parse_block(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         self.tokens.expect(TokenType::LeftBrace)?;
         let stmts = self.parse_stmts()?;
         self.tokens.expect(TokenType::RightBrace)?;
-        Ok(self.ast.add_expr(Expr::Block(stmts), pos))
+        Ok(self.arena.add_expr(Expr::Block(stmts), pos))
     }
 
-    fn parse_block_or_stmt(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+    fn parse_block_or_stmt(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         if self.tokens.match_next(TokenType::LeftBrace) {
             self.parse_block()
         } else {
             let pos = self.tokens.peek(0).pos.clone();
             let stmt = self.parse_stmt()?;
-            Ok(self.ast.add_expr(Expr::Block(vec![stmt]), pos))
+            Ok(self.arena.add_expr(Expr::Block(vec![stmt]), pos))
         }
     }
 
-    fn parse_block_or_expr(&mut self, prec: u8) -> Result<ASTId<Expr>, anyhow::Error> {
+    fn parse_block_or_expr(&mut self, prec: u8) -> Result<AstId<Expr>, anyhow::Error> {
         if self.tokens.match_next(TokenType::LeftBrace) {
             self.parse_block()
         } else {
@@ -590,30 +588,29 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     /// Parses statements up to (but not consuming) the closing `}`.
-    fn parse_stmts(&mut self) -> Result<Vec<ASTId<Stmt>>, anyhow::Error> {
-        let mut stmts: Vec<ASTId<Stmt>> = Vec::new();
+    fn parse_stmts(&mut self) -> Result<Vec<AstId<Stmt>>, anyhow::Error> {
+        let mut stmts: Vec<AstId<Stmt>> = Vec::new();
         while !self.tokens.match_next(TokenType::RightBrace) {
             stmts.push(self.parse_stmt()?);
         }
         Ok(stmts)
     }
 
-    /// Builds an anonymous lambda literal from its parameters and body.
-    fn make_lambda(&self, params: Vec<ASTId<Expr>>, body: ASTId<Expr>) -> Expr {
+    fn make_lambda(&self, params: Vec<AstId<Expr>>, body: AstId<Expr>) -> Expr {
         Expr::Literal(Literal::Lambda(FnDecl { name: String::from("lambda"), params, body }))
     }
 
-    fn parse_expr_stmt(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_expr_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let expr = self.parse_expr_semi()?;
-        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
+        Ok(self.arena.add_stmt(Stmt::Expression(expr), pos))
     }
 
-    fn parse_expr(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+    fn parse_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         self.parse_expr_precedence(0)
     }
 
-    fn parse_expr_precedence(&mut self, min_precedence: u8) -> Result<ASTId<Expr>, anyhow::Error> {
+    fn parse_expr_precedence(&mut self, min_precedence: u8) -> Result<AstId<Expr>, anyhow::Error> {
         let mut left = match Operator::parse_prefix(self.tokens, 0) {
             Some(op) => self.parse_expr_prefix(op)?,
             _ => self.parse_expr_atom()?
@@ -632,26 +629,26 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(left)
     }
 
-    fn parse_expr_infix(&mut self, op: Operator, expr: ASTId<Expr>) -> Result<ASTId<Expr>, anyhow::Error> {
-        let pos = self.ast.pos(&expr).clone();
+    fn parse_expr_infix(&mut self, op: Operator, expr: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
+        let pos = self.arena.pos(&expr).clone();
 
         let kind = match &op {
             Operator::Assign(Some(assign_op)) => {
                 // Normalize compound assignment, for example convert (a += 1) to (a = a + 1)
                 let mut right = self.parse_expr_precedence(op.infix_precedence().unwrap())?;
                 let kind = Expr::Binary(assign_op.as_ref().clone(), expr, right);
-                right = self.ast.add_expr(kind, pos.clone());
+                right = self.arena.add_expr(kind, pos.clone());
                 Expr::Binary(op, expr, right)
             },
             Operator::MemberAccess => {
                 let id = self.parse_identifier()?;
-                let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                let id = self.arena.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
                 Expr::Index(expr, id)
             },
             Operator::Arrow => {
                 let right = self.parse_block_or_expr(op.infix_precedence().unwrap())?;
-                let params = expr.as_comma_separated(self.ast).iter()
-                    .map(|id| match self.ast.get(id) {
+                let params = expr.as_comma_separated(self.arena).iter()
+                    .map(|id| match self.arena.get(id) {
                         Expr::Identifier(_) => Ok(*id),
                         _ => parse_error!(self, &pos, "Invalid lambda parameter")
                     })
@@ -664,10 +661,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             }
         };
 
-        Ok(self.ast.add_expr(kind, pos.clone()))
+        Ok(self.arena.add_expr(kind, pos.clone()))
     }
 
-    fn parse_expr_prefix(&mut self, op: Operator) -> Result<ASTId<Expr>, anyhow::Error> {
+    fn parse_expr_prefix(&mut self, op: Operator) -> Result<AstId<Expr>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let kind = match &op {
             Operator::Group => {
@@ -696,33 +693,33 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     }
                 };
 
-                return Ok(self.ast.add_expr(Expr::Literal(Literal::Array(expr)), pos));
+                return Ok(self.arena.add_expr(Expr::Literal(Literal::Array(expr)), pos));
             },
             _ => {
                 let right = self.parse_expr_precedence(op.prefix_precedence().unwrap())?;
                 Expr::Unary(op, right)
             }
         };
-        Ok(self.ast.add_expr(kind, pos))
+        Ok(self.arena.add_expr(kind, pos))
     }
 
-    fn parse_expr_postfix(&mut self, op: Operator, expr: ASTId<Expr>) -> Result<ASTId<Expr>, anyhow::Error> {
-        let pos = self.ast.pos(&expr).clone();
+    fn parse_expr_postfix(&mut self, op: Operator, expr: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
+        let pos = self.arena.pos(&expr).clone();
         match op {
             Operator::Call => {
                 let args = self.parse_call_arguments()?;
-                Ok(self.ast.add_expr(Expr::Call(expr, args), pos))
+                Ok(self.arena.add_expr(Expr::Call(expr, args), pos))
             },
             Operator::Index => {
                 let index = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightBracket)?;
-                Ok(self.ast.add_expr(Expr::Index(expr, index), pos))
+                Ok(self.arena.add_expr(Expr::Index(expr, index), pos))
             },
             _ => unreachable!()
         }
     }
 
-    fn parse_expr_atom(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+    fn parse_expr_atom(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         let token = self.tokens.next().clone();
         let pos = token.pos.clone();
 
@@ -745,26 +742,26 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             _ => parse_error!(self, &pos, "Unexpected token {token}")
         };
 
-        Ok(self.ast.add_expr(kind, pos))
+        Ok(self.arena.add_expr(kind, pos))
     }
 
-    fn parse_super(&mut self) -> Result<ASTId<Expr>, anyhow::Error> {
+    fn parse_super(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         let token = self.tokens.next();
         let pos = token.pos.clone();
 
         match token.kind {
             TokenType::Dot => {
-                let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
+                let super_expr = self.arena.add_expr(Expr::Super, pos.clone());
                 let id = self.parse_identifier()?;
-                let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                let expr = self.ast.add_expr(Expr::Index(super_expr, id), pos.clone());
+                let id = self.arena.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                let expr = self.arena.add_expr(Expr::Index(super_expr, id), pos.clone());
                 Ok(expr)
             },
             TokenType::LeftBracket => {
-                let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
+                let super_expr = self.arena.add_expr(Expr::Super, pos.clone());
                 let expr = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightBracket)?;
-                let expr = self.ast.add_expr(Expr::Index(super_expr, expr), pos.clone());
+                let expr = self.arena.add_expr(Expr::Index(super_expr, expr), pos.clone());
                 Ok(expr)
             },
             TokenType::LeftParen => parse_error!(self, &pos, "Super call must be the first statement in an init block"),
@@ -772,17 +769,17 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
     }
 
-    fn parse_super_call(&mut self) -> Result<ASTId<Stmt>, anyhow::Error> {
+    fn parse_super_call(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Super)?.pos.clone();
         self.tokens.expect(TokenType::LeftParen)?;
         let args = self.parse_call_arguments()?;
         self.tokens.expect(TokenType::Semicolon)?;
-        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-        let expr = self.ast.add_expr(Expr::Call(super_expr, args), pos.clone());
-        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
+        let super_expr = self.arena.add_expr(Expr::Super, pos.clone());
+        let expr = self.arena.add_expr(Expr::Call(super_expr, args), pos.clone());
+        Ok(self.arena.add_stmt(Stmt::Expression(expr), pos))
     }
 
-    fn parse_call_arguments(&mut self) -> Result<Option<ASTId<Expr>>, anyhow::Error> {
+    fn parse_call_arguments(&mut self) -> Result<Option<AstId<Expr>>, anyhow::Error> {
         let prev_ctx = std::mem::replace(&mut self.ctx, ParseContext::Call);
 
         let args = match self.tokens.next_if(TokenType::RightParen) {

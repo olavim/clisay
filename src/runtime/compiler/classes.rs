@@ -1,4 +1,4 @@
-use crate::parser::{ASTId, ClassDecl, Stmt};
+use crate::parser::{AstId, ClassDecl, Stmt};
 use crate::runtime::objects::{ClassMember, ObjClass, ObjFn, ObjString};
 use crate::runtime::opcode;
 use crate::runtime::value::Value;
@@ -8,7 +8,7 @@ use anyhow::anyhow;
 use super::{ClassCompilation, ClassFrame, Compiler, FnKind};
 
 impl<'a> Compiler<'a> {
-    pub (super) fn class_declaration(&mut self, stmt: &ASTId<Stmt>, decl: &Box<ClassDecl>) -> Result<(), anyhow::Error> {
+    pub (super) fn class_declaration(&mut self, stmt: &AstId<Stmt>, decl: &Box<ClassDecl>) -> Result<(), anyhow::Error> {
         // The slot was reserved by declaration hoisting before any body in this scope
         // was compiled, which is what lets forward references resolve.
         let name = self.gc.intern(&decl.name);
@@ -104,7 +104,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_fn(&mut self, stmt: &ASTId<Stmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {
+    fn compile_fn(&mut self, stmt: &AstId<Stmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {
         let Stmt::Fn(decl) = self.ast.get(stmt) else { unreachable!(); };
         let const_idx = self.function(stmt, decl, kind)?;
         let func_const = self.chunk.constants[const_idx as usize];
@@ -112,7 +112,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compiles a method and installs it into the current class frame.
-    fn install_method(&mut self, stmt: &ASTId<Stmt>, name: *mut ObjString) -> Result<(), anyhow::Error> {
+    fn install_method(&mut self, stmt: &AstId<Stmt>, name: *mut ObjString) -> Result<(), anyhow::Error> {
         let function_ptr = self.compile_fn(stmt, FnKind::Method)?;
         let frame = self.class_frames.last_mut().unwrap();
         let ClassMember::Method(id) = frame.class.resolve(name).unwrap() else { unreachable!(); };
