@@ -127,8 +127,8 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Emits a store into `place`; the value to store is already on top of the
-    /// stack. When `discarded` (statement position) the store also drops the value.
+    /// Emits a store into `place`. The value to store is already on top of the
+    /// stack. When `discarded` (statement position) the store also pops the value.
     fn emit_store(&mut self, place: Place, discarded: bool, node: &AstId<Expr>) {
         match place {
             Place::Local(slot) => {
@@ -148,40 +148,8 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Resolves `expr` to a local slot if it is a bare identifier bound to one.
-    fn local_operand(&mut self, expr: &AstId<Expr>) -> Option<u8> {
-        let Expr::Identifier(name) = self.ast.get(expr) else { return None };
-        let name = self.gc.intern(name);
-        self.resolve_local(name)
-    }
-
-    /// `(local_slot, const_idx)` when `local_side` is a local and `const_side` is a
-    /// numeric literal. The constant is interned only on a full match, so callers
-    /// can probe operand orders cheaply.
-    pub (super) fn try_local_const(&mut self, local_side: &AstId<Expr>, const_side: &AstId<Expr>) -> Result<Option<(u8, u8)>, anyhow::Error> {
-        let Some(local) = self.local_operand(local_side) else { return Ok(None) };
-        let Expr::Literal(Literal::Number(num)) = self.ast.get(const_side) else { return Ok(None) };
-        let const_idx = self.ir.add_constant(Value::from(*num))?;
-        Ok(Some((local, const_idx)))
-    }
-
-    /// Like `try_local_const`, but also accepts the constant on the left.
-    fn try_local_const_commutative(&mut self, left: &AstId<Expr>, right: &AstId<Expr>) -> Result<Option<(u8, u8)>, anyhow::Error> {
-        if let Some(pair) = self.try_local_const(left, right)? {
-            return Ok(Some(pair));
-        }
-        return self.try_local_const(right, left);
-    }
-
-    /// If `rhs` is `a + b` with both operands locals, returns their slots.
-    fn local_add_operands(&mut self, rhs: &AstId<Expr>) -> Option<(u8, u8)> {
-        let Expr::Binary(Operator::Add, a, b) = self.ast.get(rhs) else { return None };
-        let (a, b) = (*a, *b);
-        Some((self.local_operand(&a)?, self.local_operand(&b)?))
-    }
-
     /// Compiles `lhs = rhs`. `discarded` is true in statement position, which lets
-    /// the store drop its own value (and enables the `dst = a + b` store fusion).
+    /// the store pop its own value.
     fn compile_assign(&mut self, lhs: &AstId<Expr>, rhs: &AstId<Expr>, discarded: bool) -> Result<(), anyhow::Error> {
         match self.ast.get(lhs) {
             Expr::Identifier(name) => {
@@ -193,17 +161,6 @@ impl<'a> Compiler<'a> {
                 }
 
                 let place = self.resolve_place(interned)?;
-
-                // Store fusion: `dst = a + b` (all locals, value discarded) → one op.
-                if discarded {
-                    if let Place::Local(dst) = place {
-                        if let Some((a, b)) = self.local_add_operands(rhs) {
-                            self.emit(Inst::SetLocalAddLocalLocal(dst, a, b), lhs);
-                            return Ok(());
-                        }
-                    }
-                }
-
                 self.expression(rhs)?;
                 self.emit_store(place, discarded, lhs);
                 Ok(())
@@ -226,32 +183,11 @@ impl<'a> Compiler<'a> {
             return self.index(left, right, IndexOp::Load);
         }
 
-        match op {
-            Operator::Add => {
-                if let Some((local, const_idx)) = self.try_local_const_commutative(left, right)? {
-                    self.emit(Inst::AddLocalConst(local, const_idx), right);
-                    return Ok(());
-                }
-            },
-            Operator::Subtract => {
-                let fused = if let Some((local, const_idx)) = self.try_local_const(left, right)? {
-                    Some(Inst::SubLocalConst(local, const_idx))
-                } else if let Some((local, const_idx)) = self.try_local_const(right, left)? {
-                    Some(Inst::SubConstLocal(const_idx, local))
-                } else { None };
-
-                if let Some(inst) = fused {
-                    self.emit(inst, right);
-                    return Ok(());
-                }
-            },
-            _ => {}
-        }
-
         if let Operator::Comma = op {
             compiler_error!(self, right, "Unexpected ','");
         }
 
+        // Canonical lowering; `optimize` fuses `local <op> const` forms.
         self.expression(left)?;
         self.expression(right)?;
         self.emit(Inst::from_operator(op), right);

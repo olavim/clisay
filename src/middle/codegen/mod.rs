@@ -4,7 +4,6 @@ use anyhow::anyhow;
 use anyhow::bail;
 use fnv::FnvHashMap;
 
-use crate::ast;
 use crate::core::gc::Gc;
 use crate::core::objects::ObjClass;
 use crate::core::objects::ObjString;
@@ -119,76 +118,10 @@ impl<'a> Compiler<'a> {
         self.ir.emit(inst, pos);
     }
 
-    fn binary_jump_inst(op: &ast::Operator) -> Option<fn(Label) -> Inst> {
-        use ast::Operator;
-        Some(match op {
-            Operator::LessThan => Inst::JumpIfGe,
-            Operator::LessThanEqual => Inst::JumpIfGt,
-            Operator::GreaterThan => Inst::JumpIfLe,
-            Operator::GreaterThanEqual => Inst::JumpIfLt,
-            Operator::LogicalEqual => Inst::JumpIfNeq,
-            Operator::LogicalNotEqual => Inst::JumpIfEq,
-            _ => return None
-        })
-    }
-
-    /// Fused compare-and-branch variant for the common `local <cmp> number`.
-    fn local_const_jump_inst(op: &ast::Operator) -> Option<fn(Label, u8, u8) -> Inst> {
-        use ast::Operator;
-        Some(match op {
-            Operator::LessThan => Inst::JumpIfGeLocalConst,
-            Operator::LessThanEqual => Inst::JumpIfGtLocalConst,
-            Operator::GreaterThan => Inst::JumpIfLeLocalConst,
-            Operator::GreaterThanEqual => Inst::JumpIfLtLocalConst,
-            _ => return None
-        })
-    }
-
-    /// The comparison with its operands swapped (`a < b` => `b > a`), letting a
-    /// `const <cmp> local` condition reuse the `local <cmp> const` fused ops.
-    fn flip_cmp(op: &ast::Operator) -> ast::Operator {
-        use ast::Operator;
-        match op {
-            Operator::LessThan => Operator::GreaterThan,
-            Operator::LessThanEqual => Operator::GreaterThanEqual,
-            Operator::GreaterThan => Operator::LessThan,
-            Operator::GreaterThanEqual => Operator::LessThanEqual,
-            other => other.clone()
-        }
-    }
-
     /// Emits a conditional branch to a fresh (unbound) label and returns it; the
     /// caller should bind the label at the jump's destination.
     fn emit_conditional_jump<T: 'static>(&mut self, cond: &AstId<Expr>, node_id: &AstId<T>) -> Result<Label, anyhow::Error> {
         let target = self.ir.new_label();
-
-        if let Expr::Binary(op, left, right) = self.ast.get(cond) {
-            let (op, left, right) = (op.clone(), *left, *right);
-
-            // Fused `local <cmp> number`. Operands may be in either order:
-            // `const <cmp> local` reuses the same ops with the comparison flipped.
-            let mut fused = None;
-            if let Some(to_inst) = Self::local_const_jump_inst(&op) {
-                fused = self.try_local_const(&left, &right)?.map(|(l, c)| (to_inst, l, c));
-            }
-            if fused.is_none() {
-                if let Some(to_inst) = Self::local_const_jump_inst(&Self::flip_cmp(&op)) {
-                    fused = self.try_local_const(&right, &left)?.map(|(l, c)| (to_inst, l, c));
-                }
-            }
-            if let Some((to_inst, local_idx, const_idx)) = fused {
-                self.emit(to_inst(target, local_idx, const_idx), node_id);
-                return Ok(target);
-            }
-
-            if let Some(to_inst) = Self::binary_jump_inst(&op) {
-                self.expression(&left)?;
-                self.expression(&right)?;
-                self.emit(to_inst(target), node_id);
-                return Ok(target);
-            }
-        }
-
         self.expression(cond)?;
         self.emit(Inst::JumpIfFalse(target), node_id);
         Ok(target)
@@ -198,7 +131,7 @@ impl<'a> Compiler<'a> {
         self.class_frames.last().unwrap()
     }
 
-    /// Unwraps a `Stmt::Fn` node into its declaration. Callers only ever pass
+    /// Unwraps an `Stmt::Fn` node into its declaration. Callers only ever pass
     /// statements the parser guarantees are functions (methods, initializers).
     fn fn_decl(&self, stmt: &AstId<Stmt>) -> &'a FnDecl {
         let Stmt::Fn(decl) = self.ast.get(stmt) else {

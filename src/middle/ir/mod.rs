@@ -13,9 +13,9 @@ use crate::frontend::lex::SourcePosition;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Label(usize);
 
-/// A single IR instruction. Operands are typed (local slots, constant-pool
-/// indices, member ids, argument counts) and jumps reference a [`Label`] rather
-/// than a byte offset.
+/// A single IR instruction. Operands are typed and jumps reference a [`Label`]
+/// rather than a byte offset.
+#[derive(Clone, Copy)]
 pub enum Inst {
     // Control flow
     Call(u8),
@@ -27,7 +27,6 @@ pub enum Inst {
     JumpIfLt(Label),
     JumpIfEq(Label),
     JumpIfNeq(Label),
-    // Fused compare-and-branch: `local <cmp> const`
     JumpIfGeLocalConst(Label, u8, u8),
     JumpIfGtLocalConst(Label, u8, u8),
     JumpIfLeLocalConst(Label, u8, u8),
@@ -193,13 +192,37 @@ impl Ir {
         &self.constants
     }
 
-    /// The instruction index `label` is bound to. Every jump must land on a real
-    /// instruction, so the target is always a valid index into `code` — a target
-    /// at or past the end means a label went unbound or an `optimize` pass left a
-    /// stale target behind.
+    /// The instruction index `label` is bound to.
     pub fn label_target(&self, label: Label) -> usize {
         let target = self.labels[label.0].expect("label was never bound");
         debug_assert!(target < self.code.len(), "jump target past end of instruction stream");
         target
+    }
+
+    /// Rewrites the instruction stream with a peephole `fuse` function and fixes
+    /// up every label to track the new positions.
+    pub fn rewrite(self, fuse: impl Fn(&[Inst], usize) -> Option<(Inst, usize)>) -> Ir {
+        let mut code = Vec::with_capacity(self.code.len());
+        let mut positions = Vec::with_capacity(self.code.len());
+        let mut old_to_new = vec![0usize; self.code.len() + 1];
+
+        let mut i = 0;
+        while i < self.code.len() {
+            let (inst, len) = fuse(&self.code, i).unwrap_or((self.code[i], 1));
+            let new_idx = code.len();
+            for k in 0..len {
+                old_to_new[i + k] = new_idx;
+            }
+            positions.push(self.positions[i + len - 1].clone());
+            code.push(inst);
+            i += len;
+        }
+        old_to_new[self.code.len()] = code.len();
+
+        let labels = self.labels.into_iter()
+            .map(|target| target.map(|idx| old_to_new[idx]))
+            .collect();
+
+        Ir { code, positions, constants: self.constants, labels, entries: self.entries }
     }
 }
