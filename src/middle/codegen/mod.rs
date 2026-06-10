@@ -4,14 +4,13 @@ use anyhow::anyhow;
 use anyhow::bail;
 use fnv::FnvHashMap;
 
-use crate::backend::bytecode::chunk::BytecodeChunk;
+use crate::ast;
 use crate::core::gc::Gc;
 use crate::core::objects::ObjClass;
 use crate::core::objects::ObjString;
 use crate::core::objects::UpvalueLocation;
-use crate::backend::bytecode::opcode;
-use crate::backend::bytecode::opcode::OpCode;
 use crate::core::value::Value;
+use crate::middle::ir::{Inst, Ir, Label};
 use crate::ast::AstId;
 use crate::ast::Expr;
 use crate::ast::FnDecl;
@@ -69,7 +68,7 @@ struct TryFrame {
 }
 
 pub struct Compiler<'a> {
-    chunk: BytecodeChunk,
+    ir: Ir,
     ast: &'a Ast,
     gc: &'a mut Gc,
     locals: Vec<Local>,
@@ -86,9 +85,9 @@ macro_rules! compiler_error {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn compile<'b>(ast: &'b Ast, gc: &'b mut Gc) -> Result<BytecodeChunk, anyhow::Error> {
+    pub fn compile<'b>(ast: &'b Ast, gc: &'b mut Gc) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
-            chunk: BytecodeChunk::new(),
+            ir: Ir::new(),
             ast,
             gc,
             locals: Vec::new(),
@@ -109,59 +108,46 @@ impl<'a> Compiler<'a> {
         anyhow!("{}\n\tat {}", msg.into(), pos)
     }
 
-    fn finish(mut self) -> BytecodeChunk {
-        self.emit(opcode::PUSH_NULL, &self.ast.get_root());
-        self.emit(opcode::RETURN, &self.ast.get_root());
-        self.chunk
+    fn finish(mut self) -> Ir {
+        self.emit(Inst::PushNull, &self.ast.get_root());
+        self.emit(Inst::Return, &self.ast.get_root());
+        self.ir
     }
 
-    fn emit<T: 'static>(&mut self, byte: u8, node_id: &AstId<T>) {
+    fn emit<T: 'static>(&mut self, inst: Inst, node_id: &AstId<T>) {
         let pos = self.ast.pos(node_id);
-        self.chunk.write(byte, pos);
+        self.ir.emit(inst, pos);
     }
 
-    /// Emits a two-byte instruction: an opcode followed by a single operand byte.
-    fn emit_operand<T: 'static>(&mut self, op: OpCode, operand: u8, node_id: &AstId<T>) {
-        self.emit(op, node_id);
-        self.emit(operand, node_id);
-    }
-
-    fn emit_jump<T: 'static>(&mut self, op: OpCode, pos: u16, node_id: &AstId<T>) -> u16 {
-        self.emit(op, node_id);
-        self.emit(pos as u8, node_id);
-        self.emit((pos >> 8) as u8, node_id);
-        return self.chunk.code.len() as u16 - 3;
-    }
-    
-    fn binary_jump_op(op: &crate::ast::Operator) -> Option<OpCode> {
-        use crate::ast::Operator;
+    fn binary_jump_inst(op: &ast::Operator) -> Option<fn(Label) -> Inst> {
+        use ast::Operator;
         Some(match op {
-            Operator::LessThan => opcode::JUMP_IF_GE,
-            Operator::LessThanEqual => opcode::JUMP_IF_GT,
-            Operator::GreaterThan => opcode::JUMP_IF_LE,
-            Operator::GreaterThanEqual => opcode::JUMP_IF_LT,
-            Operator::LogicalEqual => opcode::JUMP_IF_NEQ,
-            Operator::LogicalNotEqual => opcode::JUMP_IF_EQ,
+            Operator::LessThan => Inst::JumpIfGe,
+            Operator::LessThanEqual => Inst::JumpIfGt,
+            Operator::GreaterThan => Inst::JumpIfLe,
+            Operator::GreaterThanEqual => Inst::JumpIfLt,
+            Operator::LogicalEqual => Inst::JumpIfNeq,
+            Operator::LogicalNotEqual => Inst::JumpIfEq,
             _ => return None
         })
     }
 
     /// Fused compare-and-branch variant for the common `local <cmp> number`.
-    fn local_const_jump_op(op: &crate::ast::Operator) -> Option<OpCode> {
-        use crate::ast::Operator;
+    fn local_const_jump_inst(op: &ast::Operator) -> Option<fn(Label, u8, u8) -> Inst> {
+        use ast::Operator;
         Some(match op {
-            Operator::LessThan => opcode::JUMP_IF_GE_LOCAL_CONST,
-            Operator::LessThanEqual => opcode::JUMP_IF_GT_LOCAL_CONST,
-            Operator::GreaterThan => opcode::JUMP_IF_LE_LOCAL_CONST,
-            Operator::GreaterThanEqual => opcode::JUMP_IF_LT_LOCAL_CONST,
+            Operator::LessThan => Inst::JumpIfGeLocalConst,
+            Operator::LessThanEqual => Inst::JumpIfGtLocalConst,
+            Operator::GreaterThan => Inst::JumpIfLeLocalConst,
+            Operator::GreaterThanEqual => Inst::JumpIfLtLocalConst,
             _ => return None
         })
     }
 
-    /// The comparison with its operands swapped (`a < b` ⇔ `b > a`), letting a
+    /// The comparison with its operands swapped (`a < b` => `b > a`), letting a
     /// `const <cmp> local` condition reuse the `local <cmp> const` fused ops.
-    fn flip_cmp(op: &crate::ast::Operator) -> crate::ast::Operator {
-        use crate::ast::Operator;
+    fn flip_cmp(op: &ast::Operator) -> ast::Operator {
+        use ast::Operator;
         match op {
             Operator::LessThan => Operator::GreaterThan,
             Operator::LessThanEqual => Operator::GreaterThanEqual,
@@ -171,48 +157,41 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn emit_conditional_jump<T: 'static>(&mut self, cond: &AstId<Expr>, node_id: &AstId<T>) -> Result<u16, anyhow::Error> {
+    /// Emits a conditional branch to a fresh (unbound) label and returns it; the
+    /// caller should bind the label at the jump's destination.
+    fn emit_conditional_jump<T: 'static>(&mut self, cond: &AstId<Expr>, node_id: &AstId<T>) -> Result<Label, anyhow::Error> {
+        let target = self.ir.new_label();
+
         if let Expr::Binary(op, left, right) = self.ast.get(cond) {
             let (op, left, right) = (op.clone(), *left, *right);
 
             // Fused `local <cmp> number`. Operands may be in either order:
             // `const <cmp> local` reuses the same ops with the comparison flipped.
             let mut fused = None;
-            if let Some(fused_op) = Self::local_const_jump_op(&op) {
-                fused = self.try_local_const(&left, &right)?.map(|(l, c)| (fused_op, l, c));
+            if let Some(to_inst) = Self::local_const_jump_inst(&op) {
+                fused = self.try_local_const(&left, &right)?.map(|(l, c)| (to_inst, l, c));
             }
             if fused.is_none() {
-                if let Some(fused_op) = Self::local_const_jump_op(&Self::flip_cmp(&op)) {
-                    fused = self.try_local_const(&right, &left)?.map(|(l, c)| (fused_op, l, c));
+                if let Some(to_inst) = Self::local_const_jump_inst(&Self::flip_cmp(&op)) {
+                    fused = self.try_local_const(&right, &left)?.map(|(l, c)| (to_inst, l, c));
                 }
             }
-            if let Some((fused_op, local_idx, const_idx)) = fused {
-                let jump_ref = self.emit_jump(fused_op, 0, node_id);
-                self.emit(local_idx, node_id);
-                self.emit(const_idx, node_id);
-                return Ok(jump_ref);
+            if let Some((to_inst, local_idx, const_idx)) = fused {
+                self.emit(to_inst(target, local_idx, const_idx), node_id);
+                return Ok(target);
             }
 
-            if let Some(jump_op) = Self::binary_jump_op(&op) {
+            if let Some(to_inst) = Self::binary_jump_inst(&op) {
                 self.expression(&left)?;
                 self.expression(&right)?;
-                return Ok(self.emit_jump(jump_op, 0, node_id));
+                self.emit(to_inst(target), node_id);
+                return Ok(target);
             }
         }
 
         self.expression(cond)?;
-        Ok(self.emit_jump(opcode::JUMP_IF_FALSE, 0, node_id))
-    }
-
-    fn patch_jump(&mut self, jump_ref: u16) -> Result<(), anyhow::Error> {
-        if self.chunk.code.len() > u16::MAX as usize {
-            bail!("Jump too large");
-        }
-
-        let pos = self.chunk.code.len() as u16;
-        self.chunk.code[jump_ref as usize + 1] = pos as u8;
-        self.chunk.code[jump_ref as usize + 2] = (pos >> 8) as u8;
-        Ok(())
+        self.emit(Inst::JumpIfFalse(target), node_id);
+        Ok(target)
     }
 
     fn current_class_frame(&self) -> &ClassFrame {
@@ -236,16 +215,16 @@ impl<'a> Compiler<'a> {
         self.scope_depth -= 1;
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
             if self.locals.last().unwrap().is_captured {
-                self.emit_operand(opcode::CLOSE_UPVALUE, self.locals.len() as u8 - 1, node_id);
+                self.emit(Inst::CloseUpvalue(self.locals.len() as u8 - 1), node_id);
             } else {
-                self.emit(opcode::POP, node_id);
+                self.emit(Inst::Pop, node_id);
             }
             self.locals.pop();
         }
     }
 
     /// Declares a new local variable in the current scope. Returns the slot index of the variable,
-    /// which is relative to the current function's `local_offset` (i.e. the operand for `GET_LOCAL`/`SET_LOCAL`).
+    /// which is relative to the current function's `local_offset`.
     fn declare_local<T: 'static>(&mut self, name: *mut ObjString, is_mutable: bool, node_id: &AstId<T>) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
@@ -255,7 +234,7 @@ impl<'a> Compiler<'a> {
             compiler_error!(self, node_id, "Variable '{}' already declared in this scope", unsafe { &(*name).value });
         }
 
-        self.chunk.add_constant(Value::from(name))?;
+        self.ir.add_constant(Value::from(name))?;
         self.locals.push(Local { name, depth: self.scope_depth, is_mutable, is_captured: false });
 
         let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);

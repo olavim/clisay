@@ -1,7 +1,7 @@
 use crate::ast::{AstId, ClassDecl, Stmt};
 use crate::core::objects::{ClassMember, ObjClass, ObjFn, ObjString};
-use crate::backend::bytecode::opcode;
 use crate::core::value::Value;
+use crate::middle::ir::Inst;
 
 use anyhow::anyhow;
 
@@ -92,13 +92,13 @@ impl<'a> Compiler<'a> {
         self.exit_scope(stmt);
 
         let class = self.gc.alloc(class);
-        let idx = self.chunk.add_constant(Value::from(class))?;
+        let idx = self.ir.add_constant(Value::from(class))?;
         self.classes.insert(self.gc.intern(&decl.name), ClassCompilation { class, next_member_id });
-        self.emit_operand(opcode::PUSH_CLASS, idx, stmt);
+        self.emit(Inst::PushClass(idx), stmt);
 
         // Store the class into the reserved slot and discard the placeholder.
-        self.emit_operand(opcode::SET_LOCAL, slot, stmt);
-        self.emit(opcode::POP, stmt);
+        self.emit(Inst::SetLocal(slot), stmt);
+        self.emit(Inst::Pop, stmt);
 
         Ok(())
     }
@@ -106,7 +106,7 @@ impl<'a> Compiler<'a> {
     fn compile_fn(&mut self, stmt: &AstId<Stmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {
         let decl = self.fn_decl(stmt);
         let const_idx = self.function(stmt, decl, kind)?;
-        let func_const = self.chunk.constants[const_idx as usize];
+        let func_const = self.ir.constants()[const_idx as usize];
         Ok(func_const.as_object().as_function_ptr())
     }
 

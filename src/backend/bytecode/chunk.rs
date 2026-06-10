@@ -1,7 +1,5 @@
 use std::mem;
 
-use anyhow::bail;
-
 use crate::frontend::lex::SourcePosition;
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::value::Value;
@@ -29,15 +27,6 @@ impl BytecodeChunk {
     pub fn write(&mut self, op: OpCode, pos: &SourcePosition) {
         self.code.push(op);
         self.code_pos.push(pos.clone());
-    }
-
-    pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
-        if self.constants.len() >= u8::MAX as usize {
-            bail!("Too many constants");
-        }
-
-        self.constants.push(value);
-        Ok((self.constants.len() - 1) as u8)
     }
 }
 

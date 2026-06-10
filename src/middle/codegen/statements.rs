@@ -1,6 +1,6 @@
 use crate::compiler_error;
 use crate::ast::{AstId, CatchClause, Expr, FieldInit, Stmt};
-use crate::backend::bytecode::opcode;
+use crate::middle::ir::Inst;
 
 use super::{Compiler, FnKind, TryCatchPosition, TryFrame};
 
@@ -15,7 +15,7 @@ impl<'a> Compiler<'a> {
                     finally: Some(finally)
                 }) = self.try_frames.last().cloned() {
                     if matches!(pos, TryCatchPosition::Try) {
-                        self.emit(opcode::POP_TRY, stmt_id);
+                        self.emit(Inst::PopTry, stmt_id);
                     }
 
                     // Mark the frame as inside its finally so a `return` within the
@@ -32,14 +32,14 @@ impl<'a> Compiler<'a> {
                         compiler_error!(self, stmt_id, "Cannot return a value from a class initializer");
                     }
 
-                    self.emit_operand(opcode::GET_LOCAL, 0, stmt_id);
+                    self.emit(Inst::GetLocal(0), stmt_id);
                 } else if let Some(expr) = expr {
                     self.expression(expr)?;
                 } else {
-                    self.emit(opcode::PUSH_NULL, stmt_id);
+                    self.emit(Inst::PushNull, stmt_id);
                 }
 
-                self.emit(opcode::RETURN, stmt_id);
+                self.emit(Inst::Return, stmt_id);
             },
             Stmt::Throw(expr) => {
                 if let Some(TryFrame {
@@ -50,7 +50,7 @@ impl<'a> Compiler<'a> {
                 }
 
                 self.expression(expr)?;
-                self.emit(opcode::THROW, stmt_id);
+                self.emit(Inst::Throw, stmt_id);
             },
             Stmt::Try(try_body, catch, finally) => {
                 self.try_frames.push(TryFrame {
@@ -63,13 +63,15 @@ impl<'a> Compiler<'a> {
                     // Attribute the try scaffolding (and an uncaught re-throw) to the
                     // first body statement, matching where the protected code lives.
                     let node_id = &stmts[0];
-                    let push_try_ref = self.emit_jump(opcode::PUSH_TRY, 0, node_id);
+                    let handler = self.ir.new_label();
+                    self.emit(Inst::PushTry(handler), node_id);
 
                     self.expression_stmt(try_body)?;
 
-                    self.emit(opcode::POP_TRY, node_id);
-                    let try_jump = self.emit_jump(opcode::JUMP, 0, node_id);
-                    self.patch_jump(push_try_ref)?;
+                    self.emit(Inst::PopTry, node_id);
+                    let end = self.ir.new_label();
+                    self.emit(Inst::Jump(end), node_id);
+                    self.ir.bind(handler);
 
                     if let Some(catch) = catch {
                         self.compile_catch(catch)?;
@@ -77,10 +79,10 @@ impl<'a> Compiler<'a> {
                         if let Some(finally) = finally {
                             self.compile_finally(finally)?;
                         }
-                        self.emit(opcode::THROW, node_id);
+                        self.emit(Inst::Throw, node_id);
                     }
 
-                    self.patch_jump(try_jump)?;
+                    self.ir.bind(end);
                 }
 
                 if let Some(finally) = finally {
@@ -98,50 +100,52 @@ impl<'a> Compiler<'a> {
                     .expect("fn declarations are reserved by hoist_declarations before compilation");
 
                 let const_idx = self.function(stmt_id, decl, FnKind::Function)?;
-                self.emit_operand(opcode::PUSH_CLOSURE, const_idx, stmt_id);
+                self.emit(Inst::PushClosure(const_idx), stmt_id);
 
                 // Store the closure into the reserved slot and discard the placeholder.
-                self.emit_operand(opcode::SET_LOCAL, slot, stmt_id);
-                self.emit(opcode::POP, stmt_id);
+                self.emit(Inst::SetLocal(slot), stmt_id);
+                self.emit(Inst::Pop, stmt_id);
             },
             Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
             Stmt::Say(FieldInit { name, value }) => {
                 let name = self.gc.intern(name);
                 let slot = self.declare_local(name, true, stmt_id)?;
 
-                let op = if let Some(expr) = value {
+                let inst = if let Some(expr) = value {
                     self.expression(expr)?;
-                    opcode::SET_LOCAL
+                    Inst::SetLocal(slot)
                 } else {
-                    opcode::GET_LOCAL
+                    Inst::GetLocal(slot)
                 };
-                self.emit_operand(op, slot, stmt_id);
+                self.emit(inst, stmt_id);
             },
             Stmt::Expression(expr) => {
                 self.expression_stmt(expr)?;
             },
             Stmt::While(cond, body) => {
-                let pos = self.chunk.code.len() as u16;
+                let loop_start = self.ir.new_label();
+                self.ir.bind(loop_start);
 
-                let jump_ref = self.emit_conditional_jump(cond, stmt_id)?;
+                let exit = self.emit_conditional_jump(cond, stmt_id)?;
 
                 self.expression_stmt(body)?;
 
-                self.emit_jump(opcode::JUMP, pos, stmt_id);
-                self.patch_jump(jump_ref)?;
+                self.emit(Inst::Jump(loop_start), stmt_id);
+                self.ir.bind(exit);
             },
             Stmt::If(cond, then, otherwise) => {
-                let jump_ref = self.emit_conditional_jump(cond, stmt_id)?;
+                let else_target = self.emit_conditional_jump(cond, stmt_id)?;
 
                 self.expression_stmt(then)?;
 
                 if let Some(otherwise) = otherwise {
-                    let else_jump_ref = self.emit_jump(opcode::JUMP, 0, stmt_id);
-                    self.patch_jump(jump_ref)?;
+                    let end = self.ir.new_label();
+                    self.emit(Inst::Jump(end), stmt_id);
+                    self.ir.bind(else_target);
                     self.statement(otherwise)?;
-                    self.patch_jump(else_jump_ref)?;
+                    self.ir.bind(end);
                 } else {
-                    self.patch_jump(jump_ref)?;
+                    self.ir.bind(else_target);
                 }
             },
             Stmt::Block(body) => {
@@ -214,7 +218,7 @@ impl<'a> Compiler<'a> {
             };
             let name = self.gc.intern(&name);
             self.declare_local(name, false, stmt_id)?;
-            self.emit(opcode::PUSH_NULL, stmt_id);
+            self.emit(Inst::PushNull, stmt_id);
         }
         Ok(())
     }

@@ -1,7 +1,7 @@
 use crate::ast::{AstId, Expr, FnDecl};
 use crate::core::objects::{ObjFn, ObjString};
-use crate::backend::bytecode::opcode;
 use crate::core::value::Value;
+use crate::middle::ir::Inst;
 
 use super::{Compiler, FnFrame, FnKind, Local};
 
@@ -9,10 +9,9 @@ impl<'a> Compiler<'a> {
     pub (super) fn enter_function(&mut self, kind: FnKind, self_name: *mut ObjString) {
         self.scope_depth += 1;
 
-        /* Reserve relative slot 0 of the new frame for the callee. At runtime
-         * the stack start points at the closure or instance being called, so
-         * the frame's own locals (params, body) must begin at slot 1.
-         */
+        // Reserve relative slot 0 of the new frame for the callee. At runtime
+        // the stack start points at the closure or instance being called, so
+        // the frame's own locals (params, body) must begin at slot 1.
         let local_offset = self.locals.len() as u8;
         self.locals.push(Local {
             name: self_name,
@@ -38,16 +37,16 @@ impl<'a> Compiler<'a> {
         }
 
         if matches!(self.ast.get(body_id), Expr::Block(_)) {
-            if self.chunk.code[self.chunk.code.len() - 1] != opcode::RETURN {
+            if !matches!(self.ir.code().last(), Some(Inst::Return)) {
                 if let FnKind::Initializer = frame.kind {
-                    self.emit_operand(opcode::GET_LOCAL, 0, body_id);
+                    self.emit(Inst::GetLocal(0), body_id);
                 } else {
-                    self.emit(opcode::PUSH_NULL, body_id);
+                    self.emit(Inst::PushNull, body_id);
                 }
-                self.emit(opcode::RETURN, body_id);
+                self.emit(Inst::Return, body_id);
             }
         } else {
-            self.emit(opcode::RETURN, body_id);
+            self.emit(Inst::Return, body_id);
         }
 
         frame
@@ -61,8 +60,12 @@ impl<'a> Compiler<'a> {
         };
         self.enter_function(kind, self_name);
 
-        let jump_ref = self.emit_jump(opcode::JUMP, 0, node_id);
-        let ip_start = self.chunk.code.len();
+        // Jump over the inlined body; `body` marks its entry (resolved to a byte
+        // offset and stored as the fn's `ip_start` at assembly time).
+        let skip = self.ir.new_label();
+        self.emit(Inst::Jump(skip), node_id);
+        let body = self.ir.new_label();
+        self.ir.bind(body);
         let arity = decl.params.len() as u8;
 
         for param in &decl.params {
@@ -77,11 +80,12 @@ impl<'a> Compiler<'a> {
 
         self.expression(&decl.body)?;
         let frame = self.exit_function(&decl.body);
-        self.patch_jump(jump_ref)?;
+        self.ir.bind(skip);
 
         let name = self.gc.intern(&decl.name);
-        let func = self.gc.alloc(ObjFn::new(name, arity, ip_start, frame.upvalues));
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, frame.upvalues));
+        self.ir.record_entry(func, body);
 
-        self.chunk.add_constant(Value::from(func))
+        self.ir.add_constant(Value::from(func))
     }
 }

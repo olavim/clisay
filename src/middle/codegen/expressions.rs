@@ -1,8 +1,8 @@
 use crate::compiler_error;
 use crate::ast::{AstId, Expr, FnDecl, Literal, Operator};
 use crate::core::objects::ObjString;
-use crate::backend::bytecode::opcode;
 use crate::core::value::Value;
+use crate::middle::ir::Inst;
 
 use super::{ClassCompilation, Compiler, FnKind};
 
@@ -56,7 +56,7 @@ impl<'a> Compiler<'a> {
             // Any other expression leaves a value that the statement discards.
             _ => {
                 self.expression(expr)?;
-                self.emit(opcode::POP, expr);
+                self.emit(Inst::Pop, expr);
                 Ok(())
             }
         }
@@ -84,19 +84,19 @@ impl<'a> Compiler<'a> {
 
     fn this(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
         self.require_class(expr)?;
-        self.emit_operand(opcode::GET_LOCAL, 0, expr);
+        self.emit(Inst::GetLocal(0), expr);
         Ok(())
     }
 
     fn super_(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
         self.require_superclass(expr)?;
-        self.emit_operand(opcode::GET_LOCAL, 0, expr);
+        self.emit(Inst::GetLocal(0), expr);
         Ok(())
     }
 
     fn unary_expression(&mut self, op: &Operator, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
         self.expression(expr)?;
-        self.emit(opcode::from_operator(op), expr);
+        self.emit(Inst::from_operator(op), expr);
         Ok(())
     }
 
@@ -109,7 +109,7 @@ impl<'a> Compiler<'a> {
         } else if let Some(id) = self.class_frames.last().and_then(|f| f.class.resolve_id(name)) {
             Place::Field(id)
         } else {
-            Place::Global(self.chunk.add_constant(Value::from(name))?)
+            Place::Global(self.ir.add_constant(Value::from(name))?)
         };
         Ok(place)
     }
@@ -117,13 +117,13 @@ impl<'a> Compiler<'a> {
     /// Emits a read of `place`, pushing its value.
     fn emit_load(&mut self, place: Place, node: &AstId<Expr>) {
         match place {
-            Place::Local(slot) => self.emit_operand(opcode::GET_LOCAL, slot, node),
-            Place::Upvalue(idx) => self.emit_operand(opcode::GET_UPVALUE, idx, node),
+            Place::Local(slot) => self.emit(Inst::GetLocal(slot), node),
+            Place::Upvalue(idx) => self.emit(Inst::GetUpvalue(idx), node),
             Place::Field(id) => {
-                self.emit_operand(opcode::GET_LOCAL, 0, node);
-                self.emit_operand(opcode::GET_PROPERTY_ID, id, node);
+                self.emit(Inst::GetLocal(0), node);
+                self.emit(Inst::GetPropertyId(id), node);
             },
-            Place::Global(idx) => self.emit_operand(opcode::GET_GLOBAL, idx, node),
+            Place::Global(idx) => self.emit(Inst::GetGlobal(idx), node),
         }
     }
 
@@ -132,21 +132,18 @@ impl<'a> Compiler<'a> {
     fn emit_store(&mut self, place: Place, discarded: bool, node: &AstId<Expr>) {
         match place {
             Place::Local(slot) => {
-                let op = if discarded { opcode::SET_LOCAL_POP } else { opcode::SET_LOCAL };
-                self.emit_operand(op, slot, node);
+                self.emit(if discarded { Inst::SetLocalPop(slot) } else { Inst::SetLocal(slot) }, node);
             },
             Place::Upvalue(idx) => {
-                let op = if discarded { opcode::SET_UPVALUE_POP } else { opcode::SET_UPVALUE };
-                self.emit_operand(op, idx, node);
+                self.emit(if discarded { Inst::SetUpvaluePop(idx) } else { Inst::SetUpvalue(idx) }, node);
             },
             Place::Field(id) => {
-                self.emit_operand(opcode::GET_LOCAL, 0, node); // push `this` (the target)
-                let op = if discarded { opcode::SET_PROPERTY_ID_POP } else { opcode::SET_PROPERTY_ID };
-                self.emit_operand(op, id, node);
+                self.emit(Inst::GetLocal(0), node); // push `this` (the target)
+                self.emit(if discarded { Inst::SetPropertyIdPop(id) } else { Inst::SetPropertyId(id) }, node);
             },
             Place::Global(idx) => {
-                self.emit_operand(opcode::SET_GLOBAL, idx, node);
-                if discarded { self.emit(opcode::POP, node); }
+                self.emit(Inst::SetGlobal(idx), node);
+                if discarded { self.emit(Inst::Pop, node); }
             }
         }
     }
@@ -164,7 +161,7 @@ impl<'a> Compiler<'a> {
     pub (super) fn try_local_const(&mut self, local_side: &AstId<Expr>, const_side: &AstId<Expr>) -> Result<Option<(u8, u8)>, anyhow::Error> {
         let Some(local) = self.local_operand(local_side) else { return Ok(None) };
         let Expr::Literal(Literal::Number(num)) = self.ast.get(const_side) else { return Ok(None) };
-        let const_idx = self.chunk.add_constant(Value::from(*num))?;
+        let const_idx = self.ir.add_constant(Value::from(*num))?;
         Ok(Some((local, const_idx)))
     }
 
@@ -201,10 +198,7 @@ impl<'a> Compiler<'a> {
                 if discarded {
                     if let Place::Local(dst) = place {
                         if let Some((a, b)) = self.local_add_operands(rhs) {
-                            self.emit(opcode::SET_LOCAL_ADD_LOCAL_LOCAL, lhs);
-                            self.emit(dst, lhs);
-                            self.emit(a, lhs);
-                            self.emit(b, lhs);
+                            self.emit(Inst::SetLocalAddLocalLocal(dst, a, b), lhs);
                             return Ok(());
                         }
                     }
@@ -235,23 +229,19 @@ impl<'a> Compiler<'a> {
         match op {
             Operator::Add => {
                 if let Some((local, const_idx)) = self.try_local_const_commutative(left, right)? {
-                    self.emit(opcode::ADD_LOCAL_CONST, right);
-                    self.emit(local, right);
-                    self.emit(const_idx, right);
+                    self.emit(Inst::AddLocalConst(local, const_idx), right);
                     return Ok(());
                 }
             },
             Operator::Subtract => {
-                let block = if let Some((local, const_idx)) = self.try_local_const(left, right)? {
-                    Some((opcode::SUB_LOCAL_CONST, local, const_idx))
+                let fused = if let Some((local, const_idx)) = self.try_local_const(left, right)? {
+                    Some(Inst::SubLocalConst(local, const_idx))
                 } else if let Some((local, const_idx)) = self.try_local_const(right, left)? {
-                    Some((opcode::SUB_CONST_LOCAL, const_idx, local))
+                    Some(Inst::SubConstLocal(const_idx, local))
                 } else { None };
 
-                if let Some((opcode, lhs, rhs)) = block {
-                    self.emit(opcode, right);
-                    self.emit(lhs, right);
-                    self.emit(rhs, right);
+                if let Some(inst) = fused {
+                    self.emit(inst, right);
                     return Ok(());
                 }
             },
@@ -264,7 +254,7 @@ impl<'a> Compiler<'a> {
 
         self.expression(left)?;
         self.expression(right)?;
-        self.emit(opcode::from_operator(op), right);
+        self.emit(Inst::from_operator(op), right);
         Ok(())
     }
 
@@ -313,15 +303,15 @@ impl<'a> Compiler<'a> {
             IndexOp::Load => {
                 self.expression(expr)?;
                 self.expression(member_expr_id)?;
-                self.emit(opcode::GET_INDEX, expr);
+                self.emit(Inst::GetIndex, expr);
             },
             IndexOp::Store { rhs, discarded } => {
                 self.expression(&rhs)?;
                 self.expression(expr)?;
                 self.expression(member_expr_id)?;
-                self.emit(opcode::SET_INDEX, expr);
+                self.emit(Inst::SetIndex, expr);
                 if discarded {
-                    self.emit(opcode::POP, expr);
+                    self.emit(Inst::Pop, expr);
                 }
             }
         }
@@ -332,13 +322,12 @@ impl<'a> Compiler<'a> {
         match op {
             IndexOp::Load => {
                 self.expression(target_expr)?;
-                self.emit_operand(opcode::GET_PROPERTY_ID, member_id, target_expr);
+                self.emit(Inst::GetPropertyId(member_id), target_expr);
             },
             IndexOp::Store { rhs, discarded } => {
                 self.expression(&rhs)?;
                 self.expression(target_expr)?;
-                let store = if discarded { opcode::SET_PROPERTY_ID_POP } else { opcode::SET_PROPERTY_ID };
-                self.emit_operand(store, member_id, target_expr);
+                self.emit(if discarded { Inst::SetPropertyIdPop(member_id) } else { Inst::SetPropertyId(member_id) }, target_expr);
             }
         }
         Ok(())
@@ -346,7 +335,7 @@ impl<'a> Compiler<'a> {
 
     fn index_class_member_by_accessor(&mut self, target_expr: &AstId<Expr>, accessor_id: u8, member_expr_id: &AstId<Expr>, op: IndexOp) -> Result<(), anyhow::Error> {
         self.expression(target_expr)?;
-        self.emit_operand(opcode::GET_PROPERTY_ID, accessor_id, target_expr);
+        self.emit(Inst::GetPropertyId(accessor_id), target_expr);
 
         self.expression(member_expr_id)?;
         let arg_count = match op {
@@ -356,11 +345,11 @@ impl<'a> Compiler<'a> {
                 2
             }
         };
-        self.emit_operand(opcode::CALL, arg_count, target_expr);
+        self.emit(Inst::Call(arg_count), target_expr);
 
         // A setter call returns a value; drop it in statement position.
         if let IndexOp::Store { discarded: true, .. } = op {
-            self.emit(opcode::POP, target_expr);
+            self.emit(Inst::Pop, target_expr);
         }
         Ok(())
     }
@@ -372,8 +361,8 @@ impl<'a> Compiler<'a> {
                 let init = self.gc.preset_identifiers.init;
                 let member_id = unsafe { &*superclass.class }.resolve_id(init).unwrap();
 
-                self.emit_operand(opcode::GET_LOCAL, 0, expr);
-                self.emit_operand(opcode::GET_PROPERTY_ID, member_id, expr);
+                self.emit(Inst::GetLocal(0), expr);
+                self.emit(Inst::GetPropertyId(member_id), expr);
             },
             _ => { self.expression(expr)? }
         };
@@ -381,36 +370,36 @@ impl<'a> Compiler<'a> {
         for arg in args {
             self.expression(arg)?;
         }
-        self.emit_operand(opcode::CALL, args.len() as u8, expr);
+        self.emit(Inst::Call(args.len() as u8), expr);
 
         Ok(())
     }
 
     fn lambda(&mut self, expr: &AstId<Expr>, decl: &FnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
         let const_idx = self.function(expr, decl, kind)?;
-        self.emit_operand(opcode::PUSH_CLOSURE, const_idx, expr);
+        self.emit(Inst::PushClosure(const_idx), expr);
         return Ok(());
     }
 
     fn literal(&mut self, expr: &AstId<Expr>, literal: &Literal) -> Result<(), anyhow::Error> {
         match literal {
             Literal::Number(num) => {
-                let idx = self.chunk.add_constant(Value::from(*num))?;
-                self.emit_operand(opcode::PUSH_CONSTANT, idx, expr);
+                let idx = self.ir.add_constant(Value::from(*num))?;
+                self.emit(Inst::PushConstant(idx), expr);
             },
             Literal::String(str) => {
                 let str = self.gc.intern(str);
-                let idx = self.chunk.add_constant(Value::from(str))?;
-                self.emit_operand(opcode::PUSH_CONSTANT, idx, expr);
+                let idx = self.ir.add_constant(Value::from(str))?;
+                self.emit(Inst::PushConstant(idx), expr);
             },
-            Literal::Null => { self.emit(opcode::PUSH_NULL, expr); },
-            Literal::Boolean(true) => { self.emit(opcode::PUSH_TRUE, expr); },
-            Literal::Boolean(false) => { self.emit(opcode::PUSH_FALSE, expr); },
+            Literal::Null => { self.emit(Inst::PushNull, expr); },
+            Literal::Boolean(true) => { self.emit(Inst::PushTrue, expr); },
+            Literal::Boolean(false) => { self.emit(Inst::PushFalse, expr); },
             Literal::Array(elements) => {
                 for element in elements {
                     self.expression(element)?;
                 }
-                self.emit_operand(opcode::ARRAY, elements.len() as u8, expr);
+                self.emit(Inst::Array(elements.len() as u8), expr);
             },
             Literal::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };

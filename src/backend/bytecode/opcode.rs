@@ -1,5 +1,3 @@
-use crate::ast::Operator;
-
 pub type OpCode = u8;
 
 /// One operand of an instruction. The VM reads operands directly in its dispatch
@@ -15,6 +13,16 @@ pub enum Operand {
     Const,
     /// A `u16` bytecode offset (jump target).
     Jump,
+}
+
+impl Operand {
+    /// The number of bytes this operand occupies in the encoded instruction.
+    pub fn size(&self) -> usize {
+        match self {
+            Operand::Byte | Operand::Local | Operand::Const => 1,
+            Operand::Jump => 2,
+        }
+    }
 }
 
 macro_rules! opcodes {
@@ -117,29 +125,4 @@ opcodes! {
     NOT,
     AND,
     OR,
-}
-
-pub fn from_operator(op: &Operator) -> OpCode {
-    return match op {
-        Operator::Add => ADD,
-        Operator::Subtract => SUBTRACT,
-        Operator::Multiply => MULTIPLY,
-        Operator::Divide => DIVIDE,
-        Operator::LeftShift => LEFT_SHIFT,
-        Operator::RightShift => RIGHT_SHIFT,
-        Operator::LessThan => LESS_THAN,
-        Operator::LessThanEqual => LESS_THAN_EQUAL,
-        Operator::GreaterThan => GREATER_THAN,
-        Operator::GreaterThanEqual => GREATER_THAN_EQUAL,
-        Operator::LogicalEqual => EQUAL,
-        Operator::LogicalNotEqual => NOT_EQUAL,
-        Operator::LogicalAnd => AND,
-        Operator::LogicalOr => OR,
-        Operator::BitAnd => BIT_AND,
-        Operator::BitOr => BIT_OR,
-        Operator::BitXor => BIT_XOR,
-        Operator::BitNot => BIT_NOT,
-        Operator::Negate => NEGATE,
-        _ => unreachable!("Invalid operator")
-    };
 }

@@ -2,3 +2,4 @@
 //! ultimately produces and the interpreter executes.
 
 pub mod bytecode;
+pub mod assemble;
