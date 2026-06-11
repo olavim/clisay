@@ -3,12 +3,17 @@
 mod operator;
 
 use core::fmt;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
 pub use operator::Operator;
 
 use crate::frontend::lex::SourcePosition;
+
+/// An interned identifier, a cheap `Copy` identity. Resolved back to text via
+/// [`Ast::text`]. Identifiers are interned by the parser as nodes are built.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Symbol(u32);
 
 pub enum Literal {
     Null,
@@ -49,18 +54,18 @@ pub enum Expr {
     Index(AstId<Expr>, AstId<Expr>),
 
     Literal(Literal),
-    Identifier(String),
+    Identifier(Symbol),
     This,
     Super
 }
 
 pub struct FieldInit {
-    pub name: String,
+    pub name: Symbol,
     pub value: Option<AstId<Expr>>
 }
 
 pub struct FnDecl {
-    pub name: String,
+    pub name: Symbol,
     pub params: Vec<AstId<Expr>>,
     pub body: AstId<Expr>
 }
@@ -72,12 +77,12 @@ pub struct CatchClause {
 }
 
 pub struct ClassDecl {
-    pub name: String,
-    pub superclass: Option<String>,
+    pub name: Symbol,
+    pub superclass: Option<Symbol>,
     pub init: AstId<Stmt>,
     pub getter: Option<AstId<Stmt>>,
     pub setter: Option<AstId<Stmt>>,
-    pub fields: HashSet<String>,
+    pub fields: HashSet<Symbol>,
     pub methods: Vec<AstId<Stmt>>
 }
 
@@ -139,10 +144,29 @@ pub struct AstId<T> {
     _marker: PhantomData<T>
 }
 
+impl<T> AstId<T> {
+    /// The node's index in the AST. A stable key for side-tables (e.g. resolver bindings).
+    pub fn index(&self) -> usize {
+        self.id
+    }
+}
+
 impl<T> Copy for AstId<T> {}
 impl<T> Clone for AstId<T> {
     fn clone(&self) -> AstId<T> {
         *self
+    }
+}
+
+impl<T> PartialEq for AstId<T> {
+    fn eq(&self, other: &AstId<T>) -> bool {
+        self.id == other.id
+    }
+}
+impl<T> Eq for AstId<T> {}
+impl<T> std::hash::Hash for AstId<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
     }
 }
 
@@ -167,12 +191,40 @@ impl AstId<Expr> {
 }
 
 pub struct Ast {
-    nodes: Vec<Node>
+    nodes: Vec<Node>,
+    /// Identifier interning
+    ident_ids: HashMap<String, u32>,
+    ident_texts: Vec<String>,
 }
 
 impl Ast {
     pub(crate) fn new() -> Ast {
-        Ast { nodes: Vec::new() }
+        Ast {
+            nodes: Vec::new(),
+            ident_ids: HashMap::new(),
+            ident_texts: Vec::new(),
+        }
+    }
+
+    /// Interns (deduplicates) an identifier, returning its symbol.
+    pub fn intern(&mut self, text: &str) -> Symbol {
+        if let Some(&id) = self.ident_ids.get(text) {
+            return Symbol(id);
+        }
+        let id = self.ident_texts.len() as u32;
+        self.ident_texts.push(text.to_string());
+        self.ident_ids.insert(text.to_string(), id);
+        Symbol(id)
+    }
+
+    /// The text of an interned symbol.
+    pub fn text(&self, symbol: Symbol) -> &str {
+        &self.ident_texts[symbol.0 as usize]
+    }
+
+    /// The symbol for `text` if it was ever interned, else `None`.
+    pub fn symbol_of(&self, text: &str) -> Option<Symbol> {
+        self.ident_ids.get(text).copied().map(Symbol)
     }
 
     pub fn get<T: AstNode>(&self, id: &AstId<T>) -> &T {

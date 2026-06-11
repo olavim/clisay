@@ -4,7 +4,7 @@ mod precedence;
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, ClassDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt};
+use crate::ast::{Ast, AstId, CatchClause, ClassDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol};
 use crate::frontend::lex::{SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -13,17 +13,17 @@ macro_rules! parse_error {
 
 pub struct Parser<'parser, 'vm> {
     tokens: &'vm mut TokenStream<'vm>,
-    arena: &'parser mut Ast,
+    ast: &'parser mut Ast,
     current_class: Option<String>
 }
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub fn parse(tokens: &'vm mut TokenStream<'vm>) -> Result<Ast, anyhow::Error> {
-        let mut arena = Ast::new();
+        let mut ast = Ast::new();
 
         let mut parser = Parser {
             tokens,
-            arena: &mut arena,
+            ast: &mut ast,
             current_class: None
         };
 
@@ -32,10 +32,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         while parser.tokens.has_next() {
             stmts.push(parser.parse_stmt()?);
         }
-        let block = parser.arena.add_expr(Expr::Block(stmts), pos.clone());
-        arena.add_stmt(Stmt::Expression(block), pos);
+        let block = parser.ast.add_expr(Expr::Block(stmts), pos.clone());
+        ast.add_stmt(Stmt::Expression(block), pos);
 
-        Ok(arena)
+        Ok(ast)
     }
 
     fn error(&self, message: impl Into<String>, pos: &SourcePosition) -> anyhow::Error {
@@ -49,8 +49,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_identifier_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         let token = self.tokens.expect(TokenType::Identifier)?;
-        let id = self.arena.add_expr(Expr::Identifier(token.lexeme.clone()), token.pos.clone());
-        Ok(id)
+        let pos = token.pos.clone();
+        let name = self.ast.intern(&token.lexeme);
+        Ok(self.ast.add_expr(Expr::Identifier(name), pos))
     }
 
     fn parse_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -79,18 +80,19 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             },
             None => None
         };
-        Ok(self.arena.add_stmt(Stmt::If(condition, then, otherwise), pos))
+        Ok(self.ast.add_stmt(Stmt::If(condition, then, otherwise), pos))
     }
 
     fn parse_block_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let body = self.parse_block_or_stmt()?;
-        Ok(self.arena.add_stmt(Stmt::Block(body), pos))
+        Ok(self.ast.add_stmt(Stmt::Block(body), pos))
     }
 
     fn parse_say(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Say)?.pos.clone();
         let name = self.parse_identifier()?;
+        let name = self.ast.intern(&name);
 
         let expr = if let Some(_) = self.tokens.next_if(TokenType::Equal) {
             Some(self.parse_expr()?)
@@ -100,17 +102,18 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         self.tokens.expect(TokenType::Semicolon)?;
         let field_init = FieldInit { name, value: expr };
-        Ok(self.arena.add_stmt(Stmt::Say(field_init), pos))
+        Ok(self.ast.add_stmt(Stmt::Say(field_init), pos))
     }
 
     fn parse_fn(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Fn)?.pos.clone();
         let name = self.parse_identifier()?;
+        let name = self.ast.intern(&name);
         let fn_decl = self.parse_fn_decl(name)?;
-        Ok(self.arena.add_stmt(Stmt::Fn(fn_decl), pos))
+        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    fn parse_fn_decl(&mut self, name: String) -> Result<FnDecl, anyhow::Error> {
+    fn parse_fn_decl(&mut self, name: Symbol) -> Result<FnDecl, anyhow::Error> {
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
         let body = self.parse_block()?;
@@ -123,17 +126,21 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_accessor(&mut self, name: String, arity: usize, arity_error: &str) -> Result<AstId<Stmt>, anyhow::Error> {
         let token = self.tokens.peek(0).clone();
+        let name = self.ast.intern(&name);
         let fn_decl = self.parse_fn_decl(name)?;
         if fn_decl.params.len() != arity {
             parse_error!(self, &token.pos, "{}", arity_error)
         }
-        Ok(self.arena.add_stmt(Stmt::Fn(fn_decl), token.pos))
+        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), token.pos))
     }
 
     fn parse_init(&mut self, has_superclass: bool) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
-        let Some(name) = &self.current_class else { unreachable!() };
-        let name = format!("{}.init", name);
+        let init_name = {
+            let Some(class) = &self.current_class else { unreachable!() };
+            format!("{}.init", class)
+        };
+        let name = self.ast.intern(&init_name);
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
         self.tokens.expect(TokenType::LeftBrace)?;
@@ -152,9 +159,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         stmts.extend(self.parse_stmts()?);
         self.tokens.expect(TokenType::RightBrace)?;
 
-        let body = self.arena.add_expr(Expr::Block(stmts), pos.clone());
+        let body = self.ast.add_expr(Expr::Block(stmts), pos.clone());
         let fn_decl = FnDecl { name, params, body };
-        Ok(self.arena.add_stmt(Stmt::Fn(fn_decl), pos))
+        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
     }
 
     fn parse_params(&mut self, end_token: TokenType) -> Result<Vec<AstId<Expr>>, anyhow::Error> {
@@ -177,25 +184,29 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn virtual_super_call(&mut self, pos: SourcePosition) -> Result<AstId<Stmt>, anyhow::Error> {
-        let super_expr = self.arena.add_expr(Expr::Super, pos.clone());
-        let expr = self.arena.add_expr(Expr::Call(super_expr, Vec::new()), pos.clone());
-        Ok(self.arena.add_stmt(Stmt::Expression(expr), pos.clone()))
+        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
+        let expr = self.ast.add_expr(Expr::Call(super_expr, Vec::new()), pos.clone());
+        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos.clone()))
     }
 
     fn parse_class(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Class)?.pos.clone();
-        let name = self.parse_identifier()?;
+        let class_name = self.parse_identifier()?;
+        let class_sym = self.ast.intern(&class_name);
 
-        let prev_class = std::mem::replace(&mut self.current_class, Some(name.clone()));
+        let prev_class = std::mem::replace(&mut self.current_class, Some(class_name.clone()));
 
         let superclass = match self.tokens.next_if(TokenType::Colon) {
-            Some(_) => Some(self.parse_identifier()?),
+            Some(_) => {
+                let super_name = self.parse_identifier()?;
+                Some(self.ast.intern(&super_name))
+            },
             None => None
         };
 
         self.tokens.expect(TokenType::LeftBrace)?;
 
-        let mut fields: std::collections::HashSet<String> = std::collections::HashSet::default();
+        let mut fields: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
         let mut field_stmts: Vec<AstId<Stmt>> = Vec::new();
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
         let mut init = None;
@@ -231,12 +242,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             };
 
                             self.tokens.expect(TokenType::Semicolon)?;
-                            fields.insert(name.clone());
+                            let field = self.ast.intern(&name);
+                            fields.insert(field);
 
                             if let Some(value) = value {
-                                let id = self.arena.add_expr(Expr::Identifier(name), pos.clone());
-                                let assign = self.arena.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
-                                field_stmts.push(self.arena.add_stmt(Stmt::Expression(assign), pos.clone()));
+                                let id = self.ast.add_expr(Expr::Identifier(field), pos.clone());
+                                let assign = self.ast.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
+                                field_stmts.push(self.ast.add_stmt(Stmt::Expression(assign), pos.clone()));
                             }
                         }
                     }
@@ -258,22 +270,23 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     Vec::new()
                 };
 
-                let body = self.arena.add_expr(Expr::Block(stmts), pos.clone());
+                let body = self.ast.add_expr(Expr::Block(stmts), pos.clone());
+                let init_name = self.ast.intern(&format!("{}.init", class_name));
                 let fn_decl = FnDecl {
-                    name: format!("{}.init", name),
+                    name: init_name,
                     params: Vec::new(),
                     body
                 };
-                self.arena.add_stmt(Stmt::Fn(fn_decl), pos.clone())
+                self.ast.add_stmt(Stmt::Fn(fn_decl), pos.clone())
             }
         };
 
-        let Stmt::Fn(fn_decl) = self.arena.get(&init) else { unreachable!() };
-        let Expr::Block(body) = self.arena.get_mut(&fn_decl.body.clone()) else { unreachable!() };
+        let Stmt::Fn(fn_decl) = self.ast.get(&init) else { unreachable!() };
+        let Expr::Block(body) = self.ast.get_mut(&fn_decl.body.clone()) else { unreachable!() };
         body.splice(0..0, field_stmts.iter().cloned());
 
         let class_decl = Box::new(ClassDecl {
-            name,
+            name: class_sym,
             superclass,
             init,
             getter,
@@ -283,14 +296,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         });
 
         self.current_class = prev_class;
-        Ok(self.arena.add_stmt(Stmt::Class(class_decl), pos))
+        Ok(self.ast.add_stmt(Stmt::Class(class_decl), pos))
     }
 
     fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::While)?.pos.clone();
         let condition = self.parse_expr()?;
         let body = self.parse_block_or_stmt()?;
-        Ok(self.arena.add_stmt(Stmt::While(condition, body), pos))
+        Ok(self.ast.add_stmt(Stmt::While(condition, body), pos))
     }
 
     fn parse_return(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -300,13 +313,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             false => Some(self.parse_expr()?)
         };
         self.tokens.expect(TokenType::Semicolon)?;
-        Ok(self.arena.add_stmt(Stmt::Return(expr), pos))
+        Ok(self.ast.add_stmt(Stmt::Return(expr), pos))
     }
 
     fn parse_throw(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Throw)?.pos.clone();
         let expr = self.parse_expr_semi()?;
-        Ok(self.arena.add_stmt(Stmt::Throw(expr), pos))
+        Ok(self.ast.add_stmt(Stmt::Throw(expr), pos))
     }
 
     /// Parses an expression terminated by a required semicolon.
@@ -350,7 +363,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             parse_error!(self, &pos, "Expected catch or finally block")
         }
 
-        Ok(self.arena.add_stmt(Stmt::Try(try_body, catch, finally), pos))
+        Ok(self.ast.add_stmt(Stmt::Try(try_body, catch, finally), pos))
     }
 
     fn parse_block(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
@@ -358,7 +371,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.tokens.expect(TokenType::LeftBrace)?;
         let stmts = self.parse_stmts()?;
         self.tokens.expect(TokenType::RightBrace)?;
-        Ok(self.arena.add_expr(Expr::Block(stmts), pos))
+        Ok(self.ast.add_expr(Expr::Block(stmts), pos))
     }
 
     fn parse_block_or_stmt(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
@@ -367,7 +380,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         } else {
             let pos = self.tokens.peek(0).pos.clone();
             let stmt = self.parse_stmt()?;
-            Ok(self.arena.add_expr(Expr::Block(vec![stmt]), pos))
+            Ok(self.ast.add_expr(Expr::Block(vec![stmt]), pos))
         }
     }
 
@@ -388,14 +401,15 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(stmts)
     }
 
-    fn make_lambda(&self, params: Vec<AstId<Expr>>, body: AstId<Expr>) -> Expr {
-        Expr::Literal(Literal::Lambda(FnDecl { name: String::from("lambda"), params, body }))
+    fn make_lambda(&mut self, params: Vec<AstId<Expr>>, body: AstId<Expr>) -> Expr {
+        let name = self.ast.intern("lambda");
+        Expr::Literal(Literal::Lambda(FnDecl { name, params, body }))
     }
 
     fn parse_expr_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let expr = self.parse_expr_semi()?;
-        Ok(self.arena.add_stmt(Stmt::Expression(expr), pos))
+        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
     }
 
     fn parse_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
@@ -422,25 +436,25 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn parse_expr_infix(&mut self, op: Operator, expr: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
-        let pos = self.arena.pos(&expr).clone();
+        let pos = self.ast.pos(&expr).clone();
 
         let kind = match &op {
             Operator::Assign(Some(assign_op)) => {
                 // Normalize compound assignment, for example convert (a += 1) to (a = a + 1)
                 let mut right = self.parse_expr_precedence(op.infix_precedence().unwrap())?;
                 let kind = Expr::Binary(assign_op.as_ref().clone(), expr, right);
-                right = self.arena.add_expr(kind, pos.clone());
+                right = self.ast.add_expr(kind, pos.clone());
                 Expr::Binary(op, expr, right)
             },
             Operator::MemberAccess => {
                 let id = self.parse_identifier()?;
-                let id = self.arena.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
                 Expr::Index(expr, id)
             },
             Operator::Arrow => {
                 let right = self.parse_block_or_expr(op.infix_precedence().unwrap())?;
-                let params = expr.as_comma_separated(self.arena).iter()
-                    .map(|id| match self.arena.get(id) {
+                let params = expr.as_comma_separated(self.ast).iter()
+                    .map(|id| match self.ast.get(id) {
                         Expr::Identifier(_) => Ok(*id),
                         _ => parse_error!(self, &pos, "Invalid lambda parameter")
                     })
@@ -453,7 +467,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             }
         };
 
-        Ok(self.arena.add_expr(kind, pos.clone()))
+        Ok(self.ast.add_expr(kind, pos.clone()))
     }
 
     fn parse_expr_prefix(&mut self, op: Operator) -> Result<AstId<Expr>, anyhow::Error> {
@@ -481,31 +495,31 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     None => {
                         let expr = self.parse_expr()?;
                         self.tokens.expect(TokenType::RightBracket)?;
-                        expr.as_comma_separated(self.arena)
+                        expr.as_comma_separated(self.ast)
                     }
                 };
 
-                return Ok(self.arena.add_expr(Expr::Literal(Literal::Array(elements)), pos));
+                return Ok(self.ast.add_expr(Expr::Literal(Literal::Array(elements)), pos));
             },
             _ => {
                 let right = self.parse_expr_precedence(op.prefix_precedence().unwrap())?;
                 Expr::Unary(op, right)
             }
         };
-        Ok(self.arena.add_expr(kind, pos))
+        Ok(self.ast.add_expr(kind, pos))
     }
 
     fn parse_expr_postfix(&mut self, op: Operator, expr: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
-        let pos = self.arena.pos(&expr).clone();
+        let pos = self.ast.pos(&expr).clone();
         match op {
             Operator::Call => {
                 let args = self.parse_call_arguments()?;
-                Ok(self.arena.add_expr(Expr::Call(expr, args), pos))
+                Ok(self.ast.add_expr(Expr::Call(expr, args), pos))
             },
             Operator::Index => {
                 let index = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightBracket)?;
-                Ok(self.arena.add_expr(Expr::Index(expr, index), pos))
+                Ok(self.ast.add_expr(Expr::Index(expr, index), pos))
             },
             _ => unreachable!()
         }
@@ -526,15 +540,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::True => Expr::Literal(Literal::Boolean(true)),
             TokenType::False => Expr::Literal(Literal::Boolean(false)),
             TokenType::This => Expr::This,
-            /* The super keyword is not a valid expression on its own,
-             * so it makes sense to consider something like `super.x` as an "atom".
-             */
+            // The super keyword is not a valid expression on its own,
+            // so it makes sense to consider something like `super.x` as an "atom".
             TokenType::Super => return self.parse_super(),
-            TokenType::Identifier => Expr::Identifier(token.lexeme.clone()),
+            TokenType::Identifier => Expr::Identifier(self.ast.intern(&token.lexeme)),
             _ => parse_error!(self, &pos, "Unexpected token {token}")
         };
 
-        Ok(self.arena.add_expr(kind, pos))
+        Ok(self.ast.add_expr(kind, pos))
     }
 
     fn parse_super(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
@@ -543,17 +556,17 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         match token.kind {
             TokenType::Dot => {
-                let super_expr = self.arena.add_expr(Expr::Super, pos.clone());
+                let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
                 let id = self.parse_identifier()?;
-                let id = self.arena.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                let expr = self.arena.add_expr(Expr::Index(super_expr, id), pos.clone());
+                let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                let expr = self.ast.add_expr(Expr::Index(super_expr, id), pos.clone());
                 Ok(expr)
             },
             TokenType::LeftBracket => {
-                let super_expr = self.arena.add_expr(Expr::Super, pos.clone());
+                let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
                 let expr = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightBracket)?;
-                let expr = self.arena.add_expr(Expr::Index(super_expr, expr), pos.clone());
+                let expr = self.ast.add_expr(Expr::Index(super_expr, expr), pos.clone());
                 Ok(expr)
             },
             TokenType::LeftParen => parse_error!(self, &pos, "Super call must be the first statement in an init block"),
@@ -566,9 +579,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.tokens.expect(TokenType::LeftParen)?;
         let args = self.parse_call_arguments()?;
         self.tokens.expect(TokenType::Semicolon)?;
-        let super_expr = self.arena.add_expr(Expr::Super, pos.clone());
-        let expr = self.arena.add_expr(Expr::Call(super_expr, args), pos.clone());
-        Ok(self.arena.add_stmt(Stmt::Expression(expr), pos))
+        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
+        let expr = self.ast.add_expr(Expr::Call(super_expr, args), pos.clone());
+        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
     }
 
     fn parse_call_arguments(&mut self) -> Result<Vec<AstId<Expr>>, anyhow::Error> {
@@ -577,7 +590,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             None => {
                 let args = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightParen)?;
-                Ok(args.as_comma_separated(self.arena))
+                Ok(args.as_comma_separated(self.ast))
             }
         }
     }

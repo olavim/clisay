@@ -1,15 +1,11 @@
-use std::ops::Range;
-
 use anyhow::anyhow;
-use anyhow::bail;
 use fnv::FnvHashMap;
 
 use crate::core::gc::Gc;
 use crate::core::objects::ObjClass;
 use crate::core::objects::ObjString;
-use crate::core::objects::UpvalueLocation;
-use crate::core::value::Value;
 use crate::middle::ir::{Inst, Ir, Label};
+use crate::middle::resolve::{Bindings, Cleanup, FnKind};
 use crate::ast::AstId;
 use crate::ast::Expr;
 use crate::ast::FnDecl;
@@ -20,38 +16,6 @@ mod expressions;
 mod statements;
 mod functions;
 mod classes;
-
-struct Local {
-    name: *mut ObjString,
-    depth: u8,
-    is_mutable: bool,
-    is_captured: bool
-}
-
-struct FnFrame {
-    upvalues: Vec<UpvalueLocation>,
-    local_offset: u8,
-    class_frame: Option<u8>,
-    kind: FnKind
-}
-
-#[derive(Clone, Copy)]
-enum FnKind {
-    Function,
-    Method,
-    Initializer
-}
-
-struct ClassFrame {
-    class: ObjClass,
-    superclass: Option<ClassCompilation>
-}
-
-#[derive(Clone, Copy)]
-struct ClassCompilation {
-    class: *mut ObjClass,
-    next_member_id: u8
-}
 
 #[derive(Clone, Copy)]
 enum TryCatchPosition {
@@ -66,16 +30,16 @@ struct TryFrame {
     finally: Option<AstId<Expr>>
 }
 
+/// Lowers a resolved AST to IR.
 pub struct Compiler<'a> {
     ir: Ir,
     ast: &'a Ast,
     gc: &'a mut Gc,
-    locals: Vec<Local>,
-    scope_depth: u8,
-    fn_frames: Vec<FnFrame>,
+    bindings: &'a Bindings,
+    /// The kind of each enclosing function, for initializer return handling.
+    fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
-    class_frames: Vec<ClassFrame>,
-    classes: FnvHashMap<*mut ObjString, ClassCompilation>
+    classes: FnvHashMap<*mut ObjString, *mut ObjClass>
 }
 
 #[macro_export]
@@ -84,16 +48,14 @@ macro_rules! compiler_error {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn compile<'b>(ast: &'b Ast, gc: &'b mut Gc) -> Result<Ir, anyhow::Error> {
+    pub fn compile<'b>(ast: &'b Ast, gc: &'b mut Gc, bindings: &'b Bindings) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
             ir: Ir::new(),
             ast,
             gc,
-            locals: Vec::new(),
-            scope_depth: 0,
-            fn_frames: Vec::new(),
+            bindings,
+            fn_kinds: Vec::new(),
             try_frames: Vec::new(),
-            class_frames: Vec::new(),
             classes: FnvHashMap::default()
         };
 
@@ -118,8 +80,8 @@ impl<'a> Compiler<'a> {
         self.ir.emit(inst, pos);
     }
 
-    /// Emits a conditional branch to a fresh (unbound) label and returns it; the
-    /// caller should bind the label at the jump's destination.
+    /// Emits a conditional branch to a fresh (unbound) label and returns it.
+    /// The caller should bind the label to the jump's destination.
     fn emit_conditional_jump<T: 'static>(&mut self, cond: &AstId<Expr>, node_id: &AstId<T>) -> Result<Label, anyhow::Error> {
         let target = self.ir.new_label();
         self.expression(cond)?;
@@ -127,137 +89,21 @@ impl<'a> Compiler<'a> {
         Ok(target)
     }
 
-    fn current_class_frame(&self) -> &ClassFrame {
-        self.class_frames.last().unwrap()
+    fn exit_scope<T: 'static>(&mut self, node_id: &AstId<T>) {
+        let cleanups = self.bindings.cleanup(node_id).to_vec();
+        for cleanup in cleanups {
+            let inst = match cleanup {
+                Cleanup::Pop => Inst::Pop,
+                Cleanup::CloseUpvalue(slot) => Inst::CloseUpvalue(slot),
+            };
+            self.emit(inst, node_id);
+        }
     }
 
-    /// Unwraps an `Stmt::Fn` node into its declaration. Callers only ever pass
-    /// statements the parser guarantees are functions (methods, initializers).
     fn fn_decl(&self, stmt: &AstId<Stmt>) -> &'a FnDecl {
         let Stmt::Fn(decl) = self.ast.get(stmt) else {
             unreachable!("expected a function statement");
         };
         decl
-    }
-
-    fn enter_scope(&mut self) {
-        self.scope_depth += 1;
-    }
-
-    fn exit_scope<T: 'static>(&mut self, node_id: &AstId<T>) {
-        self.scope_depth -= 1;
-        while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
-            if self.locals.last().unwrap().is_captured {
-                self.emit(Inst::CloseUpvalue(self.locals.len() as u8 - 1), node_id);
-            } else {
-                self.emit(Inst::Pop, node_id);
-            }
-            self.locals.pop();
-        }
-    }
-
-    /// Declares a new local variable in the current scope. Returns the slot index of the variable,
-    /// which is relative to the current function's `local_offset`.
-    fn declare_local<T: 'static>(&mut self, name: *mut ObjString, is_mutable: bool, node_id: &AstId<T>) -> Result<u8, anyhow::Error> {
-        if self.locals.len() >= u8::MAX as usize {
-            bail!("Too many variables in scope");
-        }
-
-        if self.locals.iter().rev().any(|local| local.depth == self.scope_depth && local.name == name) {
-            compiler_error!(self, node_id, "Variable '{}' already declared in this scope", unsafe { &(*name).value });
-        }
-
-        self.ir.add_constant(Value::from(name))?;
-        self.locals.push(Local { name, depth: self.scope_depth, is_mutable, is_captured: false });
-
-        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
-        Ok((self.locals.len() - 1) as u8 - local_offset)
-    }
-
-    fn resolve_local(&self, name: *mut ObjString) -> Option<u8> {
-        let local_offset = match self.fn_frames.last() {
-            Some(frame) => frame.local_offset,
-            None => 0
-        };
-
-        return self.resolve_local_in_range(name, local_offset..self.locals.len() as u8);
-    }
-
-    fn resolve_local_in_range(&self, name: *mut ObjString, range: Range<u8>) -> Option<u8> {
-        for i in range.clone().rev() {
-            let local = &self.locals[i as usize];
-            if local.name == name {
-                return Some((i - range.start) as u8);
-            }
-        }
-        
-        None
-    }
-
-    fn resolve_upvalue(&mut self, name: *mut ObjString) -> Result<Option<u8>, anyhow::Error> {
-        if self.fn_frames.is_empty() {
-            return Ok(None);
-        }
-
-        let max_class_frame = self.resolve_member_class(name);
-        self.resolve_frame_upvalue(name, self.fn_frames.len() - 1, max_class_frame)
-    }
-
-    fn resolve_frame_upvalue(&mut self, name: *mut ObjString, frame_idx: usize, max_class_frame: Option<u8>) -> Result<Option<u8>, anyhow::Error> {
-        let class_frame = self.fn_frames[frame_idx].class_frame;
-
-        if max_class_frame.is_some() && class_frame.is_some() && class_frame.unwrap() < max_class_frame.unwrap() {
-            return Ok(None);
-        }
-
-        if max_class_frame.is_some() && class_frame.is_none() {
-            return Ok(None);
-        }
-
-        let range_start = if frame_idx == 0 { 0 } else { self.fn_frames[frame_idx - 1].local_offset };
-        let range_end = self.fn_frames[frame_idx].local_offset;
-        
-        if let Some(idx) = self.resolve_local_in_range(name, range_start..range_end) {
-            self.locals[(range_start + idx) as usize].is_captured = true;
-            return Ok(Some(self.add_upvalue(idx, true, frame_idx)?));
-        }
-
-        if frame_idx == 0 {
-            return Ok(None);
-        }
-
-        if let Some(idx) = self.resolve_frame_upvalue(name, frame_idx - 1, max_class_frame)? {
-            return Ok(Some(self.add_upvalue(idx, false, frame_idx)?));
-        }
-
-        Ok(None)
-    }
-
-    fn add_upvalue(&mut self, location: u8, is_local: bool, frame_idx: usize) -> Result<u8, anyhow::Error> {
-        for i in 0..self.fn_frames[frame_idx].upvalues.len() {
-            let upvalue = &self.fn_frames[frame_idx].upvalues[i];
-            if upvalue.location == location && upvalue.is_local == is_local {
-                return Ok(i as u8);
-            }
-        }
-
-        if self.fn_frames[frame_idx].upvalues.len() >= u8::MAX as usize {
-            bail!("Too many upvalues");
-        }
-
-        let upvalue = UpvalueLocation { location, is_local };
-        self.fn_frames[frame_idx].upvalues.push(upvalue);
-        return Ok((self.fn_frames[frame_idx].upvalues.len() - 1) as u8);
-    }
-
-    fn resolve_member_class(&self, name: *mut ObjString) -> Option<u8> {
-        for i in (0..self.class_frames.len()).rev() {
-            let class = &self.class_frames[i].class;
-            if class.resolve(name).is_some() {
-                return Some(i as u8);
-            }
-        }
-
-        None
     }
 }

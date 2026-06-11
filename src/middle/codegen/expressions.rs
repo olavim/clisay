@@ -1,21 +1,10 @@
 use crate::compiler_error;
 use crate::ast::{AstId, Expr, FnDecl, Literal, Operator};
-use crate::core::objects::ObjString;
 use crate::core::value::Value;
 use crate::middle::ir::Inst;
+use crate::middle::resolve::{FnKind, Member, Place};
 
-use super::{ClassCompilation, Compiler, FnKind};
-
-/// A resolved assignable binding that a bare identifier denotes.
-#[derive(Clone, Copy)]
-enum Place {
-    Local(u8),
-    Upvalue(u8),
-    /// An implicit-`this` class field, by member id.
-    Field(u8),
-    /// A global, by name-constant index.
-    Global(u8),
-}
+use super::Compiler;
 
 /// How an index / property expression (`a.b`, `a[b]`) is being accessed.
 #[derive(Clone, Copy)]
@@ -30,18 +19,16 @@ impl<'a> Compiler<'a> {
     pub (super) fn expression(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
         match self.ast.get(expr) {
             Expr::Block(stmts) => self.scoped_body(stmts, expr)?,
-            Expr::Unary(op, expr) => self.unary_expression(op, expr)?,
+            Expr::Unary(op, operand) => self.unary_expression(op, operand)?,
             Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
-            Expr::Call(expr, args) => self.call_expression(expr, args)?,
-            Expr::Index(expr, id) => self.index(expr, id, IndexOp::Load)?,
+            Expr::Call(callee, args) => self.call_expression(callee, args)?,
+            Expr::Index(target, member) => self.index(target, member, IndexOp::Load)?,
             Expr::Literal(lit) => self.literal(expr, lit)?,
-            Expr::Identifier(name) => {
-                let name = self.gc.intern(name);
-                let place = self.resolve_place(name)?;
-                self.emit_load(place, expr);
+            Expr::Identifier(_) => {
+                let place = self.bindings.place(expr);
+                self.emit_load(place, expr)?;
             },
-            Expr::This => self.this(expr)?,
-            Expr::Super => self.super_(expr)?
+            Expr::This | Expr::Super => self.emit(Inst::GetLocal(0), expr),
         };
 
         Ok(())
@@ -62,60 +49,14 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Errors unless we are compiling inside a class method (where `this` is bound).
-    fn require_class(&self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        if self.class_frames.is_empty() {
-            compiler_error!(self, expr, "Cannot use 'this' outside of a class method");
-        }
-        Ok(())
-    }
-
-    /// Returns the enclosing class's superclass, erroring if we are not inside a
-    /// class method, or the class has no superclass.
-    fn require_superclass(&self, expr: &AstId<Expr>) -> Result<ClassCompilation, anyhow::Error> {
-        let Some(frame) = self.class_frames.last() else {
-            compiler_error!(self, expr, "Cannot use 'super' outside of a class method");
-        };
-        let Some(superclass) = frame.superclass else {
-            compiler_error!(self, expr, "Cannot use 'super' outside of a child class method");
-        };
-        Ok(superclass)
-    }
-
-    fn this(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        self.require_class(expr)?;
-        self.emit(Inst::GetLocal(0), expr);
-        Ok(())
-    }
-
-    fn super_(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        self.require_superclass(expr)?;
-        self.emit(Inst::GetLocal(0), expr);
-        Ok(())
-    }
-
     fn unary_expression(&mut self, op: &Operator, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
         self.expression(expr)?;
         self.emit(Inst::from_operator(op), expr);
         Ok(())
     }
 
-    /// Resolves a bare identifier to the binding it denotes.
-    fn resolve_place(&mut self, name: *mut ObjString) -> Result<Place, anyhow::Error> {
-        let place = if let Some(slot) = self.resolve_local(name) {
-            Place::Local(slot)
-        } else if let Some(idx) = self.resolve_upvalue(name)? {
-            Place::Upvalue(idx)
-        } else if let Some(id) = self.class_frames.last().and_then(|f| f.class.resolve_id(name)) {
-            Place::Field(id)
-        } else {
-            Place::Global(self.ir.add_constant(Value::from(name))?)
-        };
-        Ok(place)
-    }
-
     /// Emits a read of `place`, pushing its value.
-    fn emit_load(&mut self, place: Place, node: &AstId<Expr>) {
+    fn emit_load(&mut self, place: Place, node: &AstId<Expr>) -> Result<(), anyhow::Error> {
         match place {
             Place::Local(slot) => self.emit(Inst::GetLocal(slot), node),
             Place::Upvalue(idx) => self.emit(Inst::GetUpvalue(idx), node),
@@ -123,13 +64,18 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::GetLocal(0), node);
                 self.emit(Inst::GetPropertyId(id), node);
             },
-            Place::Global(idx) => self.emit(Inst::GetGlobal(idx), node),
+            Place::Global(symbol) => {
+                let name = self.gc.intern(self.ast.text(symbol));
+                let idx = self.ir.add_constant(Value::from(name))?;
+                self.emit(Inst::GetGlobal(idx), node);
+            },
         }
+        Ok(())
     }
 
     /// Emits a store into `place`. The value to store is already on top of the
     /// stack. When `discarded` (statement position) the store also pops the value.
-    fn emit_store(&mut self, place: Place, discarded: bool, node: &AstId<Expr>) {
+    fn emit_store(&mut self, place: Place, discarded: bool, node: &AstId<Expr>) -> Result<(), anyhow::Error> {
         match place {
             Place::Local(slot) => {
                 self.emit(if discarded { Inst::SetLocalPop(slot) } else { Inst::SetLocal(slot) }, node);
@@ -141,28 +87,24 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::GetLocal(0), node); // push `this` (the target)
                 self.emit(if discarded { Inst::SetPropertyIdPop(id) } else { Inst::SetPropertyId(id) }, node);
             },
-            Place::Global(idx) => {
+            Place::Global(symbol) => {
+                let name = self.gc.intern(self.ast.text(symbol));
+                let idx = self.ir.add_constant(Value::from(name))?;
                 self.emit(Inst::SetGlobal(idx), node);
                 if discarded { self.emit(Inst::Pop, node); }
             }
         }
+        Ok(())
     }
 
     /// Compiles `lhs = rhs`. `discarded` is true in statement position, which lets
     /// the store pop its own value.
     fn compile_assign(&mut self, lhs: &AstId<Expr>, rhs: &AstId<Expr>, discarded: bool) -> Result<(), anyhow::Error> {
         match self.ast.get(lhs) {
-            Expr::Identifier(name) => {
-                let interned = self.gc.intern(name);
-                if let Some(local) = self.locals.iter().rev().find(|local| local.name == interned) {
-                    if !local.is_mutable {
-                        compiler_error!(self, lhs, "Invalid assignment: '{name}' is immutable");
-                    }
-                }
-
-                let place = self.resolve_place(interned)?;
+            Expr::Identifier(_) => {
+                let place = self.bindings.place(lhs);
                 self.expression(rhs)?;
-                self.emit_store(place, discarded, lhs);
+                self.emit_store(place, discarded, lhs)?;
                 Ok(())
             },
             Expr::Index(obj, member) => {
@@ -183,10 +125,6 @@ impl<'a> Compiler<'a> {
             return self.index(left, right, IndexOp::Load);
         }
 
-        if let Operator::Comma = op {
-            compiler_error!(self, right, "Unexpected ','");
-        }
-
         // Canonical lowering; `optimize` fuses `local <op> const` forms.
         self.expression(left)?;
         self.expression(right)?;
@@ -194,67 +132,35 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn index(&mut self, expr: &AstId<Expr>, member_expr_id: &AstId<Expr>, op: IndexOp) -> Result<(), anyhow::Error> {
-        let expr_type = self.ast.get(expr);
-        if matches!(expr_type, Expr::This | Expr::Super) {
-            let member_name = match self.ast.get(member_expr_id) {
-                Expr::Literal(Literal::String(name)) => Some(self.gc.intern(name)),
-                _ => None,
-            };
-
-            let class = if matches!(expr_type, Expr::Super) {
-                let superclass = self.require_superclass(expr)?;
-                unsafe { &*superclass.class }
-            } else {
-                self.require_class(expr)?;
-                &self.current_class_frame().class
-            };
-
-            if let Some(member_id) = member_name.and_then(|name| class.resolve_id(name)) {
-                return self.index_class_member_by_id(expr, member_id, op);
+    fn index(&mut self, target: &AstId<Expr>, member_expr_id: &AstId<Expr>, op: IndexOp) -> Result<(), anyhow::Error> {
+        if matches!(self.ast.get(target), Expr::This | Expr::Super) {
+            match self.bindings.member(target) {
+                Member::ById(member_id) => return self.index_member_by_id(target, member_id, op),
+                Member::ByAccessor(accessor_id) => return self.index_member_by_accessor(target, accessor_id, member_expr_id, op),
+                Member::SuperInit(_) => unreachable!("super-call resolution on a member access"),
             }
-
-            let is_store = matches!(op, IndexOp::Store { .. });
-            let accessor_id = if is_store {
-                class.resolve_id(self.gc.preset_identifiers.set)
-            } else {
-                class.resolve_id(self.gc.preset_identifiers.get)
-            };
-
-            if let Some(accessor_id) = accessor_id {
-                return self.index_class_member_by_accessor(expr, accessor_id, member_expr_id, op);
-            }
-
-            let class_name = unsafe { &(*class.name).value };
-            let accessor_name = if is_store { "setter" } else { "getter" };
-            if let Some(member_name) = member_name {
-                let member_name = unsafe { &(*member_name).value };
-                compiler_error!(self, expr, "Invalid index: {class_name} doesn't have member {member_name} and doesn't have a {accessor_name}")
-            } else {
-                compiler_error!(self, expr, "Invalid index: {class_name} doesn't have a {accessor_name}")
-            };
         }
 
         match op {
             IndexOp::Load => {
-                self.expression(expr)?;
+                self.expression(target)?;
                 self.expression(member_expr_id)?;
-                self.emit(Inst::GetIndex, expr);
+                self.emit(Inst::GetIndex, target);
             },
             IndexOp::Store { rhs, discarded } => {
                 self.expression(&rhs)?;
-                self.expression(expr)?;
+                self.expression(target)?;
                 self.expression(member_expr_id)?;
-                self.emit(Inst::SetIndex, expr);
+                self.emit(Inst::SetIndex, target);
                 if discarded {
-                    self.emit(Inst::Pop, expr);
+                    self.emit(Inst::Pop, target);
                 }
             }
         }
         Ok(())
     }
 
-    fn index_class_member_by_id(&mut self, target_expr: &AstId<Expr>, member_id: u8, op: IndexOp) -> Result<(), anyhow::Error> {
+    fn index_member_by_id(&mut self, target_expr: &AstId<Expr>, member_id: u8, op: IndexOp) -> Result<(), anyhow::Error> {
         match op {
             IndexOp::Load => {
                 self.expression(target_expr)?;
@@ -269,7 +175,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn index_class_member_by_accessor(&mut self, target_expr: &AstId<Expr>, accessor_id: u8, member_expr_id: &AstId<Expr>, op: IndexOp) -> Result<(), anyhow::Error> {
+    fn index_member_by_accessor(&mut self, target_expr: &AstId<Expr>, accessor_id: u8, member_expr_id: &AstId<Expr>, op: IndexOp) -> Result<(), anyhow::Error> {
         self.expression(target_expr)?;
         self.emit(Inst::GetPropertyId(accessor_id), target_expr);
 
@@ -290,23 +196,22 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn call_expression(&mut self, expr: &AstId<Expr>, args: &Vec<AstId<Expr>>) -> Result<(), anyhow::Error> {
-        match self.ast.get(expr) {
+    fn call_expression(&mut self, callee: &AstId<Expr>, args: &Vec<AstId<Expr>>) -> Result<(), anyhow::Error> {
+        match self.ast.get(callee) {
             Expr::Super => {
-                let superclass = self.require_superclass(expr)?;
-                let init = self.gc.preset_identifiers.init;
-                let member_id = unsafe { &*superclass.class }.resolve_id(init).unwrap();
-
-                self.emit(Inst::GetLocal(0), expr);
-                self.emit(Inst::GetPropertyId(member_id), expr);
+                let Member::SuperInit(member_id) = self.bindings.member(callee) else {
+                    unreachable!("super call resolved to a non-init member");
+                };
+                self.emit(Inst::GetLocal(0), callee);
+                self.emit(Inst::GetPropertyId(member_id), callee);
             },
-            _ => { self.expression(expr)? }
+            _ => { self.expression(callee)? }
         };
 
         for arg in args {
             self.expression(arg)?;
         }
-        self.emit(Inst::Call(args.len() as u8), expr);
+        self.emit(Inst::Call(args.len() as u8), callee);
 
         Ok(())
     }

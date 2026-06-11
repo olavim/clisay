@@ -20,10 +20,8 @@ impl ObjectHeader {
 }
 
 /// A tagged pointer to a heap object. Objects are 8-aligned, so the low 3 bits of
-/// the pointer hold a `tag` that lets the hot call path classify callables without
-/// dereferencing the object; non-callables share `TAG_HEADER` and are distinguished
-/// by the header's `ObjectKind`. The tag is purely a hot-path shortcut — every
-/// object also carries its `ObjectKind` in its header.
+/// the pointer can hold a `tag` that lets the hot call path classify callables without
+/// dereferencing the object.
 pub const TAG_HEADER: u8 = 0;
 pub const TAG_CLOSURE: u8 = 3;
 pub const TAG_FUNCTION: u8 = 4;
@@ -396,14 +394,6 @@ impl ObjClass {
         match self.members.get(&name) {
             Some(ClassMember::Method(id)) => self.methods.get(id).copied(),
             _ => None
-        }
-    }
-
-    pub fn resolve_id(&self, name: *mut ObjString) -> Option<MemberId> {
-        match self.members.get(&name) {
-            Some(ClassMember::Field(id)) |
-            Some(ClassMember::Method(id)) => Some(*id),
-            None => None
         }
     }
 

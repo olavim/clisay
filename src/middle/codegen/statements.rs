@@ -1,8 +1,9 @@
 use crate::compiler_error;
 use crate::ast::{AstId, CatchClause, Expr, FieldInit, Stmt};
 use crate::middle::ir::Inst;
+use crate::middle::resolve::FnKind;
 
-use super::{Compiler, FnKind, TryCatchPosition, TryFrame};
+use super::{Compiler, TryCatchPosition, TryFrame};
 
 
 impl<'a> Compiler<'a> {
@@ -18,16 +19,13 @@ impl<'a> Compiler<'a> {
                         self.emit(Inst::PopTry, stmt_id);
                     }
 
-                    // Mark the frame as inside its finally so a `return` within the
-                    // inlined finally doesn't recurse back here, then restore the
-                    // position so sibling returns in the same body still inline it.
                     let idx = self.try_frames.len() - 1;
                     self.try_frames[idx].position = TryCatchPosition::Finally;
                     self.inline_block(&finally)?;
                     self.try_frames[idx].position = pos;
                 }
 
-                if let FnKind::Initializer = self.fn_frames.last().unwrap().kind {
+                if let FnKind::Initializer = *self.fn_kinds.last().unwrap() {
                     if expr.is_some() {
                         compiler_error!(self, stmt_id, "Cannot return a value from a class initializer");
                     }
@@ -60,8 +58,6 @@ impl<'a> Compiler<'a> {
 
                 let Expr::Block(stmts) = self.ast.get(try_body) else { unreachable!() };
                 if !stmts.is_empty() {
-                    // Attribute the try scaffolding (and an uncaught re-throw) to the
-                    // first body statement, matching where the protected code lives.
                     let node_id = &stmts[0];
                     let handler = self.ir.new_label();
                     self.emit(Inst::PushTry(handler), node_id);
@@ -92,12 +88,8 @@ impl<'a> Compiler<'a> {
                 self.try_frames.pop();
             },
             Stmt::Fn(decl) => {
-                let name = self.gc.intern(&decl.name);
-                
-                // The slot was reserved by `hoist_declarations` before any body in this
-                // scope was compiled, which is what lets forward references resolve.
-                let slot = self.resolve_local(name)
-                    .expect("fn declarations are reserved by hoist_declarations before compilation");
+                // The slot was reserved by hoisting so forward references resolve.
+                let slot = self.bindings.slot(stmt_id);
 
                 let const_idx = self.function(stmt_id, decl, FnKind::Function)?;
                 self.emit(Inst::PushClosure(const_idx), stmt_id);
@@ -107,9 +99,8 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::Pop, stmt_id);
             },
             Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
-            Stmt::Say(FieldInit { name, value }) => {
-                let name = self.gc.intern(name);
-                let slot = self.declare_local(name, true, stmt_id)?;
+            Stmt::Say(FieldInit { value, .. }) => {
+                let slot = self.bindings.slot(stmt_id);
 
                 let inst = if let Some(expr) = value {
                     self.expression(expr)?;
@@ -164,61 +155,42 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `body` in its own lexical scope: enter a scope, compile the
-    /// statements (with declaration hoisting), then exit and clean up locals.
     pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<AstId<Stmt>>, node_id: &AstId<T>) -> Result<(), anyhow::Error> {
-        self.enter_scope();
         self.statement_body(body)?;
         self.exit_scope(node_id);
         Ok(())
     }
 
     /// Compiles the statements of an `Expr::Block` body directly into the current
-    /// scope, without opening a new one.
+    /// scope, without its own cleanup.
     fn inline_block(&mut self, body: &AstId<Expr>) -> Result<(), anyhow::Error> {
         let Expr::Block(stmts) = self.ast.get(body) else { unreachable!() };
         self.statement_body(stmts)
     }
 
-    /// Compiles a `catch` clause: marks the enclosing try frame as being in its
-    /// catch, then binds the parameter and body in a single shared scope.
     fn compile_catch(&mut self, catch: &CatchClause) -> Result<(), anyhow::Error> {
         let idx = self.try_frames.len() - 1;
         self.try_frames[idx].position = TryCatchPosition::Catch;
 
-        self.enter_scope();
-        if let Some(param) = &catch.param {
-            let Expr::Identifier(name) = self.ast.get(param) else { unreachable!() };
-            let name = self.gc.intern(name);
-            self.declare_local(name, false, param)?;
-        }
         self.inline_block(&catch.body)?;
         self.exit_scope(&catch.body);
         Ok(())
     }
 
-    /// Compiles a `finally` block (scoped, value discarded), marking the enclosing
-    /// try frame as being inside its finally so a nested return/throw won't re-run it.
     fn compile_finally(&mut self, finally: &AstId<Expr>) -> Result<(), anyhow::Error> {
         let idx = self.try_frames.len() - 1;
         self.try_frames[idx].position = TryCatchPosition::Finally;
         self.expression_stmt(finally)
     }
 
-    /// Reserve a local slot for every `fn`/`class` declared directly in `body`
-    /// before any statement is compiled, so a declaration can be referenced before
-    /// it appears in source (e.g. mutual recursion). A `PUSH_NULL` placeholder holds
-    /// the slot until the declaration is compiled into it.
-    pub (super) fn hoist_declarations(&mut self, body: &Vec<AstId<Stmt>>) -> Result<(), anyhow::Error> {
+    /// Emit a `PUSH_NULL` placeholder for every `fn`/`class` declared directly in
+    /// `body`, holding its (resolver-assigned) slot until the declaration is
+    /// compiled into it - which is what lets forward references resolve.
+    fn hoist_declarations(&mut self, body: &Vec<AstId<Stmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
-            let name = match self.ast.get(stmt_id) {
-                Stmt::Fn(decl) => decl.name.clone(),
-                Stmt::Class(decl) => decl.name.clone(),
-                _ => continue
-            };
-            let name = self.gc.intern(&name);
-            self.declare_local(name, false, stmt_id)?;
-            self.emit(Inst::PushNull, stmt_id);
+            if matches!(self.ast.get(stmt_id), Stmt::Fn(_) | Stmt::Class(_)) {
+                self.emit(Inst::PushNull, stmt_id);
+            }
         }
         Ok(())
     }
