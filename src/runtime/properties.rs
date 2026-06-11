@@ -75,7 +75,7 @@ impl Vm {
             return Ok(());
         }
 
-        let getter = native_class.resolve_method(self.gc.preset_identifiers.get).unwrap();
+        let getter = native_class.getter().unwrap();
         self.stack.push(target);
         self.stack.push(prop);
         return self.call_native(1, getter.as_native_function_ptr());
@@ -83,7 +83,7 @@ impl Vm {
 
     fn set_native_type_index(&mut self, native_class_ptr: *mut ObjClass, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let native_class = unsafe { &*native_class_ptr };
-        let setter = native_class.resolve_method(self.gc.preset_identifiers.set).unwrap();
+        let setter = native_class.setter().unwrap();
         let value = self.stack.pop();
         self.stack.push(target);
         self.stack.push(prop);
@@ -103,7 +103,7 @@ impl Vm {
 
         let class = unsafe { &*(*instance_ref).class };
 
-        if let Some(getter) = class.resolve_method(self.gc.preset_identifiers.get) {
+        if let Some(getter) = class.getter() {
             self.stack.push(target);
             self.stack.push(prop);
 
@@ -148,7 +148,7 @@ impl Vm {
             }
         }
 
-        if let Some(setter) = class.resolve_method(self.gc.preset_identifiers.set) {
+        if let Some(setter) = class.setter() {
             let value = self.stack.pop();
             self.stack.push(target);
             self.stack.push(prop);

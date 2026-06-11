@@ -19,19 +19,13 @@ impl<'a> Compiler<'a> {
             let name = self.gc.intern(self.ast.text(sym));
             class.members.insert(name, member);
         }
-        // The accessor/initializer convention is a runtime detail: expose them
-        // under the `@get`/`@set`/`@init` names the VM dispatches on.
-        if let Some(id) = layout.getter_id {
-            class.members.insert(self.gc.preset_identifiers.get, ClassMember::Method(id));
-        }
-        if let Some(id) = layout.setter_id {
-            class.members.insert(self.gc.preset_identifiers.set, ClassMember::Method(id));
-        }
-        class.members.insert(self.gc.preset_identifiers.init, ClassMember::Method(layout.init_id));
         for &field_id in &layout.fields {
             class.fields.insert(field_id);
         }
         class.member_count = layout.member_count;
+        class.getter_id = layout.getter_id;
+        class.setter_id = layout.setter_id;
+        class.init_id = Some(layout.init_id);
 
         // Inherit the superclass's compiled methods.
         if let Some(super_sym) = superclass {
@@ -40,19 +34,17 @@ impl<'a> Compiler<'a> {
             class.methods = unsafe { &*super_class }.methods.clone();
         }
 
+        // Compile the accessor/initializer/method bodies into their slots.
         if let Some(stmt_id) = &decl.getter {
-            let getter = self.gc.preset_identifiers.get;
-            self.install_method(&mut class, stmt_id, getter)?;
+            let ptr = self.compile_fn(stmt_id, FnKind::Method)?;
+            class.methods.insert(class.getter_id.unwrap(), ptr.into());
         }
         if let Some(stmt_id) = &decl.setter {
-            let setter = self.gc.preset_identifiers.set;
-            self.install_method(&mut class, stmt_id, setter)?;
+            let ptr = self.compile_fn(stmt_id, FnKind::Method)?;
+            class.methods.insert(class.setter_id.unwrap(), ptr.into());
         }
-
         let init_ptr = self.compile_fn(&decl.init, FnKind::Initializer)?;
-        let init = self.gc.preset_identifiers.init;
-        let ClassMember::Method(init_id) = class.resolve(init).unwrap() else { unreachable!() };
-        class.methods.insert(init_id, init_ptr.into());
+        class.methods.insert(class.init_id.unwrap(), init_ptr.into());
 
         for stmt_id in &decl.methods {
             let name = self.gc.intern(self.ast.text(self.fn_decl(stmt_id).name));

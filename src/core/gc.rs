@@ -38,22 +38,6 @@ impl GcTraceable for String {
     }
 }
 
-pub struct PresetIdentifiers {
-    pub init: *mut ObjString,
-    pub get: *mut ObjString,
-    pub set: *mut ObjString
-}
-
-impl Default for PresetIdentifiers {
-    fn default() -> Self {
-        PresetIdentifiers {
-            init: std::ptr::null_mut(),
-            get: std::ptr::null_mut(),
-            set: std::ptr::null_mut()
-        }
-    }
-}
-
 pub struct Gc {
     refs: Vec<Object>,
     strings: FnvHashMap<String, *mut ObjString>,
@@ -64,27 +48,20 @@ pub struct Gc {
     pub bytes_allocated: usize,
     next_gc: usize,
     /// When true, GC runs on every allocation.
-    pub stress: bool,
-    pub preset_identifiers: PresetIdentifiers
+    pub stress: bool
 }
 
 impl Gc {
     pub fn new() -> Gc {
-        let mut gc = Gc {
+        Gc {
             refs: Vec::new(),
             strings: FnvHashMap::default(),
             reachable_refs: Vec::new(),
             free_lists: FnvHashMap::default(),
             bytes_allocated: 0,
             next_gc: 1024 * 1024,
-            stress: false,
-            preset_identifiers: PresetIdentifiers::default()
-        };
-
-        gc.preset_identifiers.init = gc.intern("@init");
-        gc.preset_identifiers.get = gc.intern("@get");
-        gc.preset_identifiers.set = gc.intern("@set");
-        gc
+            stress: false
+        }
     }
 
     pub fn alloc<T: GcTraceable>(&mut self, obj: T) -> *mut T
@@ -170,16 +147,9 @@ impl Gc {
     }
 
     pub fn collect(&mut self) {
-        self.mark_presets();
         self.mark_reachable();
         self.sweep_strings();
         self.sweep_objects();
-    }
-
-    fn mark_presets(&mut self) {
-        self.mark_object(self.preset_identifiers.init);
-        self.mark_object(self.preset_identifiers.get);
-        self.mark_object(self.preset_identifiers.set);
     }
 
     fn mark_reachable(&mut self) {

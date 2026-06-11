@@ -368,10 +368,16 @@ pub enum ClassMember {
 pub struct ObjClass {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
+    /// Field and regular-method names. The accessors/initializer are *not* here;
+    /// they're addressed structurally via the id fields below.
     pub members: FnvHashMap<*mut ObjString, ClassMember>,
     pub fields: IntSet<MemberId>,
     pub methods: IntMap<MemberId, Object>,
-    pub member_count: u8
+    pub member_count: u8,
+    pub getter_id: Option<MemberId>,
+    pub setter_id: Option<MemberId>,
+    /// `None` for native classes, which have no initializer.
+    pub init_id: Option<MemberId>
 }
 
 impl ObjClass {
@@ -382,7 +388,10 @@ impl ObjClass {
             members: FnvHashMap::default(),
             fields: IntSet::default(),
             methods: IntMap::default(),
-            member_count: 0
+            member_count: 0,
+            getter_id: None,
+            setter_id: None,
+            init_id: None
         }
     }
 
@@ -399,6 +408,18 @@ impl ObjClass {
 
     pub fn get_method(&self, id: MemberId) -> Object {
         self.methods[&id]
+    }
+
+    pub fn getter(&self) -> Option<Object> {
+        self.getter_id.map(|id| self.methods[&id])
+    }
+
+    pub fn setter(&self) -> Option<Object> {
+        self.setter_id.map(|id| self.methods[&id])
+    }
+
+    pub fn initializer(&self) -> Option<Object> {
+        self.init_id.map(|id| self.methods[&id])
     }
 }
 
