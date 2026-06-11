@@ -26,7 +26,7 @@ impl Operand {
 }
 
 macro_rules! opcodes {
-    ( $( $name:ident $( ( $( $operand:ident ),* ) )? ),+ $(,)? ) => {
+    ( $( $inst:ident => $name:ident $( ( $( $operand:ident ),* ) )? ),+ $(,)? ) => {
         opcodes!(@consts 0u8 ; $( $name ),+ );
 
         /// The opcode's identifier, used as its disassembly mnemonic.
@@ -44,6 +44,12 @@ macro_rules! opcodes {
                 _ => &[]
             }
         }
+
+        pub fn opcode_of(inst: &crate::middle::ir::Inst) -> OpCode {
+            match inst {
+                $( crate::middle::ir::Inst::$inst { .. } => $name, )+
+            }
+        }
     };
 
     (@consts $idx:expr ; $name:ident $(, $rest:ident )* ) => {
@@ -54,75 +60,74 @@ macro_rules! opcodes {
 }
 
 opcodes! {
-    CALL(Byte),
-    JUMP(Jump),
-    JUMP_IF_FALSE(Jump),
-    JUMP_IF_GE(Jump),
-    JUMP_IF_GT(Jump),
-    JUMP_IF_LE(Jump),
-    JUMP_IF_LT(Jump),
-    JUMP_IF_EQ(Jump),
-    JUMP_IF_NEQ(Jump),
-    JUMP_IF_GE_LOCAL_CONST(Jump, Local, Const),
-    JUMP_IF_GT_LOCAL_CONST(Jump, Local, Const),
-    JUMP_IF_LE_LOCAL_CONST(Jump, Local, Const),
-    JUMP_IF_LT_LOCAL_CONST(Jump, Local, Const),
-    CLOSE_UPVALUE(Byte),
-    ARRAY(Byte),
-    RETURN,
-    THROW,
-    PUSH_TRY(Jump),
-    POP_TRY,
+    Call => CALL(Byte),
+    Jump => JUMP(Jump),
+    JumpIfFalse => JUMP_IF_FALSE(Jump),
+    JumpIfGe => JUMP_IF_GE(Jump),
+    JumpIfGt => JUMP_IF_GT(Jump),
+    JumpIfLe => JUMP_IF_LE(Jump),
+    JumpIfLt => JUMP_IF_LT(Jump),
+    JumpIfEq => JUMP_IF_EQ(Jump),
+    JumpIfNeq => JUMP_IF_NEQ(Jump),
+    JumpIfGeLocalConst => JUMP_IF_GE_LOCAL_CONST(Jump, Local, Const),
+    JumpIfGtLocalConst => JUMP_IF_GT_LOCAL_CONST(Jump, Local, Const),
+    JumpIfLeLocalConst => JUMP_IF_LE_LOCAL_CONST(Jump, Local, Const),
+    JumpIfLtLocalConst => JUMP_IF_LT_LOCAL_CONST(Jump, Local, Const),
+    CloseUpvalue => CLOSE_UPVALUE(Byte),
+    Array => ARRAY(Byte),
+    Return => RETURN,
+    Throw => THROW,
+    PushTry => PUSH_TRY(Jump),
+    PopTry => POP_TRY,
 
     // Explicit stack manipulation
-    POP,
-    PUSH_CONSTANT(Const),
-    PUSH_NULL,
-    PUSH_TRUE,
-    PUSH_FALSE,
-    PUSH_CLOSURE(Const),
-    PUSH_CLASS(Const),
+    Pop => POP,
+    PushConstant => PUSH_CONSTANT(Const),
+    PushNull => PUSH_NULL,
+    PushTrue => PUSH_TRUE,
+    PushFalse => PUSH_FALSE,
+    PushClosure => PUSH_CLOSURE(Const),
+    PushClass => PUSH_CLASS(Const),
 
     // Gets/sets
-    GET_GLOBAL(Const),
-    SET_GLOBAL(Const),
-    GET_LOCAL(Local),
-    SET_LOCAL(Local),
-    SET_LOCAL_POP(Local),
-    SET_LOCAL_ADD_LOCAL_LOCAL(Local, Local, Local),
-    GET_UPVALUE(Byte),
-    SET_UPVALUE(Byte),
-    SET_UPVALUE_POP(Byte),
-    GET_INDEX,
-    SET_INDEX,
-    GET_PROPERTY_ID(Byte),
-    SET_PROPERTY_ID(Byte),
-    SET_PROPERTY_ID_POP(Byte),
+    GetGlobal => GET_GLOBAL(Const),
+    SetGlobal => SET_GLOBAL(Const),
+    GetLocal => GET_LOCAL(Local),
+    SetLocal => SET_LOCAL(Local),
+    SetLocalPop => SET_LOCAL_POP(Local),
+    SetLocalAddLocalLocal => SET_LOCAL_ADD_LOCAL_LOCAL(Local, Local, Local),
+    GetUpvalue => GET_UPVALUE(Byte),
+    SetUpvalue => SET_UPVALUE(Byte),
+    SetUpvaluePop => SET_UPVALUE_POP(Byte),
+    GetIndex => GET_INDEX,
+    SetIndex => SET_INDEX,
+    GetPropertyId => GET_PROPERTY_ID(Byte),
+    SetPropertyId => SET_PROPERTY_ID(Byte),
+    SetPropertyIdPop => SET_PROPERTY_ID_POP(Byte),
 
     // Arithmetic
-    ADD,
-    ADD_LOCAL_CONST(Local, Const),
-    SUBTRACT,
-    SUB_LOCAL_CONST(Local, Const),
-    SUB_CONST_LOCAL(Const, Local),
-    MULTIPLY,
-    DIVIDE,
-    NEGATE,
-    LEFT_SHIFT,
-    RIGHT_SHIFT,
-    BIT_AND,
-    BIT_OR,
-    BIT_XOR,
-    BIT_NOT,
+    Add => ADD,
+    AddLocalConst => ADD_LOCAL_CONST(Local, Const),
+    Subtract => SUBTRACT,
+    SubLocalConst => SUB_LOCAL_CONST(Local, Const),
+    SubConstLocal => SUB_CONST_LOCAL(Const, Local),
+    Multiply => MULTIPLY,
+    Divide => DIVIDE,
+    Negate => NEGATE,
+    LeftShift => LEFT_SHIFT,
+    RightShift => RIGHT_SHIFT,
+    BitAnd => BIT_AND,
+    BitOr => BIT_OR,
+    BitXor => BIT_XOR,
+    BitNot => BIT_NOT,
 
     // Logical
-    EQUAL,
-    NOT_EQUAL,
-    LESS_THAN,
-    LESS_THAN_EQUAL,
-    GREATER_THAN,
-    GREATER_THAN_EQUAL,
-    NOT,
-    AND,
-    OR,
+    Equal => EQUAL,
+    NotEqual => NOT_EQUAL,
+    LessThan => LESS_THAN,
+    LessThanEqual => LESS_THAN_EQUAL,
+    GreaterThan => GREATER_THAN,
+    GreaterThanEqual => GREATER_THAN_EQUAL,
+    And => AND,
+    Or => OR,
 }
