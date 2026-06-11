@@ -392,14 +392,6 @@ impl ObjClass {
         }
     }
 
-    pub fn resolve_id(&self, name: *mut ObjString) -> Option<MemberId> {
-        match self.members.get(&name) {
-            Some(ClassMember::Field(id)) |
-            Some(ClassMember::Method(id)) => Some(*id),
-            None => None
-        }
-    }
-
     pub fn get_method(&self, id: MemberId) -> Object {
         self.methods[&id]
     }
