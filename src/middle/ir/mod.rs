@@ -2,7 +2,6 @@
 
 use anyhow::bail;
 
-use crate::ast::Operator;
 use crate::core::objects::ObjFn;
 use crate::core::value::Value;
 use crate::frontend::lex::SourcePosition;
@@ -86,33 +85,6 @@ pub enum Inst {
     Or,
 }
 
-impl Inst {
-    pub fn from_operator(op: &Operator) -> Inst {
-        match op {
-            Operator::Add => Inst::Add,
-            Operator::Subtract => Inst::Subtract,
-            Operator::Multiply => Inst::Multiply,
-            Operator::Divide => Inst::Divide,
-            Operator::LeftShift => Inst::LeftShift,
-            Operator::RightShift => Inst::RightShift,
-            Operator::LessThan => Inst::LessThan,
-            Operator::LessThanEqual => Inst::LessThanEqual,
-            Operator::GreaterThan => Inst::GreaterThan,
-            Operator::GreaterThanEqual => Inst::GreaterThanEqual,
-            Operator::LogicalEqual => Inst::Equal,
-            Operator::LogicalNotEqual => Inst::NotEqual,
-            Operator::LogicalAnd => Inst::And,
-            Operator::LogicalOr => Inst::Or,
-            Operator::BitAnd => Inst::BitAnd,
-            Operator::BitOr => Inst::BitOr,
-            Operator::BitXor => Inst::BitXor,
-            Operator::BitNot => Inst::BitNot,
-            Operator::Negate => Inst::Negate,
-            _ => unreachable!("Invalid operator")
-        }
-    }
-}
-
 pub struct Ir {
     code: Vec<Inst>,
     positions: Vec<SourcePosition>,
@@ -178,7 +150,6 @@ impl Ir {
         &self.constants
     }
 
-    /// The instruction index `label` is bound to.
     pub fn label_target(&self, label: Label) -> usize {
         let target = self.labels[label.0].expect("label was never bound");
         debug_assert!(target < self.code.len(), "jump target past end of instruction stream");

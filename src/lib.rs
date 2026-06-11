@@ -27,6 +27,7 @@ use crate::core::gc::Gc;
 use crate::frontend::lex::{tokenize, TokenStream};
 use crate::frontend::parse::Parser;
 use crate::middle::codegen::Compiler;
+use crate::middle::lower::lower;
 use crate::middle::optimize::optimize;
 use crate::middle::resolve::resolve;
 
@@ -34,8 +35,9 @@ pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
     let mut gc = Gc::new();
     let tokens = tokenize(String::from(file_name), String::from(src))?;
     let ast = Parser::parse(&mut TokenStream::new(&tokens))?;
-    let bindings = resolve(&ast)?;
-    let ir = Compiler::compile(&ast, &mut gc, &bindings)?;
+    let hir = lower(ast)?;
+    let bindings = resolve(&hir)?;
+    let ir = Compiler::compile(&hir, &mut gc, &bindings)?;
     let ir = optimize(ir);
     let chunk = assemble(ir)?;
     runtime::execute(chunk, gc)

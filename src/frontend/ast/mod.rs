@@ -10,8 +10,19 @@ pub use operator::Operator;
 
 use crate::frontend::lex::SourcePosition;
 
+/// An interned identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol(u32);
+
+impl Symbol {
+    pub(crate) fn from_raw(id: u32) -> Symbol {
+        Symbol(id)
+    }
+
+    pub fn index(&self) -> usize {
+        self.0 as usize
+    }
+}
 
 pub enum Literal {
     Null,
@@ -36,21 +47,11 @@ impl fmt::Display for Literal {
 }
 
 pub enum Expr {
-    /// A block body (function/method/lambda/program)
     Block(Vec<AstId<Stmt>>),
-
-    /// A unary expression: Unary(operator, operand)
     Unary(Operator, AstId<Expr>),
-
-    /// A binary expression: Binary(operator, left, right)
     Binary(Operator, AstId<Expr>, AstId<Expr>),
-
-    /// A function call: Call(callee, arguments)
     Call(AstId<Expr>, Vec<AstId<Expr>>),
-
-    /// An index expression: Index(target, index)
     Index(AstId<Expr>, AstId<Expr>),
-
     Literal(Literal),
     Identifier(Symbol),
     This,
@@ -68,6 +69,7 @@ pub struct FnDecl {
     pub body: AstId<Expr>
 }
 
+/// A `catch (param) { ... }` clause of a try statement.
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
     pub body: AstId<Expr>
@@ -76,10 +78,13 @@ pub struct CatchClause {
 pub struct ClassDecl {
     pub name: Symbol,
     pub superclass: Option<Symbol>,
-    pub init: AstId<Stmt>,
+    pub init_name: Symbol,
+    pub init: Option<AstId<Stmt>>,
     pub getter: Option<AstId<Stmt>>,
     pub setter: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
+    /// Field initializers (`field = value`), spliced into the init during lowering.
+    pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>
 }
 
@@ -92,6 +97,7 @@ pub enum Stmt {
     While(AstId<Expr>, AstId<Expr>),
     /// An if statement: If(condition, then block, else body).
     If(AstId<Expr>, AstId<Expr>, Option<AstId<Stmt>>),
+    /// A bare `{ ... }` statement block (wraps an `Expr::Block`).
     Block(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
@@ -106,7 +112,6 @@ pub enum NodeKind {
 pub trait AstNode: Sized {
     fn wrap(self) -> NodeKind;
     fn unwrap(node: &NodeKind) -> &Self;
-    fn unwrap_mut(node: &mut NodeKind) -> &mut Self;
 }
 
 impl AstNode for Expr {
@@ -114,17 +119,11 @@ impl AstNode for Expr {
     fn unwrap(node: &NodeKind) -> &Expr {
         match node { NodeKind::Expr(expr) => expr, _ => unreachable!() }
     }
-    fn unwrap_mut(node: &mut NodeKind) -> &mut Expr {
-        match node { NodeKind::Expr(expr) => expr, _ => unreachable!() }
-    }
 }
 
 impl AstNode for Stmt {
     fn wrap(self) -> NodeKind { NodeKind::Stmt(self) }
     fn unwrap(node: &NodeKind) -> &Stmt {
-        match node { NodeKind::Stmt(stmt) => stmt, _ => unreachable!() }
-    }
-    fn unwrap_mut(node: &mut NodeKind) -> &mut Stmt {
         match node { NodeKind::Stmt(stmt) => stmt, _ => unreachable!() }
     }
 }
@@ -137,13 +136,6 @@ pub struct Node {
 pub struct AstId<T> {
     id: usize,
     _marker: PhantomData<T>
-}
-
-impl<T> AstId<T> {
-    /// The node's index in the AST.
-    pub fn index(&self) -> usize {
-        self.id
-    }
 }
 
 impl<T> Copy for AstId<T> {}
@@ -187,7 +179,6 @@ impl AstId<Expr> {
 
 pub struct Ast {
     nodes: Vec<Node>,
-    /// Identifier interning
     ident_ids: HashMap<String, u32>,
     ident_texts: Vec<String>,
 }
@@ -211,20 +202,13 @@ impl Ast {
         Symbol(id)
     }
 
-    pub fn text(&self, symbol: Symbol) -> &str {
-        &self.ident_texts[symbol.0 as usize]
-    }
-
-    pub fn symbol_of(&self, text: &str) -> Option<Symbol> {
-        self.ident_ids.get(text).copied().map(Symbol)
+    /// Removes the identifier interning tables, leaving them empty.
+    pub(crate) fn take_idents(&mut self) -> (HashMap<String, u32>, Vec<String>) {
+        (std::mem::take(&mut self.ident_ids), std::mem::take(&mut self.ident_texts))
     }
 
     pub fn get<T: AstNode>(&self, id: &AstId<T>) -> &T {
         T::unwrap(&self.nodes[id.id].kind)
-    }
-
-    pub fn get_mut<T: AstNode>(&mut self, id: &AstId<T>) -> &mut T {
-        T::unwrap_mut(&mut self.nodes[id.id].kind)
     }
 
     pub fn pos<T>(&self, id: &AstId<T>) -> &SourcePosition {

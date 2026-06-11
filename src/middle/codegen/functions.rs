@@ -1,13 +1,13 @@
-use crate::ast::{AstId, Expr, FnDecl};
 use crate::core::objects::ObjFn;
 use crate::core::value::Value;
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId};
 use crate::middle::ir::Inst;
 use crate::middle::resolve::FnKind;
 
 use super::Compiler;
 
 impl<'a> Compiler<'a> {
-    pub (super) fn function<T: 'static>(&mut self, node_id: &AstId<T>, decl: &FnDecl, kind: FnKind) -> Result<u8, anyhow::Error> {
+    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, decl: &HirFnDecl, kind: FnKind) -> Result<u8, anyhow::Error> {
         self.fn_kinds.push(kind);
 
         // Add a jump over the function's body after declaration.
@@ -24,7 +24,7 @@ impl<'a> Compiler<'a> {
 
         self.fn_kinds.pop();
 
-        let name = self.gc.intern(self.ast.text(decl.name));
+        let name = self.gc.intern(self.hir.text(decl.name));
         let arity = decl.params.len() as u8;
         let upvalues = self.bindings.upvalues(&decl.body).to_vec();
         let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues));
@@ -33,8 +33,8 @@ impl<'a> Compiler<'a> {
         self.ir.add_constant(Value::from(func))
     }
 
-    fn exit_function(&mut self, body_id: &AstId<Expr>, kind: FnKind) {
-        if matches!(self.ast.get(body_id), Expr::Block(_)) {
+    fn exit_function(&mut self, body_id: &HirId<HirExpr>, kind: FnKind) {
+        if matches!(self.hir.get(body_id), HirExpr::Block(_)) {
             if !matches!(self.ir.code().last(), Some(Inst::Return)) {
                 if let FnKind::Initializer = kind {
                     self.emit(Inst::GetLocal(0), body_id);
