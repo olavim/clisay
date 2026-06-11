@@ -1,4 +1,4 @@
-//! Name resolution. A single lexical walk of the AST that decides what every
+//! Name resolution. A single lexical walk of the HIR that decides what every
 //! identifier binds to. Produces a [`Bindings`] table that `codegen` consumes.
 
 use std::collections::HashMap;
@@ -8,8 +8,10 @@ use anyhow::bail;
 use fnv::FnvHashMap;
 
 use crate::compiler_error;
-use crate::ast::{Ast, AstId, ClassDecl, Expr, FnDecl, Literal, Operator, Stmt, Symbol};
 use crate::core::objects::{ClassMember, UpvalueLocation};
+use crate::middle::hir::{
+    Hir, HirClassDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol,
+};
 
 /// Where a bare identifier binds.
 #[derive(Clone, Copy)]
@@ -82,41 +84,41 @@ impl ClassLayout {
 /// The output of resolution: per-node binding decisions consumed by codegen.
 pub struct Bindings {
     /// Identifier uses and assignment targets => their binding.
-    places: HashMap<AstId<Expr>, Place>,
+    places: HashMap<HirId<HirExpr>, Place>,
     /// `this`/`super` member accesses => their resolution.
-    members: HashMap<AstId<Expr>, Member>,
+    members: HashMap<HirId<HirExpr>, Member>,
     /// `say`/`fn`/`class` statements => the local slot they occupy.
-    slots: HashMap<AstId<Stmt>, u8>,
+    slots: HashMap<HirId<HirStmt>, u8>,
     /// Function bodies => the captured upvalues of that function.
-    upvalues: HashMap<AstId<Expr>, Vec<UpvalueLocation>>,
+    upvalues: HashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
     /// Class declarations => their member layout.
-    classes: HashMap<AstId<Stmt>, ClassLayout>,
-    /// Scope nodes (by AST node index) => locals to clean up on exit.
+    classes: HashMap<HirId<HirStmt>, ClassLayout>,
+    /// Scope nodes (by HIR node index) => locals to clean up on exit.
     cleanups: HashMap<usize, Vec<Cleanup>>,
 }
 
 impl Bindings {
-    pub fn place(&self, id: &AstId<Expr>) -> Place {
+    pub fn place(&self, id: &HirId<HirExpr>) -> Place {
         self.places[id]
     }
 
-    pub fn member(&self, id: &AstId<Expr>) -> Member {
+    pub fn member(&self, id: &HirId<HirExpr>) -> Member {
         self.members[id]
     }
 
-    pub fn slot(&self, id: &AstId<Stmt>) -> u8 {
+    pub fn slot(&self, id: &HirId<HirStmt>) -> u8 {
         self.slots[id]
     }
 
-    pub fn upvalues(&self, body: &AstId<Expr>) -> &[UpvalueLocation] {
+    pub fn upvalues(&self, body: &HirId<HirExpr>) -> &[UpvalueLocation] {
         &self.upvalues[body]
     }
 
-    pub fn class_layout(&self, id: &AstId<Stmt>) -> &ClassLayout {
+    pub fn class_layout(&self, id: &HirId<HirStmt>) -> &ClassLayout {
         &self.classes[id]
     }
 
-    pub fn cleanup<T>(&self, scope: &AstId<T>) -> &[Cleanup] {
+    pub fn cleanup<T>(&self, scope: &HirId<T>) -> &[Cleanup] {
         self.cleanups.get(&scope.index()).map_or(&[], Vec::as_slice)
     }
 }
@@ -134,7 +136,7 @@ struct FnFrame {
     upvalues: Vec<UpvalueLocation>,
     local_offset: u8,
     class_frame: Option<u8>,
-    body: AstId<Expr>,
+    body: HirId<HirExpr>,
 }
 
 struct ClassFrame {
@@ -143,7 +145,7 @@ struct ClassFrame {
 }
 
 pub struct Resolver<'a> {
-    ast: &'a Ast,
+    hir: &'a Hir,
     bindings: Bindings,
     locals: Vec<Local>,
     scope_depth: u8,
@@ -152,9 +154,9 @@ pub struct Resolver<'a> {
     classes: FnvHashMap<Symbol, ClassLayout>,
 }
 
-pub fn resolve(ast: &Ast) -> Result<Bindings, anyhow::Error> {
+pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
     let mut resolver = Resolver {
-        ast,
+        hir,
         bindings: Bindings {
             places: HashMap::new(),
             members: HashMap::new(),
@@ -170,14 +172,14 @@ pub fn resolve(ast: &Ast) -> Result<Bindings, anyhow::Error> {
         classes: FnvHashMap::default(),
     };
 
-    let root = resolver.ast.get_root();
+    let root = resolver.hir.get_root();
     resolver.statement(&root)?;
     Ok(resolver.bindings)
 }
 
 impl<'a> Resolver<'a> {
-    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &AstId<T>) -> anyhow::Error {
-        let pos = self.ast.pos(node_id);
+    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &HirId<T>) -> anyhow::Error {
+        let pos = self.hir.pos(node_id);
         anyhow!("{}\n\tat {}", msg.into(), pos)
     }
 
@@ -185,7 +187,7 @@ impl<'a> Resolver<'a> {
         self.scope_depth += 1;
     }
 
-    fn exit_scope<T: 'static>(&mut self, node_id: &AstId<T>) {
+    fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
         self.scope_depth -= 1;
         let mut cleanups = Vec::new();
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
@@ -201,13 +203,13 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn declare_local<T: 'static>(&mut self, name: Symbol, is_mutable: bool, node_id: &AstId<T>) -> Result<u8, anyhow::Error> {
+    fn declare_local<T: 'static>(&mut self, name: Symbol, is_mutable: bool, node_id: &HirId<T>) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
         }
 
         if self.locals.iter().rev().any(|local| local.depth == self.scope_depth && local.name == Some(name)) {
-            compiler_error!(self, node_id, "Variable '{}' already declared in this scope", self.ast.text(name));
+            compiler_error!(self, node_id, "Variable '{}' already declared in this scope", self.hir.text(name));
         }
 
         self.locals.push(Local { name: Some(name), depth: self.scope_depth, is_mutable, is_captured: false });
@@ -303,24 +305,24 @@ impl<'a> Resolver<'a> {
         Ok(place)
     }
 
-    fn statement(&mut self, stmt_id: &AstId<Stmt>) -> Result<(), anyhow::Error> {
-        match self.ast.get(stmt_id) {
-            Stmt::Return(expr) => {
+    fn statement(&mut self, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
+        match self.hir.get(stmt_id) {
+            HirStmt::Return(expr) => {
                 if let Some(expr) = expr {
                     self.expression(expr)?;
                 }
             },
-            Stmt::Throw(expr) => self.expression(expr)?,
-            Stmt::Try(try_body, catch, finally) => {
+            HirStmt::Throw(expr) => self.expression(expr)?,
+            HirStmt::Try(try_body, catch, finally) => {
                 self.expression(try_body)?;
                 if let Some(catch) = catch {
                     self.enter_scope();
                     if let Some(param) = &catch.param {
-                        let Expr::Identifier(name) = self.ast.get(param) else { unreachable!() };
+                        let HirExpr::Identifier(name) = self.hir.get(param) else { unreachable!() };
                         self.declare_local(*name, false, param)?;
                     }
-                    // catch body is an Expr::Block compiled inline (no extra scope).
-                    let Expr::Block(stmts) = self.ast.get(&catch.body) else { unreachable!() };
+                    // catch body is a HirExpr::Block compiled inline (no extra scope).
+                    let HirExpr::Block(stmts) = self.hir.get(&catch.body) else { unreachable!() };
                     self.statement_body(stmts)?;
                     self.exit_scope(&catch.body);
                 }
@@ -328,39 +330,39 @@ impl<'a> Resolver<'a> {
                     self.expression(finally)?;
                 }
             },
-            Stmt::Fn(decl) => {
+            HirStmt::Fn(decl) => {
                 let name = decl.name;
                 let slot = self.resolve_local(name)
                     .expect("fn declarations are reserved by hoisting");
                 self.bindings.slots.insert(*stmt_id, slot);
                 self.function(decl, FnKind::Function)?;
             },
-            Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
-            Stmt::Say(field) => {
+            HirStmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
+            HirStmt::Say(field) => {
                 let slot = self.declare_local(field.name, true, stmt_id)?;
                 self.bindings.slots.insert(*stmt_id, slot);
                 if let Some(expr) = &field.value {
                     self.expression(expr)?;
                 }
             },
-            Stmt::Expression(expr) => self.expression(expr)?,
-            Stmt::While(cond, body) => {
+            HirStmt::Expression(expr) => self.expression(expr)?,
+            HirStmt::While(cond, body) => {
                 self.expression(cond)?;
                 self.expression(body)?;
             },
-            Stmt::If(cond, then, otherwise) => {
+            HirStmt::If(cond, then, otherwise) => {
                 self.expression(cond)?;
                 self.expression(then)?;
                 if let Some(otherwise) = otherwise {
                     self.statement(otherwise)?;
                 }
             },
-            Stmt::Block(body) => self.expression(body)?,
+            HirStmt::Block(body) => self.expression(body)?,
         };
         Ok(())
     }
 
-    fn statement_body(&mut self, body: &Vec<AstId<Stmt>>) -> Result<(), anyhow::Error> {
+    fn statement_body(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         self.hoist_declarations(body)?;
         for stmt_id in body {
             self.statement(stmt_id)?;
@@ -368,18 +370,18 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn scoped_body<T: 'static>(&mut self, body: &Vec<AstId<Stmt>>, node_id: &AstId<T>) -> Result<(), anyhow::Error> {
+    fn scoped_body<T: 'static>(&mut self, body: &Vec<HirId<HirStmt>>, node_id: &HirId<T>) -> Result<(), anyhow::Error> {
         self.enter_scope();
         self.statement_body(body)?;
         self.exit_scope(node_id);
         Ok(())
     }
 
-    fn hoist_declarations(&mut self, body: &Vec<AstId<Stmt>>) -> Result<(), anyhow::Error> {
+    fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
-            let name = match self.ast.get(stmt_id) {
-                Stmt::Fn(decl) => decl.name,
-                Stmt::Class(decl) => decl.name,
+            let name = match self.hir.get(stmt_id) {
+                HirStmt::Fn(decl) => decl.name,
+                HirStmt::Class(decl) => decl.name,
                 _ => continue,
             };
             self.declare_local(name, false, stmt_id)?;
@@ -387,46 +389,35 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn expression(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        match self.ast.get(expr) {
-            Expr::Block(stmts) => self.scoped_body(stmts, expr)?,
-            Expr::Unary(_, operand) => self.expression(operand)?,
-            Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
-            Expr::Call(callee, args) => self.call_expression(callee, args)?,
-            Expr::Index(target, member) => self.index(target, member)?,
-            Expr::Literal(lit) => self.literal(lit)?,
-            Expr::Identifier(name) => {
+    fn expression(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match self.hir.get(expr) {
+            HirExpr::Block(stmts) => self.scoped_body(stmts, expr)?,
+            HirExpr::Unary(_, operand) => self.expression(operand)?,
+            HirExpr::Binary(_, left, right) => {
+                self.expression(left)?;
+                self.expression(right)?;
+            },
+            HirExpr::Assign(left, right) => self.assign(left, right)?,
+            HirExpr::Call(callee, args) => self.call_expression(callee, args)?,
+            HirExpr::Index(target, member) => self.index(target, member)?,
+            HirExpr::Literal(lit) => self.literal(lit)?,
+            HirExpr::Identifier(name) => {
                 let place = self.resolve_place(*name)?;
                 self.bindings.places.insert(*expr, place);
             },
-            Expr::This => self.require_class(expr)?,
-            Expr::Super => { self.require_superclass(expr)?; },
+            HirExpr::This => self.require_class(expr)?,
+            HirExpr::Super => { self.require_superclass(expr)?; },
         };
         Ok(())
     }
 
-    fn binary_expression(&mut self, op: &Operator, left: &AstId<Expr>, right: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        if let Operator::Assign(_) = op {
-            return self.assign(left, right);
-        }
-        if let Operator::MemberAccess = op {
-            return self.index(left, right);
-        }
-        if let Operator::Comma = op {
-            compiler_error!(self, right, "Unexpected ','");
-        }
-        self.expression(left)?;
-        self.expression(right)?;
-        Ok(())
-    }
-
-    fn assign(&mut self, lhs: &AstId<Expr>, rhs: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        match self.ast.get(lhs) {
-            Expr::Identifier(name) => {
+    fn assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match self.hir.get(lhs) {
+            HirExpr::Identifier(name) => {
                 let name = *name;
                 if let Some(local) = self.locals.iter().rev().find(|local| local.name == Some(name)) {
                     if !local.is_mutable {
-                        compiler_error!(self, lhs, "Invalid assignment: '{}' is immutable", self.ast.text(name));
+                        compiler_error!(self, lhs, "Invalid assignment: '{}' is immutable", self.hir.text(name));
                     }
                 }
                 let place = self.resolve_place(name)?;
@@ -434,9 +425,9 @@ impl<'a> Resolver<'a> {
                 self.expression(rhs)?;
                 Ok(())
             },
-            Expr::Index(obj, member) => {
+            HirExpr::Index(obj, member) => {
                 let (obj, member) = (*obj, *member);
-                if matches!(self.ast.get(&obj), Expr::This | Expr::Super) {
+                if matches!(self.hir.get(&obj), HirExpr::This | HirExpr::Super) {
                     self.class_member(&obj, &member, true)?;
                     // An accessor store evaluates the member expression as a call arg.
                     if let Member::ByAccessor(_) = self.bindings.members[&obj] {
@@ -455,8 +446,8 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolves an index load (`a[b]`, `a.b`).
-    fn index(&mut self, target: &AstId<Expr>, member: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        if matches!(self.ast.get(target), Expr::This | Expr::Super) {
+    fn index(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
             self.class_member(target, member, false)?;
             // An accessor load evaluates the member expression as a call arg.
             if let Member::ByAccessor(_) = self.bindings.members[target] {
@@ -471,10 +462,10 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolves a `this`/`super` member access.
-    fn class_member(&mut self, target: &AstId<Expr>, member: &AstId<Expr>, is_store: bool) -> Result<(), anyhow::Error> {
-        let is_super = matches!(self.ast.get(target), Expr::Super);
-        let member_name = match self.ast.get(member) {
-            Expr::Literal(Literal::String(name)) => self.ast.symbol_of(name),
+    fn class_member(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_store: bool) -> Result<(), anyhow::Error> {
+        let is_super = matches!(self.hir.get(target), HirExpr::Super);
+        let member_name = match self.hir.get(member) {
+            HirExpr::Literal(HirLiteral::String(name)) => self.hir.symbol_of(name),
             _ => None,
         };
 
@@ -497,18 +488,18 @@ impl<'a> Resolver<'a> {
             return Ok(());
         }
 
-        let class_name = self.ast.text(class.name);
+        let class_name = self.hir.text(class.name);
         let accessor_name = if is_store { "setter" } else { "getter" };
         if let Some(member_name) = member_name {
-            let member_name = self.ast.text(member_name);
+            let member_name = self.hir.text(member_name);
             compiler_error!(self, target, "Invalid index: {class_name} doesn't have member {member_name} and doesn't have a {accessor_name}")
         } else {
             compiler_error!(self, target, "Invalid index: {class_name} doesn't have a {accessor_name}")
         }
     }
 
-    fn call_expression(&mut self, callee: &AstId<Expr>, args: &Vec<AstId<Expr>>) -> Result<(), anyhow::Error> {
-        if matches!(self.ast.get(callee), Expr::Super) {
+    fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &Vec<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
+        if matches!(self.hir.get(callee), HirExpr::Super) {
             let superclass = self.require_superclass(callee)?;
             self.bindings.members.insert(*callee, Member::SuperInit(superclass.init_id));
         } else {
@@ -520,31 +511,31 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn literal(&mut self, literal: &Literal) -> Result<(), anyhow::Error> {
+    fn literal(&mut self, literal: &HirLiteral) -> Result<(), anyhow::Error> {
         match literal {
-            Literal::Array(elements) => {
+            HirLiteral::Array(elements) => {
                 for element in elements {
                     self.expression(element)?;
                 }
             },
-            Literal::Lambda(decl) => self.lambda(decl)?,
+            HirLiteral::Lambda(decl) => self.lambda(decl)?,
             _ => {},
         }
         Ok(())
     }
 
-    fn lambda(&mut self, decl: &FnDecl) -> Result<(), anyhow::Error> {
+    fn lambda(&mut self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
         self.function(decl, FnKind::Function)
     }
 
-    fn require_class(&self, node: &AstId<Expr>) -> Result<(), anyhow::Error> {
+    fn require_class(&self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if self.class_frames.is_empty() {
             compiler_error!(self, node, "Cannot use 'this' outside of a class method");
         }
         Ok(())
     }
 
-    fn require_superclass(&self, node: &AstId<Expr>) -> Result<ClassLayout, anyhow::Error> {
+    fn require_superclass(&self, node: &HirId<HirExpr>) -> Result<ClassLayout, anyhow::Error> {
         let Some(frame) = self.class_frames.last() else {
             compiler_error!(self, node, "Cannot use 'super' outside of a class method");
         };
@@ -558,7 +549,7 @@ impl<'a> Resolver<'a> {
         &self.class_frames.last().unwrap().layout
     }
 
-    fn function(&mut self, decl: &FnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
+    fn function(&mut self, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
         // A function's callee slot is named for recursion; a method/initializer's
         // slot 0 is `this`, addressed positionally and never resolved by name.
         let self_name = match kind {
@@ -577,7 +568,7 @@ impl<'a> Resolver<'a> {
         });
 
         for param in &decl.params {
-            let Expr::Identifier(param_name) = self.ast.get(param) else {
+            let HirExpr::Identifier(param_name) = self.hir.get(param) else {
                 unreachable!("parser guarantees parameters are identifiers");
             };
             self.declare_local(*param_name, true, param)?;
@@ -595,7 +586,7 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn class_declaration(&mut self, stmt: &AstId<Stmt>, decl: &Box<ClassDecl>) -> Result<(), anyhow::Error> {
+    fn class_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &Box<HirClassDecl>) -> Result<(), anyhow::Error> {
         let name = decl.name;
         let slot = self.resolve_local(name).expect("class declarations are reserved by hoisting");
         self.bindings.slots.insert(*stmt, slot);
@@ -604,7 +595,7 @@ impl<'a> Resolver<'a> {
         let superclass = match &decl.superclass {
             Some(super_name) => {
                 let layout = self.classes.get(super_name)
-                    .ok_or(anyhow!("Class '{}' not declared", self.ast.text(*super_name)))?;
+                    .ok_or(anyhow!("Class '{}' not declared", self.hir.text(*super_name)))?;
                 Some(layout.clone())
             },
             None => None,
@@ -681,8 +672,8 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn fn_decl(&self, stmt: &AstId<Stmt>) -> &'a FnDecl {
-        let Stmt::Fn(decl) = self.ast.get(stmt) else {
+    fn fn_decl(&self, stmt: &HirId<HirStmt>) -> &'a HirFnDecl {
+        let HirStmt::Fn(decl) = self.hir.get(stmt) else {
             unreachable!("expected a function statement");
         };
         decl

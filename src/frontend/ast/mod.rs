@@ -15,6 +15,17 @@ use crate::frontend::lex::SourcePosition;
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol(u32);
 
+impl Symbol {
+    pub(crate) fn from_raw(id: u32) -> Symbol {
+        Symbol(id)
+    }
+
+    /// The symbol's raw index, used to look its text up in the interning table.
+    pub fn index(&self) -> usize {
+        self.0 as usize
+    }
+}
+
 pub enum Literal {
     Null,
     Boolean(bool),
@@ -79,10 +90,17 @@ pub struct CatchClause {
 pub struct ClassDecl {
     pub name: Symbol,
     pub superclass: Option<Symbol>,
-    pub init: AstId<Stmt>,
+    /// The initializer's runtime name (`"{class}.init"`), used whether the init is
+    /// declared or synthesised during lowering.
+    pub init_name: Symbol,
+    /// The declared initializer (`Stmt::Fn`), or `None` when the class has none —
+    /// lowering synthesises a virtual init in that case.
+    pub init: Option<AstId<Stmt>>,
     pub getter: Option<AstId<Stmt>>,
     pub setter: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
+    /// Field initializers (`field = value`), spliced into the init during lowering.
+    pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>
 }
 
@@ -111,7 +129,6 @@ pub enum NodeKind {
 pub trait AstNode: Sized {
     fn wrap(self) -> NodeKind;
     fn unwrap(node: &NodeKind) -> &Self;
-    fn unwrap_mut(node: &mut NodeKind) -> &mut Self;
 }
 
 impl AstNode for Expr {
@@ -119,17 +136,11 @@ impl AstNode for Expr {
     fn unwrap(node: &NodeKind) -> &Expr {
         match node { NodeKind::Expr(expr) => expr, _ => unreachable!() }
     }
-    fn unwrap_mut(node: &mut NodeKind) -> &mut Expr {
-        match node { NodeKind::Expr(expr) => expr, _ => unreachable!() }
-    }
 }
 
 impl AstNode for Stmt {
     fn wrap(self) -> NodeKind { NodeKind::Stmt(self) }
     fn unwrap(node: &NodeKind) -> &Stmt {
-        match node { NodeKind::Stmt(stmt) => stmt, _ => unreachable!() }
-    }
-    fn unwrap_mut(node: &mut NodeKind) -> &mut Stmt {
         match node { NodeKind::Stmt(stmt) => stmt, _ => unreachable!() }
     }
 }
@@ -142,13 +153,6 @@ pub struct Node {
 pub struct AstId<T> {
     id: usize,
     _marker: PhantomData<T>
-}
-
-impl<T> AstId<T> {
-    /// The node's index in the AST. A stable key for side-tables (e.g. resolver bindings).
-    pub fn index(&self) -> usize {
-        self.id
-    }
 }
 
 impl<T> Copy for AstId<T> {}
@@ -217,22 +221,14 @@ impl Ast {
         Symbol(id)
     }
 
-    /// The text of an interned symbol.
-    pub fn text(&self, symbol: Symbol) -> &str {
-        &self.ident_texts[symbol.0 as usize]
-    }
-
-    /// The symbol for `text` if it was ever interned, else `None`.
-    pub fn symbol_of(&self, text: &str) -> Option<Symbol> {
-        self.ident_ids.get(text).copied().map(Symbol)
+    /// Removes the identifier interning tables, leaving them empty. Used by lowering
+    /// to move name identity into the `Hir` (the `Ast` is discarded afterward).
+    pub(crate) fn take_idents(&mut self) -> (HashMap<String, u32>, Vec<String>) {
+        (std::mem::take(&mut self.ident_ids), std::mem::take(&mut self.ident_texts))
     }
 
     pub fn get<T: AstNode>(&self, id: &AstId<T>) -> &T {
         T::unwrap(&self.nodes[id.id].kind)
-    }
-
-    pub fn get_mut<T: AstNode>(&mut self, id: &AstId<T>) -> &mut T {
-        T::unwrap_mut(&mut self.nodes[id.id].kind)
     }
 
     pub fn pos<T>(&self, id: &AstId<T>) -> &SourcePosition {

@@ -6,11 +6,11 @@ use crate::core::objects::ObjClass;
 use crate::core::objects::ObjString;
 use crate::middle::ir::{Inst, Ir, Label};
 use crate::middle::resolve::{Bindings, Cleanup, FnKind};
-use crate::ast::AstId;
-use crate::ast::Expr;
-use crate::ast::FnDecl;
-use crate::ast::Stmt;
-use crate::ast::Ast;
+use crate::middle::hir::Hir;
+use crate::middle::hir::HirExpr;
+use crate::middle::hir::HirFnDecl;
+use crate::middle::hir::HirId;
+use crate::middle::hir::HirStmt;
 
 mod expressions;
 mod statements;
@@ -27,13 +27,13 @@ enum TryCatchPosition {
 #[derive(Clone)]
 struct TryFrame {
     position: TryCatchPosition,
-    finally: Option<AstId<Expr>>
+    finally: Option<HirId<HirExpr>>
 }
 
-/// Lowers a resolved AST to IR.
+/// Lowers a resolved HIR to IR.
 pub struct Compiler<'a> {
     ir: Ir,
-    ast: &'a Ast,
+    hir: &'a Hir,
     gc: &'a mut Gc,
     bindings: &'a Bindings,
     /// The kind of each enclosing function, for initializer return handling.
@@ -48,10 +48,10 @@ macro_rules! compiler_error {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn compile<'b>(ast: &'b Ast, gc: &'b mut Gc, bindings: &'b Bindings) -> Result<Ir, anyhow::Error> {
+    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
             ir: Ir::new(),
-            ast,
+            hir,
             gc,
             bindings,
             fn_kinds: Vec::new(),
@@ -59,37 +59,37 @@ impl<'a> Compiler<'a> {
             classes: FnvHashMap::default()
         };
 
-        let stmt_id = compiler.ast.get_root();
+        let stmt_id = compiler.hir.get_root();
         compiler.statement(&stmt_id)?;
         Ok(compiler.finish())
     }
 
-    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &AstId<T>) -> anyhow::Error {
-        let pos = self.ast.pos(node_id);
+    fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &HirId<T>) -> anyhow::Error {
+        let pos = self.hir.pos(node_id);
         anyhow!("{}\n\tat {}", msg.into(), pos)
     }
 
     fn finish(mut self) -> Ir {
-        self.emit(Inst::PushNull, &self.ast.get_root());
-        self.emit(Inst::Return, &self.ast.get_root());
+        self.emit(Inst::PushNull, &self.hir.get_root());
+        self.emit(Inst::Return, &self.hir.get_root());
         self.ir
     }
 
-    fn emit<T: 'static>(&mut self, inst: Inst, node_id: &AstId<T>) {
-        let pos = self.ast.pos(node_id);
+    fn emit<T: 'static>(&mut self, inst: Inst, node_id: &HirId<T>) {
+        let pos = self.hir.pos(node_id);
         self.ir.emit(inst, pos);
     }
 
     /// Emits a conditional branch to a fresh (unbound) label and returns it.
     /// The caller should bind the label to the jump's destination.
-    fn emit_conditional_jump<T: 'static>(&mut self, cond: &AstId<Expr>, node_id: &AstId<T>) -> Result<Label, anyhow::Error> {
+    fn emit_conditional_jump<T: 'static>(&mut self, cond: &HirId<HirExpr>, node_id: &HirId<T>) -> Result<Label, anyhow::Error> {
         let target = self.ir.new_label();
         self.expression(cond)?;
         self.emit(Inst::JumpIfFalse(target), node_id);
         Ok(target)
     }
 
-    fn exit_scope<T: 'static>(&mut self, node_id: &AstId<T>) {
+    fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
         let cleanups = self.bindings.cleanup(node_id).to_vec();
         for cleanup in cleanups {
             let inst = match cleanup {
@@ -100,8 +100,8 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn fn_decl(&self, stmt: &AstId<Stmt>) -> &'a FnDecl {
-        let Stmt::Fn(decl) = self.ast.get(stmt) else {
+    fn fn_decl(&self, stmt: &HirId<HirStmt>) -> &'a HirFnDecl {
+        let HirStmt::Fn(decl) = self.hir.get(stmt) else {
             unreachable!("expected a function statement");
         };
         decl

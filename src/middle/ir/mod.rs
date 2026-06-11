@@ -3,7 +3,6 @@
 
 use anyhow::bail;
 
-use crate::ast::Operator;
 use crate::core::objects::ObjFn;
 use crate::core::value::Value;
 use crate::frontend::lex::SourcePosition;
@@ -88,33 +87,6 @@ pub enum Inst {
     GreaterThanEqual,
     And,
     Or,
-}
-
-impl Inst {
-    pub fn from_operator(op: &Operator) -> Inst {
-        match op {
-            Operator::Add => Inst::Add,
-            Operator::Subtract => Inst::Subtract,
-            Operator::Multiply => Inst::Multiply,
-            Operator::Divide => Inst::Divide,
-            Operator::LeftShift => Inst::LeftShift,
-            Operator::RightShift => Inst::RightShift,
-            Operator::LessThan => Inst::LessThan,
-            Operator::LessThanEqual => Inst::LessThanEqual,
-            Operator::GreaterThan => Inst::GreaterThan,
-            Operator::GreaterThanEqual => Inst::GreaterThanEqual,
-            Operator::LogicalEqual => Inst::Equal,
-            Operator::LogicalNotEqual => Inst::NotEqual,
-            Operator::LogicalAnd => Inst::And,
-            Operator::LogicalOr => Inst::Or,
-            Operator::BitAnd => Inst::BitAnd,
-            Operator::BitOr => Inst::BitOr,
-            Operator::BitXor => Inst::BitXor,
-            Operator::BitNot => Inst::BitNot,
-            Operator::Negate => Inst::Negate,
-            _ => unreachable!("Invalid operator")
-        }
-    }
 }
 
 /// A whole program's worth of IR: the instruction stream (with a source position

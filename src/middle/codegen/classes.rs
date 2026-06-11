@@ -1,22 +1,22 @@
-use crate::ast::{AstId, ClassDecl, Stmt};
 use crate::core::objects::{ClassMember, ObjClass, ObjFn, ObjString};
 use crate::core::value::Value;
+use crate::middle::hir::{HirClassDecl, HirId, HirStmt};
 use crate::middle::ir::Inst;
 use crate::middle::resolve::FnKind;
 
 use super::Compiler;
 
 impl<'a> Compiler<'a> {
-    pub (super) fn class_declaration(&mut self, stmt: &AstId<Stmt>, decl: &Box<ClassDecl>) -> Result<(), anyhow::Error> {
+    pub (super) fn class_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &Box<HirClassDecl>) -> Result<(), anyhow::Error> {
         let slot = self.bindings.slot(stmt);
 
         // Build the class from the resolver-computed member layout.
         let layout = self.bindings.class_layout(stmt);
-        let class_name = self.gc.intern(self.ast.text(layout.name));
+        let class_name = self.gc.intern(self.hir.text(layout.name));
         let superclass = layout.superclass;
         let mut class = ObjClass::new(class_name);
         for (&sym, &member) in &layout.members {
-            let name = self.gc.intern(self.ast.text(sym));
+            let name = self.gc.intern(self.hir.text(sym));
             class.members.insert(name, member);
         }
         for &field_id in &layout.fields {
@@ -29,7 +29,7 @@ impl<'a> Compiler<'a> {
 
         // Inherit the superclass's compiled methods.
         if let Some(super_sym) = superclass {
-            let super_name = self.gc.intern(self.ast.text(super_sym));
+            let super_name = self.gc.intern(self.hir.text(super_sym));
             let super_class = self.classes[&super_name];
             class.methods = unsafe { &*super_class }.methods.clone();
         }
@@ -47,7 +47,7 @@ impl<'a> Compiler<'a> {
         class.methods.insert(class.init_id.unwrap(), init_ptr.into());
 
         for stmt_id in &decl.methods {
-            let name = self.gc.intern(self.ast.text(self.fn_decl(stmt_id).name));
+            let name = self.gc.intern(self.hir.text(self.fn_decl(stmt_id).name));
             self.install_method(&mut class, stmt_id, name)?;
         }
 
@@ -63,7 +63,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_fn(&mut self, stmt: &AstId<Stmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {
+    fn compile_fn(&mut self, stmt: &HirId<HirStmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {
         let decl = self.fn_decl(stmt);
         let const_idx = self.function(stmt, decl, kind)?;
         let func_const = self.ir.constants()[const_idx as usize];
@@ -71,7 +71,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compiles a method and installs its `ObjFn` at the member id.
-    fn install_method(&mut self, class: &mut ObjClass, stmt: &AstId<Stmt>, name: *mut ObjString) -> Result<(), anyhow::Error> {
+    fn install_method(&mut self, class: &mut ObjClass, stmt: &HirId<HirStmt>, name: *mut ObjString) -> Result<(), anyhow::Error> {
         let function_ptr = self.compile_fn(stmt, FnKind::Method)?;
         let ClassMember::Method(id) = class.resolve(name).unwrap() else { unreachable!() };
         class.methods.insert(id, function_ptr.into());

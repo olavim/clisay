@@ -1,5 +1,5 @@
 use crate::compiler_error;
-use crate::ast::{AstId, CatchClause, Expr, FieldInit, Stmt};
+use crate::middle::hir::{HirCatchClause, HirExpr, HirFieldInit, HirId, HirStmt};
 use crate::middle::ir::Inst;
 use crate::middle::resolve::FnKind;
 
@@ -7,9 +7,9 @@ use super::{Compiler, TryCatchPosition, TryFrame};
 
 
 impl<'a> Compiler<'a> {
-    pub (super) fn statement(&mut self, stmt_id: &AstId<Stmt>) -> Result<(), anyhow::Error> {
-        match self.ast.get(stmt_id) {
-            Stmt::Return(expr) => {
+    pub (super) fn statement(&mut self, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
+        match self.hir.get(stmt_id) {
+            HirStmt::Return(expr) => {
                 // If returning from a try or catch block with a finally block, inline the finally block before returning.
                 if let Some(TryFrame {
                     position: pos @ (TryCatchPosition::Try | TryCatchPosition::Catch),
@@ -39,7 +39,7 @@ impl<'a> Compiler<'a> {
 
                 self.emit(Inst::Return, stmt_id);
             },
-            Stmt::Throw(expr) => {
+            HirStmt::Throw(expr) => {
                 if let Some(TryFrame {
                     position: TryCatchPosition::Catch,
                     finally: Some(finally)
@@ -50,13 +50,13 @@ impl<'a> Compiler<'a> {
                 self.expression(expr)?;
                 self.emit(Inst::Throw, stmt_id);
             },
-            Stmt::Try(try_body, catch, finally) => {
+            HirStmt::Try(try_body, catch, finally) => {
                 self.try_frames.push(TryFrame {
                     position: TryCatchPosition::Try,
                     finally: *finally
                 });
 
-                let Expr::Block(stmts) = self.ast.get(try_body) else { unreachable!() };
+                let HirExpr::Block(stmts) = self.hir.get(try_body) else { unreachable!() };
                 if !stmts.is_empty() {
                     let node_id = &stmts[0];
                     let handler = self.ir.new_label();
@@ -87,7 +87,7 @@ impl<'a> Compiler<'a> {
 
                 self.try_frames.pop();
             },
-            Stmt::Fn(decl) => {
+            HirStmt::Fn(decl) => {
                 // The slot was reserved by hoisting so forward references resolve.
                 let slot = self.bindings.slot(stmt_id);
 
@@ -98,8 +98,8 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::SetLocal(slot), stmt_id);
                 self.emit(Inst::Pop, stmt_id);
             },
-            Stmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
-            Stmt::Say(FieldInit { value, .. }) => {
+            HirStmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
+            HirStmt::Say(HirFieldInit { value, .. }) => {
                 let slot = self.bindings.slot(stmt_id);
 
                 let inst = if let Some(expr) = value {
@@ -110,10 +110,10 @@ impl<'a> Compiler<'a> {
                 };
                 self.emit(inst, stmt_id);
             },
-            Stmt::Expression(expr) => {
+            HirStmt::Expression(expr) => {
                 self.expression_stmt(expr)?;
             },
-            Stmt::While(cond, body) => {
+            HirStmt::While(cond, body) => {
                 let loop_start = self.ir.new_label();
                 self.ir.bind(loop_start);
 
@@ -124,7 +124,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::Jump(loop_start), stmt_id);
                 self.ir.bind(exit);
             },
-            Stmt::If(cond, then, otherwise) => {
+            HirStmt::If(cond, then, otherwise) => {
                 let else_target = self.emit_conditional_jump(cond, stmt_id)?;
 
                 self.expression_stmt(then)?;
@@ -139,7 +139,7 @@ impl<'a> Compiler<'a> {
                     self.ir.bind(else_target);
                 }
             },
-            Stmt::Block(body) => {
+            HirStmt::Block(body) => {
                 self.expression_stmt(body)?;
             }
         };
@@ -147,7 +147,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn statement_body(&mut self, body: &Vec<AstId<Stmt>>) -> Result<(), anyhow::Error> {
+    fn statement_body(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         self.hoist_declarations(body)?;
         for stmt_id in body {
             self.statement(stmt_id)?;
@@ -155,20 +155,20 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<AstId<Stmt>>, node_id: &AstId<T>) -> Result<(), anyhow::Error> {
+    pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<HirId<HirStmt>>, node_id: &HirId<T>) -> Result<(), anyhow::Error> {
         self.statement_body(body)?;
         self.exit_scope(node_id);
         Ok(())
     }
 
-    /// Compiles the statements of an `Expr::Block` body directly into the current
+    /// Compiles the statements of a `HirExpr::Block` body directly into the current
     /// scope, without its own cleanup.
-    fn inline_block(&mut self, body: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        let Expr::Block(stmts) = self.ast.get(body) else { unreachable!() };
+    fn inline_block(&mut self, body: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let HirExpr::Block(stmts) = self.hir.get(body) else { unreachable!() };
         self.statement_body(stmts)
     }
 
-    fn compile_catch(&mut self, catch: &CatchClause) -> Result<(), anyhow::Error> {
+    fn compile_catch(&mut self, catch: &HirCatchClause) -> Result<(), anyhow::Error> {
         let idx = self.try_frames.len() - 1;
         self.try_frames[idx].position = TryCatchPosition::Catch;
 
@@ -177,7 +177,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn compile_finally(&mut self, finally: &AstId<Expr>) -> Result<(), anyhow::Error> {
+    fn compile_finally(&mut self, finally: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let idx = self.try_frames.len() - 1;
         self.try_frames[idx].position = TryCatchPosition::Finally;
         self.expression_stmt(finally)
@@ -186,9 +186,9 @@ impl<'a> Compiler<'a> {
     /// Emit a `PUSH_NULL` placeholder for every `fn`/`class` declared directly in
     /// `body`, holding its (resolver-assigned) slot until the declaration is
     /// compiled into it - which is what lets forward references resolve.
-    fn hoist_declarations(&mut self, body: &Vec<AstId<Stmt>>) -> Result<(), anyhow::Error> {
+    fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
-            if matches!(self.ast.get(stmt_id), Stmt::Fn(_) | Stmt::Class(_)) {
+            if matches!(self.hir.get(stmt_id), HirStmt::Fn(_) | HirStmt::Class(_)) {
                 self.emit(Inst::PushNull, stmt_id);
             }
         }

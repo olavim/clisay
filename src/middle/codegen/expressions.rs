@@ -1,6 +1,6 @@
 use crate::compiler_error;
-use crate::ast::{AstId, Expr, FnDecl, Literal, Operator};
 use crate::core::value::Value;
+use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, UnOp};
 use crate::middle::ir::Inst;
 use crate::middle::resolve::{FnKind, Member, Place};
 
@@ -12,34 +12,35 @@ enum IndexOp {
     /// Read the value.
     Load,
     /// Assign `rhs`. `discarded` is true in statement position (the value should be dropped).
-    Store { rhs: AstId<Expr>, discarded: bool },
+    Store { rhs: HirId<HirExpr>, discarded: bool },
 }
 
 impl<'a> Compiler<'a> {
-    pub (super) fn expression(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        match self.ast.get(expr) {
-            Expr::Block(stmts) => self.scoped_body(stmts, expr)?,
-            Expr::Unary(op, operand) => self.unary_expression(op, operand)?,
-            Expr::Binary(op, left, right) => self.binary_expression(op, left, right)?,
-            Expr::Call(callee, args) => self.call_expression(callee, args)?,
-            Expr::Index(target, member) => self.index(target, member, IndexOp::Load)?,
-            Expr::Literal(lit) => self.literal(expr, lit)?,
-            Expr::Identifier(_) => {
+    pub (super) fn expression(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match self.hir.get(expr) {
+            HirExpr::Block(stmts) => self.scoped_body(stmts, expr)?,
+            HirExpr::Unary(op, operand) => self.unary_expression(*op, operand)?,
+            HirExpr::Binary(op, left, right) => self.binary_expression(*op, left, right)?,
+            HirExpr::Assign(left, right) => self.compile_assign(left, right, false)?,
+            HirExpr::Call(callee, args) => self.call_expression(callee, args)?,
+            HirExpr::Index(target, member) => self.index(target, member, IndexOp::Load)?,
+            HirExpr::Literal(lit) => self.literal(expr, lit)?,
+            HirExpr::Identifier(_) => {
                 let place = self.bindings.place(expr);
                 self.emit_load(place, expr)?;
             },
-            Expr::This | Expr::Super => self.emit(Inst::GetLocal(0), expr),
+            HirExpr::This | HirExpr::Super => self.emit(Inst::GetLocal(0), expr),
         };
 
         Ok(())
     }
 
     /// Compiles an expression in statement position, where its value is discarded.
-    pub (super) fn expression_stmt(&mut self, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        match self.ast.get(expr) {
-            Expr::Block(stmts) => self.scoped_body(stmts, expr),
+    pub (super) fn expression_stmt(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match self.hir.get(expr) {
+            HirExpr::Block(stmts) => self.scoped_body(stmts, expr),
             // An assignment statement stores in discard context, so the store op itself drops the value.
-            Expr::Binary(Operator::Assign(_), left, right) => self.compile_assign(left, right, true),
+            HirExpr::Assign(left, right) => self.compile_assign(left, right, true),
             // Any other expression leaves a value that the statement discards.
             _ => {
                 self.expression(expr)?;
@@ -49,14 +50,14 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn unary_expression(&mut self, op: &Operator, expr: &AstId<Expr>) -> Result<(), anyhow::Error> {
+    fn unary_expression(&mut self, op: UnOp, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.expression(expr)?;
-        self.emit(Inst::from_operator(op), expr);
+        self.emit(unop_inst(op), expr);
         Ok(())
     }
 
     /// Emits a read of `place`, pushing its value.
-    fn emit_load(&mut self, place: Place, node: &AstId<Expr>) -> Result<(), anyhow::Error> {
+    fn emit_load(&mut self, place: Place, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match place {
             Place::Local(slot) => self.emit(Inst::GetLocal(slot), node),
             Place::Upvalue(idx) => self.emit(Inst::GetUpvalue(idx), node),
@@ -65,7 +66,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::GetPropertyId(id), node);
             },
             Place::Global(symbol) => {
-                let name = self.gc.intern(self.ast.text(symbol));
+                let name = self.gc.intern(self.hir.text(symbol));
                 let idx = self.ir.add_constant(Value::from(name))?;
                 self.emit(Inst::GetGlobal(idx), node);
             },
@@ -75,7 +76,7 @@ impl<'a> Compiler<'a> {
 
     /// Emits a store into `place`. The value to store is already on top of the
     /// stack. When `discarded` (statement position) the store also pops the value.
-    fn emit_store(&mut self, place: Place, discarded: bool, node: &AstId<Expr>) -> Result<(), anyhow::Error> {
+    fn emit_store(&mut self, place: Place, discarded: bool, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match place {
             Place::Local(slot) => {
                 self.emit(if discarded { Inst::SetLocalPop(slot) } else { Inst::SetLocal(slot) }, node);
@@ -88,7 +89,7 @@ impl<'a> Compiler<'a> {
                 self.emit(if discarded { Inst::SetPropertyIdPop(id) } else { Inst::SetPropertyId(id) }, node);
             },
             Place::Global(symbol) => {
-                let name = self.gc.intern(self.ast.text(symbol));
+                let name = self.gc.intern(self.hir.text(symbol));
                 let idx = self.ir.add_constant(Value::from(name))?;
                 self.emit(Inst::SetGlobal(idx), node);
                 if discarded { self.emit(Inst::Pop, node); }
@@ -99,15 +100,15 @@ impl<'a> Compiler<'a> {
 
     /// Compiles `lhs = rhs`. `discarded` is true in statement position, which lets
     /// the store pop its own value.
-    fn compile_assign(&mut self, lhs: &AstId<Expr>, rhs: &AstId<Expr>, discarded: bool) -> Result<(), anyhow::Error> {
-        match self.ast.get(lhs) {
-            Expr::Identifier(_) => {
+    fn compile_assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>, discarded: bool) -> Result<(), anyhow::Error> {
+        match self.hir.get(lhs) {
+            HirExpr::Identifier(_) => {
                 let place = self.bindings.place(lhs);
                 self.expression(rhs)?;
                 self.emit_store(place, discarded, lhs)?;
                 Ok(())
             },
-            Expr::Index(obj, member) => {
+            HirExpr::Index(obj, member) => {
                 let (obj, member) = (*obj, *member);
                 self.index(&obj, &member, IndexOp::Store { rhs: *rhs, discarded })
             },
@@ -115,25 +116,16 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn binary_expression(&mut self, op: &Operator, left: &AstId<Expr>, right: &AstId<Expr>) -> Result<(), anyhow::Error> {
-        // A value-context assignment: its result is used, so it is never discarded.
-        if let Operator::Assign(_) = op {
-            return self.compile_assign(left, right, false);
-        }
-
-        if let Operator::MemberAccess = op {
-            return self.index(left, right, IndexOp::Load);
-        }
-
+    fn binary_expression(&mut self, op: BinOp, left: &HirId<HirExpr>, right: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // Canonical lowering; `optimize` fuses `local <op> const` forms.
         self.expression(left)?;
         self.expression(right)?;
-        self.emit(Inst::from_operator(op), right);
+        self.emit(binop_inst(op), right);
         Ok(())
     }
 
-    fn index(&mut self, target: &AstId<Expr>, member_expr_id: &AstId<Expr>, op: IndexOp) -> Result<(), anyhow::Error> {
-        if matches!(self.ast.get(target), Expr::This | Expr::Super) {
+    fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, op: IndexOp) -> Result<(), anyhow::Error> {
+        if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
             match self.bindings.member(target) {
                 Member::ById(member_id) => return self.index_member_by_id(target, member_id, op),
                 Member::ByAccessor(accessor_id) => return self.index_member_by_accessor(target, accessor_id, member_expr_id, op),
@@ -160,7 +152,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn index_member_by_id(&mut self, target_expr: &AstId<Expr>, member_id: u8, op: IndexOp) -> Result<(), anyhow::Error> {
+    fn index_member_by_id(&mut self, target_expr: &HirId<HirExpr>, member_id: u8, op: IndexOp) -> Result<(), anyhow::Error> {
         match op {
             IndexOp::Load => {
                 self.expression(target_expr)?;
@@ -175,7 +167,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn index_member_by_accessor(&mut self, target_expr: &AstId<Expr>, accessor_id: u8, member_expr_id: &AstId<Expr>, op: IndexOp) -> Result<(), anyhow::Error> {
+    fn index_member_by_accessor(&mut self, target_expr: &HirId<HirExpr>, accessor_id: u8, member_expr_id: &HirId<HirExpr>, op: IndexOp) -> Result<(), anyhow::Error> {
         self.expression(target_expr)?;
         self.emit(Inst::GetPropertyId(accessor_id), target_expr);
 
@@ -196,9 +188,9 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn call_expression(&mut self, callee: &AstId<Expr>, args: &Vec<AstId<Expr>>) -> Result<(), anyhow::Error> {
-        match self.ast.get(callee) {
-            Expr::Super => {
+    fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &Vec<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
+        match self.hir.get(callee) {
+            HirExpr::Super => {
                 let Member::SuperInit(member_id) = self.bindings.member(callee) else {
                     unreachable!("super call resolved to a non-init member");
                 };
@@ -216,35 +208,65 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn lambda(&mut self, expr: &AstId<Expr>, decl: &FnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
+    fn lambda(&mut self, expr: &HirId<HirExpr>, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
         let const_idx = self.function(expr, decl, kind)?;
         self.emit(Inst::PushClosure(const_idx), expr);
         return Ok(());
     }
 
-    fn literal(&mut self, expr: &AstId<Expr>, literal: &Literal) -> Result<(), anyhow::Error> {
+    fn literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral) -> Result<(), anyhow::Error> {
         match literal {
-            Literal::Number(num) => {
+            HirLiteral::Number(num) => {
                 let idx = self.ir.add_constant(Value::from(*num))?;
                 self.emit(Inst::PushConstant(idx), expr);
             },
-            Literal::String(str) => {
+            HirLiteral::String(str) => {
                 let str = self.gc.intern(str);
                 let idx = self.ir.add_constant(Value::from(str))?;
                 self.emit(Inst::PushConstant(idx), expr);
             },
-            Literal::Null => { self.emit(Inst::PushNull, expr); },
-            Literal::Boolean(true) => { self.emit(Inst::PushTrue, expr); },
-            Literal::Boolean(false) => { self.emit(Inst::PushFalse, expr); },
-            Literal::Array(elements) => {
+            HirLiteral::Null => { self.emit(Inst::PushNull, expr); },
+            HirLiteral::Boolean(true) => { self.emit(Inst::PushTrue, expr); },
+            HirLiteral::Boolean(false) => { self.emit(Inst::PushFalse, expr); },
+            HirLiteral::Array(elements) => {
                 for element in elements {
                     self.expression(element)?;
                 }
                 self.emit(Inst::Array(elements.len() as u8), expr);
             },
-            Literal::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
+            HirLiteral::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };
 
         return Ok(());
+    }
+}
+
+fn binop_inst(op: BinOp) -> Inst {
+    match op {
+        BinOp::Add => Inst::Add,
+        BinOp::Subtract => Inst::Subtract,
+        BinOp::Multiply => Inst::Multiply,
+        BinOp::Divide => Inst::Divide,
+        BinOp::LeftShift => Inst::LeftShift,
+        BinOp::RightShift => Inst::RightShift,
+        BinOp::LessThan => Inst::LessThan,
+        BinOp::LessThanEqual => Inst::LessThanEqual,
+        BinOp::GreaterThan => Inst::GreaterThan,
+        BinOp::GreaterThanEqual => Inst::GreaterThanEqual,
+        BinOp::Equal => Inst::Equal,
+        BinOp::NotEqual => Inst::NotEqual,
+        BinOp::And => Inst::And,
+        BinOp::Or => Inst::Or,
+        BinOp::BitAnd => Inst::BitAnd,
+        BinOp::BitOr => Inst::BitOr,
+        BinOp::BitXor => Inst::BitXor,
+    }
+}
+
+fn unop_inst(op: UnOp) -> Inst {
+    match op {
+        UnOp::Negate => Inst::Negate,
+        UnOp::BitNot => Inst::BitNot,
+        UnOp::Not => unreachable!("logical-not has no opcode"),
     }
 }

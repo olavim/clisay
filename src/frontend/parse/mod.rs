@@ -134,27 +134,25 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), token.pos))
     }
 
+    fn init_name(&mut self) -> Symbol {
+        let class = self.current_class.clone().expect("init parsed outside a class");
+        self.ast.intern(&format!("{}.init", class))
+    }
+
     fn parse_init(&mut self, has_superclass: bool) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
-        let init_name = {
-            let Some(class) = &self.current_class else { unreachable!() };
-            format!("{}.init", class)
-        };
-        let name = self.ast.intern(&init_name);
+        let name = self.init_name();
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
         self.tokens.expect(TokenType::LeftBrace)?;
 
-        // Ensure initializer calls super() if there is a superclass
-        let mut stmts = if has_superclass {
-            // Parse super() call if it exists, or add a virtual zero-arity super() call
-            match (self.tokens.peek(0).kind, self.tokens.peek(1).kind) {
-                (TokenType::Super, TokenType::LeftParen) => vec![self.parse_super_call()?],
-                _ => vec![self.virtual_super_call(pos.clone())?]
-            }
-        } else {
-            Vec::new()
-        };
+        let mut stmts = Vec::new();
+        if has_superclass && matches!(
+            (self.tokens.peek(0).kind, self.tokens.peek(1).kind),
+            (TokenType::Super, TokenType::LeftParen)
+        ) {
+            stmts.push(self.parse_super_call()?);
+        }
 
         stmts.extend(self.parse_stmts()?);
         self.tokens.expect(TokenType::RightBrace)?;
@@ -183,12 +181,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(params)
     }
 
-    fn virtual_super_call(&mut self, pos: SourcePosition) -> Result<AstId<Stmt>, anyhow::Error> {
-        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-        let expr = self.ast.add_expr(Expr::Call(super_expr, Vec::new()), pos.clone());
-        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos.clone()))
-    }
-
     fn parse_class(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Class)?.pos.clone();
         let class_name = self.parse_identifier()?;
@@ -207,7 +199,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.tokens.expect(TokenType::LeftBrace)?;
 
         let mut fields: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
-        let mut field_stmts: Vec<AstId<Stmt>> = Vec::new();
+        let mut field_inits: Vec<(Symbol, AstId<Expr>)> = Vec::new();
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
         let mut init = None;
         let mut getter = None;
@@ -235,20 +227,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                         },
                         _ => {
                             // Field declaration
-                            let value = if let Some(_) = self.tokens.next_if(TokenType::Equal) {
-                                Some(self.parse_expr()?)
-                            } else {
-                                None
-                            };
+                            let value = self.tokens.next_if(TokenType::Equal)
+                                .map(|_| self.parse_expr())
+                                .transpose()?;
 
                             self.tokens.expect(TokenType::Semicolon)?;
                             let field = self.ast.intern(&name);
                             fields.insert(field);
 
                             if let Some(value) = value {
-                                let id = self.ast.add_expr(Expr::Identifier(field), pos.clone());
-                                let assign = self.ast.add_expr(Expr::Binary(Operator::Assign(None), id, value), pos.clone());
-                                field_stmts.push(self.ast.add_stmt(Stmt::Expression(assign), pos.clone()));
+                                field_inits.push((field, value));
                             }
                         }
                     }
@@ -260,38 +248,17 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
         self.tokens.expect(TokenType::RightBrace)?;
 
-        let init = match init {
-            Some(stmt_id) => stmt_id,
-            None => {
-                // Virtual initializer
-                let stmts = if superclass.is_some() {
-                    vec![self.virtual_super_call(pos.clone())?]
-                } else {
-                    Vec::new()
-                };
-
-                let body = self.ast.add_expr(Expr::Block(stmts), pos.clone());
-                let init_name = self.ast.intern(&format!("{}.init", class_name));
-                let fn_decl = FnDecl {
-                    name: init_name,
-                    params: Vec::new(),
-                    body
-                };
-                self.ast.add_stmt(Stmt::Fn(fn_decl), pos.clone())
-            }
-        };
-
-        let Stmt::Fn(fn_decl) = self.ast.get(&init) else { unreachable!() };
-        let Expr::Block(body) = self.ast.get_mut(&fn_decl.body.clone()) else { unreachable!() };
-        body.splice(0..0, field_stmts.iter().cloned());
+        let init_name = self.ast.intern(&format!("{}.init", class_name));
 
         let class_decl = Box::new(ClassDecl {
             name: class_sym,
             superclass,
+            init_name,
             init,
             getter,
             setter,
             fields,
+            field_inits,
             methods: method_stmts
         });
 
@@ -439,13 +406,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = self.ast.pos(&expr).clone();
 
         let kind = match &op {
-            Operator::Assign(Some(assign_op)) => {
-                // Normalize compound assignment, for example convert (a += 1) to (a = a + 1)
-                let mut right = self.parse_expr_precedence(op.infix_precedence().unwrap())?;
-                let kind = Expr::Binary(assign_op.as_ref().clone(), expr, right);
-                right = self.ast.add_expr(kind, pos.clone());
-                Expr::Binary(op, expr, right)
-            },
             Operator::MemberAccess => {
                 let id = self.parse_identifier()?;
                 let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
