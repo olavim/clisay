@@ -14,6 +14,32 @@ impl Vm {
         Some(member)
     }
 
+    fn bind_method(&mut self, target: Value, method: Object) -> Value {
+        if method.tag() == objects::TAG_FUNCTION {
+            let closure = self.create_closure(method.as_function_ptr());
+            self.stack.push(Value::from(closure));
+            let bound = self.alloc(ObjBoundMethod::new(target, closure));
+            self.stack.pop();
+            Value::from(bound)
+        } else {
+            Value::from(self.alloc(ObjBoundMethod::new(target, method)))
+        }
+    }
+
+    fn invoke_accessor(&mut self, accessor: Object, arg_count: usize) -> Result<(), anyhow::Error> {
+        match accessor.tag() {
+            objects::TAG_FUNCTION => {
+                let func_ptr = accessor.as_function_ptr();
+                let closure = self.create_closure(func_ptr);
+                let ip_start = unsafe { (*func_ptr).ip_start };
+                self.push_frame(closure.as_closure_ptr(), self.stack.offset(arg_count), ip_start);
+                Ok(())
+            },
+            objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, accessor.as_native_function_ptr()),
+            _ => unsafe { std::hint::unreachable_unchecked() }
+        }
+    }
+
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
         let instance = unsafe { &*instance_ptr };
         let class = unsafe { &*instance.class };
@@ -22,22 +48,7 @@ impl Vm {
             Some(ClassMember::Field(id)) => Some(unsafe { (*instance_ptr).get(id) }),
             Some(ClassMember::Method(id)) => {
                 let method = class.get_method(id);
-                match method.tag() {
-                    objects::TAG_FUNCTION => {
-                        let closure = self.create_closure(method.as_function_ptr());
-                        // Root the fresh closure on the value stack: it isn't reachable
-                        // yet and the bound-method allocation below can trigger GC.
-                        self.stack.push(Value::from(closure));
-                        let bound_method = self.alloc(ObjBoundMethod::new(instance_ptr.into(), closure));
-                        self.stack.pop();
-                        return Some(Value::from(bound_method));
-                    },
-                    objects::TAG_NATIVE_FUNCTION => {
-                        let bound_method = self.alloc(ObjBoundMethod::new(instance_ptr.into(), method));
-                        return Some(Value::from(bound_method));
-                    },
-                    _ => unsafe { std::hint::unreachable_unchecked() }
-                }
+                Some(self.bind_method(instance_ptr.into(), method))
             },
             None => None
         }
@@ -46,15 +57,7 @@ impl Vm {
     fn get_property_by_id(&mut self, instance_ref: *mut ObjInstance, id: u8) -> Value {
         let value = unsafe { (*instance_ref).get(id) };
         match value.kind() {
-            ValueKind::Object(ObjectKind::Function) => {
-                let closure = self.create_closure(value.as_object().as_function_ptr());
-                // Root the fresh closure on the value stack: it isn't reachable yet and
-                // the bound-method allocation below can trigger GC.
-                self.stack.push(Value::from(closure));
-                let method = self.alloc(ObjBoundMethod::new(instance_ref.into(), closure));
-                self.stack.pop();
-                Value::from(method)
-            },
+            ValueKind::Object(ObjectKind::Function) => self.bind_method(instance_ref.into(), value.as_object()),
             _ => value
         }
     }
@@ -106,20 +109,7 @@ impl Vm {
         if let Some(getter) = class.getter() {
             self.stack.push(target);
             self.stack.push(prop);
-
-            match getter.tag() {
-                objects::TAG_FUNCTION => {
-                    let func_ptr = getter.as_function_ptr();
-                    let closure = self.create_closure(func_ptr);
-                    let ip_start = unsafe { (*func_ptr).ip_start };
-                    self.push_frame(closure.as_closure_ptr(), self.stack.offset(1), ip_start);
-                    return Ok(());
-                },
-                objects::TAG_NATIVE_FUNCTION => {
-                    return self.call_native(1, getter.as_native_function_ptr());
-                },
-                _ => unsafe { std::hint::unreachable_unchecked() }
-            }
+            return self.invoke_accessor(getter, 1);
         }
 
         self.error(format!(
@@ -153,20 +143,7 @@ impl Vm {
             self.stack.push(target);
             self.stack.push(prop);
             self.stack.push(value);
-
-            match setter.tag() {
-                objects::TAG_FUNCTION => {
-                    let func_ptr = setter.as_function_ptr();
-                    let closure = self.create_closure(func_ptr);
-                    let ip_start = unsafe { (*func_ptr).ip_start };
-                    self.push_frame(closure.as_closure_ptr(), self.stack.offset(2), ip_start);
-                    return Ok(());
-                },
-                objects::TAG_NATIVE_FUNCTION => {
-                    return self.call_native(2, setter.as_native_function_ptr());
-                },
-                _ => unsafe { std::hint::unreachable_unchecked() }
-            }
+            return self.invoke_accessor(setter, 2);
         }
 
         self.error(format!(

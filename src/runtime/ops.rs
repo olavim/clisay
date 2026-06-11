@@ -159,7 +159,6 @@ impl Vm {
 
     unary_op_methods! {
         op_negate  => |v| is_number => -v.as_number();
-        op_not     => |v| is_bool   => !v.as_bool();
         op_bit_not => |v| is_number => !(v.as_number() as i64) as f64;
     }
 
