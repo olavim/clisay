@@ -12,7 +12,7 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     let mut size = 0usize;
     for inst in ir.code() {
         offsets.push(size);
-        size += encoded_len(opcode_of(inst));
+        size += encoded_len(opcode::opcode_of(inst));
     }
 
     if size > u16::MAX as usize {
@@ -41,7 +41,7 @@ fn encoded_len(op: OpCode) -> usize {
 fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, pos: &SourcePosition) {
     use Inst::*;
 
-    chunk.write(opcode_of(inst), pos);
+    chunk.write(opcode::opcode_of(inst), pos);
 
     let target_of = |label: Label| offsets[ir.label_target(label)] as u16;
     let write_jump = |chunk: &mut BytecodeChunk, target: u16| {
@@ -99,74 +99,5 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(a, pos);
             chunk.write(b, pos);
         }
-    }
-}
-
-/// The opcode each instruction encodes to.
-fn opcode_of(inst: &Inst) -> OpCode {
-    use Inst::*;
-    match inst {
-        Call(_) => opcode::CALL,
-        Jump(_) => opcode::JUMP,
-        JumpIfFalse(_) => opcode::JUMP_IF_FALSE,
-        JumpIfGe(_) => opcode::JUMP_IF_GE,
-        JumpIfGt(_) => opcode::JUMP_IF_GT,
-        JumpIfLe(_) => opcode::JUMP_IF_LE,
-        JumpIfLt(_) => opcode::JUMP_IF_LT,
-        JumpIfEq(_) => opcode::JUMP_IF_EQ,
-        JumpIfNeq(_) => opcode::JUMP_IF_NEQ,
-        JumpIfGeLocalConst(..) => opcode::JUMP_IF_GE_LOCAL_CONST,
-        JumpIfGtLocalConst(..) => opcode::JUMP_IF_GT_LOCAL_CONST,
-        JumpIfLeLocalConst(..) => opcode::JUMP_IF_LE_LOCAL_CONST,
-        JumpIfLtLocalConst(..) => opcode::JUMP_IF_LT_LOCAL_CONST,
-        Return => opcode::RETURN,
-        Throw => opcode::THROW,
-        PushTry(_) => opcode::PUSH_TRY,
-        PopTry => opcode::POP_TRY,
-        Pop => opcode::POP,
-        PushConstant(_) => opcode::PUSH_CONSTANT,
-        PushNull => opcode::PUSH_NULL,
-        PushTrue => opcode::PUSH_TRUE,
-        PushFalse => opcode::PUSH_FALSE,
-        PushClosure(_) => opcode::PUSH_CLOSURE,
-        PushClass(_) => opcode::PUSH_CLASS,
-        GetGlobal(_) => opcode::GET_GLOBAL,
-        SetGlobal(_) => opcode::SET_GLOBAL,
-        GetLocal(_) => opcode::GET_LOCAL,
-        SetLocal(_) => opcode::SET_LOCAL,
-        SetLocalPop(_) => opcode::SET_LOCAL_POP,
-        SetLocalAddLocalLocal(..) => opcode::SET_LOCAL_ADD_LOCAL_LOCAL,
-        GetUpvalue(_) => opcode::GET_UPVALUE,
-        SetUpvalue(_) => opcode::SET_UPVALUE,
-        SetUpvaluePop(_) => opcode::SET_UPVALUE_POP,
-        CloseUpvalue(_) => opcode::CLOSE_UPVALUE,
-        GetIndex => opcode::GET_INDEX,
-        SetIndex => opcode::SET_INDEX,
-        GetPropertyId(_) => opcode::GET_PROPERTY_ID,
-        SetPropertyId(_) => opcode::SET_PROPERTY_ID,
-        SetPropertyIdPop(_) => opcode::SET_PROPERTY_ID_POP,
-        Array(_) => opcode::ARRAY,
-        Add => opcode::ADD,
-        AddLocalConst(..) => opcode::ADD_LOCAL_CONST,
-        Subtract => opcode::SUBTRACT,
-        SubLocalConst(..) => opcode::SUB_LOCAL_CONST,
-        SubConstLocal(..) => opcode::SUB_CONST_LOCAL,
-        Multiply => opcode::MULTIPLY,
-        Divide => opcode::DIVIDE,
-        Negate => opcode::NEGATE,
-        LeftShift => opcode::LEFT_SHIFT,
-        RightShift => opcode::RIGHT_SHIFT,
-        BitAnd => opcode::BIT_AND,
-        BitOr => opcode::BIT_OR,
-        BitXor => opcode::BIT_XOR,
-        BitNot => opcode::BIT_NOT,
-        Equal => opcode::EQUAL,
-        NotEqual => opcode::NOT_EQUAL,
-        LessThan => opcode::LESS_THAN,
-        LessThanEqual => opcode::LESS_THAN_EQUAL,
-        GreaterThan => opcode::GREATER_THAN,
-        GreaterThanEqual => opcode::GREATER_THAN_EQUAL,
-        And => opcode::AND,
-        Or => opcode::OR,
     }
 }
