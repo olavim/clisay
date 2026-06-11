@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::bail;
 
 use crate::core::gc::{Gc, GcTraceable};
@@ -53,16 +51,18 @@ impl NativeType for NativeArray {
         "Array"
     }
 
-    fn instance_methods(&self, gc: &mut Gc) -> HashMap<*mut ObjString, ObjNativeFn> {
-        let methods = vec![
-            (gc.intern("length"), 0, (|host, target, _args| Self::length(host, target)) as NativeFn),
-            (gc.preset_identifiers.get, 1, (|host, target, args| Self::get(host, target, args[0])) as NativeFn),
-            (gc.preset_identifiers.set, 2, (|host, target, args| Self::set(host, target, args[0], args[1])) as NativeFn),
-        ]
-            .into_iter()
-            .map(|(name, arity, function)| (name, ObjNativeFn::new(name, arity, function)))
-            .collect::<HashMap<_, _>>();
+    fn methods(&self, gc: &mut Gc) -> Vec<(*mut ObjString, ObjNativeFn)> {
+        let length = gc.intern("length");
+        vec![(length, ObjNativeFn::new(length, 0, (|host, target, _args| Self::length(host, target)) as NativeFn))]
+    }
 
-        methods
+    fn getter(&self, gc: &mut Gc) -> Option<ObjNativeFn> {
+        let name = gc.intern("get");
+        Some(ObjNativeFn::new(name, 1, (|host, target, args| Self::get(host, target, args[0])) as NativeFn))
+    }
+
+    fn setter(&self, gc: &mut Gc) -> Option<ObjNativeFn> {
+        let name = gc.intern("set");
+        Some(ObjNativeFn::new(name, 2, (|host, target, args| Self::set(host, target, args[0], args[1])) as NativeFn))
     }
 }

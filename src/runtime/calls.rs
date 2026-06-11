@@ -77,7 +77,7 @@ impl Vm {
 
     fn call_class(&mut self, arg_count: usize, class_ptr: *mut ObjClass) -> Result<(), anyhow::Error> {
         let class = unsafe { &*class_ptr };
-        let init_method_obj = class.resolve_method(self.gc.preset_identifiers.init).unwrap();
+        let init_method_obj = class.initializer().unwrap();
         match init_method_obj.tag() {
             objects::TAG_FUNCTION => {
                 let init_method_ref = init_method_obj.as_function_ptr();
