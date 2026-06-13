@@ -496,6 +496,10 @@ impl Vm {
                             let closure_ptr = object.as_closure_ptr();
                             let closure = unsafe { &*closure_ptr };
                             if arg_count == closure.arity as usize {
+                                if self.frames.is_full() {
+                                    self.ip = ip;
+                                    return Err(self.stack_overflow());
+                                }
                                 let stack_start = self.stack.offset(arg_count);
                                 self.frames.push(CallFrame {
                                     closure: closure_ptr,

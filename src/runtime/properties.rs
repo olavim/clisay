@@ -32,8 +32,7 @@ impl Vm {
                 let func_ptr = accessor.as_function_ptr();
                 let closure = self.create_closure(func_ptr);
                 let ip_start = unsafe { (*func_ptr).ip_start };
-                self.push_frame(closure.as_closure_ptr(), self.stack.offset(arg_count), ip_start);
-                Ok(())
+                self.push_frame(closure.as_closure_ptr(), self.stack.offset(arg_count), ip_start)
             },
             objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, accessor.as_native_function_ptr()),
             _ => unsafe { std::hint::unreachable_unchecked() }
