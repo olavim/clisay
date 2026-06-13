@@ -60,3 +60,15 @@ harness = false
 [[bench]]
 name = "method_calls"
 harness = false
+
+[[bench]]
+name = "alloc_gc"
+harness = false
+
+[[bench]]
+name = "strings"
+harness = false
+
+[[bench]]
+name = "arrays"
+harness = false
