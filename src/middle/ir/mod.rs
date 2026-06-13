@@ -1,6 +1,7 @@
 //! The intermediate representation.
 
 use anyhow::bail;
+use fnv::FnvHashMap;
 
 use crate::core::objects::ObjFn;
 use crate::core::value::Value;
@@ -90,6 +91,7 @@ pub struct Ir {
     code: Vec<Inst>,
     positions: Vec<SourcePosition>,
     constants: Vec<Value>,
+    constant_indices: FnvHashMap<Value, u8>,
     labels: Vec<Option<usize>>,
     /// Function entry points.
     entries: Vec<(*mut ObjFn, Label)>,
@@ -101,6 +103,7 @@ impl Ir {
             code: Vec::new(),
             positions: Vec::new(),
             constants: Vec::new(),
+            constant_indices: FnvHashMap::default(),
             labels: Vec::new(),
             entries: Vec::new(),
         }
@@ -131,12 +134,17 @@ impl Ir {
 
     /// Interns a constant, returning its pool index.
     pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
+        if let Some(&idx) = self.constant_indices.get(&value) {
+            return Ok(idx);
+        }
         if self.constants.len() >= u8::MAX as usize {
             bail!("Too many constants");
         }
 
+        let idx = self.constants.len() as u8;
         self.constants.push(value);
-        Ok((self.constants.len() - 1) as u8)
+        self.constant_indices.insert(value, idx);
+        Ok(idx)
     }
 
     pub fn code(&self) -> &[Inst] {
@@ -181,6 +189,6 @@ impl Ir {
             .map(|target| target.map(|idx| old_to_new[idx]))
             .collect();
 
-        Ir { code, positions, constants: self.constants, labels, entries: self.entries }
+        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, entries: self.entries }
     }
 }
