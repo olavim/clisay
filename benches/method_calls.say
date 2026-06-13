@@ -10,7 +10,7 @@ class Counter {
 
 say c = Counter();
 say i = 0;
-while i < 1000000 {
+while i < 500000 {
     c.inc();
     i = i + 1;
 }
