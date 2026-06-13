@@ -20,6 +20,11 @@ pub enum Inst {
     Call(u8),
     Jump(Label),
     JumpIfFalse(Label),
+    /// Short-circuit jumps for `&&`/`||`: peek the top value; if it is falsy
+    /// (resp. truthy) jump to the target leaving it on the stack, otherwise pop
+    /// it and fall through. The surviving value is the expression's result.
+    JumpIfFalseOrPop(Label),
+    JumpIfTrueOrPop(Label),
     JumpIfGe(Label),
     JumpIfGt(Label),
     JumpIfLe(Label),
@@ -85,8 +90,6 @@ pub enum Inst {
     LessThanEqual,
     GreaterThan,
     GreaterThanEqual,
-    And,
-    Or,
 }
 
 /// A whole program's worth of IR: the instruction stream (with a source position

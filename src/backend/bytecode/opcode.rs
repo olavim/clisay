@@ -63,6 +63,8 @@ opcodes! {
     Call => CALL(Byte),
     Jump => JUMP(Jump),
     JumpIfFalse => JUMP_IF_FALSE(Jump),
+    JumpIfFalseOrPop => JUMP_IF_FALSE_OR_POP(Jump),
+    JumpIfTrueOrPop => JUMP_IF_TRUE_OR_POP(Jump),
     JumpIfGe => JUMP_IF_GE(Jump),
     JumpIfGt => JUMP_IF_GT(Jump),
     JumpIfLe => JUMP_IF_LE(Jump),
@@ -128,6 +130,4 @@ opcodes! {
     LessThanEqual => LESS_THAN_EQUAL,
     GreaterThan => GREATER_THAN,
     GreaterThanEqual => GREATER_THAN_EQUAL,
-    And => AND,
-    Or => OR,
 }

@@ -1,0 +1,21 @@
+// && / || short-circuit and return an operand (truthy = not null and not false).
+fn boom() {
+    print("BOOM");
+    return 99;
+}
+
+// The right operand must NOT be evaluated when the left short-circuits.
+print(false && boom());   // expect: false
+print(null && boom());    // expect: null
+print(true || boom());    // expect: true
+print("x" || boom());     // expect: x
+
+// When it doesn't short-circuit, the operand value is returned (not coerced).
+print(5 && "h");          // expect: h
+print(null || 3);         // expect: 3
+print(true && 7);         // expect: 7
+print(false || 9);        // expect: 9
+
+// When the right operand IS evaluated, its side effect runs exactly once.
+say r = true && boom();   // expect: BOOM
+print(r);                 // expect: 99

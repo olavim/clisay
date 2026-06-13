@@ -522,6 +522,10 @@ impl Vm {
                 opcode::THROW => delegate!(self.op_throw()?),
                 opcode::PUSH_TRY => delegate!(self.op_push_try()),
                 opcode::POP_TRY => self.op_pop_try(),
+                // `&&`/`||` short-circuit. Cold (no loop runs them), so kept out of
+                // the inlined hot block to keep the dispatch loop body small.
+                opcode::JUMP_IF_FALSE_OR_POP => delegate!(self.op_jump_if_false_or_pop()),
+                opcode::JUMP_IF_TRUE_OR_POP => delegate!(self.op_jump_if_true_or_pop()),
                 opcode::CLOSE_UPVALUE => delegate!(self.op_close_upvalue()),
                 opcode::ARRAY => delegate!(self.op_array()),
                 opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
@@ -546,8 +550,6 @@ impl Vm {
                 opcode::LESS_THAN_EQUAL => delegate!(self.op_less_than_equal()?),
                 opcode::GREATER_THAN => delegate!(self.op_greater_than()?),
                 opcode::GREATER_THAN_EQUAL => delegate!(self.op_greater_than_equal()?),
-                opcode::AND => delegate!(self.op_and()?),
-                opcode::OR => delegate!(self.op_or()?),
                 _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }

@@ -80,6 +80,28 @@ impl Vm {
         self.try_frames.pop();
     }
 
+    /// `&&`: keep the top value and jump to the end when it is falsy (the result
+    /// is the left operand); otherwise pop it and fall through to evaluate the right.
+    pub(super) fn op_jump_if_false_or_pop(&mut self) {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        if self.stack.peek(0).is_falsy() {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        } else {
+            self.stack.truncate(1);
+        }
+    }
+
+    /// `||`: keep the top value and jump to the end when it is truthy; otherwise
+    /// pop it and fall through to evaluate the right operand.
+    pub(super) fn op_jump_if_true_or_pop(&mut self) {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        if !self.stack.peek(0).is_falsy() {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        } else {
+            self.stack.truncate(1);
+        }
+    }
+
     pub(super) fn op_array(&mut self) {
         let len = self.read_next() as usize;
         // Copy the elements without popping them first: they must stay on the stack
@@ -153,8 +175,6 @@ impl Vm {
     value_binop_methods! {
         op_equal     => |a, b| a.value_eq(b);
         op_not_equal => |a, b| !a.value_eq(b);
-        op_and       => |a, b| a.as_bool() && b.as_bool();
-        op_or        => |a, b| a.as_bool() || b.as_bool();
     }
 
     unary_op_methods! {
