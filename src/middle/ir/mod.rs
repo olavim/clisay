@@ -18,6 +18,10 @@ pub struct Label(usize);
 pub enum Inst {
     // Control flow
     Call(u8),
+    /// Fused method call `recv.name(args)`: `Invoke(name_const, arg_count)` resolves
+    /// the method on the receiver's class and pushes the frame directly, avoiding
+    /// the bound-method allocation that `GetIndex` + `Call` would incur.
+    Invoke(u8, u8),
     Jump(Label),
     JumpIfFalse(Label),
     /// Short-circuit jumps for `&&`/`||`: peek the top value; if it is falsy

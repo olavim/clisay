@@ -64,6 +64,14 @@ pub struct TryFrame {
     stack_start: *mut Value
 }
 
+/// A method invoke (`INVOKE`) whose member resolved through a getter — itself a
+/// frame call. The arguments are parked here until the getter frame returns its
+/// value (at call-stack depth `depth`), at which point the value is called.
+struct PendingInvoke {
+    args: SmallVec<[Value; 4]>,
+    depth: usize
+}
+
 pub struct Vm {
     pub(crate) gc: Gc,
     ip: *const OpCode,
@@ -75,6 +83,7 @@ pub struct Vm {
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     index_cache: Box<[IndexCache]>,
+    pending_invokes: Vec<PendingInvoke>,
     out: Vec<String>
 }
 
@@ -144,6 +153,7 @@ impl Vm {
             open_upvalues: Vec::new(),
             native_types,
             index_cache: vec![IndexCache { site: 0, class: std::ptr::null_mut(), member: ClassMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
+            pending_invokes: Vec::new(),
             out: Vec::new()
         };
 
@@ -252,6 +262,12 @@ impl Vm {
 
         for &upvalue in &self.open_upvalues {
             self.gc.mark_object(upvalue);
+        }
+
+        for pending in &self.pending_invokes {
+            for value in &pending.args {
+                value.mark(&mut self.gc);
+            }
         }
 
         for value in self.stack.iter() {
@@ -518,7 +534,7 @@ impl Vm {
                 },
                 opcode::RETURN => {
                     self.ip = ip;
-                    if !self.op_return() {
+                    if !self.op_return()? {
                         return Ok(self.out);
                     }
                     ip = self.ip;
@@ -535,6 +551,7 @@ impl Vm {
                 opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
                 opcode::PUSH_CLASS => delegate!(self.op_push_class()),
                 opcode::GET_GLOBAL => delegate!(self.op_get_global()?),
+                opcode::INVOKE => delegate!(self.op_invoke()?),
                 opcode::GET_INDEX => delegate!(self.op_get_index()?),
                 opcode::SET_INDEX => delegate!(self.op_set_index()?),
                 opcode::GET_PROPERTY_ID => delegate!(self.op_get_property_by_id()?),

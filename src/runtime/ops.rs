@@ -36,9 +36,9 @@ macro_rules! unary_op_methods {
 }
 
 impl Vm {
-    pub(super) fn op_return(&mut self) -> bool {
+    pub(super) fn op_return(&mut self) -> Result<bool, anyhow::Error> {
         if self.frames.len() == 1 {
-            return false;
+            return Ok(false);
         }
 
         let frame = self.frames.pop();
@@ -49,7 +49,13 @@ impl Vm {
         let value = self.stack.pop();
         self.stack.set_top(frame.stack_start);
         self.stack.push(value);
-        true
+
+        // A returned getter value may complete a deferred INVOKE. Kept here, off
+        // the inlined dispatch arm, so the hot loop body stays small.
+        if !self.pending_invokes.is_empty() {
+            self.complete_pending_invokes()?;
+        }
+        Ok(true)
     }
     
     pub(super) fn op_throw(&mut self) -> Result<(), anyhow::Error> {

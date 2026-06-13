@@ -89,6 +89,11 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(c, pos);
         }
 
+        Invoke(name, arg_count) => {
+            chunk.write(name, pos);
+            chunk.write(arg_count, pos);
+        }
+
         SubConstLocal(c, local) => {
             chunk.write(c, pos);
             chunk.write(local, pos);

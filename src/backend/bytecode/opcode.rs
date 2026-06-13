@@ -61,6 +61,7 @@ macro_rules! opcodes {
 
 opcodes! {
     Call => CALL(Byte),
+    Invoke => INVOKE(Const, Byte),
     Jump => JUMP(Jump),
     JumpIfFalse => JUMP_IF_FALSE(Jump),
     JumpIfFalseOrPop => JUMP_IF_FALSE_OR_POP(Jump),

@@ -26,6 +26,92 @@ impl Vm {
         }
     }
 
+    /// Fused method call (`INVOKE`). Fast-paths an instance method — pushing the
+    /// frame with the receiver as slot 0 and no bound-method allocation — and
+    /// falls back to a faithful "get the member, then call it" for every other
+    /// case (fields holding callables, getters, native receivers, errors).
+    pub(super) fn op_invoke(&mut self) -> Result<(), anyhow::Error> {
+        let name_idx = self.read_next() as usize;
+        let arg_count = self.read_next() as usize;
+        let name = self.chunk.constants[name_idx].as_object().as_string_ptr();
+        let receiver = self.stack.peek(arg_count);
+
+        if matches!(receiver.kind(), ValueKind::Object(ObjectKind::Instance)) {
+            let class_ptr = unsafe { (*receiver.as_object().as_instance_ptr()).class };
+            if let Some(ClassMember::Method(id)) = self.resolve_cached_class_property(class_ptr, name) {
+                let method = unsafe { &*class_ptr }.get_method(id);
+                if method.tag() == objects::TAG_FUNCTION {
+                    return self.invoke_method(method, arg_count);
+                }
+            }
+        }
+
+        self.invoke_member_slow(name, arg_count)
+    }
+
+    /// Pushes a frame for an instance method without allocating a bound method.
+    /// The receiver already sits at the base of the call window, so it becomes
+    /// slot 0 (`this`).
+    fn invoke_method(&mut self, method: Object, arg_count: usize) -> Result<(), anyhow::Error> {
+        let func_ptr = method.as_function_ptr();
+        let func = unsafe { &*func_ptr };
+        if arg_count != func.arity as usize {
+            let name = unsafe { &(*func.name).value };
+            return self.error(format!("{} expects {} arguments, but was called with {}", name, func.arity, arg_count));
+        }
+        let ip_start = func.ip_start;
+        let closure = self.create_closure(func_ptr);
+        self.push_frame(closure.as_closure_ptr(), self.stack.offset(arg_count), ip_start)
+    }
+
+    /// Fallback for non-fast-path receivers/members: fetch `receiver.name` exactly
+    /// as `GET_INDEX` would (handling fields, getters, native types, and errors),
+    /// then call the resulting value with the original arguments.
+    ///
+    /// When the member resolves through a getter, fetching it pushes a frame and
+    /// the value isn't available until that frame returns, so the call is deferred
+    /// (see [`Vm::complete_pending_invokes`]); otherwise it completes immediately.
+    fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize) -> Result<(), anyhow::Error> {
+        let mut args: SmallVec<[Value; 4]> = SmallVec::with_capacity(arg_count);
+        for i in (0..arg_count).rev() {
+            args.push(self.stack.peek(i));
+        }
+        self.stack.truncate(arg_count);     // leaves [receiver]
+        self.stack.push(Value::from(name)); // [receiver, name]
+
+        let depth = self.frames.len();
+        self.op_get_index()?;
+
+        if self.frames.len() == depth {
+            // Synchronous (field value / native): the member value is on the stack.
+            self.finish_invoke(args)
+        } else {
+            // A getter frame was pushed; complete the call when it returns.
+            self.pending_invokes.push(PendingInvoke { args, depth });
+            Ok(())
+        }
+    }
+
+    /// Calls the just-resolved member value (on the stack top) with `args`.
+    fn finish_invoke(&mut self, args: SmallVec<[Value; 4]>) -> Result<(), anyhow::Error> {
+        let arg_count = args.len();
+        let callable = self.stack.peek(0);
+        for arg in args {
+            self.stack.push(arg);
+        }
+        self.call(arg_count, callable)
+    }
+
+    /// Fires any deferred invoke whose getter frame has now returned (its value is
+    /// on the stack top). Called after a `RETURN` when invokes are pending.
+    pub(super) fn complete_pending_invokes(&mut self) -> Result<(), anyhow::Error> {
+        while self.pending_invokes.last().is_some_and(|p| p.depth == self.frames.len()) {
+            let pending = self.pending_invokes.pop().unwrap();
+            self.finish_invoke(pending.args)?;
+        }
+        Ok(())
+    }
+
     fn invoke_accessor(&mut self, accessor: Object, arg_count: usize) -> Result<(), anyhow::Error> {
         match accessor.tag() {
             objects::TAG_FUNCTION => {

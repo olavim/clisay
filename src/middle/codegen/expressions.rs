@@ -208,6 +208,21 @@ impl<'a> Compiler<'a> {
     }
 
     fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &Vec<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
+        // Fuse `recv.name(args)` into a single INVOKE when the receiver is an
+        // arbitrary expression (not `this`/`super`, which have their own member
+        // resolution) and the member is a literal name. This dispatches the method
+        // without the bound-method allocation of `GetIndex` + `Call`.
+        if let Some((target, name)) = self.as_method_invoke(callee) {
+            self.expression(&target)?;
+            for arg in args {
+                self.expression(arg)?;
+            }
+            let name_ref = self.gc.intern(name);
+            let idx = self.ir.add_constant(Value::from(name_ref))?;
+            self.emit(Inst::Invoke(idx, args.len() as u8), callee);
+            return Ok(());
+        }
+
         match self.hir.get(callee) {
             HirExpr::Super => {
                 let Member::SuperInit(member_id) = self.bindings.member(callee) else {
@@ -225,6 +240,18 @@ impl<'a> Compiler<'a> {
         self.emit(Inst::Call(args.len() as u8), callee);
 
         Ok(())
+    }
+
+    /// If `callee` is `recv.name` where `recv` is not `this`/`super` and `name` is
+    /// a literal, returns the receiver expression and the member name — the shape
+    /// that compiles to a fused `INVOKE`.
+    fn as_method_invoke(&self, callee: &HirId<HirExpr>) -> Option<(HirId<HirExpr>, String)> {
+        let HirExpr::Index(target, member) = self.hir.get(callee) else { return None };
+        if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
+            return None;
+        }
+        let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) else { return None };
+        Some((*target, name.clone()))
     }
 
     fn lambda(&mut self, expr: &HirId<HirExpr>, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
