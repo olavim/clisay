@@ -10,6 +10,14 @@ use super::objects::{ObjClosure, ObjString, ObjUpvalue, ObjectHeader, ObjectKind
 /// by size alone with this fixed alignment.
 const OBJ_ALIGN: usize = 8;
 
+/// The collection threshold floor, and the value `next_gc` starts at.
+const INITIAL_GC_THRESHOLD: usize = 1024 * 1024;
+
+/// After each collection, the next threshold is set to the live heap times this
+/// factor, so collection frequency scales with the live set instead of firing on
+/// every allocation once the heap exceeds a fixed size.
+const GC_GROW_FACTOR: usize = 2;
+
 pub trait GcTraceable {
     fn fmt(&self) -> String;
     fn mark(&self, gc: &mut Gc);
@@ -59,7 +67,7 @@ impl Gc {
             reachable_refs: Vec::new(),
             free_lists: FnvHashMap::default(),
             bytes_allocated: 0,
-            next_gc: 1024 * 1024,
+            next_gc: INITIAL_GC_THRESHOLD,
             stress: false
         }
     }
@@ -150,6 +158,9 @@ impl Gc {
         self.mark_reachable();
         self.sweep_strings();
         self.sweep_objects();
+        // Scale the next threshold to the surviving live set so collection
+        // frequency tracks live size, never below the initial floor.
+        self.next_gc = self.bytes_allocated.saturating_mul(GC_GROW_FACTOR).max(INITIAL_GC_THRESHOLD);
     }
 
     fn mark_reachable(&mut self) {
