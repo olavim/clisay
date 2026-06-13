@@ -35,6 +35,7 @@ pub trait NativeType {
             member_id += 1;
         }
         class.member_count = member_id;
+        class.build_template();
 
         class
     }

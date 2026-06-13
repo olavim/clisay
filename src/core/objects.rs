@@ -377,7 +377,9 @@ pub struct ObjClass {
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
     /// `None` for native classes, which have no initializer.
-    pub init_id: Option<MemberId>
+    pub init_id: Option<MemberId>,
+    /// Prebuilt initial instance values (method slots filled, fields `NULL`).
+    pub template: Box<[Value]>
 }
 
 impl ObjClass {
@@ -391,8 +393,19 @@ impl ObjClass {
             member_count: 0,
             getter_id: None,
             setter_id: None,
-            init_id: None
+            init_id: None,
+            template: Box::new([])
         }
+    }
+
+    /// Builds the initial instance-value template from the finalized members.
+    /// Call once after `methods`/`member_count` are fully populated.
+    pub fn build_template(&mut self) {
+        let mut values = vec![Value::NULL; self.member_count as usize].into_boxed_slice();
+        for (&id, &method) in &self.methods {
+            values[id as usize] = Value::from(method);
+        }
+        self.template = values;
     }
 
     pub fn resolve(&self, name: *mut ObjString) -> Option<ClassMember> {
@@ -441,6 +454,7 @@ impl GcTraceable for ObjClass {
     fn size(&self) -> usize {
         mem::size_of::<ObjClass>()
             + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<ClassMember>())
+            + self.template.len() * mem::size_of::<Value>()
     }
 }
 
@@ -456,16 +470,10 @@ pub struct ObjInstance {
 impl ObjInstance {
     pub fn new(class_ptr: *mut ObjClass) -> ObjInstance {
         let class = unsafe { &*class_ptr };
-        let mut values = vec![Value::NULL; class.member_count as usize].into_boxed_slice();
-
-        for (&id, &method) in &class.methods {
-            values[id as usize] = Value::from(method);
-        }
-
         ObjInstance {
             header: ObjectHeader::new(ObjectKind::Instance),
             class: class_ptr,
-            values
+            values: class.template.clone()
         }
     }
 

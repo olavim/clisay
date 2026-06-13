@@ -51,6 +51,7 @@ impl<'a> Compiler<'a> {
             self.install_method(&mut class, stmt_id, name)?;
         }
 
+        class.build_template();
         let class = self.gc.alloc(class);
         let idx = self.ir.add_constant(Value::from(class))?;
         self.classes.insert(class_name, class);
