@@ -2,7 +2,10 @@
 pub struct Stack<T, const N: usize> {
     values: [T; N],
     top: *mut T,
-    bottom: *mut T
+    bottom: *mut T,
+    /// One past the last slot (`bottom + N`), precomputed so `is_full` is a bare
+    /// pointer comparison with no address arithmetic on the hot path.
+    end: *mut T
 }
 
 impl<'a, T: Copy, const N: usize> Stack<T, N> {
@@ -10,13 +13,15 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
         Self {
             values: [unsafe { std::mem::zeroed() }; N],
             top: std::ptr::null_mut(),
-            bottom: std::ptr::null_mut()
+            bottom: std::ptr::null_mut(),
+            end: std::ptr::null_mut()
         }
     }
 
     pub fn init(&mut self) {
         self.top = self.values.as_mut_ptr();
         self.bottom = self.values.as_mut_ptr();
+        self.end = unsafe { self.values.as_mut_ptr().add(N) };
     }
 
     #[inline]
@@ -92,6 +97,14 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
     pub fn len(&self) -> usize {
         // unsafe { self.top.offset_from(self.bottom) as usize }
         (self.top as isize - self.bottom as isize) as usize / std::mem::size_of::<T>()
+    }
+
+    /// Whether the backing array is full, i.e. a further `push` would write out
+    /// of bounds. A bare pointer comparison against the precomputed `end`, cheap
+    /// enough to guard the hot call path.
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.top >= self.end
     }
 }
 
@@ -184,6 +197,11 @@ impl<'a, T: Copy, const N: usize> CachedStack<T, N> {
     #[inline]
     pub fn top_ptr(&self) -> *mut T {
         self.stack.top
+    }
+
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.stack.is_full()
     }
 
     #[inline]

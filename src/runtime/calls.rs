@@ -10,13 +10,26 @@ macro_rules! check_arity {
 }
 
 impl Vm {
-    pub(super) fn push_frame(&mut self, closure: *mut ObjClosure, stack_start: *mut Value, ip_start: usize) {
+    /// The stack-overflow error, kept off the hot call path. `#[cold]` +
+    /// `#[inline(never)]` so the bulky error/trace formatting isn't inlined into
+    /// the dispatch loop's `CALL` arm (which would bloat the hot loop body).
+    #[cold]
+    #[inline(never)]
+    pub(super) fn stack_overflow(&mut self) -> anyhow::Error {
+        self.error("Stack overflow").unwrap_err()
+    }
+
+    pub(super) fn push_frame(&mut self, closure: *mut ObjClosure, stack_start: *mut Value, ip_start: usize) -> Result<(), anyhow::Error> {
+        if self.frames.is_full() {
+            return Err(self.stack_overflow());
+        }
         self.frames.push(CallFrame {
             closure,
             return_ip: self.ip,
             stack_start
         });
         self.ip = unsafe { self.chunk.code.as_ptr().offset(ip_start as isize) };
+        Ok(())
     }
 
     pub(crate) fn call(&mut self, arg_count: usize, value: Value) -> Result<(), anyhow::Error> {
@@ -51,8 +64,7 @@ impl Vm {
     fn call_closure(&mut self, arg_count: usize, closure_ptr: *mut ObjClosure) -> Result<(), anyhow::Error> {
         let closure = unsafe { &*closure_ptr };
         check_arity!(self, arg_count, closure.arity, closure.name);
-        self.push_frame(closure_ptr, self.stack.offset(arg_count), closure.ip_start);
-        Ok(())
+        self.push_frame(closure_ptr, self.stack.offset(arg_count), closure.ip_start)
     }
 
     fn call_bound_method(&mut self, arg_count: usize, bound_method_ptr: *mut ObjBoundMethod) -> Result<(), anyhow::Error> {
@@ -64,7 +76,7 @@ impl Vm {
                 let closure = unsafe { &*closure_ptr };
                 check_arity!(self, arg_count, closure.arity, closure.name);
                 let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
-                self.push_frame(closure_ptr, stack_start, closure.ip_start);
+                self.push_frame(closure_ptr, stack_start, closure.ip_start)?;
             },
             objects::TAG_NATIVE_FUNCTION => {
                 self.stack.set(arg_count, Value::from(bound_method.target));
@@ -91,8 +103,7 @@ impl Vm {
                 let instance = self.alloc(ObjInstance::new(class_ptr));
                 self.stack.pop();
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
-                self.push_frame(closure.as_closure_ptr(), stack_start, init_method.ip_start);
-                Ok(())
+                self.push_frame(closure.as_closure_ptr(), stack_start, init_method.ip_start)
             },
             objects::TAG_NATIVE_FUNCTION => {
                 self.call_native(arg_count, init_method_obj.as_native_function_ptr())?;
