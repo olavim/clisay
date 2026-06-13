@@ -534,6 +534,7 @@ impl Vm {
                 opcode::SET_PROPERTY_ID => delegate!(self.op_set_property_by_id()?),
                 opcode::SET_PROPERTY_ID_POP => delegate!(self.op_set_property_by_id_pop()?),
                 opcode::NEGATE => delegate!(self.op_negate()?),
+                opcode::NOT => self.op_not(),
                 opcode::LEFT_SHIFT => delegate!(self.op_left_shift()?),
                 opcode::RIGHT_SHIFT => delegate!(self.op_right_shift()?),
                 opcode::BIT_AND => delegate!(self.op_bit_and()?),

@@ -67,6 +67,7 @@ pub enum Inst {
     Multiply,
     Divide,
     Negate,
+    Not,
     LeftShift,
     RightShift,
     BitAnd,

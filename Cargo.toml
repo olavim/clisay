@@ -26,6 +26,17 @@ test-generator = "0.3.1"
 default = []
 capture_output = []
 
+# The lib and bin unittest harnesses don't understand criterion's flags
+# (e.g. --save-baseline), and `cargo bench` would otherwise run them in bench
+# mode and abort. Only the criterion bench targets should run under `cargo bench`.
+[lib]
+bench = false
+
+[[bin]]
+name = "clisay"
+path = "src/main.rs"
+bench = false
+
 [profile.release]
 debug = true
 
