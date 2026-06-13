@@ -10,31 +10,37 @@ use super::NativeType;
 pub struct NativeArray;
 
 impl NativeArray {
+    /// Validates an array index against `len`: it must be a non-negative integer
+    /// number in bounds. Shared by `get` and `set` so reads and writes reject the
+    /// same inputs identically.
+    fn checked_index(index: Value, len: usize) -> Result<usize, anyhow::Error> {
+        if !matches!(index.kind(), ValueKind::Number) {
+            bail!("Invalid array index: {}", index.fmt());
+        }
+
+        let i = index.as_number();
+        if i.fract() != 0.0 {
+            bail!("Invalid array index: {}", index.fmt());
+        }
+
+        if i < 0.0 || i >= len as f64 {
+            bail!("Array index out of bounds: {}", index.fmt());
+        }
+
+        Ok(i as usize)
+    }
+
     fn get(host: &mut dyn Host, target: Value, prop: Value) -> Result<(), anyhow::Error> {
-        if !matches!(prop.kind(), ValueKind::Number) {
-            bail!("Invalid array index: {}", prop.fmt());
-        };
-
-        let index = prop.as_number();
-
-        if index.fract() != 0.0 {
-            bail!("Invalid array index: {}", prop.fmt());
-        }
-
         let array = unsafe { &*target.as_object().as_array_ptr() };
-
-        if index < 0.0 || index >= array.values.len() as f64 {
-            bail!("Array index out of bounds: {}", prop.fmt());
-        }
-
-        host.push(array.values[index as usize]);
+        let index = Self::checked_index(prop, array.values.len())?;
+        host.push(array.values[index]);
         Ok(())
     }
 
     fn set(host: &mut dyn Host, target: Value, index: Value, value: Value) -> Result<(), anyhow::Error> {
-        let target = unsafe { &mut *target.as_object().as_array_ptr() };
-        let index = index.as_number() as usize;
-        target.values[index] = value;
+        let array = unsafe { &mut *target.as_object().as_array_ptr() };
+        let i = Self::checked_index(index, array.values.len())?;
+        array.values[i] = value;
         host.push(value);
         Ok(())
     }
