@@ -342,7 +342,7 @@ impl GcTraceable for ObjBoundMethod {
 
     fn mark(&self, gc: &mut Gc) {
         self.target.mark(gc);
-        self.method.mark(gc);
+        gc.mark_object(self.method);
     }
 
     fn size(&self) -> usize {

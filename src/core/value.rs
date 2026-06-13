@@ -147,7 +147,7 @@ impl GcTraceable for Value {
 
     fn mark(&self, gc: &mut Gc) {
         if self.is_object() {
-            self.as_object().mark(gc);
+            gc.mark_object(self.as_object());
         }
     }
 

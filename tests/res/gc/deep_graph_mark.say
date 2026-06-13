@@ -1,0 +1,28 @@
+// A deeply nested live object graph must be markable without overflowing the
+// host stack. Build a 50000-node linked list kept live via `head`, then force a
+// full collection while it is reachable. Recursive marking overflows the native
+// stack here; iterative (worklist) marking handles it. Walking the list and
+// counting proves every node survived the collection.
+class Node {
+    next;
+    init(n) {
+        this.next = n;
+    }
+}
+
+say head = null;
+say i = 0;
+while i < 50000 {
+    head = Node(head);
+    i = i + 1;
+}
+
+gcCollect();
+
+say count = 0;
+say cur = head;
+while cur != null {
+    count = count + 1;
+    cur = cur.next;
+}
+print(count); // expect: 50000
