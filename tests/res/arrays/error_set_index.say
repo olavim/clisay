@@ -1,0 +1,11 @@
+say arr = [0];
+arr[1] = 9; // error: Array index out of bounds: 1
+// @split
+say arr = [0];
+arr[-1] = 9; // error: Array index out of bounds: -1
+// @split
+say arr = [0];
+arr[1.5] = 9; // error: Invalid array index: 1.5
+// @split
+say arr = [0];
+arr["x"] = 9; // error: Invalid array index: "x"
