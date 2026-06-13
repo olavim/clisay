@@ -22,7 +22,7 @@ impl fmt::Display for ValueKind {
 }
 
 /// NaN boxed value
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub struct Value(u64);
 
 impl Value {

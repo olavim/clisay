@@ -2,6 +2,7 @@
 //! jump `Label`s and a constant pool.
 
 use anyhow::bail;
+use fnv::FnvHashMap;
 
 use crate::core::objects::ObjFn;
 use crate::core::value::Value;
@@ -103,6 +104,8 @@ pub struct Ir {
     code: Vec<Inst>,
     positions: Vec<SourcePosition>,
     constants: Vec<Value>,
+    /// Maps an already-pooled constant to its index.
+    constant_indices: FnvHashMap<Value, u8>,
     /// `labels[id]` is the instruction index a label is bound to, or `None`
     /// until [`bind`](Ir::bind) is called.
     labels: Vec<Option<usize>>,
@@ -117,6 +120,7 @@ impl Ir {
             code: Vec::new(),
             positions: Vec::new(),
             constants: Vec::new(),
+            constant_indices: FnvHashMap::default(),
             labels: Vec::new(),
             entries: Vec::new(),
         }
@@ -149,14 +153,20 @@ impl Ir {
         &self.entries
     }
 
-    /// Interns a constant, returning its pool index.
+    /// Interns a constant, returning its pool index. Equal values reuse one slot,
+    /// so the 255-entry pool isn't exhausted by repeated literals.
     pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
+        if let Some(&idx) = self.constant_indices.get(&value) {
+            return Ok(idx);
+        }
         if self.constants.len() >= u8::MAX as usize {
             bail!("Too many constants");
         }
 
+        let idx = self.constants.len() as u8;
         self.constants.push(value);
-        Ok((self.constants.len() - 1) as u8)
+        self.constant_indices.insert(value, idx);
+        Ok(idx)
     }
 
     pub fn code(&self) -> &[Inst] {
@@ -202,6 +212,6 @@ impl Ir {
             .map(|target| target.map(|idx| old_to_new[idx]))
             .collect();
 
-        Ir { code, positions, constants: self.constants, labels, entries: self.entries }
+        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, entries: self.entries }
     }
 }
