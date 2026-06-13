@@ -14,6 +14,7 @@ pub struct Label(usize);
 pub enum Inst {
     // Control flow
     Call(u8),
+    Invoke(u8, u8),
     Jump(Label),
     JumpIfFalse(Label),
     JumpIfFalseOrPop(Label),
