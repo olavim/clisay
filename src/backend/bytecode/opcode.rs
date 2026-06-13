@@ -114,6 +114,7 @@ opcodes! {
     Multiply => MULTIPLY,
     Divide => DIVIDE,
     Negate => NEGATE,
+    Not => NOT,
     LeftShift => LEFT_SHIFT,
     RightShift => RIGHT_SHIFT,
     BitAnd => BIT_AND,

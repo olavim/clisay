@@ -56,7 +56,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Pop
         | PushNull | PushTrue | PushFalse
         | GetIndex | SetIndex
-        | Add | Subtract | Multiply | Divide | Negate
+        | Add | Subtract | Multiply | Divide | Negate | Not
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
         | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
         | And | Or => {}

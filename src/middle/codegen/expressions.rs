@@ -267,6 +267,6 @@ fn unop_inst(op: UnOp) -> Inst {
     match op {
         UnOp::Negate => Inst::Negate,
         UnOp::BitNot => Inst::BitNot,
-        UnOp::Not => unreachable!("logical-not has no opcode"),
+        UnOp::Not => Inst::Not,
     }
 }

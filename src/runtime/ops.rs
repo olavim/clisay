@@ -162,6 +162,12 @@ impl Vm {
         op_bit_not => |v| is_number => !(v.as_number() as i64) as f64;
     }
 
+    /// Logical not. The only falsy values are `null` and `false`.
+    pub(super) fn op_not(&mut self) {
+        let v = self.stack.pop();
+        self.stack.push(Value::from(v.is_null() || v == Value::FALSE));
+    }
+
     fn binary_op_number<F: Fn(f64, f64) -> Value>(&mut self, func: F, token: impl Into<String>) -> Result<(), anyhow::Error> {
         let b = self.stack.pop();
         let a = self.stack.pop();
