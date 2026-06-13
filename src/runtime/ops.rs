@@ -80,6 +80,24 @@ impl Vm {
         self.try_frames.pop();
     }
 
+    pub(super) fn op_jump_if_false_or_pop(&mut self) {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        if self.stack.peek(0).is_falsy() {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        } else {
+            self.stack.truncate(1);
+        }
+    }
+
+    pub(super) fn op_jump_if_true_or_pop(&mut self) {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        if !self.stack.peek(0).is_falsy() {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        } else {
+            self.stack.truncate(1);
+        }
+    }
+
     pub(super) fn op_array(&mut self) {
         let len = self.read_next() as usize;
         let values = unsafe {
@@ -151,8 +169,6 @@ impl Vm {
     value_binop_methods! {
         op_equal     => |a, b| a.value_eq(b);
         op_not_equal => |a, b| !a.value_eq(b);
-        op_and       => |a, b| a.as_bool() && b.as_bool();
-        op_or        => |a, b| a.as_bool() || b.as_bool();
     }
 
     unary_op_methods! {

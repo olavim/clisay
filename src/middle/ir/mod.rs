@@ -16,6 +16,8 @@ pub enum Inst {
     Call(u8),
     Jump(Label),
     JumpIfFalse(Label),
+    JumpIfFalseOrPop(Label),
+    JumpIfTrueOrPop(Label),
     JumpIfGe(Label),
     JumpIfGt(Label),
     JumpIfLe(Label),
@@ -81,8 +83,6 @@ pub enum Inst {
     LessThanEqual,
     GreaterThan,
     GreaterThanEqual,
-    And,
-    Or,
 }
 
 pub struct Ir {

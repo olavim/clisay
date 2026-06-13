@@ -58,8 +58,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | GetIndex | SetIndex
         | Add | Subtract | Multiply | Divide | Negate | Not
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
-        | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
-        | And | Or => {}
+        | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual => {}
 
         Call(b)
         | Array(b)
@@ -70,6 +69,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
 
         Jump(l)
         | JumpIfFalse(l)
+        | JumpIfFalseOrPop(l) | JumpIfTrueOrPop(l)
         | JumpIfGe(l) | JumpIfGt(l)
         | JumpIfLe(l) | JumpIfLt(l)
         | JumpIfEq(l) | JumpIfNeq(l)

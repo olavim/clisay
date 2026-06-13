@@ -104,9 +104,27 @@ impl<'a> Compiler<'a> {
     }
 
     fn binary_expression(&mut self, op: BinOp, left: &HirId<HirExpr>, right: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if let BinOp::And | BinOp::Or = op {
+            return self.logical_expression(op, left, right);
+        }
+
         self.expression(left)?;
         self.expression(right)?;
         self.emit(binop_inst(op), right);
+        Ok(())
+    }
+
+    fn logical_expression(&mut self, op: BinOp, left: &HirId<HirExpr>, right: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let end = self.ir.new_label();
+        self.expression(left)?;
+        let short_circuit = match op {
+            BinOp::And => Inst::JumpIfFalseOrPop(end),
+            BinOp::Or => Inst::JumpIfTrueOrPop(end),
+            _ => unreachable!("logical_expression called with a non-logical operator"),
+        };
+        self.emit(short_circuit, left);
+        self.expression(right)?;
+        self.ir.bind(end);
         Ok(())
     }
 
@@ -241,8 +259,7 @@ fn binop_inst(op: BinOp) -> Inst {
         BinOp::GreaterThanEqual => Inst::GreaterThanEqual,
         BinOp::Equal => Inst::Equal,
         BinOp::NotEqual => Inst::NotEqual,
-        BinOp::And => Inst::And,
-        BinOp::Or => Inst::Or,
+        BinOp::And | BinOp::Or => unreachable!("logical ops compile to short-circuit branches"),
         BinOp::BitAnd => Inst::BitAnd,
         BinOp::BitOr => Inst::BitOr,
         BinOp::BitXor => Inst::BitXor,
