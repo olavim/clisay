@@ -2,6 +2,7 @@ mod token;
 mod token_stream;
 
 use std::fmt;
+use std::rc::Rc;
 use std::sync::LazyLock;
 
 use anyhow::bail;
@@ -19,7 +20,7 @@ static REGEX_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\S\r\
 
 #[derive(Clone)]
 pub struct SourcePosition {
-    pub file: String,
+    pub file: Rc<str>,
     pub line: usize
 }
 
@@ -79,9 +80,10 @@ pub fn tokenize(file_name: String, input: String) -> Result<Vec<Token>, anyhow::
     let mut tokens: Vec<Token> = Vec::new();
     let mut input_index = 0;
     let mut line = 1;
+    let file: Rc<str> = Rc::from(file_name);
 
     while tokens.last().map_or(true, |t| t.kind != TokenType::EOF) {
-        let pos = SourcePosition { file: file_name.clone(), line };
+        let pos = SourcePosition { file: file.clone(), line };
         let mut token = next_token(&input, input_index, &pos)?;
         token.pos = pos;
         input_index += token.lexeme.len();
