@@ -91,7 +91,6 @@ opcodes! {
 
     // Gets/sets
     GetGlobal => GET_GLOBAL(Const),
-    SetGlobal => SET_GLOBAL(Const),
     GetLocal => GET_LOCAL(Local),
     SetLocal => SET_LOCAL(Local),
     SetLocalPop => SET_LOCAL_POP(Local),

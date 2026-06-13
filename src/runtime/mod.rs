@@ -527,7 +527,6 @@ impl Vm {
                 opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
                 opcode::PUSH_CLASS => delegate!(self.op_push_class()),
                 opcode::GET_GLOBAL => delegate!(self.op_get_global()?),
-                opcode::SET_GLOBAL => unsafe { std::hint::unreachable_unchecked() },
                 opcode::GET_INDEX => delegate!(self.op_get_index()?),
                 opcode::SET_INDEX => delegate!(self.op_set_index()?),
                 opcode::GET_PROPERTY_ID => delegate!(self.op_get_property_by_id()?),

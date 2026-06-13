@@ -64,7 +64,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         Call(b)
         | Array(b)
         | PushConstant(b) | PushClosure(b) | PushClass(b)
-        | GetGlobal(b) | SetGlobal(b) | GetLocal(b) | SetLocal(b) | SetLocalPop(b)
+        | GetGlobal(b) | GetLocal(b) | SetLocal(b) | SetLocalPop(b)
         | CloseUpvalue(b) | GetUpvalue(b) | SetUpvalue(b) | SetUpvaluePop(b)
         | GetPropertyId(b) | SetPropertyId(b) | SetPropertyIdPop(b) => chunk.write(b, pos),
 

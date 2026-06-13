@@ -421,6 +421,11 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 let place = self.resolve_place(name)?;
+                // Script code can't create or reassign globals (only native fns live
+                // there); an assignment target that resolves to a global is undefined.
+                if let Place::Global(_) = place {
+                    compiler_error!(self, lhs, "Cannot assign to undefined variable '{}'", self.hir.text(name));
+                }
                 self.bindings.places.insert(*lhs, place);
                 self.expression(rhs)?;
                 Ok(())

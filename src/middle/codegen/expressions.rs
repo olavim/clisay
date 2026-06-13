@@ -88,12 +88,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::GetLocal(0), node); // push `this` (the target)
                 self.emit(if discarded { Inst::SetPropertyIdPop(id) } else { Inst::SetPropertyId(id) }, node);
             },
-            Place::Global(symbol) => {
-                let name = self.gc.intern(self.hir.text(symbol));
-                let idx = self.ir.add_constant(Value::from(name))?;
-                self.emit(Inst::SetGlobal(idx), node);
-                if discarded { self.emit(Inst::Pop, node); }
-            }
+            Place::Global(_) => unreachable!("assignment to a global is rejected during resolution"),
         }
         Ok(())
     }
