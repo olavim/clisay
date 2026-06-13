@@ -1,7 +1,5 @@
 //! Name resolution.
 
-use std::collections::HashMap;
-
 use anyhow::anyhow;
 use anyhow::bail;
 use fnv::FnvHashMap;
@@ -71,17 +69,17 @@ impl ClassLayout {
 
 pub struct Bindings {
     /// Identifier uses and assignment targets => their binding.
-    places: HashMap<HirId<HirExpr>, Place>,
+    places: FnvHashMap<HirId<HirExpr>, Place>,
     /// `this`/`super` member accesses => their resolution.
-    members: HashMap<HirId<HirExpr>, Member>,
+    members: FnvHashMap<HirId<HirExpr>, Member>,
     /// `say`/`fn`/`class` statements => the local slot they occupy.
-    slots: HashMap<HirId<HirStmt>, u8>,
+    slots: FnvHashMap<HirId<HirStmt>, u8>,
     /// Function bodies => the captured upvalues of that function.
-    upvalues: HashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
+    upvalues: FnvHashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
     /// Class declarations => their member layout.
-    classes: HashMap<HirId<HirStmt>, ClassLayout>,
+    classes: FnvHashMap<HirId<HirStmt>, ClassLayout>,
     /// Scope nodes (by HIR node index) => locals to clean up on exit.
-    cleanups: HashMap<usize, Vec<Cleanup>>,
+    cleanups: FnvHashMap<usize, Vec<Cleanup>>,
 }
 
 impl Bindings {
@@ -144,12 +142,12 @@ pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
     let mut resolver = Resolver {
         hir,
         bindings: Bindings {
-            places: HashMap::new(),
-            members: HashMap::new(),
-            slots: HashMap::new(),
-            upvalues: HashMap::new(),
-            classes: HashMap::new(),
-            cleanups: HashMap::new(),
+            places: FnvHashMap::default(),
+            members: FnvHashMap::default(),
+            slots: FnvHashMap::default(),
+            upvalues: FnvHashMap::default(),
+            classes: FnvHashMap::default(),
+            cleanups: FnvHashMap::default(),
         },
         locals: Vec::new(),
         scope_depth: 0,
