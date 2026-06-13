@@ -88,6 +88,10 @@ impl Value {
         self == Self::NULL
     }
 
+    pub fn is_falsy(self) -> bool {
+        self.is_null() || self == Self::FALSE
+    }
+
     pub fn is_callable(self) -> bool {
         (self.0 & Self::CALLABLE_MASK) == Self::CALLABLE_MASK
     }

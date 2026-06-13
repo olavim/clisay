@@ -390,7 +390,7 @@ impl Vm {
                 opcode::JUMP_IF_FALSE => {
                     let offset = read_short!() as usize;
                     let value = self.stack.pop();
-                    if value.is_bool() && !value.as_bool() {
+                    if value.is_falsy() {
                         ip = unsafe { code_base.add(offset) };
                     }
                 },
