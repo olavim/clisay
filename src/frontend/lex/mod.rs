@@ -2,18 +2,20 @@ mod token;
 mod token_stream;
 
 use std::fmt;
+use std::sync::LazyLock;
 
 use anyhow::bail;
 use regex::Regex;
 pub use token::{Token, TokenType};
 pub use token_stream::TokenStream;
 
-const REGEX_STRING: &str = r#""([^"\\]|\\.)*""#;
-const REGEX_NUMERIC: &str = r"(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?";
-const REGEX_ALPHANUMERIC: &str = r"[a-zA-Z_][a-zA-Z0-9_]*";
-const REGEX_COMMENT: &str = r"\/\/[^\n\r]*";
-const REGEX_NEWLINE: &str = r"(\r\n|\r|\n)";
-const REGEX_WHITESPACE: &str = r"[^\S\r\n]+";
+// Compile token patterns once on first use.
+static REGEX_STRING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"\\]|\\.)*""#).unwrap());
+static REGEX_NUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?").unwrap());
+static REGEX_ALPHANUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[a-zA-Z_][a-zA-Z0-9_]*").unwrap());
+static REGEX_COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\/\/[^\n\r]*").unwrap());
+static REGEX_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\r\n|\r|\n)").unwrap());
+static REGEX_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\S\r\n]+").unwrap());
 
 #[derive(Clone)]
 pub struct SourcePosition {
@@ -27,8 +29,8 @@ impl fmt::Display for SourcePosition {
     }
 }
 
-fn find_at<'a>(regex: &str, input: &'a str, pos: usize) -> Option<usize> {
-    return match Regex::new(regex).unwrap().find(&input[pos..]) {
+fn find_at(regex: &Regex, input: &str, pos: usize) -> Option<usize> {
+    return match regex.find(&input[pos..]) {
         Some(mat) if mat.start() == 0 => Option::from(pos + mat.len()),
         _ => None
     };
@@ -39,27 +41,27 @@ fn next_token(input: &str, input_index: usize, pos: &SourcePosition) -> Result<T
         return Ok(Token::new(TokenType::EOF, ""));
     }
     
-    if let Some(end) = find_at(REGEX_COMMENT, input, input_index) {
+    if let Some(end) = find_at(&REGEX_COMMENT, input, input_index) {
         return Ok(Token::new(TokenType::Comment, &input[input_index..end]));
     }
     
-    if let Some(end) = find_at(REGEX_WHITESPACE, input, input_index) {
+    if let Some(end) = find_at(&REGEX_WHITESPACE, input, input_index) {
         return Ok(Token::new(TokenType::Whitespace, &input[input_index..end]));
     }
     
-    if let Some(end) = find_at(REGEX_NEWLINE, input, input_index) {
+    if let Some(end) = find_at(&REGEX_NEWLINE, input, input_index) {
         return Ok(Token::new(TokenType::Newline, &input[input_index..end]));
     }
     
-    if let Some(end) = find_at(REGEX_ALPHANUMERIC, input, input_index) {
+    if let Some(end) = find_at(&REGEX_ALPHANUMERIC, input, input_index) {
         return Ok(Token::from_alphanumeric(&input[input_index..end]));
     }
     
-    if let Some(end) = find_at(REGEX_NUMERIC, input, input_index) {
+    if let Some(end) = find_at(&REGEX_NUMERIC, input, input_index) {
         return Ok(Token::new(TokenType::NumericLiteral, &input[input_index..end]));
     }
     
-    if let Some(end) = find_at(REGEX_STRING, input, input_index) {
+    if let Some(end) = find_at(&REGEX_STRING, input, input_index) {
         return Ok(Token::new(TokenType::StringLiteral, &input[input_index..end]));
     }
 
