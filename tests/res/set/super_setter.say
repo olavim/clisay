@@ -1,6 +1,6 @@
 type A {
-    prop;
-    value;
+    pub prop;
+    pub value;
 
     set(prop, value) {
         this.prop = prop;

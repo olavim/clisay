@@ -4,6 +4,7 @@
 use anyhow::anyhow;
 use anyhow::bail;
 use fnv::FnvHashMap;
+use nohash_hasher::IntSet;
 
 use crate::compiler_error;
 use crate::core::objects::{ClassMember, UpvalueLocation};
@@ -57,6 +58,10 @@ pub struct TypeLayout {
     pub members: FnvHashMap<Symbol, ClassMember>,
     /// Field member ids. Includes inherited members.
     pub fields: Vec<u8>,
+    /// Member ids that are **not** externally accessible (private or `inner`).
+    /// Includes inherited non-public members. Consumed by the VM to reject external
+    /// `obj.member` access at the dynamic boundary.
+    pub non_public: IntSet<u8>,
     pub member_count: u8,
 
     /// Member id of the getter function.
@@ -615,6 +620,7 @@ impl<'a> Resolver<'a> {
             superclass: decl.superclass,
             members: FnvHashMap::default(),
             fields: Vec::new(),
+            non_public: IntSet::default(),
             getter_id: None,
             setter_id: None,
             init_id: 0,
@@ -625,6 +631,7 @@ impl<'a> Resolver<'a> {
         if let Some(superclass) = &superclass {
             layout.members = superclass.members.clone();
             layout.fields = superclass.fields.clone();
+            layout.non_public = superclass.non_public.clone();
             // Accessors are inherited unless overridden below; the initializer is not.
             layout.getter_id = superclass.getter_id;
             layout.setter_id = superclass.setter_id;
@@ -634,11 +641,17 @@ impl<'a> Resolver<'a> {
         for field in &decl.fields {
             layout.members.insert(*field, ClassMember::Field(next_member_id));
             layout.fields.push(next_member_id);
+            if !decl.pub_members.contains(field) {
+                layout.non_public.insert(next_member_id);
+            }
             next_member_id += 1;
         }
         for stmt_id in &decl.methods {
             let method = self.fn_decl(stmt_id);
             layout.members.insert(method.name, ClassMember::Method(next_member_id));
+            if !decl.pub_members.contains(&method.name) {
+                layout.non_public.insert(next_member_id);
+            }
             next_member_id += 1;
         }
         if decl.getter.is_some() {

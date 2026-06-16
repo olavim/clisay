@@ -167,6 +167,7 @@ impl<'a> Lowerer<'a> {
             setter,
             fields: decl.fields.clone(),
             methods,
+            pub_members: decl.pub_members.clone(),
         })
     }
 

@@ -1,5 +1,5 @@
 type A {
-    fn print() {
+    pub fn print() {
         return "A";
     }
 }
@@ -7,7 +7,7 @@ type A {
 type B : A {}
 
 type C : B {
-    fn printParent() {
+    pub fn printParent() {
         return super.print();
     }
 }

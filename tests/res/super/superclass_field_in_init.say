@@ -1,5 +1,5 @@
 type A {
-    a = "a";
+    pub a = "a";
 }
 
 type B : A {

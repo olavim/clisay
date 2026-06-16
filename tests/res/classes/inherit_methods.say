@@ -1,19 +1,19 @@
 type A {
-    fn a() {
+    pub fn a() {
         print("a");
     }
 
-    fn current() {
+    pub fn current() {
         print("a");
     }
 }
 
 type B : A {
-    fn b() {
+    pub fn b() {
         print("b");
     }
 
-    fn current() {
+    pub fn current() {
         print("b");
     }
 }

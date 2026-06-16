@@ -1,0 +1,10 @@
+// `inner` members are object-internal: reachable from the type's own methods, but
+// (in this phase, with no traits yet) not externally accessible.
+type Widget {
+    inner state;
+    pub fn read() { return this.state; } // internal: ok
+    init(s) { this.state = s; }
+}
+say w = Widget("ready");
+print(w.read()); // expect: ready
+print(w.state); // error: Member 'state' is private

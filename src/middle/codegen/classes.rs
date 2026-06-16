@@ -22,6 +22,7 @@ impl<'a> Compiler<'a> {
         for &field_id in &layout.fields {
             class.fields.insert(field_id);
         }
+        class.non_public = layout.non_public.clone();
         class.member_count = layout.member_count;
         class.getter_id = layout.getter_id;
         class.setter_id = layout.setter_id;

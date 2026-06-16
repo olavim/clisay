@@ -15,7 +15,7 @@
 gcStress(true);
 
 type Box {
-    v;
+    pub v;
     init(x) {
         this.v = x;
     }

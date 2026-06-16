@@ -4,7 +4,7 @@
 // stack here; iterative (worklist) marking handles it. Walking the list and
 // counting proves every node survived the collection.
 type Node {
-    next;
+    pub next;
     init(n) {
         this.next = n;
     }

@@ -1,15 +1,15 @@
 type A {
-    x;
+    pub x;
 
-    fn a() {
+    pub fn a() {
         print(this.x);
     }
 }
 
 type B : A {
-    x;
+    pub x;
 
-    fn b() {
+    pub fn b() {
         print(this.x);
     }
 }

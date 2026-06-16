@@ -7,11 +7,11 @@
 // would print garbage instead of "hi".
 
 type Foo {
-    val;
+    pub val;
     init(v) {
         this.val = v;
     }
-    fn bar() {
+    pub fn bar() {
         print(this.val);
     }
 }

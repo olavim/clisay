@@ -1,13 +1,13 @@
 type A {
-    x = "A";
-    fn getX() {
+    pub x = "A";
+    pub fn getX() {
         return this.x;
     }
 }
 
 type B : A {
-    x = "B";
-    fn getSuperX() {
+    pub x = "B";
+    pub fn getSuperX() {
         return super.getX();
     }
 }

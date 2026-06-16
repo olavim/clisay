@@ -1,7 +1,7 @@
 type A {
-    value;
+    pub value;
 
-    fn set(a, b) {
+    pub fn set(a, b) {
         this[a] = b;
     }
 

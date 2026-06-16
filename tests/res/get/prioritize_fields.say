@@ -1,5 +1,5 @@
 type Object {
-    foo = "bar";
+    pub foo = "bar";
     get(prop) {
         return prop;
     }

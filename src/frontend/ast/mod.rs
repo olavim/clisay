@@ -108,7 +108,10 @@ pub struct TypeDecl {
     pub fields: HashSet<Symbol>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
-    pub methods: Vec<AstId<Stmt>>
+    pub methods: Vec<AstId<Stmt>>,
+    /// Members (fields/methods) declared `pub` are externally accessible. Members not
+    /// listed are private (or `inner`), reachable only through `this`/`super`.
+    pub pub_members: HashSet<Symbol>
 }
 
 pub enum Stmt {

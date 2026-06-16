@@ -12,11 +12,11 @@
 // crash or `n` would stop counting correctly.
 
 type Counter {
-    n;
+    pub n;
     init() {
         this.n = 0;
     }
-    fn inc() {
+    pub fn inc() {
         this.n = this.n + 1;
     }
 }

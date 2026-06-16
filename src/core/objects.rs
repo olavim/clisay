@@ -373,6 +373,10 @@ pub struct ObjType {
     /// they're addressed structurally via the id fields below.
     pub members: FnvHashMap<*mut ObjString, ClassMember>,
     pub fields: IntSet<MemberId>,
+    /// Member ids that are not externally accessible (private/inner). External
+    /// `obj.member` access to one of these is a runtime error; internal `this.x`
+    /// access (resolved by id) bypasses this entirely.
+    pub non_public: IntSet<MemberId>,
     pub methods: IntMap<MemberId, Object>,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
@@ -390,6 +394,7 @@ impl ObjType {
             name,
             members: FnvHashMap::default(),
             fields: IntSet::default(),
+            non_public: IntSet::default(),
             methods: IntMap::default(),
             member_count: 0,
             getter_id: None,

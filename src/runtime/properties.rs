@@ -39,6 +39,10 @@ impl Vm {
         if matches!(receiver.kind(), ValueKind::Object(ObjectKind::Instance)) {
             let class_ptr = unsafe { (*receiver.as_object().as_instance_ptr()).class };
             if let Some(ClassMember::Method(id)) = self.resolve_cached_class_property(class_ptr, name) {
+                // External `obj.method()` cannot reach a private/`inner` method.
+                if unsafe { &*class_ptr }.non_public.contains(&id) {
+                    return self.error(format!("Member '{}' is private", unsafe { &*name }.value));
+                }
                 let method = unsafe { &*class_ptr }.get_method(id);
                 if method.tag() == objects::TAG_FUNCTION {
                     return self.invoke_method(method, arg_count);
@@ -185,7 +189,16 @@ impl Vm {
         let instance_ref = target.as_object().as_instance_ptr();
 
         if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
-            if let Some(value) = self.get_instance_property(instance_ref, prop.as_object().as_string_ptr()) {
+            let prop_str = prop.as_object().as_string_ptr();
+            // External `obj.member` access: a private/`inner` member is not reachable.
+            // (`this.x` never reaches here because it resolves to a member id internally.)
+            if let Some(member) = self.resolve_cached_class_property(unsafe { (*instance_ref).class }, prop_str) {
+                let id = match member { ClassMember::Field(id) | ClassMember::Method(id) => id };
+                if unsafe { &*(*instance_ref).class }.non_public.contains(&id) {
+                    return self.error(format!("Member '{}' is private", prop.as_object().as_string()));
+                }
+            }
+            if let Some(value) = self.get_instance_property(instance_ref, prop_str) {
                 self.stack.push(value);
                 return Ok(());
             }
@@ -216,6 +229,9 @@ impl Vm {
 
             if let Some(member) = member {
                 if let ClassMember::Field(id) = member {
+                    if class.non_public.contains(&id) {
+                        return self.error(format!("Member '{}' is private", prop.as_object().as_string()));
+                    }
                     let value = self.stack.peek(0);
                     instance.set(id, value);
                     return Ok(());

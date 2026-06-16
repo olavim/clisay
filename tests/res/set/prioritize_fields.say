@@ -1,7 +1,7 @@
 type Object {
-    prop;
-    value;
-    foo;
+    pub prop;
+    pub value;
+    pub foo;
 
     set(prop, value) {
         this.prop = prop;

@@ -1,9 +1,9 @@
 type A {
-    x = "A";
+    pub x = "A";
 }
 
 type B : A {
-    fn setSuperX() {
+    pub fn setSuperX() {
         super.x = "B";
     }
 }

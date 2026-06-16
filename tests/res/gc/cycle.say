@@ -7,7 +7,7 @@ say bytesStart = gcHeapSize();
 
 {
     type Node {
-        self;
+        pub self;
         init() {
             this.self = this;
         }

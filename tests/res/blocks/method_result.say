@@ -1,4 +1,4 @@
 type A {
-    fn foo() { return 42; }
+    pub fn foo() { return 42; }
 }
 print(A().foo()); // expect: 42

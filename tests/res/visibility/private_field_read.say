@@ -1,0 +1,6 @@
+type Box {
+    secret; // private by default
+    init(s) { this.secret = s; }
+}
+say b = Box(42);
+print(b.secret); // error: Member 'secret' is private

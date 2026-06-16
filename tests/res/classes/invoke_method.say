@@ -1,10 +1,10 @@
 // Method calls on a non-`this` receiver compile to the fused INVOKE opcode.
 type Math {
-    fn add(a, b) {
+    pub fn add(a, b) {
         return a + b;
     }
     // Calls a sibling method through `this` (its own, non-INVOKE path).
-    fn double(x) {
+    pub fn double(x) {
         return this.add(x, x);
     }
 }
@@ -23,7 +23,7 @@ fn makeInc() {
 }
 
 type Holder {
-    fn_field;
+    pub fn_field;
     init(f) {
         this.fn_field = f;
     }
