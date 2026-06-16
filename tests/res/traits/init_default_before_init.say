@@ -1,0 +1,16 @@
+trait Base { pub factor = 10; }
+
+trait Scaled with Base {
+    pub scaled;
+    init(n) { this.scaled = n * this.factor; }
+}
+
+type Thing with Scaled {
+    pub label = "x" + "y";
+    init(n) { Scaled.init(n); }
+}
+
+say t = Thing(3);
+print(t.factor); // expect: 10
+print(t.scaled); // expect: 30
+print(t.label);  // expect: xy

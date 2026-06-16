@@ -88,6 +88,7 @@ impl fmt::Display for Token {
 
 tokens! {
     Type => "type",
+    Trait => "trait",
     This => "this",
     Super => "super",
 

@@ -1,0 +1,12 @@
+trait Tagged { pub fn tag() { return "TOP"; } }
+
+fn makeInner() {
+    trait Tagged { pub fn tag() { return "INNER"; } }
+    type Widget with Tagged { init() {} }
+    return Widget();
+}
+
+type OuterThing with Tagged { init() {} }
+
+print(makeInner().tag()); // expect: INNER
+print(OuterThing().tag()); // expect: TOP

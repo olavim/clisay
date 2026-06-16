@@ -79,6 +79,9 @@ pub struct CatchClause {
 
 pub struct TypeDecl {
     pub name: Symbol,
+    pub is_trait: bool,
+    /// Traits mixed in via `with T1, T2, ...`.
+    pub with_traits: Vec<Symbol>,
     pub superclass: Option<Symbol>,
     pub init_name: Symbol,
     pub init: Option<AstId<Stmt>>,

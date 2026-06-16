@@ -1,0 +1,3 @@
+trait A with B { pub fn a() { return 1; } }
+trait B with A { pub fn b() { return 2; } }
+type T with A { init() {} } // error: Cyclic trait composition involving 'A'

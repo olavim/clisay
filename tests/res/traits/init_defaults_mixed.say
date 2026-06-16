@@ -1,0 +1,21 @@
+trait Counter {
+    pub count = 0;
+    pub fn bump() { this.count = this.count + 1; }
+}
+trait Named {
+    pub name;
+    init(name) { this.name = name; }
+}
+
+type Widget with Counter, Named {
+    pub tag = "w";
+    init(name) { Named.init(name); }
+}
+
+say w = Widget("box");
+print(w.count); // expect: 0
+print(w.name);  // expect: box
+print(w.tag);   // expect: w
+w.bump();
+w.bump();
+print(w.count); // expect: 2

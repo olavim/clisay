@@ -1,0 +1,7 @@
+trait Ready { pub state; init() { this.state = "r"; } }
+type T with Ready {
+    init() {
+        Ready.init();
+        Ready.init(); // error: 'Ready.init(...)' is called more than once
+    }
+}
