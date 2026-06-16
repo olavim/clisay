@@ -1,0 +1,1 @@
+say d = { a: 1, a: 2 }; // error: Duplicate dict key 'a'

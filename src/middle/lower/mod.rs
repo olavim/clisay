@@ -114,6 +114,13 @@ impl<'a> Lowerer<'a> {
             Literal::Number(n) => HirLiteral::Number(*n),
             Literal::String(s) => HirLiteral::String(s.clone()),
             Literal::Array(elements) => HirLiteral::Array(self.exprs(elements)?),
+            Literal::Dict(pairs) => {
+                let mut lowered = Vec::with_capacity(pairs.len());
+                for (key, value) in pairs {
+                    lowered.push((self.expr(key)?, self.expr(value)?));
+                }
+                HirLiteral::Dict(lowered)
+            },
             Literal::Lambda(decl) => HirLiteral::Lambda(self.fn_decl(decl)?),
         })
     }

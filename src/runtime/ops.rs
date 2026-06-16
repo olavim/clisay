@@ -114,6 +114,22 @@ impl Vm {
         self.stack.push(Value::from(array));
     }
 
+    pub(super) fn op_dict(&mut self) {
+        let count = self.read_next() as usize;
+        let n = count * 2;
+        let mut entries = fnv::FnvHashMap::with_capacity_and_hasher(count, Default::default());
+        unsafe {
+            let start = self.stack.top().sub(n);
+            let pairs = std::slice::from_raw_parts(start, n);
+            for pair in pairs.chunks_exact(2) {
+                entries.insert(pair[0], pair[1]);
+            }
+        }
+        let dict = self.alloc(ObjDict::new(entries));
+        self.stack.truncate(n);
+        self.stack.push(Value::from(dict));
+    }
+
     pub(super) fn op_push_class(&mut self) {
         let const_idx = self.read_next() as usize;
         let value = self.chunk.constants[const_idx];

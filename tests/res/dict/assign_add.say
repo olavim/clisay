@@ -1,0 +1,10 @@
+say d = { a: 1 };
+d["a"] = 2;
+print(d["a"]); // expect: 2
+
+d["c"] = 3;
+print(d["c"]); // expect: 3
+
+say v = (d["a"] = 9);
+print(v); // expect: 9
+print(d["a"]); // expect: 9

@@ -1,0 +1,23 @@
+say name = "app";
+say d = { name };
+print(d["name"]); // expect: app
+
+say e = { [name]: 1, name: 2 };
+print(e["app"]);  // expect: 1
+print(e["name"]); // expect: 2
+
+say f = { 1: "one" };
+print(f[1]);   // expect: one
+print(f["1"]); // expect: null
+
+say g = { true: "t", false: "f", null: "n" };
+print(g[true]);  // expect: t
+print(g[false]); // expect: f
+print(g[null]);  // expect: n
+
+say h = { true: "bool", "true": "str" };
+print(h[true]);   // expect: bool
+print(h["true"]); // expect: str
+
+say k = { [(() => true)()]: "called" };
+print(k[true]); // expect: called

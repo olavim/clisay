@@ -30,6 +30,7 @@ pub enum Literal {
     Number(f64),
     String(String),
     Array(Vec<AstId<Expr>>),
+    Dict(Vec<(AstId<Expr>, AstId<Expr>)>),
     Lambda(FnDecl)
 }
 
@@ -41,6 +42,7 @@ impl fmt::Display for Literal {
             Literal::Number(n) => write!(f, "{}", n),
             Literal::String(s) => write!(f, "\"{}\"", s),
             Literal::Array(_) => write!(f, "[]"),
+            Literal::Dict(_) => write!(f, "{{}}"),
             Literal::Lambda(_) => write!(f, "<lambda>")
         }
     }

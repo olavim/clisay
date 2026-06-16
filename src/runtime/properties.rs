@@ -244,6 +244,7 @@ impl Vm {
         match object_kind {
             ObjectKind::Instance => self.get_instance_index(target, prop),
             ObjectKind::Array => self.get_native_type_index(self.native_types.array, target, prop),
+            ObjectKind::Dict => self.get_dict_index(target, prop),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
     }
@@ -258,8 +259,23 @@ impl Vm {
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target),
             ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop),
+            ObjectKind::Dict => self.set_dict_index(target, prop),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
+    }
+
+    fn get_dict_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
+        let dict = unsafe { &*target.as_object().as_dict_ptr() };
+        let value = dict.entries.get(&prop).copied().unwrap_or(Value::NULL);
+        self.stack.push(value);
+        Ok(())
+    }
+
+    fn set_dict_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
+        let value = self.stack.peek(0);
+        let dict = unsafe { &mut *target.as_object().as_dict_ptr() };
+        dict.entries.insert(prop, value);
+        Ok(())
     }
 
     pub(super) fn op_get_property_by_id(&mut self) -> Result<(), anyhow::Error> {

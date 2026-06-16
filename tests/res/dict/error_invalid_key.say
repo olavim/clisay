@@ -1,0 +1,1 @@
+say d = { *: 1 }; // error: Unexpected token *: expected a dict key

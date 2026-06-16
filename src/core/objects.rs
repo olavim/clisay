@@ -116,6 +116,7 @@ objects! {
     BoundMethod    => ObjBoundMethod, bound_method,    as_bound_method_ptr,     TAG_BOUND_METHOD,    "function";
     Closure        => ObjClosure,     closure,         as_closure_ptr,          TAG_CLOSURE,         "function";
     Type           => ObjType,        class,           as_class_ptr,            TAG_CLASS,           "type";
+    Dict           => ObjDict,        dict,            as_dict_ptr,             TAG_HEADER,          "dict";
 }
 
 impl Object {
@@ -565,5 +566,39 @@ impl GcTraceable for ObjArray {
 
     fn size(&self) -> usize {
         mem::size_of::<ObjArray>() + self.values.capacity() * mem::size_of::<Value>()
+    }
+}
+
+#[repr(align(8))]
+#[repr(C)]
+pub struct ObjDict {
+    pub header: ObjectHeader,
+    pub entries: FnvHashMap<Value, Value>
+}
+
+impl ObjDict {
+    pub fn new(entries: FnvHashMap<Value, Value>) -> ObjDict {
+        ObjDict {
+            header: ObjectHeader::new(ObjectKind::Dict),
+            entries
+        }
+    }
+}
+
+impl GcTraceable for ObjDict {
+    fn fmt(&self) -> String {
+        format!("<dict {}>", self.entries.len())
+    }
+
+    fn mark(&self, gc: &mut Gc) {
+        for (key, value) in &self.entries {
+            key.mark(gc);
+            value.mark(gc);
+        }
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<ObjDict>()
+            + self.entries.capacity() * (mem::size_of::<Value>() + mem::size_of::<Value>())
     }
 }
