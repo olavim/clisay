@@ -10,6 +10,7 @@ impl Operator {
         let op = match &stream.peek(0).kind {
             TokenType::LeftParen => Operator::Group,
             TokenType::LeftBracket => Operator::Array,
+            TokenType::LeftBrace => Operator::Dict,
             TokenType::Minus => Operator::Negate,
             TokenType::Exclamation => Operator::LogicalNot,
             TokenType::Tilde => Operator::BitNot,
@@ -135,7 +136,7 @@ impl Operator {
     pub fn prefix_precedence(&self) -> Option<u8> {
         let bp = match self {
             Operator::Negate | Operator::LogicalNot | Operator::BitNot => 13,
-            Operator::Group | Operator::Array => 16,
+            Operator::Group | Operator::Array | Operator::Dict => 16,
             _ => return None
         };
         Some(bp)
@@ -157,7 +158,8 @@ impl Operator {
             Operator::LogicalNot |
             Operator::BitNot |
             Operator::Group |
-            Operator::Array => false,
+            Operator::Array |
+            Operator::Dict => false,
             _ => true
         };
     }

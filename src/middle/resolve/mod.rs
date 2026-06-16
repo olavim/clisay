@@ -521,6 +521,12 @@ impl<'a> Resolver<'a> {
                     self.expression(element)?;
                 }
             },
+            HirLiteral::Dict(pairs) => {
+                for (key, value) in pairs {
+                    self.expression(key)?;
+                    self.expression(value)?;
+                }
+            },
             HirLiteral::Lambda(decl) => self.lambda(decl)?,
             _ => {},
         }

@@ -16,7 +16,7 @@ use crate::core::stack::{CachedStack, Stack};
 use crate::core::value::Value;
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
-use crate::core::objects::{self, ClassMember, NativeFn, ObjArray, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
+use crate::core::objects::{self, ClassMember, NativeFn, ObjArray, ObjDict, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::opcode::{self, OpCode};
@@ -548,6 +548,7 @@ impl Vm {
                 opcode::JUMP_IF_TRUE_OR_POP => delegate!(self.op_jump_if_true_or_pop()),
                 opcode::CLOSE_UPVALUE => delegate!(self.op_close_upvalue()),
                 opcode::ARRAY => delegate!(self.op_array()),
+                opcode::DICT => delegate!(self.op_dict()),
                 opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
                 opcode::PUSH_CLASS => delegate!(self.op_push_class()),
                 opcode::GET_GLOBAL => delegate!(self.op_get_global()?),

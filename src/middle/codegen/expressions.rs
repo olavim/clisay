@@ -280,6 +280,13 @@ impl<'a> Compiler<'a> {
                 }
                 self.emit(Inst::Array(elements.len() as u8), expr);
             },
+            HirLiteral::Dict(pairs) => {
+                for (key, value) in pairs {
+                    self.expression(key)?;
+                    self.expression(value)?;
+                }
+                self.emit(Inst::Dict(pairs.len() as u8), expr);
+            },
             HirLiteral::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };
 

@@ -78,6 +78,7 @@ opcodes! {
     JumpIfLtLocalConst => JUMP_IF_LT_LOCAL_CONST(Jump, Local, Const),
     CloseUpvalue => CLOSE_UPVALUE(Byte),
     Array => ARRAY(Byte),
+    Dict => DICT(Byte),
     Return => RETURN,
     Throw => THROW,
     PushTry => PUSH_TRY(Jump),

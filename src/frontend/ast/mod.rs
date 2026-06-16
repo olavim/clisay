@@ -32,6 +32,9 @@ pub enum Literal {
     Number(f64),
     String(String),
     Array(Vec<AstId<Expr>>),
+    /// A `dict` literal: `{ key: value, ... }`. Each key is a string-literal expr
+    /// (identifier keys intern to strings); duplicate keys are rejected at parse.
+    Dict(Vec<(AstId<Expr>, AstId<Expr>)>),
     Lambda(FnDecl)
 }
 
@@ -43,6 +46,7 @@ impl fmt::Display for Literal {
             Literal::Number(n) => write!(f, "{}", n),
             Literal::String(s) => write!(f, "\"{}\"", s),
             Literal::Array(_) => write!(f, "[]"),
+            Literal::Dict(_) => write!(f, "{{}}"),
             Literal::Lambda(_) => write!(f, "<lambda>")
         }
     }

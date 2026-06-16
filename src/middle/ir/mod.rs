@@ -70,6 +70,7 @@ pub enum Inst {
     SetPropertyId(u8),
     SetPropertyIdPop(u8),
     Array(u8),
+    Dict(u8),
 
     // Arithmetic
     Add,

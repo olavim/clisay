@@ -1,0 +1,6 @@
+say d = { a: "a", b: "b" };
+print(d["a"]); // expect: a
+print(d["b"]); // expect: b
+
+say e = {};
+print(e["x"]); // expect: null

@@ -44,6 +44,7 @@ pub enum HirLiteral {
     Number(f64),
     String(String),
     Array(Vec<HirId<HirExpr>>),
+    Dict(Vec<(HirId<HirExpr>, HirId<HirExpr>)>),
     Lambda(HirFnDecl),
 }
 

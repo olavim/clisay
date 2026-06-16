@@ -461,6 +461,101 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
                 return Ok(self.ast.add_expr(Expr::Literal(Literal::Array(elements)), pos));
             },
+            Operator::Dict => {
+                let mut pairs: Vec<(AstId<Expr>, AstId<Expr>)> = Vec::new();
+                // Statically-known keys, tagged by value type so a value-equal pair
+                // collides (`{ a, "a" }`, `{ 1, 1.0 }`) but a cross-type pair does not
+                // (`{ 1, "1" }`). Computed `[expr]` keys are not tracked here.
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                // Parse the value tighter than `,` so the comma separates pairs.
+                let value_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
+
+                if self.tokens.next_if(TokenType::RightBrace).is_none() {
+                    loop {
+                        let tok = self.tokens.peek(0).clone();
+                        let key_pos = tok.pos.clone();
+
+                        // Each arm yields (key expr, value expr, optional static dedup key).
+                        let (key_expr, value_expr, dup_key): (AstId<Expr>, AstId<Expr>, Option<String>) = match tok.kind {
+                            // Computed key: the key is the runtime VALUE of the expression.
+                            TokenType::LeftBracket => {
+                                self.tokens.next();
+                                let key = self.parse_expr()?;
+                                self.tokens.expect(TokenType::RightBracket)?;
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, None)
+                            },
+                            // Identifier: a name → string key. `:` gives an explicit value,
+                            // otherwise it's shorthand `{ x }` ≡ `{ x: x }`.
+                            TokenType::Identifier => {
+                                self.tokens.next();
+                                let name = tok.lexeme.clone();
+                                let key = self.ast.add_expr(Expr::Literal(Literal::String(name.clone())), key_pos.clone());
+                                let value = if self.tokens.next_if(TokenType::Colon).is_some() {
+                                    self.parse_expr_precedence(value_precedence)?
+                                } else {
+                                    let sym = self.ast.intern(&name);
+                                    self.ast.add_expr(Expr::Identifier(sym), key_pos.clone())
+                                };
+                                (key, value, Some(format!("s:{name}")))
+                            },
+                            // String literal → string key.
+                            TokenType::StringLiteral => {
+                                self.tokens.next();
+                                let raw = tok.lexeme.clone();
+                                let s = String::from(&raw[1..raw.len() - 1]); // strip quotes
+                                let key = self.ast.add_expr(Expr::Literal(Literal::String(s.clone())), key_pos.clone());
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, Some(format!("s:{s}")))
+                            },
+                            // Number literal → number key (no coercion; `{ 1: v }` is read by `d[1]`).
+                            TokenType::NumericLiteral => {
+                                self.tokens.next();
+                                let n: f64 = tok.lexeme.parse().unwrap();
+                                let key = self.ast.add_expr(Expr::Literal(Literal::Number(n)), key_pos.clone());
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, Some(format!("n:{n}")))
+                            },
+                            // Keyword literals → their bool/null value key (quote for the string).
+                            TokenType::True | TokenType::False => {
+                                self.tokens.next();
+                                let b = matches!(tok.kind, TokenType::True);
+                                let key = self.ast.add_expr(Expr::Literal(Literal::Boolean(b)), key_pos.clone());
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, Some(format!("b:{b}")))
+                            },
+                            TokenType::Null => {
+                                self.tokens.next();
+                                let key = self.ast.add_expr(Expr::Literal(Literal::Null), key_pos.clone());
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, Some(String::from("null")))
+                            },
+                            _ => parse_error!(self, &key_pos, "Unexpected token {}: expected a dict key", tok)
+                        };
+
+                        if let Some(dup) = dup_key {
+                            if !seen.insert(dup) {
+                                parse_error!(self, &key_pos, "Duplicate dict key '{}'", tok.lexeme);
+                            }
+                        }
+                        pairs.push((key_expr, value_expr));
+
+                        if self.tokens.next_if(TokenType::Comma).is_some() {
+                            if self.tokens.match_next(TokenType::RightBrace) { break; } // trailing comma
+                        } else {
+                            break;
+                        }
+                    }
+                    self.tokens.expect(TokenType::RightBrace)?;
+                }
+
+                return Ok(self.ast.add_expr(Expr::Literal(Literal::Dict(pairs)), pos));
+            },
             _ => {
                 let right = self.parse_expr_precedence(op.prefix_precedence().unwrap())?;
                 Expr::Unary(op, right)
