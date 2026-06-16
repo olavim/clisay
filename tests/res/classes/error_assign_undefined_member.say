@@ -1,6 +1,6 @@
 
 type A {
-    x;
+    pub x;
 }
 
 say obj = A();

@@ -1,5 +1,5 @@
 type A {
-    value;
+    pub value;
 
     set(prop, value) {
         this.value = prop + "." + value;
@@ -7,7 +7,7 @@ type A {
 }
 
 type B : A {
-    fn set(a, b) {
+    pub fn set(a, b) {
         super[a] = b;
     }
 }

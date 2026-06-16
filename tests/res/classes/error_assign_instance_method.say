@@ -1,11 +1,11 @@
 type B {
-    me = "B";
-    fn getMe() { return this.me; }
+    pub me = "B";
+    pub fn getMe() { return this.me; }
 }
 
 type A {
-    me = "A";
-    fn getMe() { return this.me; }
+    pub me = "A";
+    pub fn getMe() { return this.me; }
 }
 
 say objA = A();

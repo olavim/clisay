@@ -84,6 +84,8 @@ pub struct HirTypeDecl {
     pub setter: Option<HirId<HirStmt>>,
     pub fields: HashSet<Symbol>,
     pub methods: Vec<HirId<HirStmt>>,
+    /// Members declared `pub` (externally accessible). See `ast::TypeDecl`.
+    pub pub_members: HashSet<Symbol>,
 }
 
 pub enum HirStmt {

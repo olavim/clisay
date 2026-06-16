@@ -1,0 +1,6 @@
+type Box {
+    value; // private by default
+    init(v) { this.value = v; }
+}
+say b = Box(1);
+b.value = 5; // error: Member 'value' is private

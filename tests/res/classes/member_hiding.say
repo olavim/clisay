@@ -1,9 +1,9 @@
 type A {
-    x = "a";
+    pub x = "a";
 }
 
 type B : A {
-    x = "b";
+    pub x = "b";
 }
 
 say obj = B();

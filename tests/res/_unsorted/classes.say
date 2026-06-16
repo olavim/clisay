@@ -1,26 +1,26 @@
 say x = "outer x";
 
 type Super {
-    x = 100;
-    msg = "initial";
+    pub x = 100;
+    pub msg = "initial";
 
     init(msg) {
         this.msg = msg;
     }
 
-    fn getMsg() {
+    pub fn getMsg() {
         return this.msg;
     }
 
-    fn getSuperX() {
+    pub fn getSuperX() {
         // Return Super.x, not TestClass.x
         return this.x;
     }
 }
 
 type TestClass : Super {
-    x; // hides Super.x
-    y;
+    pub x; // hides Super.x
+    pub y;
 
     init(x, y) {
         super("changed");
@@ -28,17 +28,17 @@ type TestClass : Super {
         this.y = y;
     }
 
-    fn getSum() {
+    pub fn getSum() {
         // Member variables get precedence over outer scope variables
         return this.x + this.y + x + y;
     }
 
-    fn getSumParams(x, y) {
+    pub fn getSumParams(x, y) {
         // Parameters get precedence over member variables
         return this.x + this.y + x + y;
     }
 
-    fn getX() {
+    pub fn getX() {
         return this.x;
     }
 }

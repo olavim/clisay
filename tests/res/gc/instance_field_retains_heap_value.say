@@ -7,7 +7,7 @@
 // instead of "foo".
 
 type Box {
-    v;
+    pub v;
     init(v) {
         this.v = v;
     }

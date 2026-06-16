@@ -1,10 +1,10 @@
 type A {
-    x = "A";
+    pub x = "A";
 }
 
 type B : A {
-    x = "B";
-    fn getSuperX() {
+    pub x = "B";
+    pub fn getSuperX() {
         return super.x;
     }
 }

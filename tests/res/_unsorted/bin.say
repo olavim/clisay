@@ -1,10 +1,10 @@
 print("stretch tree of depth:");
 
 type Tree {
-  item;
-  depth;
-  left;
-  right;
+  pub item;
+  pub depth;
+  pub left;
+  pub right;
 
   init(item, depth) {
     this.item = item;
@@ -21,7 +21,7 @@ type Tree {
     }
   }
 
-  fn check() {
+  pub fn check() {
     if (this.left == null) {
       return this.item;
     }

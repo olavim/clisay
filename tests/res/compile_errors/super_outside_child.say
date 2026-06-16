@@ -1,5 +1,5 @@
 type A {
-    fn getX() {
+    pub fn getX() {
         return super.x; // error: Cannot use 'super' outside of a child type method
     }
 }

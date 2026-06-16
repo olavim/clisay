@@ -1,5 +1,5 @@
 type Math {
-    fn add(a, b) {
+    pub fn add(a, b) {
         return a + b;
     }
 }
