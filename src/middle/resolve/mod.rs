@@ -397,7 +397,7 @@ impl<'a> Resolver<'a> {
             },
             HirExpr::Assign(left, right) => self.assign(left, right)?,
             HirExpr::Call(callee, args) => self.call_expression(callee, args)?,
-            HirExpr::Index(target, member) => self.index(target, member)?,
+            HirExpr::Index(target, member, _) => self.index(target, member)?,
             HirExpr::Literal(lit) => self.literal(lit)?,
             HirExpr::Identifier(name) => {
                 let place = self.resolve_place(*name)?;
@@ -428,7 +428,7 @@ impl<'a> Resolver<'a> {
                 self.expression(rhs)?;
                 Ok(())
             },
-            HirExpr::Index(obj, member) => {
+            HirExpr::Index(obj, member, _) => {
                 let (obj, member) = (*obj, *member);
                 if matches!(self.hir.get(&obj), HirExpr::This | HirExpr::Super) {
                     self.class_member(&obj, &member, true)?;

@@ -104,6 +104,8 @@ opcodes! {
     SetUpvaluePop => SET_UPVALUE_POP(Byte),
     GetIndex => GET_INDEX,
     SetIndex => SET_INDEX,
+    GetProperty => GET_PROPERTY,
+    SetProperty => SET_PROPERTY,
     GetPropertyId => GET_PROPERTY_ID(Byte),
     SetPropertyId => SET_PROPERTY_ID(Byte),
     SetPropertyIdPop => SET_PROPERTY_ID_POP(Byte),

@@ -65,8 +65,11 @@ pub enum Expr {
     /// A function call: Call(callee, arguments)
     Call(AstId<Expr>, Vec<AstId<Expr>>),
 
-    /// An index expression: Index(target, index)
-    Index(AstId<Expr>, AstId<Expr>),
+    /// An access expression: `Index(target, index, is_dot)`. `is_dot` marks `.name`
+    /// (member access via `.`) versus `[expr]` (data access via `[]`). The two
+    /// resolve identically for instances/arrays; they diverge only at dynamic-boundary
+    /// values (`dict`), where `.` is the method surface and `[]` is keyed data.
+    Index(AstId<Expr>, AstId<Expr>, bool),
 
     Literal(Literal),
     Identifier(Symbol),
@@ -97,8 +100,8 @@ pub struct TypeDecl {
     /// The initializer's runtime name (`"{class}.init"`), used whether the init is
     /// declared or synthesised during lowering.
     pub init_name: Symbol,
-    /// The declared initializer (`Stmt::Fn`), or `None` when the class has none —
-    /// lowering synthesises a virtual init in that case.
+    /// The declared initializer (`Stmt::Fn`). When the class has none lowering
+    /// synthesises a virtual init in that case.
     pub init: Option<AstId<Stmt>>,
     pub getter: Option<AstId<Stmt>>,
     pub setter: Option<AstId<Stmt>>,

@@ -11,6 +11,7 @@ use crate::core::value::ValueKind;
 use crate::frontend::lex::SourcePosition;
 
 use crate::core::native::array::NativeArray;
+use crate::core::native::dict::NativeDict;
 use crate::core::native::NativeType;
 use crate::core::stack::{CachedStack, Stack};
 use crate::core::value::Value;
@@ -33,12 +34,14 @@ struct IndexCache {
 }
 
 struct NativeTypes {
-    array: *mut ObjType
+    array: *mut ObjType,
+    dict: *mut ObjType
 }
 
 impl GcTraceable for NativeTypes {
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.array);
+        gc.mark_object(self.dict);
     }
     
     fn fmt(&self) -> String {
@@ -139,7 +142,8 @@ impl Vm {
         }
 
         let native_types = NativeTypes {
-            array: build_native_type(&mut gc, NativeArray)
+            array: build_native_type(&mut gc, NativeArray),
+            dict: build_native_type(&mut gc, NativeDict)
         };
 
         let mut vm = Vm {
@@ -555,6 +559,8 @@ impl Vm {
                 opcode::INVOKE => delegate!(self.op_invoke()?),
                 opcode::GET_INDEX => delegate!(self.op_get_index()?),
                 opcode::SET_INDEX => delegate!(self.op_set_index()?),
+                opcode::GET_PROPERTY => delegate!(self.op_get_property()?),
+                opcode::SET_PROPERTY => delegate!(self.op_set_property()?),
                 opcode::GET_PROPERTY_ID => delegate!(self.op_get_property_by_id()?),
                 opcode::SET_PROPERTY_ID => delegate!(self.op_set_property_by_id()?),
                 opcode::SET_PROPERTY_ID_POP => delegate!(self.op_set_property_by_id_pop()?),

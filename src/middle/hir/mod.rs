@@ -54,7 +54,9 @@ pub enum HirExpr {
     Binary(BinOp, HirId<HirExpr>, HirId<HirExpr>),
     Assign(HirId<HirExpr>, HirId<HirExpr>),
     Call(HirId<HirExpr>, Vec<HirId<HirExpr>>),
-    Index(HirId<HirExpr>, HirId<HirExpr>),
+    /// `Index(target, member, is_dot)`: `is_dot` distinguishes `.name` (member)
+    /// from `[expr]` (data). See `ast::Expr::Index`.
+    Index(HirId<HirExpr>, HirId<HirExpr>, bool),
     Literal(HirLiteral),
     Identifier(Symbol),
     This,

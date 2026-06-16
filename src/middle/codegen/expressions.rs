@@ -23,7 +23,7 @@ impl<'a> Compiler<'a> {
             HirExpr::Binary(op, left, right) => self.binary_expression(*op, left, right)?,
             HirExpr::Assign(left, right) => self.compile_assign(left, right, false)?,
             HirExpr::Call(callee, args) => self.call_expression(callee, args)?,
-            HirExpr::Index(target, member) => self.index(target, member, IndexOp::Load)?,
+            HirExpr::Index(target, member, is_dot) => self.index(target, member, *is_dot, IndexOp::Load)?,
             HirExpr::Literal(lit) => self.literal(expr, lit)?,
             HirExpr::Identifier(_) => {
                 let place = self.bindings.place(expr);
@@ -103,9 +103,9 @@ impl<'a> Compiler<'a> {
                 self.emit_store(place, discarded, lhs)?;
                 Ok(())
             },
-            HirExpr::Index(obj, member) => {
-                let (obj, member) = (*obj, *member);
-                self.index(&obj, &member, IndexOp::Store { rhs: *rhs, discarded })
+            HirExpr::Index(obj, member, is_dot) => {
+                let (obj, member, is_dot) = (*obj, *member, *is_dot);
+                self.index(&obj, &member, is_dot, IndexOp::Store { rhs: *rhs, discarded })
             },
             _ => compiler_error!(self, lhs, "Invalid assignment")
         }
@@ -143,7 +143,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, op: IndexOp) -> Result<(), anyhow::Error> {
+    fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, is_dot: bool, op: IndexOp) -> Result<(), anyhow::Error> {
         if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
             match self.bindings.member(target) {
                 Member::ById(member_id) => return self.index_member_by_id(target, member_id, op),
@@ -152,17 +152,20 @@ impl<'a> Compiler<'a> {
             }
         }
 
+        // `.name` (member, `is_dot`) and `[expr]` (data) use the same stack protocol
+        // but distinct opcodes, so the VM can route the dynamic-boundary `dict` to its
+        // method surface (`.`) vs its keyed data (`[]`).
         match op {
             IndexOp::Load => {
                 self.expression(target)?;
                 self.expression(member_expr_id)?;
-                self.emit(Inst::GetIndex, target);
+                self.emit(if is_dot { Inst::GetProperty } else { Inst::GetIndex }, target);
             },
             IndexOp::Store { rhs, discarded } => {
                 self.expression(&rhs)?;
                 self.expression(target)?;
                 self.expression(member_expr_id)?;
-                self.emit(Inst::SetIndex, target);
+                self.emit(if is_dot { Inst::SetProperty } else { Inst::SetIndex }, target);
                 if discarded {
                     self.emit(Inst::Pop, target);
                 }
@@ -246,7 +249,12 @@ impl<'a> Compiler<'a> {
     /// a literal, returns the receiver expression and the member name — the shape
     /// that compiles to a fused `INVOKE`.
     fn as_method_invoke(&self, callee: &HirId<HirExpr>) -> Option<(HirId<HirExpr>, String)> {
-        let HirExpr::Index(target, member) = self.hir.get(callee) else { return None };
+        let HirExpr::Index(target, member, is_dot) = self.hir.get(callee) else { return None };
+        // Only `recv.name(args)` (a `.`-call) is a method invoke. `recv["k"](args)` is a
+        // call of the *data* at key "k", which must not route to the method surface.
+        if !is_dot {
+            return None;
+        }
         if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
             return None;
         }

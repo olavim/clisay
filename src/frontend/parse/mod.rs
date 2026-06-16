@@ -409,7 +409,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Operator::MemberAccess => {
                 let id = self.parse_identifier()?;
                 let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                Expr::Index(expr, id)
+                Expr::Index(expr, id, true) // `.name` member access
             },
             Operator::Arrow => {
                 let right = self.parse_block_or_expr(op.infix_precedence().unwrap())?;
@@ -574,7 +574,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Operator::Index => {
                 let index = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightBracket)?;
-                Ok(self.ast.add_expr(Expr::Index(expr, index), pos))
+                Ok(self.ast.add_expr(Expr::Index(expr, index, false), pos)) // `[expr]` data access
             },
             _ => unreachable!()
         }
@@ -614,14 +614,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
                 let id = self.parse_identifier()?;
                 let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                let expr = self.ast.add_expr(Expr::Index(super_expr, id), pos.clone());
+                let expr = self.ast.add_expr(Expr::Index(super_expr, id, true), pos.clone()); // `super.name`
                 Ok(expr)
             },
             TokenType::LeftBracket => {
                 let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
                 let expr = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightBracket)?;
-                let expr = self.ast.add_expr(Expr::Index(super_expr, expr), pos.clone());
+                let expr = self.ast.add_expr(Expr::Index(super_expr, expr, false), pos.clone()); // `super[expr]`
                 Ok(expr)
             },
             TokenType::LeftParen => parse_error!(self, &pos, "Super call must be the first statement in an init block"),

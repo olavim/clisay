@@ -77,7 +77,7 @@ impl<'a> Lowerer<'a> {
             Expr::Unary(op, operand) => HirExpr::Unary(lower_unop(op), self.expr(operand)?),
             Expr::Binary(op, left, right) => return self.binary(expr_id, op, left, right),
             Expr::Call(callee, args) => HirExpr::Call(self.expr(callee)?, self.exprs(args)?),
-            Expr::Index(target, member) => HirExpr::Index(self.expr(target)?, self.expr(member)?),
+            Expr::Index(target, member, is_dot) => HirExpr::Index(self.expr(target)?, self.expr(member)?, *is_dot),
             Expr::Literal(lit) => HirExpr::Literal(self.literal(lit)?),
             Expr::Identifier(name) => HirExpr::Identifier(*name),
             Expr::This => HirExpr::This,
@@ -96,7 +96,7 @@ impl<'a> Lowerer<'a> {
                 let right = self.hir.add(normalized_binop, self.ast.pos(right).clone());
                 HirExpr::Assign(self.expr(left)?, right)
             },
-            Operator::MemberAccess => HirExpr::Index(self.expr(left)?, self.expr(right)?),
+            Operator::MemberAccess => HirExpr::Index(self.expr(left)?, self.expr(right)?, true),
             Operator::Comma => return Err(self.error("Unexpected ','", right)),
             _ => HirExpr::Binary(lower_binop(op), self.expr(left)?, self.expr(right)?),
         };

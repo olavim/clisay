@@ -66,6 +66,10 @@ pub enum Inst {
     CloseUpvalue(u8),
     GetIndex,
     SetIndex,
+    /// Dynamic member access by name (`.name`): same stack protocol as Get/SetIndex,
+    /// but routes the dynamic-boundary `dict` to its method surface instead of data.
+    GetProperty,
+    SetProperty,
     GetPropertyId(u8),
     SetPropertyId(u8),
     SetPropertyIdPop(u8),

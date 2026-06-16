@@ -80,7 +80,9 @@ impl Vm {
         self.stack.push(Value::from(name)); // [receiver, name]
 
         let depth = self.frames.len();
-        self.op_get_index()?;
+        // INVOKE is always a `recv.name(args)` (`.`-call), so resolve via property
+        // access. This routes a `dict` to its method surface, not its keyed data.
+        self.op_get_property()?;
 
         if self.frames.len() == depth {
             // Synchronous (field value / native): the member value is on the stack.
@@ -279,6 +281,58 @@ impl Vm {
             ObjectKind::Dict => self.set_dict_index(target, prop),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
+    }
+
+    /// Dotted access `target.name`: the value's declared interface. Same stack
+    /// protocol as `op_get_index`, but a `dict` resolves to its **method** surface
+    /// (`.`) rather than its keyed data (`[]`), so `d.has` and `d["has"]` never collide.
+    pub(super) fn op_get_property(&mut self) -> Result<(), anyhow::Error> {
+        let prop = self.stack.pop();
+        let target = self.stack.pop();
+        let ValueKind::Object(object_kind) = target.kind() else {
+            return self.error(format!("Invalid property access: {}", target.fmt()));
+        };
+
+        match object_kind {
+            ObjectKind::Instance => self.get_instance_index(target, prop),
+            ObjectKind::Array => self.get_native_type_index(self.native_types.array, target, prop),
+            ObjectKind::Dict => self.get_dict_method(target, prop),
+            _ => self.error(format!("Invalid property access: {}", target.fmt()))
+        }
+    }
+
+    /// Dotted store `target.name = v`. Instances assign the named field; a `dict`
+    /// method is not assignable (use `[]` for data).
+    pub(super) fn op_set_property(&mut self) -> Result<(), anyhow::Error> {
+        let prop = self.stack.pop();
+        let target = self.stack.pop();
+        let ValueKind::Object(object_kind) = target.kind() else {
+            return self.error(format!("Invalid property access: {}", target.fmt()));
+        };
+
+        match object_kind {
+            ObjectKind::Instance => self.set_instance_index(prop, target),
+            ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop),
+            ObjectKind::Dict => self.error(format!(
+                "Cannot assign to dict method '{}'; dict data is assigned with []",
+                prop.as_object().as_string()
+            )),
+            _ => self.error(format!("Invalid property access: {}", target.fmt()))
+        }
+    }
+
+    /// Resolves `dict.name` to a bound method of the `dict` method surface.
+    fn get_dict_method(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
+        let dict_class = unsafe { &*self.native_types.dict };
+        if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
+            if let Some(method) = dict_class.resolve_method(prop.as_object().as_string_ptr()) {
+                let bound = self.alloc(ObjBoundMethod::new(target, method));
+                self.stack.push(Value::from(bound));
+                return Ok(());
+            }
+            return self.error(format!("dict has no method '{}'", prop.as_object().as_string()));
+        }
+        self.error(format!("Invalid dict property: {}", prop.fmt()))
     }
 
     /// Reads `dict[key]` by value key. A missing key yields `null` — dict reads are
