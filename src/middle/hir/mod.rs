@@ -53,7 +53,7 @@ pub enum HirExpr {
     Binary(BinOp, HirId<HirExpr>, HirId<HirExpr>),
     Assign(HirId<HirExpr>, HirId<HirExpr>),
     Call(HirId<HirExpr>, Vec<HirId<HirExpr>>),
-    Index(HirId<HirExpr>, HirId<HirExpr>),
+    Index(HirId<HirExpr>, HirId<HirExpr>, bool),
     Literal(HirLiteral),
     Identifier(Symbol),
     This,

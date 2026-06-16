@@ -53,7 +53,7 @@ pub enum Expr {
     Unary(Operator, AstId<Expr>),
     Binary(Operator, AstId<Expr>, AstId<Expr>),
     Call(AstId<Expr>, Vec<AstId<Expr>>),
-    Index(AstId<Expr>, AstId<Expr>),
+    Index(AstId<Expr>, AstId<Expr>, bool),
     Literal(Literal),
     Identifier(Symbol),
     This,

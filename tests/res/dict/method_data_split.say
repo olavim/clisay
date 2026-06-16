@@ -1,0 +1,12 @@
+say d = {};
+d["has"] = "data-at-has";
+d["size"] = 99;
+
+print(d["has"]);     // expect: data-at-has
+print(d.has("has")); // expect: true
+print(d["size"]);    // expect: 99
+print(d.size());     // expect: 2
+
+d["fn"] = () => "stored-fn";
+print(d["fn"]());    // expect: stored-fn
+print(d.has("fn"));  // expect: true

@@ -56,6 +56,8 @@ pub enum Inst {
     CloseUpvalue(u8),
     GetIndex,
     SetIndex,
+    GetProperty,
+    SetProperty,
     GetPropertyId(u8),
     SetPropertyId(u8),
     SetPropertyIdPop(u8),
