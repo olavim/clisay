@@ -96,6 +96,11 @@ pub struct CatchClause {
 
 pub struct TypeDecl {
     pub name: Symbol,
+    /// `true` for a `trait` declaration (a non-instantiable, mixable bundle), `false`
+    /// for a `type`. Traits are expanded into composers during lowering (`with`).
+    pub is_trait: bool,
+    /// Traits mixed in via `with T1, T2, ...` — their members fold into this composer.
+    pub with_traits: Vec<Symbol>,
     pub superclass: Option<Symbol>,
     /// The initializer's runtime name (`"{class}.init"`), used whether the init is
     /// declared or synthesised during lowering.

@@ -1,18 +1,25 @@
 //! Lowering: AST to HIR transformation.
+//!
+//! The generic statement/expression transform lives here. The trait-composition
+//! concern is split out: `traits` handles trait scoping and member folding (`with`),
+//! and `init` handles initializer assembly and `init` orchestration.
+
+mod init;
+mod traits;
+
+use std::collections::HashMap;
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt};
-use crate::frontend::lex::SourcePosition;
+use crate::ast::{Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirCatchClause, HirTypeDecl, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral,
-    HirStmt, UnOp,
+    BinOp, Hir, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirStmt, UnOp,
 };
 
 pub fn lower(mut ast: Ast) -> Result<Hir, anyhow::Error> {
     let root = ast.get_root();
     let (ident_ids, ident_texts) = ast.take_idents();
-    let mut lowerer = Lowerer { ast: &ast, hir: Hir::new(ident_ids, ident_texts) };
+    let mut lowerer = Lowerer { ast: &ast, hir: Hir::new(ident_ids, ident_texts), trait_scopes: Vec::new() };
     lowerer.stmt(&root)?;
     Ok(lowerer.hir)
 }
@@ -20,11 +27,37 @@ pub fn lower(mut ast: Ast) -> Result<Hir, anyhow::Error> {
 struct Lowerer<'a> {
     ast: &'a Ast,
     hir: Hir,
+    /// A lexical stack of trait declarations in scope (one map per scope). See `traits`.
+    trait_scopes: Vec<HashMap<Symbol, AstId<Stmt>>>,
 }
 
 impl<'a> Lowerer<'a> {
     fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &AstId<T>) -> anyhow::Error {
         anyhow!("{}\n\tat {}", msg.into(), self.ast.pos(node_id))
+    }
+
+    /// The `TypeDecl` of a `type`/`trait` declaration statement.
+    fn ast_type(&self, id: &AstId<Stmt>) -> &'a TypeDecl {
+        match self.ast.get(id) {
+            Stmt::Type(decl) => decl,
+            _ => unreachable!("expected a type/trait declaration"),
+        }
+    }
+
+    /// The `FnDecl` of a function/method/init declaration statement.
+    fn ast_fn(&self, id: &AstId<Stmt>) -> &'a FnDecl {
+        match self.ast.get(id) {
+            Stmt::Fn(decl) => decl,
+            _ => unreachable!("expected a function declaration"),
+        }
+    }
+
+    /// The statements of a block expression.
+    fn ast_block(&self, id: &AstId<Expr>) -> &'a [AstId<Stmt>] {
+        match self.ast.get(id) {
+            Expr::Block(stmts) => stmts,
+            _ => unreachable!("expected a block expression"),
+        }
     }
 
     fn stmt(&mut self, stmt_id: &AstId<Stmt>) -> Result<HirId<HirStmt>, anyhow::Error> {
@@ -55,7 +88,17 @@ impl<'a> Lowerer<'a> {
             Stmt::Block(body) => HirStmt::Block(self.expr(body)?),
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),
-            Stmt::Type(decl) => HirStmt::Type(Box::new(self.class_decl(decl, &pos)?)),
+            Stmt::Type(decl) => {
+                if decl.is_trait {
+                    // Traits are splice-templates expanded into composers via `with`, not
+                    // runtime types. Emit nothing, but verify the trait's own init orchestrates
+                    // its `with`-mixed traits (see `init`).
+                    self.check_init_orchestration(decl, &pos)?;
+                    HirStmt::Block(self.hir.add(HirExpr::Block(Vec::new()), pos.clone()))
+                } else {
+                    HirStmt::Type(Box::new(self.lower_type(decl, &pos)?))
+                }
+            },
         };
         Ok(self.hir.add(kind, pos))
     }
@@ -71,15 +114,33 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(expr_id).clone();
         let kind = match self.ast.get(expr_id) {
             Expr::Block(stmts) => {
-                let stmts = stmts.iter().map(|s| self.stmt(s)).collect::<Result<Vec<_>, _>>()?;
-                HirExpr::Block(stmts)
+                // Each block is its own lexical scope for trait declarations (see `traits`).
+                let scope = self.scan_traits(stmts)?;
+                self.trait_scopes.push(scope);
+                let lowered = stmts.iter().map(|s| self.stmt(s)).collect::<Result<Vec<_>, _>>()?;
+                self.trait_scopes.pop();
+                HirExpr::Block(lowered)
             },
             Expr::Unary(op, operand) => HirExpr::Unary(lower_unop(op), self.expr(operand)?),
             Expr::Binary(op, left, right) => return self.binary(expr_id, op, left, right),
-            Expr::Call(callee, args) => HirExpr::Call(self.expr(callee)?, self.exprs(args)?),
+            Expr::Call(callee, args) => {
+                // `Trait.init(args)` is a qualified call orchestrating a `with`-mixed trait's
+                // init (see `init`); everything else is an ordinary call.
+                if let Some(trait_sym) = self.as_qualified_init(callee) {
+                    let lowered_args = self.exprs(args)?;
+                    self.qualified_init_call(trait_sym, lowered_args, callee, &pos)?
+                } else {
+                    HirExpr::Call(self.expr(callee)?, self.exprs(args)?)
+                }
+            },
             Expr::Index(target, member, is_dot) => HirExpr::Index(self.expr(target)?, self.expr(member)?, *is_dot),
             Expr::Literal(lit) => HirExpr::Literal(self.literal(lit)?),
-            Expr::Identifier(name) => HirExpr::Identifier(*name),
+            Expr::Identifier(name) => {
+                if self.is_trait_in_scope(*name) {
+                    return Err(self.error(format!("'{}' is a trait and cannot be used as a value (traits are not instantiable)", self.hir.text(*name)), expr_id));
+                }
+                HirExpr::Identifier(*name)
+            },
             Expr::This => HirExpr::This,
             Expr::Super => HirExpr::Super,
         };
@@ -146,86 +207,6 @@ impl<'a> Lowerer<'a> {
             None => None,
         };
         Ok(HirCatchClause { param, body: self.expr(&catch.body)? })
-    }
-
-    fn class_decl(&mut self, decl: &TypeDecl, class_pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
-        let init = self.lower_init(decl, class_pos)?;
-        let getter = match &decl.getter {
-            Some(stmt) => Some(self.stmt(stmt)?),
-            None => None,
-        };
-        let setter = match &decl.setter {
-            Some(stmt) => Some(self.stmt(stmt)?),
-            None => None,
-        };
-        let methods = decl.methods.iter().map(|m| self.stmt(m)).collect::<Result<Vec<_>, _>>()?;
-        Ok(HirTypeDecl {
-            name: decl.name,
-            superclass: decl.superclass,
-            init,
-            getter,
-            setter,
-            fields: decl.fields.clone(),
-            methods,
-            pub_members: decl.pub_members.clone(),
-        })
-    }
-
-    /// Assembles the type initializer: field initializers first, then a `super()`
-    /// call for a child class (the explicit one, or a synthesised virtual one), then
-    /// the declared body. A class without a declared init gets an empty-bodied one.
-    fn lower_init(&mut self, decl: &TypeDecl, class_pos: &SourcePosition) -> Result<HirId<HirStmt>, anyhow::Error> {
-        let is_child = decl.superclass.is_some();
-
-        // The declared init's params, body, and whether it already opens with super().
-        let (params, body_stmts, has_super, init_pos): (_, &[AstId<Stmt>], _, _) = match &decl.init {
-            Some(init_id) => {
-                let init_pos = self.ast.pos(init_id).clone();
-                let Stmt::Fn(fn_decl) = self.ast.get(init_id) else { unreachable!() };
-                let params = self.exprs(&fn_decl.params)?;
-                let Expr::Block(stmts) = self.ast.get(&fn_decl.body) else { unreachable!() };
-                let has_super = stmts.first().is_some_and(|s| self.is_super_call(s));
-                (params, stmts.as_slice(), has_super, init_pos)
-            },
-            None => (Vec::new(), &[], false, class_pos.clone()),
-        };
-
-        let mut body = Vec::new();
-
-        // 1. Field initializers (`this.f = v`), spliced ahead of everything.
-        for (field, value) in &decl.field_inits {
-            let target = self.hir.add(HirExpr::Identifier(*field), class_pos.clone());
-            let value = self.expr(value)?;
-            let assign = self.hir.add(HirExpr::Assign(target, value), class_pos.clone());
-            body.push(self.hir.add(HirStmt::Expression(assign), class_pos.clone()));
-        }
-
-        // 2. A virtual `super()` for a child class that didn't write one.
-        if is_child && !has_super {
-            body.push(self.virtual_super_call(&init_pos));
-        }
-
-        // 3. The declared body (which may itself open with an explicit `super(...)`).
-        for stmt_id in body_stmts {
-            body.push(self.stmt(stmt_id)?);
-        }
-
-        let body = self.hir.add(HirExpr::Block(body), init_pos.clone());
-        let fn_decl = HirFnDecl { name: decl.init_name, params, body };
-        Ok(self.hir.add(HirStmt::Fn(fn_decl), init_pos))
-    }
-
-    /// Whether `stmt` is a `super(...)` call statement.
-    fn is_super_call(&self, stmt: &AstId<Stmt>) -> bool {
-        let Stmt::Expression(expr) = self.ast.get(stmt) else { return false };
-        let Expr::Call(callee, _) = self.ast.get(expr) else { return false };
-        matches!(self.ast.get(callee), Expr::Super)
-    }
-
-    fn virtual_super_call(&mut self, pos: &SourcePosition) -> HirId<HirStmt> {
-        let super_expr = self.hir.add(HirExpr::Super, pos.clone());
-        let call = self.hir.add(HirExpr::Call(super_expr, Vec::new()), pos.clone());
-        self.hir.add(HirStmt::Expression(call), pos.clone())
     }
 }
 

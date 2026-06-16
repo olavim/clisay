@@ -1,2 +1,2 @@
 say x = 1;
-say x = 2; // error: Variable 'x' already declared in this scope
+say x = 2; // error: 'x' already declared in this scope

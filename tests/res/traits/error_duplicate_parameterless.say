@@ -1,0 +1,8 @@
+// A parameterless init may be called at most once (no redundant double-init).
+trait Ready { pub state; init() { this.state = "r"; } }
+type T with Ready {
+    init() {
+        Ready.init();
+        Ready.init(); // error: 'Ready.init(...)' is called more than once
+    }
+}

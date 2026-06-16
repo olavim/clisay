@@ -212,7 +212,7 @@ impl<'a> Resolver<'a> {
         }
 
         if self.locals.iter().rev().any(|local| local.depth == self.scope_depth && local.name == Some(name)) {
-            compiler_error!(self, node_id, "Variable '{}' already declared in this scope", self.hir.text(name));
+            compiler_error!(self, node_id, "'{}' already declared in this scope", self.hir.text(name));
         }
 
         self.locals.push(Local { name: Some(name), depth: self.scope_depth, is_mutable, is_captured: false });

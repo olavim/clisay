@@ -1,0 +1,2 @@
+trait Drawable { pub fn draw() { return "drawn"; } }
+say d = Drawable(); // error: 'Drawable' is a trait and cannot be used as a value (traits are not instantiable)

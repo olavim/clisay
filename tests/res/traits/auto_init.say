@@ -1,0 +1,16 @@
+// A parameterless trait init runs automatically even when the composer's init never
+// mentions it (and even when the composer has no init at all).
+trait Ready { pub state; init() { this.state = "ready"; } }
+
+type WithInit with Ready {
+    pub n;
+    init(n) { this.n = n; }   // never calls Ready.init() — it auto-runs
+}
+type NoInit with Ready { }    // no init at all — Ready.init() still auto-runs
+
+say a = WithInit(7);
+print(a.state); // expect: ready
+print(a.n);     // expect: 7
+
+say b = NoInit();
+print(b.state); // expect: ready

@@ -1,0 +1,18 @@
+// Mix order is irrelevant: `with A, B` and `with B, A` produce the same members.
+trait A { pub fn a() { return "a"; } }
+trait B { pub fn b() { return "b"; } }
+
+type AB with A, B { init() {} }
+say x = AB();
+print(x.a()); // expect: a
+print(x.b()); // expect: b
+
+// @split
+
+trait A { pub fn a() { return "a"; } }
+trait B { pub fn b() { return "b"; } }
+
+type BA with B, A { init() {} }
+say y = BA();
+print(y.a()); // expect: a
+print(y.b()); // expect: b

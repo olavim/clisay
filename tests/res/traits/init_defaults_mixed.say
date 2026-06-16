@@ -1,0 +1,23 @@
+// Mixing a defaulted-field trait (no init) with a stateful one: only the stateful
+// trait is orchestrated; the defaulted trait's fields apply automatically.
+trait Counter {
+    pub count = 0; // default, no init needed
+    pub fn bump() { this.count = this.count + 1; }
+}
+trait Named {
+    pub name;
+    init(name) { this.name = name; } // stateful
+}
+
+type Widget with Counter, Named {
+    pub tag = "w"; // the type's own defaulted field
+    init(name) { Named.init(name); } // Counter is NOT orchestrated
+}
+
+say w = Widget("box");
+print(w.count);  // expect: 0
+print(w.name);   // expect: box
+print(w.tag);    // expect: w
+w.bump();
+w.bump();
+print(w.count);  // expect: 2

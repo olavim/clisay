@@ -59,7 +59,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Say => self.parse_say(),
             TokenType::While => self.parse_while(),
             TokenType::Fn => self.parse_fn(),
-            TokenType::Type => self.parse_class(),
+            TokenType::Type => self.parse_type_decl(false),
+            TokenType::Trait => self.parse_type_decl(true),
             TokenType::Return => self.parse_return(),
             TokenType::Throw => self.parse_throw(),
             TokenType::Try => self.parse_trycatch(),
@@ -181,19 +182,44 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(params)
     }
 
-    fn parse_class(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
-        let pos = self.tokens.expect(TokenType::Type)?.pos.clone();
+    /// Parses a comma-separated `with T1, T2, ...` trait list, if present. `with` is a
+    /// contextual keyword here (an ordinary identifier elsewhere).
+    fn parse_with_list(&mut self) -> Result<Vec<Symbol>, anyhow::Error> {
+        let mut traits = Vec::new();
+        let is_with = matches!(self.tokens.peek(0).kind, TokenType::Identifier)
+            && self.tokens.peek(0).lexeme == "with";
+        if is_with {
+            self.tokens.next();
+            loop {
+                let name = self.parse_identifier()?;
+                traits.push(self.ast.intern(&name));
+                if self.tokens.next_if(TokenType::Comma).is_none() { break; }
+            }
+        }
+        Ok(traits)
+    }
+
+    fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
+        let keyword = if is_trait { TokenType::Trait } else { TokenType::Type };
+        let pos = self.tokens.expect(keyword)?.pos.clone();
         let class_name = self.parse_identifier()?;
         let class_sym = self.ast.intern(&class_name);
 
         let prev_class = std::mem::replace(&mut self.current_class, Some(class_name.clone()));
 
-        let superclass = match self.tokens.next_if(TokenType::Colon) {
-            Some(_) => {
-                let super_name = self.parse_identifier()?;
-                Some(self.ast.intern(&super_name))
-            },
-            None => None
+        let with_traits = self.parse_with_list()?;
+
+        // `: Super` inheritance is types-only (and is being removed in a later step).
+        let superclass = if !is_trait {
+            match self.tokens.next_if(TokenType::Colon) {
+                Some(_) => {
+                    let super_name = self.parse_identifier()?;
+                    Some(self.ast.intern(&super_name))
+                },
+                None => None
+            }
+        } else {
+            None
         };
 
         self.tokens.expect(TokenType::LeftBrace)?;
@@ -280,6 +306,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let class_decl = Box::new(TypeDecl {
             name: class_sym,
+            is_trait,
+            with_traits,
             superclass,
             init_name,
             init,

@@ -1,0 +1,22 @@
+// A trait without a declared init still has a virtual empty init, so `T.init()` is
+// callable (a no-op). Calling it or not is equivalent for a defaulted-only trait.
+trait Plain { pub v = 1; pub w = 2; }
+trait Stateful { pub s; init(s) { this.s = s; } }
+
+type A with Plain, Stateful {
+    init(s) {
+        Plain.init(); // explicit no-op call of the virtual init — allowed
+        Stateful.init(s);
+    }
+}
+type B with Plain, Stateful {
+    init(s) { Stateful.init(s); } // Plain.init() omitted — also fine
+}
+
+say a = A(10);
+print(a.v);  // expect: 1
+print(a.s);  // expect: 10
+
+say b = B(20);
+print(b.w);  // expect: 2
+print(b.s);  // expect: 20

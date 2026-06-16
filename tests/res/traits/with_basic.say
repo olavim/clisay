@@ -1,0 +1,17 @@
+// A type `with` behavior and defaulted-field traits adopts their members.
+trait Clock { pub fn tick() { return 1; } }
+trait Greeter {
+    pub greeting = "hi";
+    pub fn greet() { return this.greeting; }
+}
+
+type Player with Clock, Greeter {
+    pub name;
+    init(name) { this.name = name; }
+}
+
+say p = Player("hero");
+print(p.tick()); // expect: 1
+print(p.greet()); // expect: hi
+print(p.greeting); // expect: hi
+print(p.name); // expect: hero
