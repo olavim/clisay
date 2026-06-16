@@ -1,11 +1,11 @@
-// A class declared inside a block becomes unreachable once the block exits.
+// A type declared inside a block becomes unreachable once the block exits.
 // After collection the heap must return to the pre-block baseline, proving
 // ObjClass (and its method/field graph) is actually freed.
 
 say bytesStart = gcHeapSize();
 
 {
-    class Local {
+    type Local {
         a;
         b;
         init() {

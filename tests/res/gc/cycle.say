@@ -1,12 +1,12 @@
 // An instance that references itself forms a cycle. Mark-sweep handles cycles
 // via the `marked` flag, so once the local `n` goes out of scope the whole
-// thing (instance + class) must be freed and the heap return to baseline.
+// thing (instance + type) must be freed and the heap return to baseline.
 // A refcount-style scheme, or losing the `marked` short-circuit, would leak.
 
 say bytesStart = gcHeapSize();
 
 {
-    class Node {
+    type Node {
         self;
         init() {
             this.self = this;

@@ -1,8 +1,8 @@
-class A {
+type A {
     a = "a";
 }
 
-class B : A {
+type B : A {
     init() {
         print(super.a);
     }

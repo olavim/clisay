@@ -4,7 +4,7 @@ mod precedence;
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, ClassDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol};
+use crate::ast::{Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol};
 use crate::frontend::lex::{SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -59,7 +59,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Say => self.parse_say(),
             TokenType::While => self.parse_while(),
             TokenType::Fn => self.parse_fn(),
-            TokenType::Class => self.parse_class(),
+            TokenType::Type => self.parse_class(),
             TokenType::Return => self.parse_return(),
             TokenType::Throw => self.parse_throw(),
             TokenType::Try => self.parse_trycatch(),
@@ -182,7 +182,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn parse_class(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
-        let pos = self.tokens.expect(TokenType::Class)?.pos.clone();
+        let pos = self.tokens.expect(TokenType::Type)?.pos.clone();
         let class_name = self.parse_identifier()?;
         let class_sym = self.ast.intern(&class_name);
 
@@ -250,7 +250,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let init_name = self.ast.intern(&format!("{}.init", class_name));
 
-        let class_decl = Box::new(ClassDecl {
+        let class_decl = Box::new(TypeDecl {
             name: class_sym,
             superclass,
             init_name,
@@ -263,7 +263,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         });
 
         self.current_class = prev_class;
-        Ok(self.ast.add_stmt(Stmt::Class(class_decl), pos))
+        Ok(self.ast.add_stmt(Stmt::Type(class_decl), pos))
     }
 
     fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {

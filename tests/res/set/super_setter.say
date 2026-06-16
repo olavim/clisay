@@ -1,4 +1,4 @@
-class A {
+type A {
     prop;
     value;
 
@@ -8,7 +8,7 @@ class A {
     }
 }
 
-class B : A { }
+type B : A { }
 
 say obj = B();
 obj.foo = "bar";

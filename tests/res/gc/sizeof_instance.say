@@ -1,4 +1,4 @@
-class Empty {}
+type Empty {}
 say bytesStart = gcHeapSize();
 say obj = Empty();
 gcCollect();

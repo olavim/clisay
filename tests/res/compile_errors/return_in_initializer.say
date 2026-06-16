@@ -1,6 +1,6 @@
-class A {
+type A {
     init() {
-        return 1; // error: Cannot return a value from a class initializer
+        return 1; // error: Cannot return a value from a type initializer
     }
 }
 

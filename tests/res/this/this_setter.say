@@ -1,4 +1,4 @@
-class A {
+type A {
     value;
 
     fn set(a, b) {

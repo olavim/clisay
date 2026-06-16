@@ -75,7 +75,7 @@ pub struct CatchClause {
     pub body: AstId<Expr>
 }
 
-pub struct ClassDecl {
+pub struct TypeDecl {
     pub name: Symbol,
     pub superclass: Option<Symbol>,
     pub init_name: Symbol,
@@ -101,7 +101,7 @@ pub enum Stmt {
     Block(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
-    Class(Box<ClassDecl>)
+    Type(Box<TypeDecl>)
 }
 
 pub enum NodeKind {

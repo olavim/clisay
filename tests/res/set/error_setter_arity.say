@@ -1,4 +1,4 @@
-class Object {
+type Object {
     set() { // error: Setter must have exactly two parameters
         return "hello";
     }
@@ -6,7 +6,7 @@ class Object {
 
 // @split
 
-class Object {
+type Object {
     set(one) { // error: Setter must have exactly two parameters
         return "hello";
     }
@@ -14,7 +14,7 @@ class Object {
 
 // @split
 
-class Object {
+type Object {
     set(one, too, many) { // error: Setter must have exactly two parameters
         return "hello";
     }

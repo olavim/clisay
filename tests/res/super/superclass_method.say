@@ -1,11 +1,11 @@
-class A {
+type A {
     x = "A";
     fn getX() {
         return this.x;
     }
 }
 
-class B : A {
+type B : A {
     x = "B";
     fn getSuperX() {
         return super.getX();

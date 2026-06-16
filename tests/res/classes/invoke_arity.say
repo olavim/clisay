@@ -1,4 +1,4 @@
-class Math {
+type Math {
     fn add(a, b) {
         return a + b;
     }

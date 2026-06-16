@@ -1,6 +1,6 @@
 // Regression test for a use-after-free in the GC's method-binding path.
 
-class Counter {
+type Counter {
     n;
     init() {
         this.n = 0;

@@ -87,7 +87,7 @@ impl Vm {
         Ok(())
     }
 
-    fn call_class(&mut self, arg_count: usize, class_ptr: *mut ObjClass) -> Result<(), anyhow::Error> {
+    fn call_class(&mut self, arg_count: usize, class_ptr: *mut ObjType) -> Result<(), anyhow::Error> {
         let class = unsafe { &*class_ptr };
         let init_method_obj = class.initializer().unwrap();
         match init_method_obj.tag() {

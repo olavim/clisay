@@ -1,4 +1,4 @@
-class A {
+type A {
     x;
 
     fn a() {
@@ -6,7 +6,7 @@ class A {
     }
 }
 
-class B : A {
+type B : A {
     x;
 
     fn b() {
