@@ -16,7 +16,7 @@ use crate::core::stack::{CachedStack, Stack};
 use crate::core::value::Value;
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
-use crate::core::objects::{self, ClassMember, NativeFn, ObjArray, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
+use crate::core::objects::{self, ClassMember, NativeFn, ObjArray, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::opcode::{self, OpCode};
@@ -28,12 +28,12 @@ const INDEX_CACHE_SIZE: usize = 2048;
 #[derive(Clone, Copy)]
 struct IndexCache {
     site: usize,
-    class: *mut ObjClass,
+    class: *mut ObjType,
     member: ClassMember
 }
 
 struct NativeTypes {
-    array: *mut ObjClass
+    array: *mut ObjType
 }
 
 impl GcTraceable for NativeTypes {
@@ -103,7 +103,7 @@ fn disassemble(chunk: &BytecodeChunk) {
     Output::println("================");
 }
 
-fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjClass {
+fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjType {
     let class = native_type.build_class(gc);
     gc.alloc(class)
 }

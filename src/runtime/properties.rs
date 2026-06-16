@@ -2,7 +2,7 @@ use super::*;
 
 impl Vm {
     #[inline]
-    fn resolve_cached_class_property(&mut self, class_ptr: *mut ObjClass, prop: *mut ObjString) -> Option<ClassMember> {
+    fn resolve_cached_class_property(&mut self, class_ptr: *mut ObjType, prop: *mut ObjString) -> Option<ClassMember> {
         let site = self.ip as usize;
         let slot = (site >> 4) & (INDEX_CACHE_SIZE - 1);
         let entry = unsafe { self.index_cache.get_unchecked_mut(slot) };
@@ -147,7 +147,7 @@ impl Vm {
         }
     }
 
-    fn get_native_type_index(&mut self, native_class_ptr: *mut ObjClass, target: Value, prop: Value) -> Result<(), anyhow::Error> {
+    fn get_native_type_index(&mut self, native_class_ptr: *mut ObjType, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let native_class = unsafe { &*native_class_ptr };
 
         if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
@@ -169,7 +169,7 @@ impl Vm {
         return self.call_native(1, getter.as_native_function_ptr());
     }
 
-    fn set_native_type_index(&mut self, native_class_ptr: *mut ObjClass, target: Value, prop: Value) -> Result<(), anyhow::Error> {
+    fn set_native_type_index(&mut self, native_class_ptr: *mut ObjType, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let native_class = unsafe { &*native_class_ptr };
         let setter = native_class.setter().unwrap();
         let value = self.stack.pop();

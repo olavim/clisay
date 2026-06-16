@@ -1,8 +1,8 @@
-class A {
+type A {
     x = "A";
 }
 
-class B : A {
+type B : A {
     fn setSuperX() {
         super.x = "B";
     }

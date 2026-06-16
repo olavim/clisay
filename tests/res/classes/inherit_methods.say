@@ -1,4 +1,4 @@
-class A {
+type A {
     fn a() {
         print("a");
     }
@@ -8,7 +8,7 @@ class A {
     }
 }
 
-class B : A {
+type B : A {
     fn b() {
         print("b");
     }

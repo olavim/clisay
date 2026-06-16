@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use fnv::FnvHashMap;
 
 use crate::core::gc::Gc;
-use crate::core::objects::ObjClass;
+use crate::core::objects::ObjType;
 use crate::core::objects::ObjString;
 use crate::middle::ir::{Inst, Ir, Label};
 use crate::middle::resolve::{Bindings, Cleanup, FnKind};
@@ -39,7 +39,7 @@ pub struct Compiler<'a> {
     /// The kind of each enclosing function, for initializer return handling.
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
-    classes: FnvHashMap<*mut ObjString, *mut ObjClass>
+    classes: FnvHashMap<*mut ObjString, *mut ObjType>
 }
 
 #[macro_export]

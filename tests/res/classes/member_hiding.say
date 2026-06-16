@@ -1,8 +1,8 @@
-class A {
+type A {
     x = "a";
 }
 
-class B : A {
+type B : A {
     x = "b";
 }
 

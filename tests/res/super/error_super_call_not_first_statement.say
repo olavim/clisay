@@ -1,6 +1,6 @@
-class A {}
+type A {}
 
-class B : A {
+type B : A {
     init() {
         0;
         super(); // error: Super call must be the first statement in an init block

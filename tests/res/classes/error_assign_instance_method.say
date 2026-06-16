@@ -1,9 +1,9 @@
-class B {
+type B {
     me = "B";
     fn getMe() { return this.me; }
 }
 
-class A {
+type A {
     me = "A";
     fn getMe() { return this.me; }
 }

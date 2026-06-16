@@ -5,7 +5,7 @@ fn getClosure(param) {
     return closure;
 }
 
-class Object {
+type Object {
     get(prop) {
         return getClosure(prop);
     }

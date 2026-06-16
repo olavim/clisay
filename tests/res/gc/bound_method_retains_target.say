@@ -6,7 +6,7 @@
 // the target were wrongly freed, its slot would be reused and the final call
 // would print garbage instead of "hi".
 
-class Foo {
+type Foo {
     val;
     init(v) {
         this.val = v;

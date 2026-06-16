@@ -1,4 +1,4 @@
-class Object {
+type Object {
     get() { // error: Getter must have exactly one parameter
         return "hello";
     }
@@ -6,7 +6,7 @@ class Object {
 
 // @split
 
-class Object {
+type Object {
     get(one, tooMany) { // error: Getter must have exactly one parameter
         return "hello";
     }

@@ -1,6 +1,6 @@
 print("stretch tree of depth:");
 
-class Tree {
+type Tree {
   item;
   depth;
   left;

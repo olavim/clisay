@@ -119,7 +119,7 @@ objects! {
     NativeFunction => ObjNativeFn,    native_function, as_native_function_ptr,  TAG_NATIVE_FUNCTION, "function";
     BoundMethod    => ObjBoundMethod, bound_method,    as_bound_method_ptr,     TAG_BOUND_METHOD,    "function";
     Closure        => ObjClosure,     closure,         as_closure_ptr,          TAG_CLOSURE,         "function";
-    Class          => ObjClass,       class,           as_class_ptr,            TAG_CLASS,           "class";
+    Type           => ObjType,        class,           as_class_ptr,            TAG_CLASS,           "type";
 }
 
 impl Object {
@@ -365,7 +365,7 @@ pub enum ClassMember {
 
 #[repr(align(8))]
 #[repr(C)]
-pub struct ObjClass {
+pub struct ObjType {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
     /// Field and regular-method names. The accessors/initializer are *not* here;
@@ -382,10 +382,10 @@ pub struct ObjClass {
     pub template: Box<[Value]>
 }
 
-impl ObjClass {
-    pub fn new(name: *mut ObjString) -> ObjClass {
-        ObjClass {
-            header: ObjectHeader::new(ObjectKind::Class),
+impl ObjType {
+    pub fn new(name: *mut ObjString) -> ObjType {
+        ObjType {
+            header: ObjectHeader::new(ObjectKind::Type),
             name,
             members: FnvHashMap::default(),
             fields: IntSet::default(),
@@ -436,9 +436,9 @@ impl ObjClass {
     }
 }
 
-impl GcTraceable for ObjClass {
+impl GcTraceable for ObjType {
     fn fmt(&self) -> String {
-        format!("<class {}>", unsafe { &(*self.name).value })
+        format!("<type {}>", unsafe { &(*self.name).value })
     }
 
     fn mark(&self, gc: &mut Gc) {
@@ -452,7 +452,7 @@ impl GcTraceable for ObjClass {
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<ObjClass>()
+        mem::size_of::<ObjType>()
             + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<ClassMember>())
             + self.template.len() * mem::size_of::<Value>()
     }
@@ -462,13 +462,13 @@ impl GcTraceable for ObjClass {
 #[repr(C)]
 pub struct ObjInstance {
     pub header: ObjectHeader,
-    pub class: *mut ObjClass,
+    pub class: *mut ObjType,
     /// Member values indexed directly by member id.
     pub values: Box<[Value]>
 }
 
 impl ObjInstance {
-    pub fn new(class_ptr: *mut ObjClass) -> ObjInstance {
+    pub fn new(class_ptr: *mut ObjType) -> ObjInstance {
         let class = unsafe { &*class_ptr };
         ObjInstance {
             header: ObjectHeader::new(ObjectKind::Instance),

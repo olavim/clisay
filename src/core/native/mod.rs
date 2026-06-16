@@ -1,5 +1,5 @@
 use super::gc::Gc;
-use super::objects::{ClassMember, ObjClass, ObjNativeFn, ObjString};
+use super::objects::{ClassMember, ObjType, ObjNativeFn, ObjString};
 
 pub mod array;
 
@@ -15,8 +15,8 @@ pub trait NativeType {
     /// The indexing setter (`obj[k] = v`).
     fn setter(&self, _gc: &mut Gc) -> Option<ObjNativeFn> { None }
 
-    fn build_class(&self, gc: &mut Gc) -> ObjClass {
-        let mut class = ObjClass::new(gc.intern(self.get_name()));
+    fn build_class(&self, gc: &mut Gc) -> ObjType {
+        let mut class = ObjType::new(gc.intern(self.get_name()));
 
         let mut member_id = 0;
         for (name, method) in self.methods(gc) {

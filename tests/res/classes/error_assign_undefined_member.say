@@ -1,5 +1,5 @@
 
-class A {
+type A {
     x;
 }
 

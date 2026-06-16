@@ -11,7 +11,7 @@
 // GC threshold. If the closure were freed and its slot reused, the call would
 // crash or `n` would stop counting correctly.
 
-class Counter {
+type Counter {
     n;
     init() {
         this.n = 0;

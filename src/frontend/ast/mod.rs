@@ -87,7 +87,7 @@ pub struct CatchClause {
     pub body: AstId<Expr>
 }
 
-pub struct ClassDecl {
+pub struct TypeDecl {
     pub name: Symbol,
     pub superclass: Option<Symbol>,
     /// The initializer's runtime name (`"{class}.init"`), used whether the init is
@@ -118,7 +118,7 @@ pub enum Stmt {
     Block(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
-    Class(Box<ClassDecl>)
+    Type(Box<TypeDecl>)
 }
 
 pub enum NodeKind {

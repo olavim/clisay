@@ -8,7 +8,7 @@ use fnv::FnvHashMap;
 use crate::compiler_error;
 use crate::core::objects::{ClassMember, UpvalueLocation};
 use crate::middle::hir::{
-    Hir, HirClassDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol,
+    Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol,
 };
 
 /// Where a bare identifier binds.
@@ -29,7 +29,7 @@ pub enum Member {
     ById(u8),
     /// A getter/setter call: the accessor's member id.
     ByAccessor(u8),
-    /// A `super(...)` call: the superclass initializer's member id.
+    /// A `super(...)` call: the supertype initializer's member id.
     SuperInit(u8),
 }
 
@@ -47,9 +47,9 @@ pub enum FnKind {
     Initializer,
 }
 
-/// The member layout of a class, for codegen to build its `ObjClass`.
+/// The member layout of a class, for codegen to build its `ObjType`.
 #[derive(Clone)]
-pub struct ClassLayout {
+pub struct TypeLayout {
     pub name: Symbol,
     /// Superclass name
     pub superclass: Option<Symbol>,
@@ -67,7 +67,7 @@ pub struct ClassLayout {
     pub init_id: u8,
 }
 
-impl ClassLayout {
+impl TypeLayout {
     fn resolve(&self, name: Symbol) -> Option<ClassMember> {
         self.members.get(&name).copied()
     }
@@ -90,7 +90,7 @@ pub struct Bindings {
     /// Function bodies => the captured upvalues of that function.
     upvalues: FnvHashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
     /// Class declarations => their member layout.
-    classes: FnvHashMap<HirId<HirStmt>, ClassLayout>,
+    classes: FnvHashMap<HirId<HirStmt>, TypeLayout>,
     /// Scope nodes (by HIR node index) => locals to clean up on exit.
     cleanups: FnvHashMap<usize, Vec<Cleanup>>,
 }
@@ -112,7 +112,7 @@ impl Bindings {
         &self.upvalues[body]
     }
 
-    pub fn class_layout(&self, id: &HirId<HirStmt>) -> &ClassLayout {
+    pub fn class_layout(&self, id: &HirId<HirStmt>) -> &TypeLayout {
         &self.classes[id]
     }
 
@@ -138,8 +138,8 @@ struct FnFrame {
 }
 
 struct ClassFrame {
-    layout: ClassLayout,
-    superclass: Option<ClassLayout>,
+    layout: TypeLayout,
+    superclass: Option<TypeLayout>,
 }
 
 pub struct Resolver<'a> {
@@ -149,7 +149,7 @@ pub struct Resolver<'a> {
     scope_depth: u8,
     fn_frames: Vec<FnFrame>,
     class_frames: Vec<ClassFrame>,
-    classes: FnvHashMap<Symbol, ClassLayout>,
+    classes: FnvHashMap<Symbol, TypeLayout>,
 }
 
 pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
@@ -335,7 +335,7 @@ impl<'a> Resolver<'a> {
                 self.bindings.slots.insert(*stmt_id, slot);
                 self.function(decl, FnKind::Function)?;
             },
-            HirStmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
+            HirStmt::Type(decl) => self.class_declaration(stmt_id, decl)?,
             HirStmt::Say(field) => {
                 let slot = self.declare_local(field.name, true, stmt_id)?;
                 self.bindings.slots.insert(*stmt_id, slot);
@@ -379,7 +379,7 @@ impl<'a> Resolver<'a> {
         for stmt_id in body {
             let name = match self.hir.get(stmt_id) {
                 HirStmt::Fn(decl) => decl.name,
-                HirStmt::Class(decl) => decl.name,
+                HirStmt::Type(decl) => decl.name,
                 _ => continue,
             };
             self.declare_local(name, false, stmt_id)?;
@@ -533,22 +533,22 @@ impl<'a> Resolver<'a> {
 
     fn require_class(&self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if self.class_frames.is_empty() {
-            compiler_error!(self, node, "Cannot use 'this' outside of a class method");
+            compiler_error!(self, node, "Cannot use 'this' outside of a type method");
         }
         Ok(())
     }
 
-    fn require_superclass(&self, node: &HirId<HirExpr>) -> Result<ClassLayout, anyhow::Error> {
+    fn require_superclass(&self, node: &HirId<HirExpr>) -> Result<TypeLayout, anyhow::Error> {
         let Some(frame) = self.class_frames.last() else {
-            compiler_error!(self, node, "Cannot use 'super' outside of a class method");
+            compiler_error!(self, node, "Cannot use 'super' outside of a type method");
         };
         let Some(superclass) = &frame.superclass else {
-            compiler_error!(self, node, "Cannot use 'super' outside of a child class method");
+            compiler_error!(self, node, "Cannot use 'super' outside of a child type method");
         };
         Ok(superclass.clone())
     }
 
-    fn current_class(&self) -> &ClassLayout {
+    fn current_class(&self) -> &TypeLayout {
         &self.class_frames.last().unwrap().layout
     }
 
@@ -589,7 +589,7 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn class_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &Box<HirClassDecl>) -> Result<(), anyhow::Error> {
+    fn class_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &Box<HirTypeDecl>) -> Result<(), anyhow::Error> {
         let name = decl.name;
         let slot = self.resolve_local(name).expect("class declarations are reserved by hoisting");
         self.bindings.slots.insert(*stmt, slot);
@@ -598,13 +598,13 @@ impl<'a> Resolver<'a> {
         let superclass = match &decl.superclass {
             Some(super_name) => {
                 let layout = self.classes.get(super_name)
-                    .ok_or(anyhow!("Class '{}' not declared", self.hir.text(*super_name)))?;
+                    .ok_or(anyhow!("Type '{}' not declared", self.hir.text(*super_name)))?;
                 Some(layout.clone())
             },
             None => None,
         };
 
-        let mut layout = ClassLayout {
+        let mut layout = TypeLayout {
             name: decl.name,
             superclass: decl.superclass,
             members: FnvHashMap::default(),

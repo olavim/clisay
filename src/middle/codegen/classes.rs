@@ -1,20 +1,20 @@
-use crate::core::objects::{ClassMember, ObjClass, ObjFn, ObjString};
+use crate::core::objects::{ClassMember, ObjType, ObjFn, ObjString};
 use crate::core::value::Value;
-use crate::middle::hir::{HirClassDecl, HirId, HirStmt};
+use crate::middle::hir::{HirTypeDecl, HirId, HirStmt};
 use crate::middle::ir::Inst;
 use crate::middle::resolve::FnKind;
 
 use super::Compiler;
 
 impl<'a> Compiler<'a> {
-    pub (super) fn class_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &Box<HirClassDecl>) -> Result<(), anyhow::Error> {
+    pub (super) fn class_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &Box<HirTypeDecl>) -> Result<(), anyhow::Error> {
         let slot = self.bindings.slot(stmt);
 
         // Build the class from the resolver-computed member layout.
         let layout = self.bindings.class_layout(stmt);
         let class_name = self.gc.intern(self.hir.text(layout.name));
         let superclass = layout.superclass;
-        let mut class = ObjClass::new(class_name);
+        let mut class = ObjType::new(class_name);
         for (&sym, &member) in &layout.members {
             let name = self.gc.intern(self.hir.text(sym));
             class.members.insert(name, member);
@@ -72,7 +72,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compiles a method and installs its `ObjFn` at the member id.
-    fn install_method(&mut self, class: &mut ObjClass, stmt: &HirId<HirStmt>, name: *mut ObjString) -> Result<(), anyhow::Error> {
+    fn install_method(&mut self, class: &mut ObjType, stmt: &HirId<HirStmt>, name: *mut ObjString) -> Result<(), anyhow::Error> {
         let function_ptr = self.compile_fn(stmt, FnKind::Method)?;
         let ClassMember::Method(id) = class.resolve(name).unwrap() else { unreachable!() };
         class.methods.insert(id, function_ptr.into());

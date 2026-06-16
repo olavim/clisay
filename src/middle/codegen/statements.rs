@@ -27,7 +27,7 @@ impl<'a> Compiler<'a> {
 
                 if let FnKind::Initializer = *self.fn_kinds.last().unwrap() {
                     if expr.is_some() {
-                        compiler_error!(self, stmt_id, "Cannot return a value from a class initializer");
+                        compiler_error!(self, stmt_id, "Cannot return a value from a type initializer");
                     }
 
                     self.emit(Inst::GetLocal(0), stmt_id);
@@ -98,7 +98,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::SetLocal(slot), stmt_id);
                 self.emit(Inst::Pop, stmt_id);
             },
-            HirStmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
+            HirStmt::Type(decl) => self.class_declaration(stmt_id, decl)?,
             HirStmt::Say(HirFieldInit { value, .. }) => {
                 let slot = self.bindings.slot(stmt_id);
 
@@ -188,7 +188,7 @@ impl<'a> Compiler<'a> {
     /// compiled into it - which is what lets forward references resolve.
     fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
-            if matches!(self.hir.get(stmt_id), HirStmt::Fn(_) | HirStmt::Class(_)) {
+            if matches!(self.hir.get(stmt_id), HirStmt::Fn(_) | HirStmt::Type(_)) {
                 self.emit(Inst::PushNull, stmt_id);
             }
         }

@@ -1,12 +1,12 @@
-class A {
+type A {
     init() {
         print("A");
     }
 }
 
-class B : A { }
+type B : A { }
 
-class C : B {
+type C : B {
     init() {
         print("C");
     }
@@ -18,13 +18,13 @@ C();
 
 // @split
 
-class A {
+type A {
     init(msg) {
         print(msg);
     }
 }
 
-class B : A {
+type B : A {
     init() {
         super("B");
     }

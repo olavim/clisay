@@ -1,4 +1,4 @@
-class Object {
+type Object {
     prop;
     value;
 

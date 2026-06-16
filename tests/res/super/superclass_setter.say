@@ -1,4 +1,4 @@
-class A {
+type A {
     value;
 
     set(prop, value) {
@@ -6,7 +6,7 @@ class A {
     }
 }
 
-class B : A {
+type B : A {
     fn set(a, b) {
         super[a] = b;
     }

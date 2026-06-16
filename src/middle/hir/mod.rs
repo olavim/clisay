@@ -77,7 +77,7 @@ pub struct HirCatchClause {
     pub body: HirId<HirExpr>,
 }
 
-pub struct HirClassDecl {
+pub struct HirTypeDecl {
     pub name: Symbol,
     pub superclass: Option<Symbol>,
     pub init: HirId<HirStmt>,
@@ -97,7 +97,7 @@ pub enum HirStmt {
     Block(HirId<HirExpr>),
     Say(HirFieldInit),
     Fn(HirFnDecl),
-    Class(Box<HirClassDecl>),
+    Type(Box<HirTypeDecl>),
 }
 
 pub enum HirNodeKind {

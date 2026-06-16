@@ -2,10 +2,10 @@
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, ClassDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt};
+use crate::ast::{Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt};
 use crate::frontend::lex::SourcePosition;
 use crate::middle::hir::{
-    BinOp, Hir, HirCatchClause, HirClassDecl, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral,
+    BinOp, Hir, HirCatchClause, HirTypeDecl, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral,
     HirStmt, UnOp,
 };
 
@@ -55,7 +55,7 @@ impl<'a> Lowerer<'a> {
             Stmt::Block(body) => HirStmt::Block(self.expr(body)?),
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),
-            Stmt::Class(decl) => HirStmt::Class(Box::new(self.class_decl(decl, &pos)?)),
+            Stmt::Type(decl) => HirStmt::Type(Box::new(self.class_decl(decl, &pos)?)),
         };
         Ok(self.hir.add(kind, pos))
     }
@@ -141,7 +141,7 @@ impl<'a> Lowerer<'a> {
         Ok(HirCatchClause { param, body: self.expr(&catch.body)? })
     }
 
-    fn class_decl(&mut self, decl: &ClassDecl, class_pos: &SourcePosition) -> Result<HirClassDecl, anyhow::Error> {
+    fn class_decl(&mut self, decl: &TypeDecl, class_pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
         let init = self.lower_init(decl, class_pos)?;
         let getter = match &decl.getter {
             Some(stmt) => Some(self.stmt(stmt)?),
@@ -152,7 +152,7 @@ impl<'a> Lowerer<'a> {
             None => None,
         };
         let methods = decl.methods.iter().map(|m| self.stmt(m)).collect::<Result<Vec<_>, _>>()?;
-        Ok(HirClassDecl {
+        Ok(HirTypeDecl {
             name: decl.name,
             superclass: decl.superclass,
             init,
@@ -163,10 +163,10 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Assembles the class initializer: field initializers first, then a `super()`
+    /// Assembles the type initializer: field initializers first, then a `super()`
     /// call for a child class (the explicit one, or a synthesised virtual one), then
     /// the declared body. A class without a declared init gets an empty-bodied one.
-    fn lower_init(&mut self, decl: &ClassDecl, class_pos: &SourcePosition) -> Result<HirId<HirStmt>, anyhow::Error> {
+    fn lower_init(&mut self, decl: &TypeDecl, class_pos: &SourcePosition) -> Result<HirId<HirStmt>, anyhow::Error> {
         let is_child = decl.superclass.is_some();
 
         // The declared init's params, body, and whether it already opens with super().

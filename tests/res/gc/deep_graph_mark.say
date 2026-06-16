@@ -3,7 +3,7 @@
 // full collection while it is reachable. Recursive marking overflows the native
 // stack here; iterative (worklist) marking handles it. Walking the list and
 // counting proves every node survived the collection.
-class Node {
+type Node {
     next;
     init(n) {
         this.next = n;
