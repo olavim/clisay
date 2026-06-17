@@ -53,6 +53,37 @@ macro_rules! tokens {
     };
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ContextualKeyword {
+    With,
+    Req,
+    Pub,
+    Inner,
+}
+
+impl ContextualKeyword {
+    pub fn from_lexeme(lexeme: &str) -> Option<ContextualKeyword> {
+        Some(match lexeme {
+            "with" => ContextualKeyword::With,
+            "req" => ContextualKeyword::Req,
+            "pub" => ContextualKeyword::Pub,
+            "inner" => ContextualKeyword::Inner,
+            _ => return None,
+        })
+    }
+}
+
+impl fmt::Display for ContextualKeyword {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            ContextualKeyword::With => "with",
+            ContextualKeyword::Req => "req",
+            ContextualKeyword::Pub => "pub",
+            ContextualKeyword::Inner => "inner",
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct Token {
     pub kind: TokenType,
@@ -72,6 +103,13 @@ impl Token {
 
     pub fn from_punctuation(lexeme: &str) -> Option<Token> {
         return TokenType::from_punctuation(lexeme).map(|kind| Token::new(kind, lexeme));
+    }
+
+    pub fn contextual(&self) -> Option<ContextualKeyword> {
+        match self.kind {
+            TokenType::Identifier => ContextualKeyword::from_lexeme(&self.lexeme),
+            _ => None,
+        }
     }
 }
 

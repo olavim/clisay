@@ -1,0 +1,3 @@
+trait Mover {
+    pub fn step() { return this.stuff(1); } // error: Trait 'Mover' accesses 'this.stuff', which it does not declare (provide it via `with`, `req`, or `req fn`)
+}

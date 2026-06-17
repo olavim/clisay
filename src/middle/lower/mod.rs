@@ -21,6 +21,7 @@ pub fn lower(mut ast: Ast) -> Result<Hir, anyhow::Error> {
         trait_scopes: Vec::new(),
         provided_traits: std::collections::HashSet::new(),
         emitted_aliases: std::collections::HashSet::new(),
+        trait_flatten_cache: HashMap::new(),
     };
     lowerer.stmt(&root)?;
     Ok(lowerer.hir)
@@ -38,6 +39,7 @@ struct Lowerer<'a> {
     /// reachable via `T.method(...)`. A qualified call resolves to an alias if one exists,
     /// else to the plain method name.
     emitted_aliases: std::collections::HashSet<String>,
+    trait_flatten_cache: HashMap<AstId<Stmt>, Vec<(Symbol, &'a TypeDecl)>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -96,11 +98,10 @@ impl<'a> Lowerer<'a> {
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),
             Stmt::Type(decl) => {
                 if decl.is_trait {
-                    // Traits are splice-templates expanded into composers via `with`, not
-                    // runtime types. Emit nothing, but verify the trait's own init orchestrates
-                    // its `with`-mixed traits (see `init`).
+                    // A trait emits no runtime type, but it's validated on its own.
+                    self.check_provide_require_exclusive(decl, &pos)?;
                     self.check_init_orchestration(decl, &pos)?;
-                    HirStmt::Block(self.hir.add(HirExpr::Block(Vec::new()), pos.clone()))
+                    HirStmt::Trait(Box::new(self.lower_trait(decl, &pos)?))
                 } else {
                     HirStmt::Type(Box::new(self.lower_type(decl, &pos)?))
                 }

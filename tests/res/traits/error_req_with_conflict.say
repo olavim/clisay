@@ -1,0 +1,2 @@
+trait Clock { pub fn tick() { return 1; } }
+type Player with Clock req Clock { init() {} } // error: 'Clock' is both `with`-provided and `req`-depended by this type: pick one

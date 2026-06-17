@@ -82,6 +82,10 @@ pub struct TypeDecl {
     pub is_trait: bool,
     /// Traits mixed in via `with T1, T2, ...`.
     pub with_traits: Vec<Symbol>,
+    /// Traits depended on via `req T1, T2, ...`.
+    pub req_traits: Vec<Symbol>,
+    /// Method holes declared via `req fn f(params);`.
+    pub req_fns: Vec<(Symbol, usize)>,
     pub superclass: Option<Symbol>,
     pub init_name: Symbol,
     pub init: Option<AstId<Stmt>>,

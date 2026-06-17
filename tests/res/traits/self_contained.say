@@ -1,0 +1,22 @@
+fn helper(n) { return n + 100; }
+
+trait Clock { pub fn tick() { return 1; } }
+trait Counter { inner count = 0; }
+
+trait Mover with Counter req Clock {
+    speed = 2;
+    req fn onMove(d);
+    pub fn step(dir) {
+        say local = dir;
+        return this.tick()
+             + this.speed
+             + this.onMove(local)
+             + helper(this.count);
+    }
+}
+type Player with Mover, Clock, Counter {
+    inner fn onMove(d) { return d; }
+    init() { Mover.init(); }
+}
+say p = Player();
+print(p.step(5)); // expect: 108

@@ -87,6 +87,8 @@ pub struct HirTypeDecl {
     pub method_traits: Vec<Option<Symbol>>,
     pub pub_members: HashSet<Symbol>,
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
+    /// For a standalone trait (`HirStmt::Trait`): its **declared surface**.
+    pub surface: HashSet<Symbol>,
 }
 
 pub enum HirStmt {
@@ -100,6 +102,7 @@ pub enum HirStmt {
     Say(HirFieldInit),
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
+    Trait(Box<HirTypeDecl>),
 }
 
 pub enum HirNodeKind {
