@@ -191,7 +191,8 @@ impl Vm {
         if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
             let prop_str = prop.as_object().as_string_ptr();
             // External `obj.member` access: a private/`inner` member is not reachable.
-            // (`this.x` never reaches here because it resolves to a member id internally.)
+            // (`this.x` never reaches here because it resolves to a member id internally, and
+            // per-trait private/qualified slots aren't in the runtime name map at all.)
             if let Some(member) = self.resolve_cached_class_property(unsafe { (*instance_ref).class }, prop_str) {
                 let id = match member { ClassMember::Field(id) | ClassMember::Method(id) => id };
                 if unsafe { &*(*instance_ref).class }.non_public.contains(&id) {

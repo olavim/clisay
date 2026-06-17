@@ -1,0 +1,10 @@
+// Private members are per-trait: two traits may each declare a private `count`; they are distinct
+// slots and never collide.
+trait Counter { count = 0; pub fn bump()  { this.count = this.count + 1; return this.count; } }
+trait Retry   { count = 0; pub fn again() { this.count = this.count - 1; return this.count; } }
+
+type Job with Counter, Retry { init() {} }
+say j = Job();
+print(j.bump());  // expect: 1
+print(j.again()); // expect: -1
+print(j.bump());  // expect: 2

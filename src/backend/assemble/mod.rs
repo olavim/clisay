@@ -96,7 +96,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(arg_count, pos);
         }
 
-        SubConstLocal(c, local) => {
+        SubConstLocal(c, local) | AddConstLocal(c, local) => {
             chunk.write(c, pos);
             chunk.write(local, pos);
         }

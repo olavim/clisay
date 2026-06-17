@@ -129,6 +129,8 @@ impl<'a> Lowerer<'a> {
         let params = self.exprs(&fd.params)?;
         let body_stmts = self.ast_block(&fd.body);
 
+        // The trait init's body accesses the trait's own private members via plain `this.<name>` /
+        // bare `<name>`; the resolver scopes those to the trait.
         let mut body = self.synthesize_auto_inits(with_traits, body_stmts, &init_pos)?;
         for s in body_stmts {
             body.push(self.stmt(s)?);
@@ -189,7 +191,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// A `this.<name>` member-access callee (a dotted access), used to build internal init calls.
-    fn this_method(&mut self, name: &str, pos: &SourcePosition) -> HirId<HirExpr> {
+    pub(super) fn this_method(&mut self, name: &str, pos: &SourcePosition) -> HirId<HirExpr> {
         let this_expr = self.hir.add(HirExpr::This, pos.clone());
         let name_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(name.to_string())), pos.clone());
         self.hir.add(HirExpr::Index(this_expr, name_lit, true), pos.clone())

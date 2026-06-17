@@ -115,8 +115,10 @@ pub struct TypeDecl {
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,
     /// Members (fields/methods) declared `pub` are externally accessible. Members not
-    /// listed are private (or `inner`), reachable only through `this`/`super`.
-    pub pub_members: HashSet<Symbol>
+    /// listed are private or `inner`, reachable only through `this`/`super`.
+    pub pub_members: HashSet<Symbol>,
+    /// Members declared `inner`: object-internal (host and sibling traits but not external code).
+    pub inner_members: HashSet<Symbol>,
 }
 
 pub enum Stmt {

@@ -1,0 +1,10 @@
+// A qualified call `T.method(...)` is valid only for a trait the enclosing type provides.
+trait Other  { pub fn foo() { return 1; } }
+trait Logger { pub fn log() { return 2; } }
+
+type X with Logger {
+    pub fn bar() { return Other.foo(); } // error: 'Other.foo(...)': 'Other' is not a trait provided by this type
+    init() {}
+}
+say x = X();
+print(x.bar());

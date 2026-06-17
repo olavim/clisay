@@ -1,0 +1,4 @@
+// Two different traits exposing a field of the same name is an unresolvable clash.
+trait A { pub id; }
+trait B { pub id; }
+type C with A, B { init() {} } // error: Exposed field 'id' clashes between trait 'A' and trait 'B' — rename one or make it private

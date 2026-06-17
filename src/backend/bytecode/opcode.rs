@@ -113,6 +113,7 @@ opcodes! {
     // Arithmetic
     Add => ADD,
     AddLocalConst => ADD_LOCAL_CONST(Local, Const),
+    AddConstLocal => ADD_CONST_LOCAL(Const, Local),
     Subtract => SUBTRACT,
     SubLocalConst => SUB_LOCAL_CONST(Local, Const),
     SubConstLocal => SUB_CONST_LOCAL(Const, Local),

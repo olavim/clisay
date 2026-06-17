@@ -228,9 +228,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut field_inits: Vec<(Symbol, AstId<Expr>)> = Vec::new();
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
         let mut pub_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
+        let mut inner_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
         let mut init = None;
         let mut getter = None;
         let mut setter = None;
+
+        #[derive(PartialEq)]
+        enum VisibilityModifier { Pub, Inner, None }
 
         while !self.tokens.match_next(TokenType::RightBrace) {
             let member_pos = self.tokens.peek(0).pos.clone();
@@ -240,24 +244,19 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             let modifier = {
                 let tok = self.tokens.peek(0);
                 match (tok.kind, tok.lexeme.as_str()) {
-                    (TokenType::Identifier, "pub") => Some(true),
-                    (TokenType::Identifier, "inner") => Some(false),
-                    _ => None,
+                    (TokenType::Identifier, "pub") => { self.tokens.next(); VisibilityModifier::Pub },
+                    (TokenType::Identifier, "inner") => { self.tokens.next(); VisibilityModifier::Inner },
+                    _ => VisibilityModifier::None,
                 }
-            };
-            let (is_pub, has_modifier) = match modifier {
-                Some(is_pub) => { self.tokens.next(); (is_pub, true) },
-                None => (false, false),
             };
 
             let kind = self.tokens.peek(0).kind;
             match kind {
                 TokenType::Fn => {
                     let stmt = self.parse_fn()?;
-                    if is_pub {
-                        if let Stmt::Fn(decl) = self.ast.get(&stmt) {
-                            pub_members.insert(decl.name);
-                        }
+                    if let Stmt::Fn(decl) = self.ast.get(&stmt) {
+                        if modifier == VisibilityModifier::Pub { pub_members.insert(decl.name); }
+                        if modifier == VisibilityModifier::Inner { inner_members.insert(decl.name); }
                     }
                     method_stmts.push(stmt);
                 },
@@ -267,15 +266,15 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     // Some identifiers have special meaning in classes but are not outright keywords
                     match name.as_str() {
                         "init" => {
-                            if has_modifier { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
+                            if modifier != VisibilityModifier::None { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
                             init = Some(self.parse_init(superclass.is_some())?);
                         },
                         "get" => {
-                            if has_modifier { parse_error!(self, &member_pos, "An accessor cannot have a visibility modifier"); }
+                            if modifier != VisibilityModifier::None { parse_error!(self, &member_pos, "An accessor cannot have a visibility modifier"); }
                             getter = Some(self.parse_accessor(name, 1, "Getter must have exactly one parameter")?);
                         },
                         "set" => {
-                            if has_modifier { parse_error!(self, &member_pos, "An accessor cannot have a visibility modifier"); }
+                            if modifier != VisibilityModifier::None { parse_error!(self, &member_pos, "An accessor cannot have a visibility modifier"); }
                             setter = Some(self.parse_accessor(name, 2, "Setter must have exactly two parameters")?);
                         },
                         _ => {
@@ -287,7 +286,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             self.tokens.expect(TokenType::Semicolon)?;
                             let field = self.ast.intern(&name);
                             fields.insert(field);
-                            if is_pub { pub_members.insert(field); }
+                            if modifier == VisibilityModifier::Pub { pub_members.insert(field); }
+                            if modifier == VisibilityModifier::Inner { inner_members.insert(field); }
 
                             if let Some(value) = value {
                                 field_inits.push((field, value));
@@ -316,7 +316,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             fields,
             field_inits,
             methods: method_stmts,
-            pub_members
+            pub_members,
+            inner_members,
         });
 
         self.current_class = prev_class;

@@ -19,7 +19,13 @@ use crate::middle::hir::{
 pub fn lower(mut ast: Ast) -> Result<Hir, anyhow::Error> {
     let root = ast.get_root();
     let (ident_ids, ident_texts) = ast.take_idents();
-    let mut lowerer = Lowerer { ast: &ast, hir: Hir::new(ident_ids, ident_texts), trait_scopes: Vec::new() };
+    let mut lowerer = Lowerer {
+        ast: &ast,
+        hir: Hir::new(ident_ids, ident_texts),
+        trait_scopes: Vec::new(),
+        provided_traits: std::collections::HashSet::new(),
+        emitted_aliases: std::collections::HashSet::new(),
+    };
     lowerer.stmt(&root)?;
     Ok(lowerer.hir)
 }
@@ -29,6 +35,14 @@ struct Lowerer<'a> {
     hir: Hir,
     /// A lexical stack of trait declarations in scope (one map per scope). See `traits`.
     trait_scopes: Vec<HashMap<Symbol, AstId<Stmt>>>,
+    /// The traits the composer currently being lowered provides (its flattened `with`-set).
+    /// Used to validate qualified `T.method(...)` calls. Empty outside a composer body.
+    provided_traits: std::collections::HashSet<Symbol>,
+    /// Qualified-call alias method names (`"<Trait>.<method>"`) emitted for the current
+    /// composer: the methods a host override shadowed out of the plain namespace, still
+    /// reachable via `T.method(...)`. A qualified call resolves to an alias if one exists,
+    /// else to the plain method name.
+    emitted_aliases: std::collections::HashSet<String>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -124,16 +138,29 @@ impl<'a> Lowerer<'a> {
             Expr::Unary(op, operand) => HirExpr::Unary(lower_unop(op), self.expr(operand)?),
             Expr::Binary(op, left, right) => return self.binary(expr_id, op, left, right),
             Expr::Call(callee, args) => {
-                // `Trait.init(args)` is a qualified call orchestrating a `with`-mixed trait's
-                // init (see `init`); everything else is an ordinary call.
                 if let Some(trait_sym) = self.as_qualified_init(callee) {
                     let lowered_args = self.exprs(args)?;
                     self.qualified_init_call(trait_sym, lowered_args, callee, &pos)?
+                } else if let Some((trait_sym, method)) = self.as_qualified_method_call(callee) {
+                    let lowered_args = self.exprs(args)?;
+                    self.qualified_method_call(trait_sym, &method, lowered_args, callee, &pos)?
                 } else {
                     HirExpr::Call(self.expr(callee)?, self.exprs(args)?)
                 }
             },
-            Expr::Index(target, member, is_dot) => HirExpr::Index(self.expr(target)?, self.expr(member)?, *is_dot),
+            Expr::Index(target, member, is_dot) => {
+                // The per-trait renamed slot names (`"<Trait>.<name>"`) are an internal artifact;
+                // a `.` can't appear in a source identifier, so `this["<Trait>.x"]` is an attempt
+                // to reach one. Reject it so private/qualified slots can't be probed by name.
+                if matches!(self.ast.get(target), Expr::This) {
+                    if let Expr::Literal(Literal::String(name)) = self.ast.get(member) {
+                        if name.contains('.') {
+                            return Err(self.error(format!("Invalid member access: '{name}' is not a member"), expr_id));
+                        }
+                    }
+                }
+                HirExpr::Index(self.expr(target)?, self.expr(member)?, *is_dot)
+            },
             Expr::Literal(lit) => HirExpr::Literal(self.literal(lit)?),
             Expr::Identifier(name) => {
                 if self.is_trait_in_scope(*name) {

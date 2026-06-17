@@ -52,6 +52,12 @@ impl<'a> Compiler<'a> {
             self.install_method(&mut class, stmt_id, name)?;
         }
 
+        // Per-trait private/qualified slots are named `"<Trait>.<name>"` and are reached only
+        // internally by member id (resolved at compile time). They must not be visible to external
+        // string-keyed access (`obj["x"]` / `obj.x`); dropping them from the runtime name map keeps
+        // that exclusion off the hot property path entirely (a `.` can't occur in a source name).
+        class.members.retain(|&name, _| !unsafe { &*name }.value.contains('.'));
+
         class.build_template();
         let class = self.gc.alloc(class);
         let idx = self.ir.add_constant(Value::from(class))?;

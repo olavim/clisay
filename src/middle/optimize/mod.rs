@@ -50,7 +50,7 @@ fn fuse(code: &[Inst], i: usize) -> Option<(Inst, usize)> {
 
     // `const +/- local`
     if let (PushConstant(c), Some(GetLocal(l)), Some(Add)) = (a0, a1, a2) {
-        return Some((AddLocalConst(l, c), 3));
+        return Some((AddConstLocal(c, l), 3));
     }
     if let (PushConstant(c), Some(GetLocal(l)), Some(Subtract)) = (a0, a1, a2) {
         return Some((SubConstLocal(c, l), 3));

@@ -458,7 +458,24 @@ impl Vm {
                     let b_idx = read_byte!() as usize;
                     let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
                     let b = self.chunk.constants[b_idx];
-                    if a.is_number() {
+                    if a.is_number() && b.is_number() {
+                        self.stack.push(Value::from(a.as_number() + b.as_number()));
+                    } else {
+                        self.stack.push(a);
+                        self.stack.push(b);
+                        self.ip = ip;
+                        self.op_add()?;
+                        ip = self.ip;
+                    }
+                },
+                // Fused value-producing `const + local`. `+` does not commute for string concat,
+                // so the const operand stays first (unlike the numeric case it would be equivalent).
+                opcode::ADD_CONST_LOCAL => {
+                    let a_idx = read_byte!() as usize;
+                    let b_idx = read_byte!() as usize;
+                    let a = self.chunk.constants[a_idx];
+                    let b = unsafe { *(*self.frames.top()).stack_start.add(b_idx) };
+                    if a.is_number() && b.is_number() {
                         self.stack.push(Value::from(a.as_number() + b.as_number()));
                     } else {
                         self.stack.push(a);
@@ -474,7 +491,7 @@ impl Vm {
                     let b_idx = read_byte!() as usize;
                     let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
                     let b = self.chunk.constants[b_idx];
-                    if a.is_number() {
+                    if a.is_number() && b.is_number() {
                         self.stack.push(Value::from(a.as_number() - b.as_number()));
                     } else {
                         self.stack.push(a);
@@ -490,7 +507,7 @@ impl Vm {
                     let b_idx = read_byte!() as usize;
                     let a = self.chunk.constants[a_idx];
                     let b = unsafe { *(*self.frames.top()).stack_start.add(b_idx) };
-                    if b.is_number() {
+                    if a.is_number() && b.is_number() {
                         self.stack.push(Value::from(a.as_number() - b.as_number()));
                     } else {
                         self.stack.push(a);

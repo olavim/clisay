@@ -1,0 +1,38 @@
+// A trait's private member is reachable only from inside its own trait. The resolver scopes
+// each trait body to its own privates (so `this.log` / bare `log` works *inside* Logger), and
+// rejects access from anywhere else. The per-trait slot name `"Logger.log"` is an internal
+// artifact and is never addressable as a member.
+
+trait Logger { fn log(m) { print(m); } }
+type Service with Logger { init() { this.log("hello"); } } // error: Member 'log' is private
+
+// @split
+
+trait Logger { fn log(m) { print(m); } }
+type Service with Logger { init() { log("hello"); } } // error: Member 'log' is private
+
+// @split
+
+trait Logger { fn log(m) { print(m); } }
+type Service with Logger { init() { this["Logger.log"]("hello"); } } // error: Invalid member access: 'Logger.log' is not a member
+
+// @split
+
+trait Logger { fn log(m) { print(m); } }
+type Service with Logger {}
+say s = Service();
+s.log("hello"); // error: Invalid index: Service doesn't have member "log" and doesn't have a getter
+
+// @split
+
+trait Logger { fn log(m) { print(m); } }
+type Service with Logger {}
+say s = Service();
+s["log"]("hello"); // error: Invalid index: Service doesn't have member "log" and doesn't have a getter
+
+// @split
+
+trait Logger { fn log(m) { print(m); } }
+type Service with Logger {}
+say s = Service();
+s["Logger.log"]("hello"); // error: Invalid index: Service doesn't have member "Logger.log" and doesn't have a getter

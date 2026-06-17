@@ -145,6 +145,12 @@ struct FnFrame {
 struct ClassFrame {
     layout: TypeLayout,
     superclass: Option<TypeLayout>,
+    /// Per trait, its private members' plain name -> renamed slot name (from the HIR). The
+    /// resolver scopes a trait body's accesses to its own trait's entry. See `lower::traits`.
+    trait_privates: std::collections::HashMap<Symbol, std::collections::HashMap<Symbol, Symbol>>,
+    /// The plain names of every trait private member (any trait) for diagnostics: an access
+    /// that misses but names one of these is reported as private rather than missing.
+    private_names: std::collections::HashSet<Symbol>,
 }
 
 pub struct Resolver<'a> {
@@ -155,6 +161,10 @@ pub struct Resolver<'a> {
     fn_frames: Vec<FnFrame>,
     class_frames: Vec<ClassFrame>,
     classes: FnvHashMap<Symbol, TypeLayout>,
+    /// The trait whose method body is currently being resolved (`None` for host members,
+    /// accessors, the host initializer, free functions, and lambdas outside a trait method).
+    /// Selects which `ClassFrame::trait_privates` entry scopes `this.x` / bare `x`.
+    current_trait: Option<Symbol>,
 }
 
 pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
@@ -173,6 +183,7 @@ pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
         fn_frames: Vec::new(),
         class_frames: Vec::new(),
         classes: FnvHashMap::default(),
+        current_trait: None,
     };
 
     let root = resolver.hir.get_root();
@@ -295,13 +306,29 @@ impl<'a> Resolver<'a> {
         None
     }
 
-    fn resolve_place(&mut self, name: Symbol) -> Result<Place, anyhow::Error> {
+    /// The per-trait renamed slot for `name` if it's a private member of the trait whose body is
+    /// currently being resolved. Handles implicit-`this` private lookup.
+    fn private_member(&self, name: Symbol) -> Option<Symbol> {
+        let trait_sym = self.current_trait?;
+        let frame = self.class_frames.last()?;
+        frame.trait_privates.get(&trait_sym).and_then(|m| m.get(&name)).copied()
+    }
+
+    fn resolve_place(&mut self, name: Symbol, node: &HirId<HirExpr>) -> Result<Place, anyhow::Error> {
         let place = if let Some(slot) = self.resolve_local(name) {
             Place::Local(slot)
         } else if let Some(idx) = self.resolve_upvalue(name)? {
             Place::Upvalue(idx)
+        // A trait body's bare reference to its own private member.
+        } else if let Some(id) = self.private_member(name).and_then(|n| self.class_frames.last().and_then(|f| f.layout.resolve_id(n))) {
+            Place::Field(id)
         } else if let Some(id) = self.class_frames.last().and_then(|f| f.layout.resolve_id(name)) {
             Place::Field(id)
+        } else if self.class_frames.last().is_some_and(|f| f.private_names.contains(&name)) {
+            // A bare reference to a private member not visible from here (another trait's, or any
+            // from the host) — like `this.x`, report it as private rather than falling through to a
+            // global lookup (implicit `this`: bare `x` and `this.x` resolve alike).
+            compiler_error!(self, node, "Member '{}' is private", self.hir.text(name));
         } else {
             Place::Global(name)
         };
@@ -405,7 +432,7 @@ impl<'a> Resolver<'a> {
             HirExpr::Index(target, member, _) => self.index(target, member)?,
             HirExpr::Literal(lit) => self.literal(lit)?,
             HirExpr::Identifier(name) => {
-                let place = self.resolve_place(*name)?;
+                let place = self.resolve_place(*name, expr)?;
                 self.bindings.places.insert(*expr, place);
             },
             HirExpr::This => self.require_class(expr)?,
@@ -423,7 +450,7 @@ impl<'a> Resolver<'a> {
                         compiler_error!(self, lhs, "Invalid assignment: '{}' is immutable", self.hir.text(name));
                     }
                 }
-                let place = self.resolve_place(name)?;
+                let place = self.resolve_place(name, lhs)?;
                 // Script code can't create or reassign globals (only native fns live
                 // there); an assignment target that resolves to a global is undefined.
                 if let Place::Global(_) = place {
@@ -484,7 +511,13 @@ impl<'a> Resolver<'a> {
             self.current_class().clone()
         };
 
-        if let Some(member_id) = member_name.and_then(|name| class.resolve_id(name)) {
+        // Inside a trait body, `this.x` for the trait's own private member resolves to its
+        // per-trait slot (own members shadow exposed ones, §5); otherwise the plain name.
+        let lookup = member_name.map(|name| match is_super {
+            false => self.private_member(name).unwrap_or(name),
+            true => name,
+        });
+        if let Some(member_id) = lookup.and_then(|name| class.resolve_id(name)) {
             self.bindings.members.insert(*target, Member::ById(member_id));
             return Ok(());
         }
@@ -494,6 +527,14 @@ impl<'a> Resolver<'a> {
         if let Some(accessor_id) = accessor {
             self.bindings.members.insert(*target, Member::ByAccessor(accessor_id));
             return Ok(());
+        }
+
+        // A name that resolved to nothing but is some trait's private member is reported as
+        // private (it exists, but only inside its declaring trait), not as missing.
+        if let Some(name) = member_name {
+            if !is_super && self.class_frames.last().is_some_and(|f| f.private_names.contains(&name)) {
+                compiler_error!(self, target, "Member '{}' is private", self.hir.text(name));
+            }
         }
 
         let class_name = self.hir.text(class.name);
@@ -667,7 +708,17 @@ impl<'a> Resolver<'a> {
         next_member_id += 1;
         layout.member_count = next_member_id;
 
-        self.class_frames.push(ClassFrame { layout: layout.clone(), superclass });
+        let private_names = decl.trait_privates.values().flat_map(|m| m.keys().copied()).collect();
+        self.class_frames.push(ClassFrame {
+            layout: layout.clone(),
+            superclass,
+            trait_privates: decl.trait_privates.clone(),
+            private_names,
+        });
+
+        // Method bodies resolve under the declaring trait's private scope (host members: none).
+        // Save/restore around the whole class so a nested type declaration doesn't leak its scope.
+        let outer_trait = self.current_trait.take();
 
         if let Some(stmt_id) = &decl.getter {
             let getter = self.fn_decl(stmt_id);
@@ -681,11 +732,13 @@ impl<'a> Resolver<'a> {
         let init = self.fn_decl(&decl.init);
         self.function(init, FnKind::Initializer)?;
 
-        for stmt_id in &decl.methods {
+        for (stmt_id, trait_sym) in decl.methods.iter().zip(&decl.method_traits) {
+            self.current_trait = *trait_sym;
             let method = self.fn_decl(stmt_id);
             self.function(method, FnKind::Method)?;
         }
 
+        self.current_trait = outer_trait;
         self.class_frames.pop();
         self.exit_scope(stmt);
 
