@@ -1,0 +1,12 @@
+trait Greeter {
+    pub fn greet() { return "hello"; }
+}
+trait Secret {
+    fn greet() { return "shh"; }
+    pub fn reveal() { return this.greet(); }
+}
+
+type Person with Greeter, Secret {}
+say p = Person();
+print(p.greet());  // expect: hello
+print(p.reveal()); // expect: shh

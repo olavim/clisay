@@ -84,8 +84,9 @@ pub struct HirTypeDecl {
     pub setter: Option<HirId<HirStmt>>,
     pub fields: HashSet<Symbol>,
     pub methods: Vec<HirId<HirStmt>>,
-    /// Members declared `pub` (externally accessible). See `ast::TypeDecl`.
+    pub method_traits: Vec<Option<Symbol>>,
     pub pub_members: HashSet<Symbol>,
+    pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
 }
 
 pub enum HirStmt {
@@ -177,6 +178,16 @@ impl Hir {
 
     pub fn symbol_of(&self, text: &str) -> Option<Symbol> {
         self.ident_ids.get(text).copied().map(Symbol::from_raw)
+    }
+
+    pub(crate) fn intern(&mut self, text: &str) -> Symbol {
+        if let Some(&id) = self.ident_ids.get(text) {
+            return Symbol::from_raw(id);
+        }
+        let id = self.ident_texts.len() as u32;
+        self.ident_texts.push(text.to_string());
+        self.ident_ids.insert(text.to_string(), id);
+        Symbol::from_raw(id)
     }
 
     pub fn get<T: HirNode>(&self, id: &HirId<T>) -> &T {

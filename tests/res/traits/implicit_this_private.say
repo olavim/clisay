@@ -1,0 +1,17 @@
+trait Counter {
+    n = 0;
+    fn step() { return 1; }
+    pub fn bump() { this.n = n + step(); return n; }
+    pub fn shadow(n) { return n + step(); }
+}
+trait Other {
+    n = 100;
+    pub fn other() { return n; }
+}
+type Widget with Counter, Other { init() {} }
+say w = Widget();
+print(w.bump()); // expect: 1
+print(w.bump()); // expect: 2
+print(w.shadow(40));
+// expect: 41
+print(w.other()); // expect: 100

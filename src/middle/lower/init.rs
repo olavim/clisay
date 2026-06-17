@@ -160,7 +160,7 @@ impl<'a> Lowerer<'a> {
         self.hir.add(HirStmt::Expression(call), pos.clone())
     }
 
-    fn this_method(&mut self, name: &str, pos: &SourcePosition) -> HirId<HirExpr> {
+    pub(super) fn this_method(&mut self, name: &str, pos: &SourcePosition) -> HirId<HirExpr> {
         let this_expr = self.hir.add(HirExpr::This, pos.clone());
         let name_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(name.to_string())), pos.clone());
         self.hir.add(HirExpr::Index(this_expr, name_lit, true), pos.clone())

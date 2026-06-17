@@ -1,0 +1,15 @@
+trait Logger  { pub fn log(m) { print(m + " [log]"); } }
+trait Auditor { pub fn log(m) { print(m + " [audit]"); } }
+
+type Service with Logger, Auditor {
+    pub fn log(m) {
+        Logger.log(m);
+        Auditor.log(m);
+    }
+    init() {}
+}
+
+say s = Service();
+s.log("hi");
+// expect: hi [log]
+// expect: hi [audit]

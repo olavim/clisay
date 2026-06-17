@@ -52,6 +52,8 @@ impl<'a> Compiler<'a> {
             self.install_method(&mut class, stmt_id, name)?;
         }
 
+        class.members.retain(|&name, _| !unsafe { &*name }.value.contains('.'));
+
         class.build_template();
         let class = self.gc.alloc(class);
         let idx = self.ir.add_constant(Value::from(class))?;
