@@ -165,6 +165,8 @@ pub struct Resolver<'a> {
     /// accessors, the host initializer, free functions, and lambdas outside a trait method).
     /// Selects which `ClassFrame::trait_privates` entry scopes `this.x` / bare `x`.
     current_trait: Option<Symbol>,
+    /// `true` while validating a standalone `trait` against its declared surface.
+    validating_trait: bool,
 }
 
 pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
@@ -184,6 +186,7 @@ pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
         class_frames: Vec::new(),
         classes: FnvHashMap::default(),
         current_trait: None,
+        validating_trait: false,
     };
 
     let root = resolver.hir.get_root();
@@ -368,6 +371,7 @@ impl<'a> Resolver<'a> {
                 self.function(decl, FnKind::Function)?;
             },
             HirStmt::Type(decl) => self.class_declaration(stmt_id, decl)?,
+            HirStmt::Trait(decl) => self.trait_declaration(stmt_id, decl)?,
             HirStmt::Say(field) => {
                 let slot = self.declare_local(field.name, true, stmt_id)?;
                 self.bindings.slots.insert(*stmt_id, slot);
@@ -527,6 +531,15 @@ impl<'a> Resolver<'a> {
         if let Some(accessor_id) = accessor {
             self.bindings.members.insert(*target, Member::ByAccessor(accessor_id));
             return Ok(());
+        }
+
+        // While validating a standalone trait, an unresolved member is a self-containment
+        // violation: the trait reached something it does not declare.
+        if self.validating_trait {
+            if let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) {
+                compiler_error!(self, target, "Trait '{}' accesses 'this.{}', which it does not declare (provide it via `with`, `req`, or `req fn`)",
+                    self.hir.text(class.name), name);
+            }
         }
 
         // A name that resolved to nothing but is some trait's private member is reported as
@@ -744,6 +757,55 @@ impl<'a> Resolver<'a> {
 
         self.classes.insert(decl.name, layout.clone());
         self.bindings.classes.insert(*stmt, layout);
+        Ok(())
+    }
+
+    /// Validates a standalone `trait`: resolves its method bodies against a layout built from its
+    /// declared `surface`, so a `this.x` outside the surface is a self-containment error. If a
+    /// trait fails self-containment validation, it will emit compile errors even if the trait is
+    /// never used.
+    fn trait_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &Box<HirTypeDecl>) -> Result<(), anyhow::Error> {
+        self.enter_scope();
+
+        // A validation layout: every surface name (and every renamed private slot) resolves to a
+        // throwaway id — codegen never sees this layout, so the ids are immaterial; only membership
+        // matters. A `this.x` whose name is absent is the self-containment violation.
+        let mut layout = TypeLayout {
+            name: decl.name,
+            superclass: None,
+            members: FnvHashMap::default(),
+            fields: Vec::new(),
+            non_public: IntSet::default(),
+            getter_id: None,
+            setter_id: None,
+            init_id: 0,
+            member_count: 0,
+        };
+        let mut id: u8 = 0;
+        for name in &decl.surface {
+            layout.members.entry(*name).or_insert(ClassMember::Method(id));
+            id = id.wrapping_add(1);
+        }
+        for renamed in decl.trait_privates.values().flat_map(|m| m.values()) {
+            layout.members.entry(*renamed).or_insert(ClassMember::Method(id));
+            id = id.wrapping_add(1);
+        }
+        layout.member_count = id;
+
+        let private_names = decl.trait_privates.values().flat_map(|m| m.keys().copied()).collect();
+        self.class_frames.push(ClassFrame { layout, superclass: None, trait_privates: decl.trait_privates.clone(), private_names });
+
+        let outer_trait = std::mem::replace(&mut self.current_trait, Some(decl.name));
+        let was_validating = std::mem::replace(&mut self.validating_trait, true);
+        for stmt_id in &decl.methods {
+            let method = self.fn_decl(stmt_id);
+            self.function(method, FnKind::Method)?;
+        }
+        self.validating_trait = was_validating;
+        self.current_trait = outer_trait;
+
+        self.class_frames.pop();
+        self.exit_scope(stmt);
         Ok(())
     }
 

@@ -99,8 +99,12 @@ pub struct TypeDecl {
     /// `true` for a `trait` declaration (a non-instantiable, mixable bundle), `false`
     /// for a `type`. Traits are expanded into composers during lowering (`with`).
     pub is_trait: bool,
-    /// Traits mixed in via `with T1, T2, ...` — their members fold into this composer.
+    /// Traits mixed in via `with T1, T2, ...`.
     pub with_traits: Vec<Symbol>,
+    /// Traits depended on via `req T1, T2, ...`.
+    pub req_traits: Vec<Symbol>,
+    /// Method holes declared via `req fn f(params);`.
+    pub req_fns: Vec<(Symbol, usize)>,
     pub superclass: Option<Symbol>,
     /// The initializer's runtime name (`"{class}.init"`), used whether the init is
     /// declared or synthesised during lowering.

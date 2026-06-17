@@ -28,23 +28,33 @@ struct Composed {
 }
 
 impl Composed {
-    /// Seeds the accumulator with the host type's own declared members.
-    fn seed(decl: &TypeDecl) -> Composed {
+    /// An empty accumulator. A standalone trait folds its own members into one of these.
+    fn empty() -> Composed {
         Composed {
-            fields: decl.fields.clone(),
-            field_inits: decl.field_inits.clone(),
-            pub_members: decl.pub_members.clone(),
+            fields: HashSet::new(),
+            field_inits: Vec::new(),
+            pub_members: HashSet::new(),
             methods: Vec::new(),
             method_traits: Vec::new(),
             trait_privates: HashMap::new(),
             trait_inits: Vec::new(),
         }
     }
+
+    /// Seeds the accumulator with the host type's own declared members (plain, un-scoped).
+    fn seed(decl: &TypeDecl) -> Composed {
+        Composed {
+            fields: decl.fields.clone(),
+            field_inits: decl.field_inits.clone(),
+            pub_members: decl.pub_members.clone(),
+            ..Composed::empty()
+        }
+    }
 }
 
 /// Whether a member is exposed (`inner` or `pub`). A member in neither set is private (per-trait).
-fn is_exposed(td: &TypeDecl, name: &Symbol) -> bool {
-    td.pub_members.contains(name) || td.inner_members.contains(name)
+fn is_exposed(type_decl: &TypeDecl, name: &Symbol) -> bool {
+    type_decl.pub_members.contains(name) || type_decl.inner_members.contains(name)
 }
 
 impl<'a> Lowerer<'a> {
@@ -93,6 +103,8 @@ impl<'a> Lowerer<'a> {
 
         // The flattened `with`-set (identity dedupe, cycle detection).
         let traits = self.collect_traits(decl, type_pos)?;
+        self.check_provide_require_exclusive(decl, type_pos)?;
+        self.check_requirements(decl, &traits, type_pos)?;
         let host_methods: HashSet<Symbol> = decl.methods.iter().map(|m| self.ast_fn(m).name).collect();
         let exposed_methods = self.check_exposed_collisions(&traits, &host_methods, decl, type_pos)?;
 
@@ -139,7 +151,67 @@ impl<'a> Lowerer<'a> {
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
             trait_privates: composed.trait_privates,
+            surface: HashSet::new(), // gating applies to standalone traits, not composed types
         })
+    }
+
+    /// Lowers a `trait` declaration into a standalone `HirTypeDecl` for **self-containment validation**.
+    /// The resolver validates the body against the trait's surface independently of any composing type.
+    pub(super) fn lower_trait(&mut self, decl: &TypeDecl, pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
+        let surface = self.trait_surface(decl, pos)?;
+
+        let mut composed = Composed::empty();
+        self.fold_trait(decl.name, decl, &HashSet::new(), &mut composed)?;
+
+        // A placeholder empty init: a trait's init body is validated at the composing type.
+        let empty = self.hir.add(HirExpr::Block(Vec::new()), pos.clone());
+        let init = self.hir.add(HirStmt::Fn(HirFnDecl { name: decl.init_name, params: Vec::new(), body: empty }), pos.clone());
+
+        Ok(HirTypeDecl {
+            name: decl.name,
+            superclass: None,
+            init,
+            getter: None,
+            setter: None,
+            fields: composed.fields,
+            methods: composed.methods,
+            method_traits: composed.method_traits,
+            pub_members: composed.pub_members,
+            trait_privates: composed.trait_privates,
+            surface,
+        })
+    }
+
+    /// The set of member names a trait's body may reach through `this`: its own members, the
+    /// exposed (`inner`/`pub`) members of every trait it `with`-flattens or `req`-depends on
+    /// (and *their* `with`-provided members), and its own `req fn` holes.
+    fn trait_surface(&mut self, decl: &TypeDecl, pos: &SourcePosition) -> Result<HashSet<Symbol>, anyhow::Error> {
+        let mut surface: HashSet<Symbol> = HashSet::new();
+        for field in &decl.fields { surface.insert(*field); }
+        for method in &decl.methods { surface.insert(self.ast_fn(method).name); }
+        for (name, _) in &decl.req_fns { surface.insert(*name); }
+
+        // Exposed members provided through `with` (transitively).
+        for (_, type_decl) in &self.collect_traits(decl, pos)? {
+            self.add_exposed(type_decl, &mut surface);
+        }
+        // Exposed members of each `req`-depended trait (and that trait's `with`-provided set).
+        for req_trait in &decl.req_traits {
+            let stmt = self.lookup_trait(*req_trait)
+                .ok_or_else(|| anyhow!("Trait '{}' is not declared\n\tat {}", self.hir.text(*req_trait), pos))?;
+            let req_type_decl = self.ast_type(&stmt);
+            self.add_exposed(req_type_decl, &mut surface);
+            for (_, type_decl) in &self.collect_traits(req_type_decl, pos)? {
+                self.add_exposed(type_decl, &mut surface);
+            }
+        }
+        Ok(surface)
+    }
+
+    fn add_exposed(&self, type_decl: &TypeDecl, surface: &mut HashSet<Symbol>) {
+        for name in type_decl.pub_members.iter().chain(type_decl.inner_members.iter()) {
+            surface.insert(*name);
+        }
     }
 
     /// Checks exposed-member collisions across a flattened trait set, returning the exposed
@@ -172,6 +244,61 @@ impl<'a> Lowerer<'a> {
         Ok(exposed_methods)
     }
 
+    /// `req T` and `with T` are mutually exclusive on one composer (§4): you cannot both provide
+    /// and depend on the same trait. Applies to types and traits alike.
+    pub(super) fn check_provide_require_exclusive(&self, decl: &TypeDecl, pos: &SourcePosition) -> Result<(), anyhow::Error> {
+        for rt in &decl.req_traits {
+            if decl.with_traits.contains(rt) {
+                let kind = if decl.is_trait { "trait" } else { "type" };
+                return Err(anyhow!("'{}' is both `with`-provided and `req`-depended by this {kind} — pick one\n\tat {}",
+                    self.hir.text(*rt), pos));
+            }
+        }
+        Ok(())
+    }
+
+    /// At an instantiable type, every `req T` and `req fn` of the flattened trait set (and the
+    /// type's own) must be satisfied: `req T` by a `with`-provided trait, `req fn f/n` by an
+    /// `inner`/`pub` method `f` of arity `n` (own or `with`-mixed). A private member does not satisfy.
+    fn check_requirements(&self, decl: &TypeDecl, traits: &[(Symbol, &'a TypeDecl)], pos: &SourcePosition) -> Result<(), anyhow::Error> {
+        let provided: HashSet<Symbol> = traits.iter().map(|(s, _)| *s).collect();
+
+        // `req T`: the type's own and every flattened trait's required traits must be provided.
+        let req_traits = decl.req_traits.iter().map(|t| (*t, None))
+            .chain(traits.iter().flat_map(|(ts, td)| td.req_traits.iter().map(move |t| (*t, Some(*ts)))));
+        for (rt, by) in req_traits {
+            if !provided.contains(&rt) {
+                let by = by.map_or(String::new(), |t| format!(" (required by trait '{}')", self.hir.text(t)));
+                return Err(anyhow!("Unsatisfied requirement: trait '{}'{by} is not provided by any `with`\n\tat {}",
+                    self.hir.text(rt), pos));
+            }
+        }
+
+        // The composed type's exposed (`inner`/`pub`) methods, keyed by (name, arity).
+        let mut exposed: HashSet<(Symbol, usize)> = HashSet::new();
+        for m in &decl.methods {
+            let fd = self.ast_fn(m);
+            if is_exposed(decl, &fd.name) { exposed.insert((fd.name, fd.params.len())); }
+        }
+        for (_, type_decl) in traits {
+            for m in &type_decl.methods {
+                let fd = self.ast_fn(m);
+                if is_exposed(type_decl, &fd.name) { exposed.insert((fd.name, fd.params.len())); }
+            }
+        }
+
+        // `req fn`: every hole must be filled by an exposed method of matching name and arity.
+        let req_fns = decl.req_fns.iter().copied()
+            .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_fns.iter().copied()));
+        for (func_sym, arity) in req_fns {
+            if !exposed.contains(&(func_sym, arity)) {
+                return Err(anyhow!("Unsatisfied `req fn {}` (arity {arity}): needs an `inner`/`pub` method '{}' taking {arity} argument(s)\n\tat {}",
+                    self.hir.text(func_sym), self.hir.text(func_sym), pos));
+            }
+        }
+        Ok(())
+    }
+
     /// The `"<Trait>.<method>"` aliases for exposed methods a host declaration overrides.
     fn override_aliases(&self, exposed_methods: &HashMap<Symbol, Vec<Symbol>>, host_methods: &HashSet<Symbol>) -> HashSet<String> {
         let mut aliases = HashSet::new();
@@ -185,85 +312,95 @@ impl<'a> Lowerer<'a> {
         aliases
     }
 
-    /// Folds one flattened trait's members into `composed`. Exposed members take their plain name
-    /// (or a `"<Trait>.<method>"` alias when a host override shadows them); private members take a
-    /// per-trait slot name so two traits' same-named privates never collide (the resolver scopes
-    /// access to them, recorded in `trait_privates`).
-    fn fold_trait(&mut self, trait_sym: Symbol, td: &TypeDecl, host_methods: &HashSet<Symbol>, composed: &mut Composed) -> Result<(), anyhow::Error> {
-        let renames = self.trait_renames(td);
+    /// Folds one trait's members into `composed`, recording its slot layout under `trait_sym`.
+    /// Exposed members take their plain name (or a `"<Trait>.<method>"` alias when a host override
+    /// in `host_methods` shadows them); private members take a per-trait slot name so two traits'
+    /// same-named privates never collide.
+    fn fold_trait(&mut self, trait_sym: Symbol, type_decl: &TypeDecl, host_methods: &HashSet<Symbol>, composed: &mut Composed) -> Result<(), anyhow::Error> {
+        let renames = self.trait_renames(type_decl);
         let mut private_map: HashMap<Symbol, Symbol> = HashMap::new();
 
-        for f in &td.fields {
-            if is_exposed(td, f) {
-                composed.fields.insert(*f);
-                if td.pub_members.contains(f) { composed.pub_members.insert(*f); }
+        for field in &type_decl.fields {
+            if is_exposed(type_decl, field) {
+                composed.fields.insert(*field);
+                if type_decl.pub_members.contains(field) { composed.pub_members.insert(*field); }
             } else {
-                let renamed = self.hir.intern(&renames[self.hir.text(*f)]);
+                let renamed = self.hir.intern(&renames[self.hir.text(*field)]);
                 composed.fields.insert(renamed);
-                private_map.insert(*f, renamed);
+                private_map.insert(*field, renamed);
             }
         }
-        for (f, value) in &td.field_inits {
-            let slot = if is_exposed(td, f) { *f } else { self.hir.intern(&renames[self.hir.text(*f)]) };
+        for (field, value) in &type_decl.field_inits {
+            let slot = if is_exposed(type_decl, field) { *field } else { self.hir.intern(&renames[self.hir.text(*field)]) };
             composed.field_inits.push((slot, *value));
         }
 
         let tname = self.hir.text(trait_sym).to_string();
-        for m in &td.methods {
-            let name = self.ast_fn(m).name;
+        for method in &type_decl.methods {
+            let name = self.ast_fn(method).name;
             let name_text = self.hir.text(name).to_string();
-            let slot = if !is_exposed(td, &name) {
+            let slot = if !is_exposed(type_decl, &name) {
                 let renamed = self.hir.intern(&renames[&name_text]);
                 private_map.insert(name, renamed);
                 renamed
             } else if host_methods.contains(&name) {
                 self.hir.intern(&format!("{}.{}", tname, name_text))
             } else {
-                if td.pub_members.contains(&name) { composed.pub_members.insert(name); }
+                if type_decl.pub_members.contains(&name) { composed.pub_members.insert(name); }
                 name
             };
-            let lowered = self.lower_method_named(m, slot)?;
+            let lowered = self.lower_method_named(method, slot)?;
             composed.methods.push(lowered);
             composed.method_traits.push(Some(trait_sym));
         }
 
         composed.trait_privates.insert(trait_sym, private_map);
-        if td.init.is_some() { composed.trait_inits.push(trait_sym); }
+        if type_decl.init.is_some() { composed.trait_inits.push(trait_sym); }
         Ok(())
     }
 
     /// The flattened `with`-set of `decl`: every transitively-composed trait, identity-deduped
-    /// and post-ordered (a trait's `with`-mixed sub-traits precede it). Rejects composition cycles
-    /// and unknown trait names.
-    fn collect_traits(&self, decl: &TypeDecl, pos: &SourcePosition) -> Result<Vec<(Symbol, &'a TypeDecl)>, anyhow::Error> {
+    /// and post-ordered (a trait's `with`-mixed sub-traits precede it). Built by merging each
+    /// direct trait's memoized flattened set, so a trait shared across composers is flattened once.
+    fn collect_traits(&mut self, decl: &TypeDecl, pos: &SourcePosition) -> Result<Vec<(Symbol, &'a TypeDecl)>, anyhow::Error> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         let mut path = Vec::new();
         for t in &decl.with_traits {
-            self.collect_trait(*t, &mut out, &mut seen, &mut path, pos)?;
+            for entry in self.flatten_trait(*t, &mut path, pos)? {
+                if seen.insert(entry.0) { out.push(entry); }
+            }
         }
         Ok(out)
     }
 
-    fn collect_trait(&self, name: Symbol, out: &mut Vec<(Symbol, &'a TypeDecl)>, seen: &mut HashSet<Symbol>, path: &mut Vec<Symbol>, pos: &SourcePosition) -> Result<(), anyhow::Error> {
-        if seen.contains(&name) {
-            return Ok(()); // already folded in via another path, dedupe
+    /// The memoized flattened `with`-set of one trait (itself plus its transitive `with`-traits,
+    /// deduped, post-ordered). Rejects composition cycles and unknown trait names. Later composers
+    /// (and `req`/surface lookups) reuse the cached result. `path` carries the in-progress recursion
+    /// stack for cycle detection.
+    fn flatten_trait(&mut self, name: Symbol, path: &mut Vec<Symbol>, pos: &SourcePosition) -> Result<Vec<(Symbol, &'a TypeDecl)>, anyhow::Error> {
+        let Some(trait_stmt) = self.lookup_trait(name) else {
+            return Err(anyhow!("Trait '{}' is not declared\n\tat {}", self.hir.text(name), pos));
+        };
+        if let Some(cached) = self.trait_flatten_cache.get(&trait_stmt) {
+            return Ok(cached.clone());
         }
         if path.contains(&name) {
             return Err(anyhow!("Cyclic trait composition involving '{}'\n\tat {}", self.hir.text(name), pos));
         }
-        let Some(trait_stmt) = self.lookup_trait(name) else {
-            return Err(anyhow!("Trait '{}' is not declared\n\tat {}", self.hir.text(name), pos));
-        };
         let td = self.ast_type(&trait_stmt);
         path.push(name);
+        let mut out: Vec<(Symbol, &'a TypeDecl)> = Vec::new();
+        let mut seen: HashSet<Symbol> = HashSet::new();
         for sub in &td.with_traits {
-            self.collect_trait(*sub, out, seen, path, pos)?;
+            for entry in self.flatten_trait(*sub, path, pos)? {
+                if seen.insert(entry.0) { out.push(entry); }
+            }
         }
         path.pop();
-        seen.insert(name);
-        out.push((name, td));
-        Ok(())
+        if seen.insert(name) { out.push((name, td)); }
+        self.trait_flatten_cache.insert(trait_stmt, out.clone());
+        Ok(out)
     }
 
     /// The private-member rename map for a trait:

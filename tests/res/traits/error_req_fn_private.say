@@ -1,0 +1,6 @@
+// A private member does not satisfy a `req fn`. The satisfier must be `inner`/`pub`.
+trait Mover { req fn onMove(d); pub fn step() { return this.onMove(1); } }
+type Player with Mover { // error: Unsatisfied `req fn onMove` (arity 1): needs an `inner`/`pub` method 'onMove' taking 1 argument(s)
+    fn onMove(d) { return d; }
+    init() {}
+}

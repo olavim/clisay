@@ -1,0 +1,6 @@
+// A `req fn` satisfier must match arity.
+trait Mover { req fn onMove(dx, dy); pub fn step() { return this.onMove(1, 2); } }
+type Player with Mover { // error: Unsatisfied `req fn onMove` (arity 2): needs an `inner`/`pub` method 'onMove' taking 2 argument(s)
+    inner fn onMove(d) { return d; }
+    init() {}
+}

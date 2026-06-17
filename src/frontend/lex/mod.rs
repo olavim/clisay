@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 
 use anyhow::bail;
 use regex::Regex;
-pub use token::{Token, TokenType};
+pub use token::{ContextualKeyword, Token, TokenType};
 pub use token_stream::TokenStream;
 
 // Compile token patterns once on first use.

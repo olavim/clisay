@@ -5,11 +5,15 @@ mod precedence;
 use anyhow::anyhow;
 
 use crate::ast::{Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol};
-use crate::frontend::lex::{SourcePosition, TokenStream, TokenType};
+use crate::frontend::lex::{ContextualKeyword, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
     ($self:ident, $pos:expr, $($arg:tt)*) => { return Err($self.error(format!($($arg)*), $pos)) };
 }
+
+/// A member's declared visibility (from a `pub`/`inner` modifier, or private by default).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Visibility { Pub, Inner, Private }
 
 pub struct Parser<'parser, 'vm> {
     tokens: &'vm mut TokenStream<'vm>,
@@ -182,13 +186,26 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(params)
     }
 
-    /// Parses a comma-separated `with T1, T2, ...` trait list, if present. `with` is a
-    /// contextual keyword here (an ordinary identifier elsewhere).
-    fn parse_with_list(&mut self) -> Result<Vec<Symbol>, anyhow::Error> {
+    /// Parses the composition header: an optional `with T1, T2, ...` clause then an optional
+    /// `req T1, T2, ...` clause (each at most once, in that order).
+    fn parse_composition_header(&mut self) -> Result<(Vec<Symbol>, Vec<Symbol>), anyhow::Error> {
+        let with_traits = self.parse_trait_clause(ContextualKeyword::With)?;
+        let req_traits = self.parse_trait_clause(ContextualKeyword::Req)?;
+
+        // A header is `with ... req ...`; any further `with`/`req` here is a duplicate or misordered clause.
+        let tok = self.tokens.peek(0);
+        match tok.contextual() {
+            Some(kw @ (ContextualKeyword::With | ContextualKeyword::Req)) =>
+                parse_error!(self, &tok.pos, "Unexpected '{kw}' clause: a type/trait header allows at most one `with` clause followed by at most one `req` clause"),
+            _ => Ok((with_traits, req_traits)),
+        }
+    }
+
+    /// Parses a single `<keyword> T1, T2, ...` trait-list clause.
+    fn parse_trait_clause(&mut self, keyword: ContextualKeyword) -> Result<Vec<Symbol>, anyhow::Error> {
+        let present = self.tokens.peek(0).contextual() == Some(keyword);
         let mut traits = Vec::new();
-        let is_with = matches!(self.tokens.peek(0).kind, TokenType::Identifier)
-            && self.tokens.peek(0).lexeme == "with";
-        if is_with {
+        if present {
             self.tokens.next();
             loop {
                 let name = self.parse_identifier()?;
@@ -199,6 +216,27 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(traits)
     }
 
+    /// Reads an optional leading member-visibility modifier (`pub`/`inner`), consuming it if
+    /// present; absent means private.
+    fn parse_visibility(&mut self) -> Visibility {
+        match self.tokens.peek(0).contextual() {
+            Some(ContextualKeyword::Pub) => { self.tokens.next(); Visibility::Pub },
+            Some(ContextualKeyword::Inner) => { self.tokens.next(); Visibility::Inner },
+            _ => Visibility::Private,
+        }
+    }
+
+    /// Parses a `req fn f(params);` method hole, returning its name and arity.
+    fn parse_req_fn(&mut self) -> Result<(Symbol, usize), anyhow::Error> {
+        self.tokens.expect(TokenType::Fn)?;
+        let name = self.parse_identifier()?;
+        let name = self.ast.intern(&name);
+        self.tokens.expect(TokenType::LeftParen)?;
+        let params = self.parse_params(TokenType::RightParen)?;
+        self.tokens.expect(TokenType::Semicolon)?;
+        Ok((name, params.len()))
+    }
+
     fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
         let keyword = if is_trait { TokenType::Trait } else { TokenType::Type };
         let pos = self.tokens.expect(keyword)?.pos.clone();
@@ -207,7 +245,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let prev_class = std::mem::replace(&mut self.current_class, Some(class_name.clone()));
 
-        let with_traits = self.parse_with_list()?;
+        let (with_traits, req_traits) = self.parse_composition_header()?;
 
         // `: Super` inheritance is types-only (and is being removed in a later step).
         let superclass = if !is_trait {
@@ -229,52 +267,54 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
         let mut pub_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
         let mut inner_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
+        let mut req_fns: Vec<(Symbol, usize)> = Vec::new();
         let mut init = None;
         let mut getter = None;
         let mut setter = None;
 
-        #[derive(PartialEq)]
-        enum VisibilityModifier { Pub, Inner, None }
-
         while !self.tokens.match_next(TokenType::RightBrace) {
             let member_pos = self.tokens.peek(0).pos.clone();
-            // Per-member visibility: `pub` (external), `inner` (object-internal), or default private.
-            // These are *contextual* keywords (only modifiers here, ordinary identifiers elsewhere),
-            // like `init`/`get`/`set`.
-            let modifier = {
-                let tok = self.tokens.peek(0);
-                match (tok.kind, tok.lexeme.as_str()) {
-                    (TokenType::Identifier, "pub") => { self.tokens.next(); VisibilityModifier::Pub },
-                    (TokenType::Identifier, "inner") => { self.tokens.next(); VisibilityModifier::Inner },
-                    _ => VisibilityModifier::None,
-                }
-            };
+            let visibility = self.parse_visibility();
+
+            // `req fn f(params);`
+            if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Req)
+                && self.tokens.peek(1).kind == TokenType::Fn
+            {
+                if visibility != Visibility::Private { parse_error!(self, &member_pos, "A `req fn` cannot have a visibility modifier"); }
+                self.tokens.next(); // consume `req`
+                req_fns.push(self.parse_req_fn()?);
+                continue;
+            }
 
             let kind = self.tokens.peek(0).kind;
             match kind {
                 TokenType::Fn => {
                     let stmt = self.parse_fn()?;
                     if let Stmt::Fn(decl) = self.ast.get(&stmt) {
-                        if modifier == VisibilityModifier::Pub { pub_members.insert(decl.name); }
-                        if modifier == VisibilityModifier::Inner { inner_members.insert(decl.name); }
+                        match visibility {
+                            Visibility::Pub => { pub_members.insert(decl.name); },
+                            Visibility::Inner => { inner_members.insert(decl.name); },
+                            Visibility::Private => {},
+                        }
                     }
                     method_stmts.push(stmt);
                 },
                 TokenType::Identifier => {
                     let name = self.parse_identifier()?;
 
-                    // Some identifiers have special meaning in classes but are not outright keywords
+                    // `init`/`get`/`set` are specially-named methods (normal method syntax); they
+                    // take no visibility modifier.
                     match name.as_str() {
                         "init" => {
-                            if modifier != VisibilityModifier::None { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
+                            if visibility != Visibility::Private { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
                             init = Some(self.parse_init(superclass.is_some())?);
                         },
                         "get" => {
-                            if modifier != VisibilityModifier::None { parse_error!(self, &member_pos, "An accessor cannot have a visibility modifier"); }
+                            if visibility != Visibility::Private { parse_error!(self, &member_pos, "An accessor cannot have a visibility modifier"); }
                             getter = Some(self.parse_accessor(name, 1, "Getter must have exactly one parameter")?);
                         },
                         "set" => {
-                            if modifier != VisibilityModifier::None { parse_error!(self, &member_pos, "An accessor cannot have a visibility modifier"); }
+                            if visibility != Visibility::Private { parse_error!(self, &member_pos, "An accessor cannot have a visibility modifier"); }
                             setter = Some(self.parse_accessor(name, 2, "Setter must have exactly two parameters")?);
                         },
                         _ => {
@@ -286,8 +326,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             self.tokens.expect(TokenType::Semicolon)?;
                             let field = self.ast.intern(&name);
                             fields.insert(field);
-                            if modifier == VisibilityModifier::Pub { pub_members.insert(field); }
-                            if modifier == VisibilityModifier::Inner { inner_members.insert(field); }
+                            match visibility {
+                                Visibility::Pub => { pub_members.insert(field); },
+                                Visibility::Inner => { inner_members.insert(field); },
+                                Visibility::Private => {},
+                            }
 
                             if let Some(value) = value {
                                 field_inits.push((field, value));
@@ -308,6 +351,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             name: class_sym,
             is_trait,
             with_traits,
+            req_traits,
+            req_fns,
             superclass,
             init_name,
             init,

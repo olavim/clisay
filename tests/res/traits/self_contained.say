@@ -1,0 +1,25 @@
+// A trait may reach `this.x` for its own members, a `with`/`req`-provided trait's exposed members,
+// and its own `req fn` holes — and freely use free functions / locals.
+fn helper(n) { return n + 100; }   // free function in scope
+
+trait Clock { pub fn tick() { return 1; } }
+trait Counter { inner count = 0; }   // `inner` so a `with`-composer can read it
+
+trait Mover with Counter req Clock {
+    speed = 2;
+    req fn onMove(d);
+    pub fn step(dir) {
+        say local = dir;                  // local — fine
+        return this.tick()                // from `req Clock`
+             + this.speed                 // own field
+             + this.onMove(local)         // own `req fn`
+             + helper(this.count);        // free function + Counter's `inner count` (via `with`)
+    }
+}
+type Player with Mover, Clock, Counter {
+    inner fn onMove(d) { return d; }
+    init() { Mover.init(); }
+}
+say p = Player();
+print(p.step(5)); // 1 + 2 + 5 + (0+100) = 108
+// expect: 108

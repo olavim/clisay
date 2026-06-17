@@ -1,0 +1,36 @@
+// A header allows at most one `with` clause then one `req` clause; repeats/interleaving are errors.
+trait Y { pub fn y() { return 1; } }
+trait Z { pub fn z() { return 2; } }
+type X with Y with Z { init() {} } // error: Unexpected 'with' clause: a type/trait header allows at most one `with` clause followed by at most one `req` clause
+
+// @split
+
+trait Y { pub fn y() { return 1; } }
+trait Z { pub fn z() { return 2; } }
+trait X with Y with Z { init() {} } // error: Unexpected 'with' clause: a type/trait header allows at most one `with` clause followed by at most one `req` clause
+
+// @split
+
+trait Y { pub fn y() { return 1; } }
+trait Z { pub fn z() { return 2; } }
+trait X req Y with Z { init() {} } // error: Unexpected 'with' clause: a type/trait header allows at most one `with` clause followed by at most one `req` clause
+
+// @split
+
+trait Y { pub fn y() { return 1; } }
+trait Z { pub fn z() { return 2; } }
+trait X req Y req Z { init() {} } // error: Unexpected 'req' clause: a type/trait header allows at most one `with` clause followed by at most one `req` clause
+
+// @split
+
+trait A { pub fn a() { return 1; } }
+trait B { pub fn b() { return 2; } }
+trait C { pub fn c() { return 3; } }
+trait D with A req B with C { init() {} } // error: Unexpected 'with' clause: a type/trait header allows at most one `with` clause followed by at most one `req` clause
+
+// @split
+
+trait A { pub fn a() { return 1; } }
+trait B { pub fn b() { return 2; } }
+trait C { pub fn c() { return 3; } }
+trait D with A req B req C { init() {} } // error: Unexpected 'req' clause: a type/trait header allows at most one `with` clause followed by at most one `req` clause

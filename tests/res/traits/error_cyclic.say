@@ -1,3 +1,4 @@
-trait A with B { pub fn a() { return 1; } }
+// A composition cycle is caught at the trait declaration itself — traits are validated on their
+// own, with no composing type needed.
+trait A with B { pub fn a() { return 1; } } // error: Cyclic trait composition involving 'B'
 trait B with A { pub fn b() { return 2; } }
-type T with A { init() {} } // error: Cyclic trait composition involving 'A'

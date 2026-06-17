@@ -99,6 +99,8 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::Pop, stmt_id);
             },
             HirStmt::Type(decl) => self.class_declaration(stmt_id, decl)?,
+            // Traits emit no runtime type; they exist only for self-containment validation in resolve.
+            HirStmt::Trait(_) => {},
             HirStmt::Say(HirFieldInit { value, .. }) => {
                 let slot = self.bindings.slot(stmt_id);
 

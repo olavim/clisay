@@ -100,6 +100,8 @@ pub struct HirTypeDecl {
     /// traits' same-named privates stay distinct and a private is reachable only from inside
     /// its declaring trait.
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
+    /// For a standalone trait (`HirStmt::Trait`): its **declared surface**.
+    pub surface: HashSet<Symbol>,
 }
 
 pub enum HirStmt {
@@ -113,6 +115,9 @@ pub enum HirStmt {
     Say(HirFieldInit),
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
+    /// A `trait` declaration, lowered only for self-containment validation (§5). It emits no
+    /// runtime type — codegen skips it — but the resolver checks its body against its `surface`.
+    Trait(Box<HirTypeDecl>),
 }
 
 pub enum HirNodeKind {
