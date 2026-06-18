@@ -18,6 +18,9 @@ struct ResolvedTraits {
     /// The resolved `gives` delegations: `(field, trait, trait declaration)`. The field provides
     /// the trait by forwarding; lowering synthesizes the forwarders from the trait's declaration.
     gives: Vec<(Symbol, Symbol, AstId<Stmt>)>,
+    /// Traits whose **parameterless** `init` is `with`-owned via multiple paths and therefore
+    /// *floats up* to this composer.
+    floated: Vec<Symbol>,
 }
 
 pub struct NameBindings {
@@ -36,6 +39,10 @@ impl NameBindings {
 
     pub fn gives_traits(&self, ty: &AstId<Stmt>) -> &[(Symbol, Symbol, AstId<Stmt>)] {
         self.type_traits.get(ty).map_or(&[], |rt| &rt.gives)
+    }
+
+    pub fn floated_inits(&self, ty: &AstId<Stmt>) -> &[Symbol] {
+        self.type_traits.get(ty).map_or(&[], |rt| &rt.floated)
     }
 
     pub fn provided_trait(&self, composer: &AstId<Stmt>, sym: Symbol) -> Option<AstId<Stmt>> {
@@ -187,10 +194,10 @@ impl<'a> Resolver<'a> {
     }
 
     fn visit_type(&mut self, stmt: &AstId<Stmt>, decl: &TypeDecl) -> Result<(), anyhow::Error> {
-        let with = self.flatten_traits(&decl.with_traits, stmt)?;
+        let (with, floated) = self.flatten_traits(&decl.with_traits, stmt)?;
         let req = self.resolve_reqs(decl, stmt)?;
         let gives = self.resolve_gives(decl, stmt)?;
-        self.out.type_traits.insert(*stmt, ResolvedTraits { with, req, gives });
+        self.out.type_traits.insert(*stmt, ResolvedTraits { with, req, gives, floated });
 
         for method in &decl.methods { self.visit_stmt(method)?; }
         if let Some(init) = &decl.init { self.visit_stmt(init)?; }
@@ -242,16 +249,45 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn flatten_traits(&mut self, with_traits: &[Symbol], stmt: &AstId<Stmt>) -> Result<Vec<(Symbol, AstId<Stmt>)>, anyhow::Error> {
+    fn flatten_traits(&mut self, with_traits: &[Symbol], stmt: &AstId<Stmt>) -> Result<(Vec<(Symbol, AstId<Stmt>)>, Vec<Symbol>), anyhow::Error> {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         let mut path = Vec::new();
+        // For each owned trait, the direct `with` paths of this composer that own it.
+        let mut owners: HashMap<Symbol, (AstId<Stmt>, Vec<Symbol>)> = HashMap::new();
         for trait_name in with_traits {
-            for entry in self.flatten_trait(*trait_name, &mut path, stmt)? {
+            let flattened = self.flatten_trait(*trait_name, &mut path, stmt)?;
+            for (sym, id) in &flattened {
+                owners.entry(*sym).or_insert_with(|| (*id, Vec::new())).1.push(*trait_name);
+            }
+            for entry in flattened {
                 if seen.insert(entry.0) { out.push(entry); }
             }
         }
-        Ok(out)
+        // Resolve multi-owned inits in the deterministic post-order of `out`.
+        let mut floated = Vec::new();
+        for (sym, id) in &out {
+            let paths = &owners[sym].1;
+            if paths.len() < 2 { continue; }
+            match self.init_arity(*id) {
+                None => {}
+                Some(0) => floated.push(*sym),
+                Some(_) => {
+                    let paths = paths.iter().map(|p| format!("'{}'", self.ast.text(*p))).collect::<Vec<_>>().join(" and ");
+                    return Err(self.error(format!(
+                        "Trait '{}' has a parameterized `init` and is `with`-owned via multiple paths ({paths}), and its init can't be auto-resolved; make its init parameterless or `req` all but one path",
+                        self.ast.text(*sym)), stmt));
+                }
+            }
+        }
+        Ok((out, floated))
+    }
+
+    /// The parameter count of a `type`/`trait`'s declared `init`, or `None` if it declares none.
+    fn init_arity(&self, id: AstId<Stmt>) -> Option<usize> {
+        let Stmt::Type(decl) = self.ast.get(&id) else { return None };
+        let Stmt::Fn(fd) = self.ast.get(&decl.init?) else { return None };
+        Some(fd.params.len())
     }
 
     fn flatten_trait(&mut self, trait_name: Symbol, path: &mut Vec<Symbol>, stmt: &AstId<Stmt>) -> Result<Vec<(Symbol, AstId<Stmt>)>, anyhow::Error> {

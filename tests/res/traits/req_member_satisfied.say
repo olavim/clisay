@@ -1,0 +1,15 @@
+trait Counter {
+    req count;
+    pub fn inc() { this.count = this.count + 1; }
+    pub fn get() { return this.count; }
+}
+type Widget with Counter {
+    pub count = 0;
+    init() {}
+}
+
+say w = Widget();
+w.inc();
+w.inc();
+print(w.get());  // expect: 2
+print(w.count);  // expect: 2

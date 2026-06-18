@@ -1,0 +1,7 @@
+trait A {
+    pub n;
+    init(v) { this.n = v; }
+}
+trait B with A { init() { A.init(1); } }
+trait C with A { init() { A.init(2); } }
+type D with B, C { init() {} } // error: Trait 'A' has a parameterized `init` and is `with`-owned via multiple paths ('B' and 'C'), and its init can't be auto-resolved; make its init parameterless or `req` all but one path

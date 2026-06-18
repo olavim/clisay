@@ -77,6 +77,15 @@ impl<'a> Lowerer<'a> {
         // same name are overrides and keep their own definition).
         self.lower_gives(type_id, &host_methods, type_pos, &mut composed)?;
 
+        // Suppress the floated inits (parameterless multi-owned) across this construction:
+        // every owning path skips auto-orchestrating them; each merge composer emits them once. The
+        // set is the union over this type and its flattened traits (a merge point may be a sub-trait).
+        let mut suppressed: HashSet<Symbol> = self.names.floated_inits(&type_id).iter().copied().collect();
+        for (_, tid) in self.names.flattened_with(&type_id) {
+            suppressed.extend(self.names.floated_inits(tid).iter().copied());
+        }
+        let prev_suppressed = std::mem::replace(&mut self.suppressed_inits, suppressed);
+
         let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
         let getter = decl.getter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
         let setter = decl.setter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
@@ -85,6 +94,8 @@ impl<'a> Lowerer<'a> {
             composed.methods.push(init_method);
             composed.method_traits.push(Some(trait_sym));
         }
+
+        self.suppressed_inits = prev_suppressed;
 
         self.provided_traits = prev_provided;
         self.emitted_aliases = prev_aliases;
@@ -142,6 +153,7 @@ impl<'a> Lowerer<'a> {
         for field in &decl.fields { surface.insert(*field); }
         for method in &decl.methods { surface.insert(self.ast_fn(method).name); }
         for (name, _) in &decl.req_fns { surface.insert(*name); }
+        for name in &decl.req_members { surface.insert(*name); }
 
         for (_, type_decl) in &self.flattened_with(type_id) {
             self.add_exposed(type_decl, &mut surface);
@@ -282,14 +294,21 @@ impl<'a> Lowerer<'a> {
         }
 
         let mut exposed: HashSet<(Symbol, usize)> = HashSet::new();
+        let mut exposed_names: HashSet<Symbol> = HashSet::new();
+        for field in &decl.fields {
+            if is_exposed(decl, field) { exposed_names.insert(*field); }
+        }
         for m in &decl.methods {
             let fd = self.ast_fn(m);
-            if is_exposed(decl, &fd.name) { exposed.insert((fd.name, fd.params.len())); }
+            if is_exposed(decl, &fd.name) { exposed.insert((fd.name, fd.params.len())); exposed_names.insert(fd.name); }
         }
         for (_, type_decl) in traits {
+            for field in &type_decl.fields {
+                if is_exposed(type_decl, field) { exposed_names.insert(*field); }
+            }
             for m in &type_decl.methods {
                 let fd = self.ast_fn(m);
-                if is_exposed(type_decl, &fd.name) { exposed.insert((fd.name, fd.params.len())); }
+                if is_exposed(type_decl, &fd.name) { exposed.insert((fd.name, fd.params.len())); exposed_names.insert(fd.name); }
             }
         }
 
@@ -299,6 +318,16 @@ impl<'a> Lowerer<'a> {
             if !exposed.contains(&(func_sym, arity)) {
                 return Err(anyhow!("Unsatisfied `req fn {}` (arity {arity}): needs an `inner`/`pub` method '{}' taking {arity} argument(s)\n\tat {}",
                     self.hir.text(func_sym), self.hir.text(func_sym), pos));
+            }
+        }
+
+        // `req <member>`: every member hole must be filled by an exposed field/method of that name.
+        let req_members = decl.req_members.iter().copied()
+            .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_members.iter().copied()));
+        for member_sym in req_members {
+            if !exposed_names.contains(&member_sym) {
+                return Err(anyhow!("Unsatisfied `req {}`: needs an `inner`/`pub` member '{}'\n\tat {}",
+                    self.hir.text(member_sym), self.hir.text(member_sym), pos));
             }
         }
         Ok(())

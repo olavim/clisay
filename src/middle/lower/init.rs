@@ -88,6 +88,7 @@ impl<'a> Lowerer<'a> {
         if is_child && !has_super {
             body.push(self.virtual_super_call(&init_pos));
         }
+        body.extend(self.synthesize_floated_inits(composer_id, &init_pos)?);
         body.extend(self.synthesize_auto_inits(composer_id, &decl.with_traits, body_stmts, &init_pos)?);
         for stmt_id in body_stmts {
             body.push(self.stmt(stmt_id)?);
@@ -110,7 +111,8 @@ impl<'a> Lowerer<'a> {
         let params = self.exprs(&fd.params)?;
         let body_stmts = self.ast_block(&fd.body);
 
-        let mut body = self.synthesize_auto_inits(trait_id, with_traits, body_stmts, &init_pos)?;
+        let mut body = self.synthesize_floated_inits(trait_id, &init_pos)?;
+        body.extend(self.synthesize_auto_inits(trait_id, with_traits, body_stmts, &init_pos)?);
         for s in body_stmts {
             body.push(self.stmt(s)?);
         }
@@ -140,6 +142,9 @@ impl<'a> Lowerer<'a> {
         let mut autos = Vec::new();
         for t in with_traits {
             if called.contains_key(t) { continue; }
+            // A floated init (parameterless, multi-owned) is orchestrated once at its merge composer;
+            // this owning path must not also run it.
+            if self.suppressed_inits.contains(t) { continue; }
             if let Some((0, init_name)) = self.trait_init(composer_id, *t) {
                 let method_name = self.hir.text(init_name).to_string();
                 let call = HirExpr::Call(self.this_method(&method_name, pos), Vec::new());
@@ -148,6 +153,19 @@ impl<'a> Lowerer<'a> {
             }
         }
         Ok(autos)
+    }
+
+    fn synthesize_floated_inits(&mut self, composer_id: AstId<Stmt>, pos: &SourcePosition) -> Result<Vec<HirId<HirStmt>>, anyhow::Error> {
+        let mut out = Vec::new();
+        for t in self.names.floated_inits(&composer_id).to_vec() {
+            if let Some((_, init_name)) = self.trait_init(composer_id, t) {
+                let method_name = self.hir.text(init_name).to_string();
+                let call = HirExpr::Call(self.this_method(&method_name, pos), Vec::new());
+                let call = self.hir.add(call, pos.clone());
+                out.push(self.hir.add(HirStmt::Expression(call), pos.clone()));
+            }
+        }
+        Ok(out)
     }
 
     fn synthesize_gives_verifications(&mut self, composer_id: AstId<Stmt>, pos: &SourcePosition) -> Result<Vec<HirId<HirStmt>>, anyhow::Error> {

@@ -1,0 +1,14 @@
+trait A {
+    pub count = 0;
+    init() { this.count = this.count + 1; }
+}
+trait B with A { init() {} } // owns A; B's init auto-runs A.init()
+trait C req A { // depends on A, does not own it
+    pub fn marked() { return this.count; }
+}
+type D with B, C { init() {} } // owns A only through B; C's `req A` is satisfied by it
+
+say d = D();
+print(d.count); // expect: 1
+print(d.marked()); // expect: 1
+print(d is A); // expect: true
