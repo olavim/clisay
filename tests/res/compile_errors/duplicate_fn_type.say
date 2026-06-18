@@ -1,0 +1,2 @@
+fn foo() { return 1; }
+type foo { init() {} } // error: 'foo' already declared in this scope

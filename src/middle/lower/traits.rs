@@ -48,39 +48,10 @@ fn is_exposed(type_decl: &TypeDecl, name: &Symbol) -> bool {
 }
 
 impl<'a> Lowerer<'a> {
-    pub(super) fn scan_traits(&self, stmts: &[AstId<Stmt>]) -> Result<HashMap<Symbol, AstId<Stmt>>, anyhow::Error> {
-        let mut traits: HashMap<Symbol, AstId<Stmt>> = HashMap::new();
-        let mut seen: HashMap<Symbol, bool> = HashMap::new(); // name -> was declared as a trait
-        for s in stmts {
-            let (name, is_trait) = match self.ast.get(s) {
-                Stmt::Type(decl) => (decl.name, decl.is_trait),
-                Stmt::Fn(decl) => (decl.name, false),
-                Stmt::Say(field) => (field.name, false),
-                _ => continue,
-            };
-            if let Some(&prev_is_trait) = seen.get(&name) {
-                if is_trait || prev_is_trait {
-                    return Err(self.error(format!("'{}' already declared in this scope", self.hir.text(name)), s));
-                }
-            }
-            seen.insert(name, is_trait);
-            if is_trait { traits.insert(name, *s); }
-        }
-        Ok(traits)
-    }
+    pub(super) fn lower_type(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, type_pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
+        self.check_init_orchestration(type_id, decl, type_pos)?;
 
-    pub(super) fn lookup_trait(&self, name: Symbol) -> Option<AstId<Stmt>> {
-        self.trait_scopes.iter().rev().find_map(|scope| scope.get(&name).copied())
-    }
-
-    pub(super) fn is_trait_in_scope(&self, name: Symbol) -> bool {
-        self.trait_scopes.iter().any(|scope| scope.contains_key(&name))
-    }
-
-    pub(super) fn lower_type(&mut self, decl: &TypeDecl, type_pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
-        self.check_init_orchestration(decl, type_pos)?;
-
-        let traits = self.collect_traits(decl, type_pos)?;
+        let traits = self.flattened_with(type_id);
         self.check_provide_require_exclusive(decl, type_pos)?;
         self.check_requirements(decl, &traits, type_pos)?;
         let host_methods: HashSet<Symbol> = decl.methods.iter().map(|m| self.ast_fn(m).name).collect();
@@ -100,11 +71,11 @@ impl<'a> Lowerer<'a> {
             self.fold_trait(*trait_sym, td, &host_methods, &mut composed)?;
         }
 
-        let init = self.lower_type_init(decl, &composed.field_inits, type_pos)?;
+        let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
         let getter = decl.getter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
         let setter = decl.setter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
         for trait_sym in std::mem::take(&mut composed.trait_inits) {
-            let init_method = self.lower_trait_init(trait_sym)?;
+            let init_method = self.lower_trait_init(type_id, trait_sym)?;
             composed.methods.push(init_method);
             composed.method_traits.push(Some(trait_sym));
         }
@@ -114,7 +85,7 @@ impl<'a> Lowerer<'a> {
 
         Ok(HirTypeDecl {
             name: decl.name,
-            superclass: decl.superclass,
+            supertype: decl.superclass,
             init,
             getter,
             setter,
@@ -127,8 +98,8 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    pub(super) fn lower_trait(&mut self, decl: &TypeDecl, pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
-        let surface = self.trait_surface(decl, pos)?;
+    pub(super) fn lower_trait(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
+        let surface = self.trait_surface(type_id, decl)?;
 
         let mut composed = Composed::empty();
         self.fold_trait(decl.name, decl, &HashSet::new(), &mut composed)?;
@@ -138,7 +109,7 @@ impl<'a> Lowerer<'a> {
 
         Ok(HirTypeDecl {
             name: decl.name,
-            superclass: None,
+            supertype: None,
             init,
             getter: None,
             setter: None,
@@ -151,21 +122,18 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    fn trait_surface(&mut self, decl: &TypeDecl, pos: &SourcePosition) -> Result<HashSet<Symbol>, anyhow::Error> {
+    fn trait_surface(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl) -> Result<HashSet<Symbol>, anyhow::Error> {
         let mut surface: HashSet<Symbol> = HashSet::new();
         for field in &decl.fields { surface.insert(*field); }
         for method in &decl.methods { surface.insert(self.ast_fn(method).name); }
         for (name, _) in &decl.req_fns { surface.insert(*name); }
 
-        for (_, type_decl) in &self.collect_traits(decl, pos)? {
+        for (_, type_decl) in &self.flattened_with(type_id) {
             self.add_exposed(type_decl, &mut surface);
         }
-        for req_trait in &decl.req_traits {
-            let stmt = self.lookup_trait(*req_trait)
-                .ok_or_else(|| anyhow!("Trait '{}' is not declared\n\tat {}", self.hir.text(*req_trait), pos))?;
-            let req_type_decl = self.ast_type(&stmt);
-            self.add_exposed(req_type_decl, &mut surface);
-            for (_, type_decl) in &self.collect_traits(req_type_decl, pos)? {
+        for (_, req_id) in self.names.req_traits(&type_id) {
+            self.add_exposed(self.ast_type(req_id), &mut surface);
+            for (_, type_decl) in &self.flattened_with(*req_id) {
                 self.add_exposed(type_decl, &mut surface);
             }
         }
@@ -308,41 +276,8 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    fn collect_traits(&mut self, decl: &TypeDecl, pos: &SourcePosition) -> Result<Vec<(Symbol, &'a TypeDecl)>, anyhow::Error> {
-        let mut out = Vec::new();
-        let mut seen = HashSet::new();
-        let mut path = Vec::new();
-        for t in &decl.with_traits {
-            for entry in self.flatten_trait(*t, &mut path, pos)? {
-                if seen.insert(entry.0) { out.push(entry); }
-            }
-        }
-        Ok(out)
-    }
-
-    fn flatten_trait(&mut self, name: Symbol, path: &mut Vec<Symbol>, pos: &SourcePosition) -> Result<Vec<(Symbol, &'a TypeDecl)>, anyhow::Error> {
-        let Some(trait_stmt) = self.lookup_trait(name) else {
-            return Err(anyhow!("Trait '{}' is not declared\n\tat {}", self.hir.text(name), pos));
-        };
-        if let Some(cached) = self.trait_flatten_cache.get(&trait_stmt) {
-            return Ok(cached.clone());
-        }
-        if path.contains(&name) {
-            return Err(anyhow!("Cyclic trait composition involving '{}'\n\tat {}", self.hir.text(name), pos));
-        }
-        let td = self.ast_type(&trait_stmt);
-        path.push(name);
-        let mut out: Vec<(Symbol, &'a TypeDecl)> = Vec::new();
-        let mut seen: HashSet<Symbol> = HashSet::new();
-        for sub in &td.with_traits {
-            for entry in self.flatten_trait(*sub, path, pos)? {
-                if seen.insert(entry.0) { out.push(entry); }
-            }
-        }
-        path.pop();
-        if seen.insert(name) { out.push((name, td)); }
-        self.trait_flatten_cache.insert(trait_stmt, out.clone());
-        Ok(out)
+    fn flattened_with(&self, type_id: AstId<Stmt>) -> Vec<(Symbol, &'a TypeDecl)> {
+        self.names.flattened_with(&type_id).iter().map(|(sym, id)| (*sym, self.ast_type(id))).collect()
     }
 
     /// The private-member rename map for a trait:
@@ -372,7 +307,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn as_qualified_method_call(&self, callee: &AstId<Expr>) -> Option<(Symbol, String)> {
         let Expr::Index(target, member, true) = self.ast.get(callee) else { return None };
         let Expr::Identifier(t) = self.ast.get(target) else { return None };
-        if !self.is_trait_in_scope(*t) { return None; }
+        if self.names.trait_ref(*target).is_none() { return None; }
         let Expr::Literal(Literal::String(m)) = self.ast.get(member) else { return None };
         if m == "init" { return None; } // init orchestration has its own path
         Some((*t, m.clone()))

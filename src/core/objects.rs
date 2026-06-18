@@ -354,7 +354,7 @@ impl GcTraceable for ObjBoundMethod {
 type MemberId = u8;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum ClassMember {
+pub enum TypeMember {
     Field(MemberId),
     Method(MemberId)
 }
@@ -364,12 +364,10 @@ pub enum ClassMember {
 pub struct ObjType {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
-    pub members: FnvHashMap<*mut ObjString, ClassMember>,
+    /// Field and regular-method names. The accessors/initializer are *not* here;
+    /// they're addressed structurally via the id fields below.
+    pub members: FnvHashMap<*mut ObjString, TypeMember>,
     pub fields: IntSet<MemberId>,
-    /// Member ids that are not externally accessible (private/inner). External
-    /// `obj.member` access to one of these is a runtime error; internal `this.x`
-    /// access (resolved by id) bypasses this entirely.
-    pub non_public: IntSet<MemberId>,
     pub methods: IntMap<MemberId, Object>,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
@@ -387,7 +385,6 @@ impl ObjType {
             name,
             members: FnvHashMap::default(),
             fields: IntSet::default(),
-            non_public: IntSet::default(),
             methods: IntMap::default(),
             member_count: 0,
             getter_id: None,
@@ -407,13 +404,13 @@ impl ObjType {
         self.template = values;
     }
 
-    pub fn resolve(&self, name: *mut ObjString) -> Option<ClassMember> {
+    pub fn resolve(&self, name: *mut ObjString) -> Option<TypeMember> {
         self.members.get(&name).copied()
     }
 
     pub fn resolve_method(&self, name: *mut ObjString) -> Option<Object> {
         match self.members.get(&name) {
-            Some(ClassMember::Method(id)) => self.methods.get(id).copied(),
+            Some(TypeMember::Method(id)) => self.methods.get(id).copied(),
             _ => None
         }
     }
@@ -452,7 +449,7 @@ impl GcTraceable for ObjType {
 
     fn size(&self) -> usize {
         mem::size_of::<ObjType>()
-            + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<ClassMember>())
+            + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<TypeMember>())
             + self.template.len() * mem::size_of::<Value>()
     }
 }

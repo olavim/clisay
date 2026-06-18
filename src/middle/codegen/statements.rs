@@ -1,7 +1,7 @@
 use crate::compiler_error;
 use crate::middle::hir::{HirCatchClause, HirExpr, HirFieldInit, HirId, HirStmt};
 use crate::middle::ir::Inst;
-use crate::middle::resolve::FnKind;
+use crate::middle::bind::FnKind;
 
 use super::{Compiler, TryCatchPosition, TryFrame};
 

@@ -1,5 +1,6 @@
 //! The high-level IR (HIR): a post-lowering node hierarchy in which surface-only
-//! constructs are unrepresentable.
+//! constructs are unrepresentable. Produced by [`crate::middle::lower`] and consumed
+//! by `bind` and `codegen`.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -78,7 +79,7 @@ pub struct HirCatchClause {
 
 pub struct HirTypeDecl {
     pub name: Symbol,
-    pub superclass: Option<Symbol>,
+    pub supertype: Option<Symbol>,
     pub init: HirId<HirStmt>,
     pub getter: Option<HirId<HirStmt>>,
     pub setter: Option<HirId<HirStmt>>,

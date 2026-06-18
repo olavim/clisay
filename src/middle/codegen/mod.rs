@@ -5,7 +5,7 @@ use crate::core::gc::Gc;
 use crate::core::objects::ObjType;
 use crate::core::objects::ObjString;
 use crate::middle::ir::{Inst, Ir, Label};
-use crate::middle::resolve::{Bindings, Cleanup, FnKind};
+use crate::middle::bind::{Bindings, Cleanup, FnKind};
 use crate::middle::hir::Hir;
 use crate::middle::hir::HirExpr;
 use crate::middle::hir::HirFnDecl;
