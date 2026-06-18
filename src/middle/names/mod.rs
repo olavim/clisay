@@ -70,6 +70,9 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
 struct Scope {
     declared: HashSet<Symbol>,
     traits: HashMap<Symbol, AstId<Stmt>>,
+    /// Every `type`/`trait` name in scope (traits included), for validating the right operand of
+    /// `x is T`.
+    types: HashSet<Symbol>,
 }
 
 struct Resolver<'a> {
@@ -89,7 +92,12 @@ impl<'a> Resolver<'a> {
     }
 
     fn push_scope(&mut self) {
-        self.scopes.push(Scope { declared: HashSet::new(), traits: HashMap::new() });
+        self.scopes.push(Scope { declared: HashSet::new(), traits: HashMap::new(), types: HashSet::new() });
+    }
+
+    /// Whether `name` refers to a `type` or `trait` in scope (the valid right operands of `is`).
+    fn is_type_or_trait(&self, name: Symbol) -> bool {
+        self.scopes.iter().any(|scope| scope.types.contains(&name))
     }
 
     fn pop_scope(&mut self) {
@@ -110,22 +118,24 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// Hoists a block's trait declarations into the current scope's lookup table — visible to the
-    /// whole block before any statement is walked, so a `with`/`req` may reference a later-declared
-    /// trait.
-    fn hoist_traits(&mut self, stmts: &[AstId<Stmt>]) {
-        for s in stmts {
-            if let Stmt::Type(decl) = self.ast.get(s) {
+    /// Hoists a block's `type`/`trait` declarations into the current scope so a later-declared one
+    /// is visible block-wide: every name into `types` (for `is T`), and each trait additionally into
+    /// the lookup table (`with`/`req`/qualified calls).
+    fn hoist_types(&mut self, stmts: &[AstId<Stmt>]) {
+        for stmt in stmts {
+            if let Stmt::Type(decl) = self.ast.get(stmt) {
+                let scope = self.scopes.last_mut().unwrap();
+                scope.types.insert(decl.name);
                 if decl.is_trait {
-                    self.scopes.last_mut().unwrap().traits.insert(decl.name, *s);
+                    scope.traits.insert(decl.name, *stmt);
                 }
             }
         }
     }
 
     /// The declared name of a block-level statement (`say`/`fn`/`type`/`trait`), if any.
-    fn decl_name(&self, s: &AstId<Stmt>) -> Option<Symbol> {
-        match self.ast.get(s) {
+    fn decl_name(&self, stmt: &AstId<Stmt>) -> Option<Symbol> {
+        match self.ast.get(stmt) {
             Stmt::Type(decl) => Some(decl.name),
             Stmt::Fn(decl) => Some(decl.name),
             Stmt::Say(field) => Some(field.name),
@@ -136,10 +146,10 @@ impl<'a> Resolver<'a> {
     /// Processes a block's statements in the current (already-pushed) scope: hoist traits for
     /// lookup, check every declaration for collisions, then recurse.
     fn block(&mut self, stmts: &[AstId<Stmt>]) -> Result<(), anyhow::Error> {
-        self.hoist_traits(stmts);
-        for s in stmts {
-            if let Some(name) = self.decl_name(s) {
-                self.declare(name, s)?;
+        self.hoist_types(stmts);
+        for stmt in stmts {
+            if let Some(name) = self.decl_name(stmt) {
+                self.declare(name, stmt)?;
             }
         }
         for s in stmts {
@@ -232,6 +242,13 @@ impl<'a> Resolver<'a> {
             Expr::Identifier(name) => {
                 if let Some(trait_id) = self.lookup_trait(*name) {
                     self.out.name_refs.insert(*e, Binding::Trait(trait_id));
+                }
+            },
+            // `expr is T`: the right operand must be a static `type`/`trait` name (not a value).
+            Expr::Is(target, name) => {
+                self.visit_expr(target)?;
+                if !self.is_type_or_trait(*name) {
+                    return Err(self.error(format!("'{}' is not a type or trait", self.ast.text(*name)), e));
                 }
             },
             Expr::This | Expr::Super => {},

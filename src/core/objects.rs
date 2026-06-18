@@ -1,6 +1,6 @@
 use std::{fmt, mem};
 
-use fnv::FnvHashMap;
+use fnv::{FnvHashMap, FnvHashSet};
 use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
@@ -374,6 +374,10 @@ pub struct ObjType {
     pub members: FnvHashMap<*mut ObjString, TypeMember>,
     pub fields: IntSet<MemberId>,
     pub methods: IntMap<MemberId, Object>,
+    /// Interned names of every trait/type this type **provides** (own name + transitively
+    /// `with`-mixed traits + inherited). Drives `x is T`: membership is pointer equality on the
+    /// gc-interned name.
+    pub provided: FnvHashSet<*mut ObjString>,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
@@ -391,6 +395,7 @@ impl ObjType {
             members: FnvHashMap::default(),
             fields: IntSet::default(),
             methods: IntMap::default(),
+            provided: FnvHashSet::default(),
             member_count: 0,
             getter_id: None,
             setter_id: None,
@@ -450,11 +455,15 @@ impl GcTraceable for ObjType {
         for (_, &method) in &self.methods {
             gc.mark_object(method);
         }
+        for &name in &self.provided {
+            gc.mark_object(name);
+        }
     }
 
     fn size(&self) -> usize {
         mem::size_of::<ObjType>()
             + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<TypeMember>())
+            + self.provided.capacity() * mem::size_of::<*mut ObjString>()
             + self.template.len() * mem::size_of::<Value>()
     }
 }

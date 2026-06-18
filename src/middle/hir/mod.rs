@@ -59,6 +59,8 @@ pub enum HirExpr {
     Index(HirId<HirExpr>, HirId<HirExpr>, bool),
     Literal(HirLiteral),
     Identifier(Symbol),
+    /// `expr is T`: a nominal capability test against the type/trait named `T`.
+    Is(HirId<HirExpr>, Symbol),
     This,
     Super,
 }
@@ -102,6 +104,11 @@ pub struct HirTypeDecl {
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
     /// For a standalone trait (`HirStmt::Trait`): its **declared surface**.
     pub surface: HashSet<Symbol>,
+    /// The trait/type names this type **provides** for `x is T`: its own name plus every
+    /// transitively `with`-mixed trait. Empty for a standalone trait (no runtime type). The
+    /// supertype's provided set is unioned in later (`bind`/codegen), so this holds only the
+    /// declaration's own contribution.
+    pub provides: Vec<Symbol>,
 }
 
 pub enum HirStmt {

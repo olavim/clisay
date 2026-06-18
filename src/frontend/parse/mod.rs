@@ -514,6 +514,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
                 Expr::Index(expr, id, true) // `.name` member access
             },
+            Operator::Is => {
+                // The right operand is a static type/trait name, not an expression.
+                let name = self.parse_identifier()?;
+                Expr::Is(expr, self.ast.intern(&name))
+            },
             Operator::Arrow => {
                 let right = self.parse_block_or_expr(op.infix_precedence().unwrap())?;
                 let params = expr.as_comma_separated(self.ast).iter()

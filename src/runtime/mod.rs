@@ -595,6 +595,7 @@ impl Vm {
                 opcode::LESS_THAN_EQUAL => delegate!(self.op_less_than_equal()?),
                 opcode::GREATER_THAN => delegate!(self.op_greater_than()?),
                 opcode::GREATER_THAN_EQUAL => delegate!(self.op_greater_than_equal()?),
+                opcode::IS => delegate!(self.op_is()),
                 _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }

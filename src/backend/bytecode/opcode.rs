@@ -135,4 +135,5 @@ opcodes! {
     LessThanEqual => LESS_THAN_EQUAL,
     GreaterThan => GREATER_THAN,
     GreaterThanEqual => GREATER_THAN_EQUAL,
+    Is => IS(Const),
 }

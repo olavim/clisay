@@ -27,11 +27,18 @@ impl<'a> Compiler<'a> {
         class.setter_id = layout.setter_id;
         class.init_id = Some(layout.init_id);
 
-        // Inherit the superclass's compiled methods.
+        // Inherit the supertype's compiled methods and its provided-trait set.
         if let Some(super_sym) = superclass {
             let super_name = self.gc.intern(self.hir.text(super_sym));
             let super_class = self.classes[&super_name];
             class.methods = unsafe { &*super_class }.methods.clone();
+            class.provided = unsafe { &*super_class }.provided.clone();
+        }
+
+        // `x is T`: this type provides its own name and every transitively `with`-mixed trait.
+        for name in &decl.provides {
+            let name_ref = self.gc.intern(self.hir.text(*name));
+            class.provided.insert(name_ref);
         }
 
         // Compile the accessor/initializer/method bodies into their slots.

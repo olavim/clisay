@@ -29,6 +29,12 @@ impl<'a> Compiler<'a> {
                 let place = self.bindings.place(expr);
                 self.emit_load(place, expr)?;
             },
+            HirExpr::Is(target, name) => {
+                self.expression(target)?;
+                let name_ref = self.gc.intern(self.hir.text(*name));
+                let idx = self.ir.add_constant(Value::from(name_ref))?;
+                self.emit(Inst::Is(idx), expr);
+            },
             HirExpr::This | HirExpr::Super => self.emit(Inst::GetLocal(0), expr),
         };
 

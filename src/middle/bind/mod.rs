@@ -454,6 +454,8 @@ impl<'a> Resolver<'a> {
                 let place = self.resolve_place(*name, expr)?;
                 self.bindings.places.insert(*expr, place);
             },
+            // `x is T`: bind the receiver; `T` is a static name resolved at codegen.
+            HirExpr::Is(target, _) => self.expression(target)?,
             HirExpr::This => self.require_type(expr)?,
             HirExpr::Super => { self.require_supertype(expr)?; },
         };

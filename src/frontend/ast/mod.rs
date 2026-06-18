@@ -73,6 +73,9 @@ pub enum Expr {
 
     Literal(Literal),
     Identifier(Symbol),
+    /// `expr is T`: a nominal capability test against a static type/trait *name*
+    /// resolved at runtime.
+    Is(AstId<Expr>, Symbol),
     This,
     Super
 }

@@ -101,6 +101,9 @@ pub enum Inst {
     LessThanEqual,
     GreaterThan,
     GreaterThanEqual,
+    /// `x is T`: pop the receiver, push whether its type provides the trait/type named by the
+    /// constant-pool string operand.
+    Is(u8),
 }
 
 /// A whole program's worth of IR: the instruction stream (with a source position

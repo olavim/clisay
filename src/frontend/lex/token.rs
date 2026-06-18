@@ -136,6 +136,7 @@ tokens! {
     Trait => "trait",
     This => "this",
     Super => "super",
+    Is => "is",
 
     Return => "return",
     Break => "break",

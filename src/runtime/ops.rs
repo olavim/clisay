@@ -158,6 +158,17 @@ impl Vm {
         Ok(())
     }
 
+    /// `x is T`: pushes whether the receiver's type provides the trait/type named by the constant
+    /// operand. Never errors: a non-instance receiver (null/number/dict/…) yields `false`.
+    pub(super) fn op_is(&mut self) {
+        let const_idx = self.read_next() as usize;
+        let name = self.chunk.constants[const_idx].as_object().as_string_ptr();
+        let receiver = self.stack.pop();
+        let provides = matches!(receiver.kind(), ValueKind::Object(ObjectKind::Instance))
+            && unsafe { &*(*receiver.as_object().as_instance_ptr()).class }.provided.contains(&name);
+        self.stack.push(Value::from(provides));
+    }
+
     pub(super) fn op_add(&mut self) -> Result<(), anyhow::Error> {
         let b = self.stack.pop();
         let a = self.stack.pop();

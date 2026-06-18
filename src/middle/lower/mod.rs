@@ -164,6 +164,7 @@ impl<'a> Lowerer<'a> {
                 }
                 HirExpr::Identifier(*name)
             },
+            Expr::Is(target, name) => HirExpr::Is(self.expr(target)?, *name),
             Expr::This => HirExpr::This,
             Expr::Super => HirExpr::Super,
         };

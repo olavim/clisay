@@ -1,0 +1,14 @@
+null is null; // error: Unexpected token: Expected '<identifier>' but found 'null'
+// @split
+null is 0; // error: Unexpected token: Expected '<identifier>' but found 'lit(0)'
+// @split
+null is true; // error: Unexpected token: Expected '<identifier>' but found 'true'
+// @split
+null is false; // error: Unexpected token: Expected '<identifier>' but found 'false'
+// @split
+say s = 0;
+null is s; // error: 's' is not a type or trait
+// @split
+trait T {}
+say s = T;
+null is s; // error: 's' is not a type or trait
