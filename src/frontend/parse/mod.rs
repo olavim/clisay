@@ -268,6 +268,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut pub_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
         let mut inner_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
         let mut req_fns: Vec<(Symbol, usize)> = Vec::new();
+        let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
         let mut getter = None;
         let mut setter = None;
@@ -318,13 +319,21 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             setter = Some(self.parse_accessor(name, 2, "Setter must have exactly two parameters")?);
                         },
                         _ => {
-                            // Field declaration
+                            // Field declaration, optionally with a `gives Trait` delegation suffix.
+                            let field = self.ast.intern(&name);
+                            let give = if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Gives) {
+                                self.tokens.next();
+                                let trait_name = self.parse_identifier()?;
+                                Some(self.ast.intern(&trait_name))
+                            } else {
+                                None
+                            };
+
                             let value = self.tokens.next_if(TokenType::Equal)
                                 .map(|_| self.parse_expr())
                                 .transpose()?;
 
                             self.tokens.expect(TokenType::Semicolon)?;
-                            let field = self.ast.intern(&name);
                             fields.insert(field);
                             match visibility {
                                 Visibility::Pub => { pub_members.insert(field); },
@@ -332,6 +341,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                                 Visibility::Private => {},
                             }
 
+                            if let Some(trait_sym) = give {
+                                gives.push((field, trait_sym));
+                            }
                             if let Some(value) = value {
                                 field_inits.push((field, value));
                             }
@@ -353,6 +365,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             with_traits,
             req_traits,
             req_fns,
+            gives,
             superclass,
             init_name,
             init,

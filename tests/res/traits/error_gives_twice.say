@@ -1,0 +1,9 @@
+// Provide-once: the same trait given by two delegates is a collision.
+trait Powered { pub fn start() { return "vroom"; } }
+type Engine with Powered { init() {} }
+
+type Car { // error: Trait 'Powered' is provided by `gives` more than once — declare it once
+    engine gives Powered;
+    spare gives Powered;
+    init() { this.engine = Engine(); this.spare = Engine(); }
+}

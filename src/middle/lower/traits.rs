@@ -11,7 +11,7 @@ use anyhow::anyhow;
 
 use crate::ast::{AstId, Expr, Literal, Stmt, Symbol, TypeDecl};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt, HirTypeDecl};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl};
 
 use super::Lowerer;
 
@@ -67,7 +67,10 @@ impl<'a> Lowerer<'a> {
         // The flattened `with`-set, resolved by the `names` pre-pass.
         let traits = self.flattened_with(type_id);
         self.check_provide_require_exclusive(decl, type_pos)?;
-        self.check_requirements(decl, &traits, type_pos)?;
+        self.check_provide_once(type_id, decl, type_pos)?;
+        // Traits provided by delegation (`field gives Trait`): they satisfy `req T` and `is T`.
+        let gives_traits: Vec<Symbol> = self.names.gives_traits(&type_id).iter().map(|(_, t, _)| *t).collect();
+        self.check_requirements(decl, &traits, &gives_traits, type_pos)?;
         let host_methods: HashSet<Symbol> = decl.methods.iter().map(|m| self.ast_fn(m).name).collect();
         let exposed_methods = self.check_exposed_collisions(&traits, &host_methods, decl, type_pos)?;
 
@@ -87,6 +90,9 @@ impl<'a> Lowerer<'a> {
         for (trait_sym, td) in &traits {
             self.fold_trait(*trait_sym, td, &host_methods, &mut composed)?;
         }
+        // `field gives Trait`: synthesize a forwarder per exposed trait method (host methods of the
+        // same name are overrides and keep their own definition).
+        self.lower_gives(type_id, &host_methods, type_pos, &mut composed)?;
 
         let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
         let getter = decl.getter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
@@ -103,9 +109,11 @@ impl<'a> Lowerer<'a> {
         self.provided_traits = prev_provided;
         self.emitted_aliases = prev_aliases;
 
-        // What `x is T` matches: the type's own name plus every transitively `with`-mixed trait.
+        // What `x is T` matches: the type's own name, every transitively `with`-mixed trait, and
+        // every trait it provides by `gives` delegation.
         let provides = std::iter::once(decl.name)
             .chain(self.names.flattened_with(&type_id).iter().map(|(sym, _)| *sym))
+            .chain(gives_traits.iter().copied())
             .collect();
 
         Ok(HirTypeDecl {
@@ -221,15 +229,89 @@ impl<'a> Lowerer<'a> {
                 return Err(anyhow!("'{}' is both `with`-provided and `req`-depended by this {kind} — pick one\n\tat {}",
                     self.hir.text(*rt), pos));
             }
+            if decl.gives.iter().any(|(_, t)| t == rt) {
+                let kind = if decl.is_trait { "trait" } else { "type" };
+                return Err(anyhow!("'{}' is both `gives`-provided and `req`-depended by this {kind} — pick one\n\tat {}",
+                    self.hir.text(*rt), pos));
+            }
         }
         Ok(())
+    }
+
+    /// A trait may be *declared* as provided at most once across the composer's direct `with` and `gives` clauses.
+    fn check_provide_once(&self, type_id: AstId<Stmt>, decl: &TypeDecl, pos: &SourcePosition) -> Result<(), anyhow::Error> {
+        let with: HashSet<Symbol> = decl.with_traits.iter().copied().collect();
+        let mut given: HashSet<Symbol> = HashSet::new();
+        for (_, trait_sym, _) in self.names.gives_traits(&type_id) {
+            if with.contains(trait_sym) {
+                return Err(anyhow!("Trait '{}' is provided by both `with` and `gives` — declare it once\n\tat {}",
+                    self.hir.text(*trait_sym), pos));
+            }
+            if !given.insert(*trait_sym) {
+                return Err(anyhow!("Trait '{}' is provided by `gives` more than once — declare it once\n\tat {}",
+                    self.hir.text(*trait_sym), pos));
+            }
+        }
+        Ok(())
+    }
+
+    /// Synthesizes a forwarding method for each exposed method of every `gives` trait's surface
+    /// (the trait's own methods plus its `with`-flattened set). Each forwarder calls
+    /// `this.<field>.<method>(args)` and carries the trait method's visibility. A method the host
+    /// already declares is an override.
+    fn lower_gives(&mut self, type_id: AstId<Stmt>, host_methods: &HashSet<Symbol>, pos: &SourcePosition, composed: &mut Composed) -> Result<(), anyhow::Error> {
+        let mut forwarded: HashSet<Symbol> = HashSet::new();
+        for (field, _, trait_id) in self.names.gives_traits(&type_id).to_vec() {
+            let mut decls = self.flattened_with(trait_id);
+            decls.push((self.ast_type(&trait_id).name, self.ast_type(&trait_id)));
+            for (_, type_decl) in decls {
+                for method in &type_decl.methods {
+                    let fd = self.ast_fn(method);
+                    let name = fd.name;
+                    if !is_exposed(type_decl, &name) { continue; }
+                    if host_methods.contains(&name) { continue; }
+                    if !forwarded.insert(name) { continue; }
+                    let arity = fd.params.len();
+                    let is_pub = type_decl.pub_members.contains(&name);
+                    let forwarder = self.make_forwarder(field, name, arity, pos);
+                    composed.methods.push(forwarder);
+                    composed.method_traits.push(None);
+                    if is_pub { composed.pub_members.insert(name); }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Builds a forwarder `fn <method>($g0, …) { return this.<field>.<method>($g0, …); }`.
+    fn make_forwarder(&mut self, field: Symbol, method: Symbol, arity: usize, pos: &SourcePosition) -> HirId<HirStmt> {
+        let field_name = self.hir.text(field).to_string();
+        let method_name = self.hir.text(method).to_string();
+
+        let mut params = Vec::with_capacity(arity);
+        let mut args = Vec::with_capacity(arity);
+        for i in 0..arity {
+            let psym = self.hir.intern(&format!("$g{i}"));
+            params.push(self.hir.add(HirExpr::Identifier(psym), pos.clone()));
+            args.push(self.hir.add(HirExpr::Identifier(psym), pos.clone()));
+        }
+
+        let this = self.hir.add(HirExpr::This, pos.clone());
+        let field_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(field_name)), pos.clone());
+        let field_access = self.hir.add(HirExpr::Index(this, field_lit, true), pos.clone());
+        let method_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(method_name)), pos.clone());
+        let method_access = self.hir.add(HirExpr::Index(field_access, method_lit, true), pos.clone());
+        let call = self.hir.add(HirExpr::Call(method_access, args), pos.clone());
+        let ret = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
+        let body = self.hir.add(HirExpr::Block(vec![ret]), pos.clone());
+        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, params, body }), pos.clone())
     }
 
     /// At an instantiable type, every `req T` and `req fn` of the flattened trait set (and the
     /// type's own) must be satisfied: `req T` by a `with`-provided trait, `req fn f/n` by an
     /// `inner`/`pub` method `f` of arity `n` (own or `with`-mixed). A private member does not satisfy.
-    fn check_requirements(&self, decl: &TypeDecl, traits: &[(Symbol, &'a TypeDecl)], pos: &SourcePosition) -> Result<(), anyhow::Error> {
-        let provided: HashSet<Symbol> = traits.iter().map(|(s, _)| *s).collect();
+    fn check_requirements(&self, decl: &TypeDecl, traits: &[(Symbol, &'a TypeDecl)], gives: &[Symbol], pos: &SourcePosition) -> Result<(), anyhow::Error> {
+        let provided: HashSet<Symbol> = traits.iter().map(|(s, _)| *s).chain(gives.iter().copied()).collect();
 
         // `req T`: the type's own and every flattened trait's required traits must be provided.
         let req_traits = decl.req_traits.iter().map(|t| (*t, None))

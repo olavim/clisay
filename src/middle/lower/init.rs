@@ -11,7 +11,7 @@ use anyhow::anyhow;
 
 use crate::ast::{AstId, Expr, Literal, Stmt, Symbol, TypeDecl};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, UnOp};
 
 use super::Lowerer;
 
@@ -113,6 +113,9 @@ impl<'a> Lowerer<'a> {
         for stmt_id in body_stmts {
             body.push(self.stmt(stmt_id)?);
         }
+        // `gives` delegate verification: once construction (init + trait inits) has run, each
+        // delegate field must actually provide its trait, else construction fails.
+        body.extend(self.synthesize_gives_verifications(composer_id, &init_pos)?);
 
         Ok(self.make_init_fn(decl.init_name, params, body, &init_pos))
     }
@@ -177,6 +180,30 @@ impl<'a> Lowerer<'a> {
             }
         }
         Ok(autos)
+    }
+
+    /// Builds the construction-time verification for each `gives` delegate:
+    /// `if !(this.<field> is Trait) { throw "<message>"; }`. A failed check is a catchable runtime
+    /// error raised at the end of construction.
+    fn synthesize_gives_verifications(&mut self, composer_id: AstId<Stmt>, pos: &SourcePosition) -> Result<Vec<HirId<HirStmt>>, anyhow::Error> {
+        let mut out = Vec::new();
+        for (field, trait_sym, _) in self.names.gives_traits(&composer_id).to_vec() {
+            let field_name = self.hir.text(field).to_string();
+            let trait_name = self.hir.text(trait_sym).to_string();
+
+            let this = self.hir.add(HirExpr::This, pos.clone());
+            let field_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(field_name.clone())), pos.clone());
+            let access = self.hir.add(HirExpr::Index(this, field_lit, true), pos.clone());
+            let is_check = self.hir.add(HirExpr::Is(access, trait_sym), pos.clone());
+            let not_check = self.hir.add(HirExpr::Unary(UnOp::Not, is_check), pos.clone());
+
+            let msg = format!("Delegate field '{field_name}' does not provide trait '{trait_name}'");
+            let msg_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(msg)), pos.clone());
+            let throw = self.hir.add(HirStmt::Throw(msg_lit), pos.clone());
+            let then_block = self.hir.add(HirExpr::Block(vec![throw]), pos.clone());
+            out.push(self.hir.add(HirStmt::If(not_check, then_block, None), pos.clone()));
+        }
+        Ok(out)
     }
 
     /// Whether `stmt` is a `super(...)` call statement.

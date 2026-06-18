@@ -53,15 +53,12 @@ macro_rules! tokens {
     };
 }
 
-/// Identifiers that act as keywords only in specific positions — `with`/`req` in a type/trait
-/// header, `pub`/`inner` as member-visibility modifiers — and as ordinary identifiers everywhere
-/// else. They are deliberately *not* `TokenType`s, so they stay usable as names; the parser
-/// classifies them by position via [`Token::contextual`]. (`init`/`get`/`set` are specially-named
-/// methods, parsed with normal method syntax, and are not modelled here.)
+/// Identifiers that act as keywords only in specific positions.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ContextualKeyword {
     With,
     Req,
+    Gives,
     Pub,
     Inner,
 }
@@ -71,6 +68,7 @@ impl ContextualKeyword {
         Some(match lexeme {
             "with" => ContextualKeyword::With,
             "req" => ContextualKeyword::Req,
+            "gives" => ContextualKeyword::Gives,
             "pub" => ContextualKeyword::Pub,
             "inner" => ContextualKeyword::Inner,
             _ => return None,
@@ -83,6 +81,7 @@ impl fmt::Display for ContextualKeyword {
         write!(f, "{}", match self {
             ContextualKeyword::With => "with",
             ContextualKeyword::Req => "req",
+            ContextualKeyword::Gives => "gives",
             ContextualKeyword::Pub => "pub",
             ContextualKeyword::Inner => "inner",
         })

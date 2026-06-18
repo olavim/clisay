@@ -1,0 +1,8 @@
+// Provide-once: a trait declared by both `with` and `gives` is a collision.
+trait Powered { pub fn start() { return "vroom"; } }
+type Engine with Powered { init() {} }
+
+type Car with Powered { // error: Trait 'Powered' is provided by both `with` and `gives` — declare it once
+    engine gives Powered;
+    init() { this.engine = Engine(); }
+}

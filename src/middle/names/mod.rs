@@ -20,6 +20,9 @@ struct ResolvedTraits {
     /// surface validation needs the depended traits' exposed members; a `type`'s unsatisfied `req`
     /// is reported by the later requirement check, so an unresolvable one is simply omitted here.
     req: Vec<(Symbol, AstId<Stmt>)>,
+    /// The resolved `gives` delegations: `(field, trait, trait declaration)`. The field provides
+    /// the trait by forwarding; lowering synthesizes the forwarders from the trait's declaration.
+    gives: Vec<(Symbol, Symbol, AstId<Stmt>)>,
 }
 
 /// The output of name resolution: per-declaration trait-graph facts and per-reference bindings,
@@ -38,6 +41,11 @@ impl NameBindings {
     /// The resolved `req` traits of a `trait` declaration.
     pub fn req_traits(&self, ty: &AstId<Stmt>) -> &[(Symbol, AstId<Stmt>)] {
         self.type_traits.get(ty).map_or(&[], |rt| &rt.req)
+    }
+
+    /// The resolved `gives` delegations of a `type`/`trait` declaration: `(field, trait, decl)`.
+    pub fn gives_traits(&self, ty: &AstId<Stmt>) -> &[(Symbol, Symbol, AstId<Stmt>)] {
+        self.type_traits.get(ty).map_or(&[], |rt| &rt.gives)
     }
 
     /// The declaration that `composer` resolves the provided trait `sym` to (via its flattened `with`-set).
@@ -214,7 +222,8 @@ impl<'a> Resolver<'a> {
     fn visit_type(&mut self, stmt: &AstId<Stmt>, decl: &TypeDecl) -> Result<(), anyhow::Error> {
         let with = self.flatten_traits(&decl.with_traits, stmt)?;
         let req = self.resolve_reqs(decl, stmt)?;
-        self.out.type_traits.insert(*stmt, ResolvedTraits { with, req });
+        let gives = self.resolve_gives(decl, stmt)?;
+        self.out.type_traits.insert(*stmt, ResolvedTraits { with, req, gives });
 
         for method in &decl.methods { self.visit_stmt(method)?; }
         if let Some(init) = &decl.init { self.visit_stmt(init)?; }
@@ -317,6 +326,19 @@ impl<'a> Resolver<'a> {
                 Some(id) => out.push((*trait_name, id)),
                 None if decl.is_trait => return Err(self.error(format!("Trait '{}' is not declared", self.ast.text(*trait_name)), stmt)),
                 None => {},
+            }
+        }
+        Ok(out)
+    }
+
+    /// Resolves a declaration's `gives` delegations to their trait declarations. The right-hand
+    /// name must be a declared trait (the forwarders are synthesized from it).
+    fn resolve_gives(&self, decl: &TypeDecl, stmt: &AstId<Stmt>) -> Result<Vec<(Symbol, Symbol, AstId<Stmt>)>, anyhow::Error> {
+        let mut out = Vec::new();
+        for (field, trait_name) in &decl.gives {
+            match self.lookup_trait(*trait_name) {
+                Some(id) => out.push((*field, *trait_name, id)),
+                None => return Err(self.error(format!("Trait '{}' is not declared", self.ast.text(*trait_name)), stmt)),
             }
         }
         Ok(out)

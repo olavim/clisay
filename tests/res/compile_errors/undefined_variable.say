@@ -1,0 +1,2 @@
+// A reference to a name that is neither declared nor a built-in is a compile-time error.
+print(x); // error: Undefined variable 'x'

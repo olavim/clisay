@@ -452,6 +452,13 @@ impl<'a> Resolver<'a> {
             HirExpr::Literal(lit) => self.literal(lit)?,
             HirExpr::Identifier(name) => {
                 let place = self.resolve_place(*name, expr)?;
+                // The only valid global is a predefined built-in; every other name reaching here is
+                // neither a local/upvalue/field nor a declaration, so it is undefined.
+                if let Place::Global(g) = place {
+                    if !crate::core::builtins::is_builtin(self.hir.text(g)) {
+                        compiler_error!(self, expr, "Undefined variable '{}'", self.hir.text(g));
+                    }
+                }
                 self.bindings.places.insert(*expr, place);
             },
             // `x is T`: bind the receiver; `T` is a static name resolved at codegen.

@@ -209,6 +209,12 @@ impl Vm {
             Ok(())
         });
 
+        // The registered built-ins must match the list `middle::bind` checks references against,
+        // or a valid call to a native would be rejected as an undefined variable (or vice versa).
+        debug_assert_eq!(vm.globals.len(), crate::core::builtins::NAMES.len(), "built-in registration drifted from core::builtins::NAMES");
+        debug_assert!(crate::core::builtins::NAMES.iter().all(|n| vm.globals.contains_key(&vm.gc.intern(*n))),
+            "a name in core::builtins::NAMES was not registered as a native");
+
         Ok(vm.interpret()?)
     }
 
