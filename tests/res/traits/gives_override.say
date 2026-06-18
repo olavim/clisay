@@ -1,0 +1,16 @@
+trait Powered {
+    pub fn start() { return "vroom"; }
+    pub fn stop() { return "stop"; }
+}
+type Engine with Powered { init() {} }
+
+type Car {
+    engine gives Powered;
+    pub fn start() { return "custom"; }
+    init() { this.engine = Engine(); }
+}
+
+say c = Car();
+print(c.start());    // expect: custom
+print(c.stop());     // expect: stop
+print(c is Powered); // expect: true

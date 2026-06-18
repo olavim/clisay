@@ -89,6 +89,9 @@ pub struct TypeDecl {
     pub req_traits: Vec<Symbol>,
     /// Method holes declared via `req fn f(params);`.
     pub req_fns: Vec<(Symbol, usize)>,
+    /// Delegation fields declared via `field gives Trait;`: `(field, trait)`. The field provides
+    /// `Trait` by forwarding, so for example `is Trait` is true.
+    pub gives: Vec<(Symbol, Symbol)>,
     pub superclass: Option<Symbol>,
     pub init_name: Symbol,
     pub init: Option<AstId<Stmt>>,

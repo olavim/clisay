@@ -57,6 +57,7 @@ macro_rules! tokens {
 pub enum ContextualKeyword {
     With,
     Req,
+    Gives,
     Pub,
     Inner,
 }
@@ -66,6 +67,7 @@ impl ContextualKeyword {
         Some(match lexeme {
             "with" => ContextualKeyword::With,
             "req" => ContextualKeyword::Req,
+            "gives" => ContextualKeyword::Gives,
             "pub" => ContextualKeyword::Pub,
             "inner" => ContextualKeyword::Inner,
             _ => return None,
@@ -78,6 +80,7 @@ impl fmt::Display for ContextualKeyword {
         write!(f, "{}", match self {
             ContextualKeyword::With => "with",
             ContextualKeyword::Req => "req",
+            ContextualKeyword::Gives => "gives",
             ContextualKeyword::Pub => "pub",
             ContextualKeyword::Inner => "inner",
         })

@@ -1,0 +1,8 @@
+trait Powered { pub fn start() { return "vroom"; } }
+
+type Car {
+    engine gives Powered;
+    init() { this.engine = 5; } // error: Uncaught exception: "Delegate field 'engine' does not provide trait 'Powered'"
+}
+
+say c = Car();

@@ -1,0 +1,4 @@
+trait Powered { pub fn start() { return "vroom"; } }
+type Car {
+    engine gives Powered = Engine(); // error: Undefined variable 'Engine'
+}
