@@ -20,6 +20,7 @@ pub enum Operator {
     BitAnd,
     BitOr,
     BitXor,
+    Is, // expr is TypeOrTrait
     MemberAccess, // expr.member
     Comma, // expr, expr
     Arrow, // expr => expr
@@ -64,6 +65,7 @@ impl fmt::Display for Operator {
             Operator::BitAnd => "&",
             Operator::BitOr => "|",
             Operator::BitXor => "^",
+            Operator::Is => "is",
             Operator::Negate => "-",
             Operator::LogicalNot => "!",
             Operator::BitNot => "~",

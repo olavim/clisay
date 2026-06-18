@@ -83,6 +83,11 @@ impl<'a> Lowerer<'a> {
         self.provided_traits = prev_provided;
         self.emitted_aliases = prev_aliases;
 
+        // What `x is T` matches: the type's own name plus every transitively `with`-mixed trait.
+        let provides = std::iter::once(decl.name)
+            .chain(self.names.flattened_with(&type_id).iter().map(|(sym, _)| *sym))
+            .collect();
+
         Ok(HirTypeDecl {
             name: decl.name,
             supertype: decl.superclass,
@@ -95,6 +100,7 @@ impl<'a> Lowerer<'a> {
             pub_members: composed.pub_members,
             trait_privates: composed.trait_privates,
             surface: HashSet::new(), // gating applies to standalone traits, not composed types
+            provides,
         })
     }
 
@@ -119,6 +125,7 @@ impl<'a> Lowerer<'a> {
             pub_members: composed.pub_members,
             trait_privates: composed.trait_privates,
             surface,
+            provides: Vec::new(), // a standalone trait emits no runtime type
         })
     }
 

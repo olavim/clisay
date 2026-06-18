@@ -66,11 +66,11 @@ pub enum Inst {
 
     // Arithmetic
     Add,
-    AddLocalConst(u8, u8),   // local + const
-    AddConstLocal(u8, u8),   // const + local
+    AddLocalConst(u8, u8), // local + const
+    AddConstLocal(u8, u8), // const + local
     Subtract,
-    SubLocalConst(u8, u8),   // local - const
-    SubConstLocal(u8, u8),   // const - local
+    SubLocalConst(u8, u8), // local - const
+    SubConstLocal(u8, u8), // const - local
     Multiply,
     Divide,
     Negate,
@@ -89,6 +89,7 @@ pub enum Inst {
     LessThanEqual,
     GreaterThan,
     GreaterThanEqual,
+    Is(u8),
 }
 
 pub struct Ir {

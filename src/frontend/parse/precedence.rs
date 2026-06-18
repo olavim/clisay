@@ -47,6 +47,7 @@ impl Operator {
                 (None, TokenType::Dot) => Some(Operator::MemberAccess),
                 (None, TokenType::LeftBracket) => Some(Operator::Index),
                 (None, TokenType::Comma) => Some(Operator::Comma),
+                (None, TokenType::Is) => Some(Operator::Is),
 
                 (Some(Operator::LessThan), TokenType::LessThan) => Some(Operator::LeftShift),
                 (Some(Operator::GreaterThan), TokenType::GreaterThan) => Some(Operator::RightShift),
@@ -123,7 +124,8 @@ impl Operator {
             Operator::BitXor => 8,
             Operator::BitAnd => 9,
             Operator::LessThan | Operator::LessThanEqual |
-            Operator::GreaterThan | Operator::GreaterThanEqual => 10,
+            Operator::GreaterThan | Operator::GreaterThanEqual |
+            Operator::Is => 10,
             Operator::LeftShift | Operator::RightShift => 11,
             Operator::Add | Operator::Subtract => 12,
             Operator::Multiply | Operator::Divide => 13,

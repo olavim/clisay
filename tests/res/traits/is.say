@@ -1,0 +1,23 @@
+trait Greet { pub fn hi() { return "hi"; } }
+trait Loud with Greet { pub fn yell() { return "YO"; } }
+trait Other { pub fn ping() { return 0; } }
+
+type Service with Loud { init() {} }
+
+type Lookalike {
+    pub fn hi() { return "hi"; }
+    init() {}
+}
+
+say s = Service();
+print(s is Service); // expect: true
+print(s is Loud);    // expect: true
+print(s is Greet);   // expect: true
+print(s is Other);   // expect: false
+print(null is Greet); // expect: false
+print(5 is Greet);    // expect: false
+say d = { "k": 1 };
+print(d is Greet);    // expect: false
+say look = Lookalike();
+print(look is Greet); // expect: false
+print(look is Lookalike); // expect: true

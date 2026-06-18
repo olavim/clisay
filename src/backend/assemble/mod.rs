@@ -67,7 +67,8 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | PushConstant(b) | PushClosure(b) | PushClass(b)
         | GetGlobal(b) | GetLocal(b) | SetLocal(b) | SetLocalPop(b)
         | CloseUpvalue(b) | GetUpvalue(b) | SetUpvalue(b) | SetUpvaluePop(b)
-        | GetPropertyId(b) | SetPropertyId(b) | SetPropertyIdPop(b) => chunk.write(b, pos),
+        | GetPropertyId(b) | SetPropertyId(b) | SetPropertyIdPop(b)
+        | Is(b) => chunk.write(b, pos),
 
         Jump(l)
         | JumpIfFalse(l)
