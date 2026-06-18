@@ -2,4 +2,4 @@
 // resolve it, that is a compile error.
 trait Logger  { pub fn log(m) { print("log"); } }
 trait Auditor { pub fn log(m) { print("audit"); } }
-type Service with Logger, Auditor { init() {} } // error: Exposed method 'log' clashes between traits 'Logger' and 'Auditor' — the host type must declare its own 'log' to resolve it
+type Service with Logger, Auditor { init() {} } // error: Exposed method 'log' clashes between traits 'Logger' and 'Auditor'; declare 'log' in the host type to resolve it

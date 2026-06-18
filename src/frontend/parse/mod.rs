@@ -312,6 +312,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     // take no visibility modifier.
                     match name.as_str() {
                         "init" => {
+                            if is_trait { parse_error!(self, &member_pos, "A trait cannot declare an `init`; put initialization on the host type"); }
                             if visibility != Visibility::Private { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
                             init = Some(self.parse_init(superclass.is_some())?);
                         },
@@ -325,6 +326,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                         },
                         _ => {
                             // Field declaration, optionally with a `gives Trait` delegation suffix.
+                            if is_trait { parse_error!(self, &member_pos, "A trait cannot declare fields; `req` the state it needs and let the host type hold it"); }
                             let field = self.ast.intern(&name);
                             let give = if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Gives) {
                                 self.tokens.next();

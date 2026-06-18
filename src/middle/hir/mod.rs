@@ -122,8 +122,6 @@ pub enum HirStmt {
     Say(HirFieldInit),
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
-    /// A `trait` declaration, lowered only for self-containment validation (§5). It emits no
-    /// runtime type — codegen skips it — but the resolver checks its body against its `surface`.
     Trait(Box<HirTypeDecl>),
 }
 

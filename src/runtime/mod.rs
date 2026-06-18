@@ -67,9 +67,9 @@ pub struct TryFrame {
     stack_start: *mut Value
 }
 
-/// A method invoke (`INVOKE`) whose member resolved through a getter — itself a
-/// frame call. The arguments are parked here until the getter frame returns its
-/// value (at call-stack depth `depth`), at which point the value is called.
+/// A method invoke (`INVOKE`) whose member resolved through a getter.
+/// The arguments are parked here until the getter frame returns its value,
+/// at which point the value is called.
 struct PendingInvoke {
     args: SmallVec<[Value; 4]>,
     depth: usize

@@ -1,17 +1,18 @@
-// A type `with` behavior and defaulted-field traits adopts their members.
+// A type `with` behavior traits adopts their methods; a trait `req`s the state it uses, the type holds it.
 trait Clock { pub fn tick() { return 1; } }
 trait Greeter {
-    pub greeting = "hi";
+    req greeting;
     pub fn greet() { return this.greeting; }
 }
 
 type Player with Clock, Greeter {
+    pub greeting = "hi"; // the type holds the state Greeter requires
     pub name;
     init(name) { this.name = name; }
 }
 
 say p = Player("hero");
-print(p.tick()); // expect: 1
-print(p.greet()); // expect: hi
+print(p.tick());   // expect: 1
+print(p.greet());  // expect: hi
 print(p.greeting); // expect: hi
-print(p.name); // expect: hero
+print(p.name);     // expect: hero

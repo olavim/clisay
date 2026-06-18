@@ -26,10 +26,7 @@ impl Vm {
         }
     }
 
-    /// Fused method call (`INVOKE`). Fast-paths an instance method — pushing the
-    /// frame with the receiver as slot 0 and no bound-method allocation — and
-    /// falls back to a faithful "get the member, then call it" for every other
-    /// case (fields holding callables, getters, native receivers, errors).
+    /// Fused method call (`INVOKE`). Fast-paths an instance method call.
     pub(super) fn op_invoke(&mut self) -> Result<(), anyhow::Error> {
         let name_idx = self.read_next() as usize;
         let arg_count = self.read_next() as usize;
@@ -338,8 +335,7 @@ impl Vm {
         self.error(format!("Invalid dict property: {}", prop.fmt()))
     }
 
-    /// Reads `dict[key]` by value key. A missing key yields `null` — dict reads are
-    /// the dynamic boundary; absence is simply unset (no error).
+    /// Reads `dict[key]` by value key. A missing key yields `null`.
     fn get_dict_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let dict = unsafe { &*target.as_object().as_dict_ptr() };
         let value = dict.entries.get(&prop).copied().unwrap_or(Value::NULL);

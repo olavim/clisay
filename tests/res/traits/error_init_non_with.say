@@ -1,5 +1,0 @@
-// You cannot orchestrate the init of a trait you do not directly `with`-own.
-trait Stateful { v; init(v) { this.v = v; } }
-type T {
-    init() { Stateful.init(1); } // error: 'Stateful.init(...)': 'Stateful' is not directly with-mixed by this type
-}

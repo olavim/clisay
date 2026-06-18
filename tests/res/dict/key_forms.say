@@ -19,7 +19,7 @@ print(g[true]);  // expect: t
 print(g[false]); // expect: f
 print(g[null]);  // expect: n
 
-// quote to get the string key — distinct from the bool key
+// quote to get the string key, which is distinct from the bool key
 say h = { true: "bool", "true": "str" };
 print(h[true]);   // expect: bool
 print(h["true"]); // expect: str

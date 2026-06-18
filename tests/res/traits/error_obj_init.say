@@ -1,7 +1,7 @@
 // `init` is not a callable member on a constructed instance.
-trait Stateful { pub v; init(v) { this.v = v; } }
-type T with Stateful {
-    init(v) { Stateful.init(v); }
+type T {
+    pub v;
+    init(v) { this.v = v; }
 }
 say t = T(5);
 print(t.v); // expect: 5

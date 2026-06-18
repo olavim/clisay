@@ -4,6 +4,4 @@ say a = "foo";
 say b = "bar";
 print(a + b); // expect: foobar
 
-// Escapes are lexed (the string regex permits \\.) but NOT interpreted —
-// only the outer quotes are stripped, so the backslash is passed through verbatim.
 print("escaped quote: \"x\""); // expect: escaped quote: \"x\"

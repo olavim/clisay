@@ -10,21 +10,18 @@ use super::NativeType;
 pub struct NativeDict;
 
 impl NativeDict {
-    /// `d.size()` — the number of entries.
     fn size(host: &mut dyn Host, target: Value) -> Result<(), anyhow::Error> {
         let dict = unsafe { &*target.as_object().as_dict_ptr() };
         host.push(Value::from(dict.entries.len() as f64));
         Ok(())
     }
 
-    /// `d.has(key)` — whether `key` is present (by value, no coercion).
     fn has(host: &mut dyn Host, target: Value, key: Value) -> Result<(), anyhow::Error> {
         let dict = unsafe { &*target.as_object().as_dict_ptr() };
         host.push(if dict.entries.contains_key(&key) { Value::TRUE } else { Value::FALSE });
         Ok(())
     }
 
-    /// `d.remove(key)` — removes `key`, yielding its value or `null` if absent.
     fn remove(host: &mut dyn Host, target: Value, key: Value) -> Result<(), anyhow::Error> {
         let dict = unsafe { &mut *target.as_object().as_dict_ptr() };
         let removed = dict.entries.remove(&key).unwrap_or(Value::NULL);

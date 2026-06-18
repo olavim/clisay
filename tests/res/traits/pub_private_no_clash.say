@@ -3,7 +3,7 @@ trait Greeter {
     pub fn greet() { return "hello"; }
 }
 trait Secret {
-    fn greet() { return "shh"; } // private — distinct from Greeter.greet
+    fn greet() { return "shh"; } // private; distinct from Greeter.greet
     pub fn reveal() { return this.greet(); } // calls its own private greet
 }
 

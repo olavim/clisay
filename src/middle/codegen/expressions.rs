@@ -252,8 +252,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// If `callee` is `recv.name` where `recv` is not `this`/`super` and `name` is
-    /// a literal, returns the receiver expression and the member name — the shape
-    /// that compiles to a fused `INVOKE`.
+    /// a literal, returns the receiver expression and the member name.
     fn as_method_invoke(&self, callee: &HirId<HirExpr>) -> Option<(HirId<HirExpr>, String)> {
         let HirExpr::Index(target, member, is_dot) = self.hir.get(callee) else { return None };
         // Only `recv.name(args)` (a `.`-call) is a method invoke. `recv["k"](args)` is a

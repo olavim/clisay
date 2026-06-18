@@ -1,4 +1,0 @@
-trait Stateful { v; init(v) { this.v = v; } }
-type T with Stateful { // error: init must call 'Stateful.init(...)': 'Stateful' has init parameters and cannot be auto-initialized
-    init() {}
-}

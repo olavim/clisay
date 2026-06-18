@@ -1,5 +1,0 @@
-// A virtual empty init takes no arguments.
-trait Plain { pub v = 1; }
-type T with Plain {
-    init() { Plain.init(5); } // error: Trait 'Plain' has a virtual empty init that takes no arguments
-}

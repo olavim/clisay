@@ -1,7 +1,0 @@
-trait Stateful { v; init(v) { this.v = v; } }
-type T with Stateful {
-    init() {
-        Stateful.init(1);
-        Stateful.init(2); // error: 'Stateful.init(...)' is called more than once
-    }
-}

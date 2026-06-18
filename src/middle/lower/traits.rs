@@ -22,9 +22,8 @@ struct Composed {
     methods: Vec<HirId<HirStmt>>,
     /// The declaring trait of each entry in `methods` (parallel); `None` = host-declared.
     method_traits: Vec<Option<Symbol>>,
-    /// Per trait, its private members' plain name → renamed slot symbol.
+    /// Per trait, its private methods' plain name -> renamed slot symbol.
     trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
-    trait_inits: Vec<Symbol>,
 }
 
 impl Composed {
@@ -37,7 +36,6 @@ impl Composed {
             methods: Vec::new(),
             method_traits: Vec::new(),
             trait_privates: HashMap::new(),
-            trait_inits: Vec::new(),
         }
     }
 
@@ -62,8 +60,6 @@ impl<'a> Lowerer<'a> {
     /// fold every trait's members in (renaming private members per trait), then lower the
     /// composer's own init, accessors, methods, and each `with`-trait's init method.
     pub(super) fn lower_type(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, type_pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
-        self.check_init_orchestration(type_id, decl, type_pos)?;
-
         // The flattened `with`-set, resolved by the `names` pre-pass.
         let traits = self.flattened_with(type_id);
         self.check_provide_require_exclusive(decl, type_pos)?;
@@ -94,26 +90,9 @@ impl<'a> Lowerer<'a> {
         // same name are overrides and keep their own definition).
         self.lower_gives(type_id, &host_methods, type_pos, &mut composed)?;
 
-        // Suppress the floated inits (parameterless multi-owned) across this construction:
-        // every owning path skips auto-orchestrating them; each merge composer emits them once. The
-        // set is the union over this type and its flattened traits (a merge point may be a sub-trait).
-        let mut suppressed: HashSet<Symbol> = self.names.floated_inits(&type_id).iter().copied().collect();
-        for (_, tid) in self.names.flattened_with(&type_id) {
-            suppressed.extend(self.names.floated_inits(tid).iter().copied());
-        }
-        let prev_suppressed = std::mem::replace(&mut self.suppressed_inits, suppressed);
-
         let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
         let getter = decl.getter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
         let setter = decl.setter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
-        // Each `with`-mixed trait that declares an init contributes a `"<Trait>.init"` method.
-        for trait_sym in std::mem::take(&mut composed.trait_inits) {
-            let init_method = self.lower_trait_init(type_id, trait_sym)?;
-            composed.methods.push(init_method);
-            composed.method_traits.push(Some(trait_sym));
-        }
-
-        self.suppressed_inits = prev_suppressed;
 
         // Restore the previous composer context so sibling types in the same scope
         // don't see this type's traits or aliases.
@@ -219,32 +198,30 @@ impl<'a> Lowerer<'a> {
         }
         for (name, providers) in &exposed_methods {
             if !host_methods.contains(name) && providers.len() >= 2 {
-                return Err(anyhow!("Exposed method '{}' clashes between traits {} — the host type must declare its own '{}' to resolve it\n\tat {}",
+                return Err(anyhow!("Exposed method '{}' clashes between traits {}; declare '{}' in the host type to resolve it\n\tat {}",
                     self.hir.text(*name), self.trait_list(providers), self.hir.text(*name), pos));
             }
         }
         for (name, providers) in &exposed_fields {
             if providers.len() + decl.fields.contains(name) as usize >= 2 {
-                return Err(anyhow!("Exposed field '{}' clashes between {} — rename one or make it private\n\tat {}",
+                return Err(anyhow!("Exposed field '{}' clashes between {}; rename one or make it private\n\tat {}",
                     self.hir.text(*name), self.field_clash_sources(providers, decl.fields.contains(name)), pos));
             }
         }
         Ok(exposed_methods)
     }
 
-    /// `req T` and `with T` are mutually exclusive on one composer (§4): you cannot both provide
+    /// `req T` and `with T` are mutually exclusive on one composer. You cannot both provide
     /// and depend on the same trait. Applies to types and traits alike.
     pub(super) fn check_provide_require_exclusive(&self, decl: &TypeDecl, pos: &SourcePosition) -> Result<(), anyhow::Error> {
-        for rt in &decl.req_traits {
-            if decl.with_traits.contains(rt) {
-                let kind = if decl.is_trait { "trait" } else { "type" };
-                return Err(anyhow!("'{}' is both `with`-provided and `req`-depended by this {kind} — pick one\n\tat {}",
-                    self.hir.text(*rt), pos));
+        for trait_sym in &decl.req_traits {
+            if decl.with_traits.contains(trait_sym) {
+                return Err(anyhow!("Trait '{}' appears in both `with` and `req`; keep only one\n\tat {}",
+                    self.hir.text(*trait_sym), pos));
             }
-            if decl.gives.iter().any(|(_, t)| t == rt) {
-                let kind = if decl.is_trait { "trait" } else { "type" };
-                return Err(anyhow!("'{}' is both `gives`-provided and `req`-depended by this {kind} — pick one\n\tat {}",
-                    self.hir.text(*rt), pos));
+            if decl.gives.iter().any(|(_, t)| t == trait_sym) {
+                return Err(anyhow!("Trait '{}' appears in both `req` and `gives`; keep only one\n\tat {}",
+                    self.hir.text(*trait_sym), pos));
             }
         }
         Ok(())
@@ -256,11 +233,11 @@ impl<'a> Lowerer<'a> {
         let mut given: HashSet<Symbol> = HashSet::new();
         for (_, trait_sym, _) in self.names.gives_traits(&type_id) {
             if with.contains(trait_sym) {
-                return Err(anyhow!("Trait '{}' is provided by both `with` and `gives` — declare it once\n\tat {}",
+                return Err(anyhow!("Trait '{}' appears in both `with` and `gives`; keep only one\n\tat {}",
                     self.hir.text(*trait_sym), pos));
             }
             if !given.insert(*trait_sym) {
-                return Err(anyhow!("Trait '{}' is provided by `gives` more than once — declare it once\n\tat {}",
+                return Err(anyhow!("Trait '{}' appears in `gives` more than once; keep only one\n\tat {}",
                     self.hir.text(*trait_sym), pos));
             }
         }
@@ -391,28 +368,14 @@ impl<'a> Lowerer<'a> {
         aliases
     }
 
-    /// Folds one trait's members into `composed`, recording its slot layout under `trait_sym`.
-    /// Exposed members take their plain name (or a `"<Trait>.<method>"` alias when a host override
-    /// in `host_methods` shadows them); private members take a per-trait slot name so two traits'
-    /// same-named privates never collide.
+    /// Folds one trait's **methods** into `composed`, recording its private-method slots under
+    /// `trait_sym`. Exposed methods take their plain name (or a `"<Trait>.<method>"` alias when a
+    /// host override in `host_methods` shadows them); private methods take a per-trait slot name so
+    /// two traits' same-named privates never collide. Traits are stateless, so there are no fields
+    /// to fold.
     fn fold_trait(&mut self, trait_sym: Symbol, type_decl: &TypeDecl, host_methods: &HashSet<Symbol>, composed: &mut Composed) -> Result<(), anyhow::Error> {
         let renames = self.trait_renames(type_decl);
         let mut private_map: HashMap<Symbol, Symbol> = HashMap::new();
-
-        for field in &type_decl.fields {
-            if is_exposed(type_decl, field) {
-                composed.fields.insert(*field);
-                if type_decl.pub_members.contains(field) { composed.pub_members.insert(*field); }
-            } else {
-                let renamed = self.hir.intern(&renames[self.hir.text(*field)]);
-                composed.fields.insert(renamed);
-                private_map.insert(*field, renamed);
-            }
-        }
-        for (field, value) in &type_decl.field_inits {
-            let slot = if is_exposed(type_decl, field) { *field } else { self.hir.intern(&renames[self.hir.text(*field)]) };
-            composed.field_inits.push((slot, *value));
-        }
 
         let tname = self.hir.text(trait_sym).to_string();
         for method in &type_decl.methods {
@@ -434,7 +397,6 @@ impl<'a> Lowerer<'a> {
         }
 
         composed.trait_privates.insert(trait_sym, private_map);
-        if type_decl.init.is_some() { composed.trait_inits.push(trait_sym); }
         Ok(())
     }
 
@@ -445,13 +407,13 @@ impl<'a> Lowerer<'a> {
         self.names.flattened_with(&type_id).iter().map(|(sym, id)| (*sym, self.ast_type(id))).collect()
     }
 
-    /// The private-member rename map for a trait:
-    /// each private field or method name -> its per-trait form `"<Trait>.<name>"`.
+    /// The private-method rename map for a trait:
+    /// each private method name -> its per-trait form `"<Trait>.<name>"`.
     pub(super) fn trait_renames(&self, td: &TypeDecl) -> HashMap<String, String> {
         let tname = self.hir.text(td.name).to_string();
         let mut map = HashMap::new();
-        let private_names = td.fields.iter().copied().chain(td.methods.iter().map(|m| self.ast_fn(m).name));
-        for name in private_names {
+        for method in &td.methods {
+            let name = self.ast_fn(method).name;
             if !is_exposed(td, &name) {
                 let txt = self.hir.text(name).to_string();
                 map.insert(txt.clone(), format!("{}.{}", tname, txt));

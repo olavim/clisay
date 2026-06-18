@@ -1,24 +1,26 @@
-// A trait may reach `this.x` for its own members, a `with`/`req`-provided trait's exposed members,
-// and its own `req fn` holes — and freely use free functions / locals.
-fn helper(n) { return n + 100; }   // free function in scope
+// A trait may reach `this.x` for its own methods, a `with`/`req`-provided trait's exposed members,
+// its `req fn` holes and `req` members. It may also freely use free functions / locals.
+fn helper(n) { return n + 100; } // free function in scope
 
 trait Clock { pub fn tick() { return 1; } }
-trait Counter { inner count = 0; }   // `inner` so a `with`-composer can read it
 
-trait Mover with Counter req Clock {
-    speed = 2;
+trait Mover req Clock {
+    req count; // required state (held by the composing type)
+    req speed;
     req fn onMove(d);
     pub fn step(dir) {
-        say local = dir;                  // local — fine
-        return this.tick()                // from `req Clock`
-             + this.speed                 // own field
-             + this.onMove(local)         // own `req fn`
-             + helper(this.count);        // free function + Counter's `inner count` (via `with`)
+        say local = dir;           // local: ok
+        return this.tick()         // from `req Clock`
+             + this.speed          // `req` member
+             + this.onMove(local)  // own `req fn`
+             + helper(this.count); // free function + `req` member
     }
 }
-type Player with Mover, Clock, Counter {
+type Player with Mover, Clock {
+    pub count = 0;
+    pub speed = 2;
     inner fn onMove(d) { return d; }
-    init() { Mover.init(); }
+    init() {}
 }
 say p = Player();
 print(p.step(5)); // 1 + 2 + 5 + (0+100) = 108

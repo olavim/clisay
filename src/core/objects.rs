@@ -82,7 +82,7 @@ macro_rules! objects {
             }
 
             /// Drops the object's owned data in place but does **not** deallocate
-            /// the backing block — that is left to the GC's free list so the
+            /// the backing block, which is left to the GC's free list so the
             /// allocation can be recycled.
             pub fn free(self) -> (usize, usize) {
                 match self.kind() {
