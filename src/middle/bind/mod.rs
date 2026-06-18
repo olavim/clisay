@@ -516,7 +516,7 @@ impl<'a> Resolver<'a> {
 
         if self.validating_trait {
             if let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) {
-                compiler_error!(self, target, "Trait '{}' accesses 'this.{}', which it does not declare (provide it via `with`, `req`, or `req fn`)",
+                compiler_error!(self, target, "Trait '{}' accesses undeclared member 'this.{}'; use `with`, `req`, or `req fn` to provide it",
                     self.hir.text(target_type.name), name);
             }
         }

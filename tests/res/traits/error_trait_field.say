@@ -1,0 +1,3 @@
+trait Counter {
+    count = 0; // error: A trait cannot declare fields; `req` the state it needs and let the host type hold it
+}

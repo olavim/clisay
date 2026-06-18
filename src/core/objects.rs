@@ -364,14 +364,9 @@ pub enum TypeMember {
 pub struct ObjType {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
-    /// Field and regular-method names. The accessors/initializer are *not* here;
-    /// they're addressed structurally via the id fields below.
     pub members: FnvHashMap<*mut ObjString, TypeMember>,
     pub fields: IntSet<MemberId>,
     pub methods: IntMap<MemberId, Object>,
-    /// Interned names of every trait/type this type **provides** (own name + transitively
-    /// `with`-mixed traits + inherited). Drives `x is T`: membership is pointer equality on the
-    /// gc-interned name.
     pub provided: FnvHashSet<*mut ObjString>,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,

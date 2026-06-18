@@ -11,7 +11,6 @@ macro_rules! parse_error {
     ($self:ident, $pos:expr, $($arg:tt)*) => { return Err($self.error(format!($($arg)*), $pos)) };
 }
 
-/// A member's declared visibility (from a `pub`/`inner` modifier, or private by default).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Visibility { Pub, Inner, Private }
 
@@ -190,7 +189,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let with_traits = self.parse_trait_clause(ContextualKeyword::With)?;
         let req_traits = self.parse_trait_clause(ContextualKeyword::Req)?;
 
-        // A header is `with ... req ...`; any further `with`/`req` here is a duplicate or misordered clause.
+        // A header is `with ... req ...`.
         let tok = self.tokens.peek(0);
         match tok.contextual() {
             Some(kw @ (ContextualKeyword::With | ContextualKeyword::Req)) =>
@@ -214,8 +213,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(traits)
     }
 
-    /// Reads an optional leading member-visibility modifier (`pub`/`inner`), consuming it if
-    /// present; absent means private.
     fn parse_visibility(&mut self) -> Visibility {
         match self.tokens.peek(0).contextual() {
             Some(ContextualKeyword::Pub) => { self.tokens.next(); Visibility::Pub },
@@ -224,7 +221,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
     }
 
-    /// Parses a `req fn f(params);` method hole, returning its name and arity.
     fn parse_req_fn(&mut self) -> Result<(Symbol, usize), anyhow::Error> {
         self.tokens.expect(TokenType::Fn)?;
         let name = self.parse_identifier()?;
@@ -307,6 +303,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
                     match name.as_str() {
                         "init" => {
+                            if is_trait { parse_error!(self, &member_pos, "A trait cannot declare an `init`; put initialization on the host type"); }
                             if visibility != Visibility::Private { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
                             init = Some(self.parse_init(superclass.is_some())?);
                         },
@@ -319,7 +316,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             setter = Some(self.parse_accessor(name, 2, "Setter must have exactly two parameters")?);
                         },
                         _ => {
-                            // Field declaration, optionally with a `gives Trait` delegation suffix.
+                            if is_trait { parse_error!(self, &member_pos, "A trait cannot declare fields; `req` the state it needs and let the host type hold it"); }
                             let field = self.ast.intern(&name);
                             let give = if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Gives) {
                                 self.tokens.next();
@@ -529,7 +526,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 Expr::Index(expr, id, true) // `.name` member access
             },
             Operator::Is => {
-                // The right operand is a static type/trait name, not an expression.
                 let name = self.parse_identifier()?;
                 Expr::Is(expr, self.ast.intern(&name))
             },

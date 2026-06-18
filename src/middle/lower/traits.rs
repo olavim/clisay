@@ -17,7 +17,6 @@ struct Composed {
     methods: Vec<HirId<HirStmt>>,
     method_traits: Vec<Option<Symbol>>,
     trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
-    trait_inits: Vec<Symbol>,
 }
 
 impl Composed {
@@ -29,7 +28,6 @@ impl Composed {
             methods: Vec::new(),
             method_traits: Vec::new(),
             trait_privates: HashMap::new(),
-            trait_inits: Vec::new(),
         }
     }
 
@@ -49,12 +47,9 @@ fn is_exposed(type_decl: &TypeDecl, name: &Symbol) -> bool {
 
 impl<'a> Lowerer<'a> {
     pub(super) fn lower_type(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, type_pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
-        self.check_init_orchestration(type_id, decl, type_pos)?;
-
         let traits = self.flattened_with(type_id);
         self.check_provide_require_exclusive(decl, type_pos)?;
         self.check_provide_once(type_id, decl, type_pos)?;
-        // Traits provided by delegation (`field gives Trait`): they satisfy `req T` and `is T`.
         let gives_traits: Vec<Symbol> = self.names.gives_traits(&type_id).iter().map(|(_, t, _)| *t).collect();
         self.check_requirements(decl, &traits, &gives_traits, type_pos)?;
         let host_methods: HashSet<Symbol> = decl.methods.iter().map(|m| self.ast_fn(m).name).collect();
@@ -73,35 +68,14 @@ impl<'a> Lowerer<'a> {
         for (trait_sym, td) in &traits {
             self.fold_trait(*trait_sym, td, &host_methods, &mut composed)?;
         }
-        // `field gives Trait`: synthesize a forwarder per exposed trait method (host methods of the
-        // same name are overrides and keep their own definition).
         self.lower_gives(type_id, &host_methods, type_pos, &mut composed)?;
-
-        // Suppress the floated inits (parameterless multi-owned) across this construction:
-        // every owning path skips auto-orchestrating them; each merge composer emits them once. The
-        // set is the union over this type and its flattened traits (a merge point may be a sub-trait).
-        let mut suppressed: HashSet<Symbol> = self.names.floated_inits(&type_id).iter().copied().collect();
-        for (_, tid) in self.names.flattened_with(&type_id) {
-            suppressed.extend(self.names.floated_inits(tid).iter().copied());
-        }
-        let prev_suppressed = std::mem::replace(&mut self.suppressed_inits, suppressed);
 
         let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
         let getter = decl.getter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
         let setter = decl.setter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
-        for trait_sym in std::mem::take(&mut composed.trait_inits) {
-            let init_method = self.lower_trait_init(type_id, trait_sym)?;
-            composed.methods.push(init_method);
-            composed.method_traits.push(Some(trait_sym));
-        }
-
-        self.suppressed_inits = prev_suppressed;
-
         self.provided_traits = prev_provided;
         self.emitted_aliases = prev_aliases;
 
-        // What `x is T` matches: the type's own name, every transitively `with`-mixed trait, and
-        // every trait it provides by `gives` delegation.
         let provides = std::iter::once(decl.name)
             .chain(self.names.flattened_with(&type_id).iter().map(|(sym, _)| *sym))
             .chain(gives_traits.iter().copied())
@@ -187,7 +161,7 @@ impl<'a> Lowerer<'a> {
         }
         for (name, providers) in &exposed_methods {
             if !host_methods.contains(name) && providers.len() >= 2 {
-                return Err(anyhow!("Exposed method '{}' clashes between traits {}; the host type must declare its own '{}' to resolve it\n\tat {}",
+                return Err(anyhow!("Exposed method '{}' clashes between traits {}; declare '{}' in the host type to resolve it\n\tat {}",
                     self.hir.text(*name), self.trait_list(providers), self.hir.text(*name), pos));
             }
         }
@@ -201,16 +175,14 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn check_provide_require_exclusive(&self, decl: &TypeDecl, pos: &SourcePosition) -> Result<(), anyhow::Error> {
-        for rt in &decl.req_traits {
-            if decl.with_traits.contains(rt) {
-                let kind = if decl.is_trait { "trait" } else { "type" };
-                return Err(anyhow!("'{}' is both `with`-provided and `req`-depended by this {kind}: pick one\n\tat {}",
-                    self.hir.text(*rt), pos));
+        for trait_sym in &decl.req_traits {
+            if decl.with_traits.contains(trait_sym) {
+                return Err(anyhow!("Trait '{}' appears in both `with` and `req`; keep only one\n\tat {}",
+                    self.hir.text(*trait_sym), pos));
             }
-            if decl.gives.iter().any(|(_, t)| t == rt) {
-                let kind = if decl.is_trait { "trait" } else { "type" };
-                return Err(anyhow!("'{}' is both `gives`-provided and `req`-depended by this {kind}: pick one\n\tat {}",
-                    self.hir.text(*rt), pos));
+            if decl.gives.iter().any(|(_, t)| t == trait_sym) {
+                return Err(anyhow!("Trait '{}' appears in both `req` and `gives`; keep only one\n\tat {}",
+                    self.hir.text(*trait_sym), pos));
             }
         }
         Ok(())
@@ -221,11 +193,11 @@ impl<'a> Lowerer<'a> {
         let mut given: HashSet<Symbol> = HashSet::new();
         for (_, trait_sym, _) in self.names.gives_traits(&type_id) {
             if with.contains(trait_sym) {
-                return Err(anyhow!("Trait '{}' is provided by both `with` and `gives`: declare it once\n\tat {}",
+                return Err(anyhow!("Trait '{}' appears in both `with` and `gives`; keep only one\n\tat {}",
                     self.hir.text(*trait_sym), pos));
             }
             if !given.insert(*trait_sym) {
-                return Err(anyhow!("Trait '{}' is provided by `gives` more than once: declare it once\n\tat {}",
+                return Err(anyhow!("Trait '{}' appears in `gives` more than once; keep only one\n\tat {}",
                     self.hir.text(*trait_sym), pos));
             }
         }
@@ -321,7 +293,6 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // `req <member>`: every member hole must be filled by an exposed field/method of that name.
         let req_members = decl.req_members.iter().copied()
             .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_members.iter().copied()));
         for member_sym in req_members {
@@ -345,25 +316,10 @@ impl<'a> Lowerer<'a> {
         aliases
     }
 
-    /// Folds one flattened trait's members into `composed`.
+    /// Folds one trait's members into `composed`.
     fn fold_trait(&mut self, trait_sym: Symbol, type_decl: &TypeDecl, host_methods: &HashSet<Symbol>, composed: &mut Composed) -> Result<(), anyhow::Error> {
         let renames = self.trait_renames(type_decl);
         let mut private_map: HashMap<Symbol, Symbol> = HashMap::new();
-
-        for field in &type_decl.fields {
-            if is_exposed(type_decl, field) {
-                composed.fields.insert(*field);
-                if type_decl.pub_members.contains(field) { composed.pub_members.insert(*field); }
-            } else {
-                let renamed = self.hir.intern(&renames[self.hir.text(*field)]);
-                composed.fields.insert(renamed);
-                private_map.insert(*field, renamed);
-            }
-        }
-        for (field, value) in &type_decl.field_inits {
-            let slot = if is_exposed(type_decl, field) { *field } else { self.hir.intern(&renames[self.hir.text(*field)]) };
-            composed.field_inits.push((slot, *value));
-        }
 
         let tname = self.hir.text(trait_sym).to_string();
         for method in &type_decl.methods {
@@ -385,7 +341,6 @@ impl<'a> Lowerer<'a> {
         }
 
         composed.trait_privates.insert(trait_sym, private_map);
-        if type_decl.init.is_some() { composed.trait_inits.push(trait_sym); }
         Ok(())
     }
 
@@ -393,13 +348,11 @@ impl<'a> Lowerer<'a> {
         self.names.flattened_with(&type_id).iter().map(|(sym, id)| (*sym, self.ast_type(id))).collect()
     }
 
-    /// The private-member rename map for a trait:
-    /// each private field or method name -> its per-trait form `"<Trait>.<name>"`.
     pub(super) fn trait_renames(&self, td: &TypeDecl) -> HashMap<String, String> {
         let tname = self.hir.text(td.name).to_string();
         let mut map = HashMap::new();
-        let private_names = td.fields.iter().copied().chain(td.methods.iter().map(|m| self.ast_fn(m).name));
-        for name in private_names {
+        for method in &td.methods {
+            let name = self.ast_fn(method).name;
             if !is_exposed(td, &name) {
                 let txt = self.hir.text(name).to_string();
                 map.insert(txt.clone(), format!("{}.{}", tname, txt));
@@ -408,7 +361,6 @@ impl<'a> Lowerer<'a> {
         map
     }
 
-    /// Lowers a method declaration under a given (possibly renamed) member name.
     fn lower_method_named(&mut self, fn_stmt: &AstId<Stmt>, name: Symbol) -> Result<HirId<HirStmt>, anyhow::Error> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
