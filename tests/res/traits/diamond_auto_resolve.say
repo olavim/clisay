@@ -1,0 +1,13 @@
+// A parameterless init `with`-owned via two paths auto-resolves: it floats up to the merge composer
+// (D) and runs exactly once, even though both B and C own A. count goes 0 -> 1, not 2.
+trait A {
+    pub count = 0;
+    init() { this.count = this.count + 1; }
+}
+trait B with A { init() {} }
+trait C with A { init() {} }
+type D with B, C { init() {} }
+
+say d = D();
+print(d.count);  // expect: 1
+print(d is A);   // expect: true

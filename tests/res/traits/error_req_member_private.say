@@ -1,0 +1,9 @@
+// A `req`'d member satisfied only by a *private* member does not count — compile error.
+trait Counter {
+    req count;
+    pub fn inc() { this.count = this.count + 1; }
+}
+type Widget with Counter { // error: Unsatisfied `req count`: needs an `inner`/`pub` member 'count'
+    count = 0;   // private (no `pub`/`inner`) — does not satisfy the requirement
+    init() {}
+}

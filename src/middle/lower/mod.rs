@@ -24,6 +24,7 @@ pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
         hir: Hir::new(ident_ids, ident_texts),
         provided_traits: std::collections::HashSet::new(),
         emitted_aliases: std::collections::HashSet::new(),
+        suppressed_inits: std::collections::HashSet::new(),
     };
     lowerer.stmt(&root)?;
     Ok(lowerer.hir)
@@ -44,6 +45,9 @@ struct Lowerer<'a> {
     /// reachable via `T.method(...)`. A qualified call resolves to an alias if one exists,
     /// else to the plain method name.
     emitted_aliases: std::collections::HashSet<String>,
+    /// Floated trait inits (parameterless, multi-owned) whose auto-orchestration must be
+    /// **suppressed** in the owning paths while lowering the current type's construction.
+    suppressed_inits: std::collections::HashSet<Symbol>,
 }
 
 impl<'a> Lowerer<'a> {

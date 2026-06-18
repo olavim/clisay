@@ -107,6 +107,10 @@ impl<'a> Lowerer<'a> {
         if is_child && !has_super {
             body.push(self.virtual_super_call(&init_pos));
         }
+        // A trait whose parameterless init merges (multi-owned) at this type floats up to here: run it
+        // once, before the owning paths (which suppress it). Ahead of the direct auto-inits, since the
+        // owners depend on it.
+        body.extend(self.synthesize_floated_inits(composer_id, &init_pos)?);
         // Auto-call any `with`-mixed parameterless trait init not explicitly orchestrated.
         body.extend(self.synthesize_auto_inits(composer_id, &decl.with_traits, body_stmts, &init_pos)?);
         // The declared body (which may itself open with an explicit `super(...)`).
@@ -135,8 +139,10 @@ impl<'a> Lowerer<'a> {
 
         // The trait init's body accesses the trait's own private members via plain `this.<name>` /
         // bare `<name>`; the resolver scopes those to the trait. Its own `with`-mixed sub-traits
-        // resolve in the trait's own context.
-        let mut body = self.synthesize_auto_inits(trait_id, with_traits, body_stmts, &init_pos)?;
+        // resolve in the trait's own context. Any trait that merges (multi-owned) at this trait is
+        // floated and orchestrated here once, ahead of its owning paths.
+        let mut body = self.synthesize_floated_inits(trait_id, &init_pos)?;
+        body.extend(self.synthesize_auto_inits(trait_id, with_traits, body_stmts, &init_pos)?);
         for s in body_stmts {
             body.push(self.stmt(s)?);
         }
@@ -172,6 +178,9 @@ impl<'a> Lowerer<'a> {
         let mut autos = Vec::new();
         for t in with_traits {
             if called.contains_key(t) { continue; }
+            // A floated init (parameterless, multi-owned) is orchestrated once at its merge composer;
+            // this owning path must not also run it.
+            if self.suppressed_inits.contains(t) { continue; }
             if let Some((0, init_name)) = self.trait_init(composer_id, *t) {
                 let method_name = self.hir.text(init_name).to_string();
                 let call = HirExpr::Call(self.this_method(&method_name, pos), Vec::new());
@@ -182,9 +191,25 @@ impl<'a> Lowerer<'a> {
         Ok(autos)
     }
 
+    /// Synthesizes `this.<Trait.init>()` calls for each trait that *floats up* to `composer_id`: a
+    /// parameterless init `with`-owned via multiple paths is orchestrated **once, here**, while
+    /// the owning paths suppress their own orchestration of it (`suppressed_inits`).
+    fn synthesize_floated_inits(&mut self, composer_id: AstId<Stmt>, pos: &SourcePosition) -> Result<Vec<HirId<HirStmt>>, anyhow::Error> {
+        let mut out = Vec::new();
+        for t in self.names.floated_inits(&composer_id).to_vec() {
+            if let Some((_, init_name)) = self.trait_init(composer_id, t) {
+                let method_name = self.hir.text(init_name).to_string();
+                let call = HirExpr::Call(self.this_method(&method_name, pos), Vec::new());
+                let call = self.hir.add(call, pos.clone());
+                out.push(self.hir.add(HirStmt::Expression(call), pos.clone()));
+            }
+        }
+        Ok(out)
+    }
+
     /// Builds the construction-time verification for each `gives` delegate:
-    /// `if !(this.<field> is Trait) { throw "<message>"; }`. A failed check is a catchable runtime
-    /// error raised at the end of construction.
+    /// `if !(this.<field> is Trait) { throw "<message>"; }`. A failed check
+    /// is a catchable runtime error raised at the end of construction.
     fn synthesize_gives_verifications(&mut self, composer_id: AstId<Stmt>, pos: &SourcePosition) -> Result<Vec<HirId<HirStmt>>, anyhow::Error> {
         let mut out = Vec::new();
         for (field, trait_sym, _) in self.names.gives_traits(&composer_id).to_vec() {

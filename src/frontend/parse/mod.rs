@@ -268,6 +268,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut pub_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
         let mut inner_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
         let mut req_fns: Vec<(Symbol, usize)> = Vec::new();
+        let mut req_members: Vec<Symbol> = Vec::new();
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
         let mut getter = None;
@@ -277,13 +278,17 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             let member_pos = self.tokens.peek(0).pos.clone();
             let visibility = self.parse_visibility();
 
-            // `req fn f(params);`
-            if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Req)
-                && self.tokens.peek(1).kind == TokenType::Fn
-            {
-                if visibility != Visibility::Private { parse_error!(self, &member_pos, "A `req fn` cannot have a visibility modifier"); }
+            // `req fn f(params);` (method hole) or `req name;` (member/state hole)
+            if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Req) {
+                if visibility != Visibility::Private { parse_error!(self, &member_pos, "A `req` declaration cannot have a visibility modifier"); }
                 self.tokens.next(); // consume `req`
-                req_fns.push(self.parse_req_fn()?);
+                if self.tokens.match_next(TokenType::Fn) {
+                    req_fns.push(self.parse_req_fn()?);
+                } else {
+                    let name = self.parse_identifier()?;
+                    self.tokens.expect(TokenType::Semicolon)?;
+                    req_members.push(self.ast.intern(&name));
+                }
                 continue;
             }
 
@@ -365,6 +370,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             with_traits,
             req_traits,
             req_fns,
+            req_members,
             gives,
             superclass,
             init_name,

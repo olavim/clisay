@@ -108,6 +108,9 @@ pub struct TypeDecl {
     pub req_traits: Vec<Symbol>,
     /// Method holes declared via `req fn f(params);`.
     pub req_fns: Vec<(Symbol, usize)>,
+    /// Member holes declared via `req name;`: a field/member the host must provide, allowing
+    /// usage of `this.name` in the trait's bodies.
+    pub req_members: Vec<Symbol>,
     /// Delegation fields declared via `field gives Trait;`: `(field, trait)`. The field provides
     /// `Trait` by forwarding, so for example `is Trait` is true.
     pub gives: Vec<(Symbol, Symbol)>,
