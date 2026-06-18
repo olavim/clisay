@@ -2,7 +2,7 @@ use super::*;
 
 impl Vm {
     #[inline]
-    fn resolve_cached_class_property(&mut self, class_ptr: *mut ObjType, prop: *mut ObjString) -> Option<ClassMember> {
+    fn resolve_cached_class_property(&mut self, class_ptr: *mut ObjType, prop: *mut ObjString) -> Option<TypeMember> {
         let site = self.ip as usize;
         let slot = (site >> 4) & (INDEX_CACHE_SIZE - 1);
         let entry = unsafe { self.index_cache.get_unchecked_mut(slot) };
@@ -38,11 +38,7 @@ impl Vm {
 
         if matches!(receiver.kind(), ValueKind::Object(ObjectKind::Instance)) {
             let class_ptr = unsafe { (*receiver.as_object().as_instance_ptr()).class };
-            if let Some(ClassMember::Method(id)) = self.resolve_cached_class_property(class_ptr, name) {
-                // External `obj.method()` cannot reach a private/`inner` method.
-                if unsafe { &*class_ptr }.non_public.contains(&id) {
-                    return self.error(format!("Member '{}' is private", unsafe { &*name }.value));
-                }
+            if let Some(TypeMember::Method(id)) = self.resolve_cached_class_property(class_ptr, name) {
                 let method = unsafe { &*class_ptr }.get_method(id);
                 if method.tag() == objects::TAG_FUNCTION {
                     return self.invoke_method(method, arg_count);
@@ -136,8 +132,8 @@ impl Vm {
         let class = unsafe { &*instance.class };
 
         match self.resolve_cached_class_property(instance.class, prop) {
-            Some(ClassMember::Field(id)) => Some(unsafe { (*instance_ptr).get(id) }),
-            Some(ClassMember::Method(id)) => {
+            Some(TypeMember::Field(id)) => Some(unsafe { (*instance_ptr).get(id) }),
+            Some(TypeMember::Method(id)) => {
                 let method = class.get_method(id);
                 Some(self.bind_method(instance_ptr.into(), method))
             },
@@ -190,15 +186,8 @@ impl Vm {
 
         if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
             let prop_str = prop.as_object().as_string_ptr();
-            // External `obj.member` access: a private/`inner` member is not reachable.
-            // (`this.x` never reaches here because it resolves to a member id internally, and
-            // per-trait private/qualified slots aren't in the runtime name map at all.)
-            if let Some(member) = self.resolve_cached_class_property(unsafe { (*instance_ref).class }, prop_str) {
-                let id = match member { ClassMember::Field(id) | ClassMember::Method(id) => id };
-                if unsafe { &*(*instance_ref).class }.non_public.contains(&id) {
-                    return self.error(format!("Member '{}' is private", prop.as_object().as_string()));
-                }
-            }
+            // Only externally-visible members are in the name map: private/`inner` members aren't
+            // found here (internal `this.x` resolves to a member id and never reaches this path).
             if let Some(value) = self.get_instance_property(instance_ref, prop_str) {
                 self.stack.push(value);
                 return Ok(());
@@ -229,10 +218,7 @@ impl Vm {
             let member = class.resolve(prop.as_object().as_string_ptr());
 
             if let Some(member) = member {
-                if let ClassMember::Field(id) = member {
-                    if class.non_public.contains(&id) {
-                        return self.error(format!("Member '{}' is private", prop.as_object().as_string()));
-                    }
+                if let TypeMember::Field(id) = member {
                     let value = self.stack.peek(0);
                     instance.set(id, value);
                     return Ok(());

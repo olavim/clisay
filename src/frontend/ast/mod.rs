@@ -256,6 +256,11 @@ impl Ast {
         &self.nodes[id.id].pos
     }
 
+    /// The interned text of a symbol. Valid until [`Ast::take_idents`] moves the table out.
+    pub fn text(&self, sym: Symbol) -> &str {
+        &self.ident_texts[sym.index()]
+    }
+
     pub fn get_root(&self) -> AstId<Stmt> {
         AstId { id: self.nodes.len() - 1, _marker: PhantomData }
     }

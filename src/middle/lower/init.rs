@@ -21,7 +21,7 @@ impl<'a> Lowerer<'a> {
     /// trait init (explicit or virtual) is optional and runs automatically when omitted, but
     /// may be called at most once. You may not call the init of a trait you do not directly
     /// `with`-own. Applies to types and traits alike.
-    pub(super) fn check_init_orchestration(&self, decl: &TypeDecl, decl_pos: &SourcePosition) -> Result<(), anyhow::Error> {
+    pub(super) fn check_init_orchestration(&self, composer_id: AstId<Stmt>, decl: &TypeDecl, decl_pos: &SourcePosition) -> Result<(), anyhow::Error> {
         let calls = match decl.init {
             Some(init_stmt) => self.explicit_init_calls(self.ast_block(&self.ast_fn(&init_stmt).body)),
             None => HashMap::new(),
@@ -38,7 +38,7 @@ impl<'a> Lowerer<'a> {
         // Each direct `with`-trait: parameterized inits required exactly once, parameterless inits at most once.
         for t in &decl.with_traits {
             let count = calls.get(t).map_or(0, |v| v.len());
-            let parameterized = matches!(self.trait_init(*t), Some((param_count, _)) if param_count >= 1);
+            let parameterized = matches!(self.trait_init(composer_id, *t), Some((param_count, _)) if param_count >= 1);
             if parameterized && count == 0 {
                 return Err(anyhow!("init must call '{}.init(...)': '{}' has init parameters and cannot be auto-initialized\n\tat {}",
                     self.hir.text(*t), self.hir.text(*t), decl_pos));
@@ -55,7 +55,7 @@ impl<'a> Lowerer<'a> {
     pub(super) fn as_qualified_init(&self, callee: &AstId<Expr>) -> Option<Symbol> {
         let Expr::Index(target, member, true) = self.ast.get(callee) else { return None };
         let Expr::Identifier(t) = self.ast.get(target) else { return None };
-        if !self.is_trait_in_scope(*t) { return None; }
+        if self.names.trait_ref(*target).is_none() { return None; }
         let Expr::Literal(Literal::String(m)) = self.ast.get(member) else { return None };
         if m != "init" { return None; }
         Some(*t)
@@ -64,7 +64,8 @@ impl<'a> Lowerer<'a> {
     /// Builds the HIR for `Trait.init(args)`: an internal call of the spliced `"<Trait>.init"`
     /// method. A trait with no declared init still has a virtual empty (no-arg) init.
     pub(super) fn qualified_init_call(&mut self, trait_sym: Symbol, args: Vec<HirId<HirExpr>>, callee: &AstId<Expr>, pos: &SourcePosition) -> Result<HirExpr, anyhow::Error> {
-        let trait_stmt = self.lookup_trait(trait_sym).expect("qualified-init trait is in scope");
+        let Expr::Index(target, _, _) = self.ast.get(callee) else { unreachable!("a qualified call's callee is a `.`-access") };
+        let trait_stmt = self.names.trait_ref(*target).expect("qualified-init trait is in scope");
         let trait_decl = self.ast_type(&trait_stmt);
         if trait_decl.init.is_none() {
             // A virtual empty init is callable as a no-op; being empty it takes no arguments.
@@ -79,7 +80,7 @@ impl<'a> Lowerer<'a> {
 
     /// Lowers a `type`'s initializer: field defaults, then a virtual `super()` (child types),
     /// then auto-injected parameterless trait inits, then the declared body.
-    pub(super) fn lower_type_init(&mut self, decl: &TypeDecl, field_inits: &[(Symbol, AstId<Expr>)], type_pos: &SourcePosition) -> Result<HirId<HirStmt>, anyhow::Error> {
+    pub(super) fn lower_type_init(&mut self, composer_id: AstId<Stmt>, decl: &TypeDecl, field_inits: &[(Symbol, AstId<Expr>)], type_pos: &SourcePosition) -> Result<HirId<HirStmt>, anyhow::Error> {
         let is_child = decl.superclass.is_some();
         let (params, body_stmts, has_super, init_pos): (_, &[AstId<Stmt>], _, _) = match &decl.init {
             Some(init_id) => {
@@ -107,7 +108,7 @@ impl<'a> Lowerer<'a> {
             body.push(self.virtual_super_call(&init_pos));
         }
         // Auto-call any `with`-mixed parameterless trait init not explicitly orchestrated.
-        body.extend(self.synthesize_auto_inits(&decl.with_traits, body_stmts, &init_pos)?);
+        body.extend(self.synthesize_auto_inits(composer_id, &decl.with_traits, body_stmts, &init_pos)?);
         // The declared body (which may itself open with an explicit `super(...)`).
         for stmt_id in body_stmts {
             body.push(self.stmt(stmt_id)?);
@@ -118,9 +119,9 @@ impl<'a> Lowerer<'a> {
 
     /// Lowers a `with`-mixed trait's declared init into its `"<Trait>.init"` method,
     /// auto-injecting the trait's own parameterless owned inits ahead of its body.
-    pub(super) fn lower_trait_init(&mut self, trait_sym: Symbol) -> Result<HirId<HirStmt>, anyhow::Error> {
-        let trait_stmt = self.lookup_trait(trait_sym).expect("with-mixed trait is in scope");
-        let td = self.ast_type(&trait_stmt);
+    pub(super) fn lower_trait_init(&mut self, composer_id: AstId<Stmt>, trait_sym: Symbol) -> Result<HirId<HirStmt>, anyhow::Error> {
+        let trait_id = self.names.provided_trait(&composer_id, trait_sym).expect("with-mixed trait is provided");
+        let td = self.ast_type(&trait_id);
         let init_ast = td.init.expect("only traits with a declared init are lowered here");
         let init_name = td.init_name;
         let with_traits = &td.with_traits;
@@ -130,8 +131,9 @@ impl<'a> Lowerer<'a> {
         let body_stmts = self.ast_block(&fd.body);
 
         // The trait init's body accesses the trait's own private members via plain `this.<name>` /
-        // bare `<name>`; the resolver scopes those to the trait.
-        let mut body = self.synthesize_auto_inits(with_traits, body_stmts, &init_pos)?;
+        // bare `<name>`; the resolver scopes those to the trait. Its own `with`-mixed sub-traits
+        // resolve in the trait's own context.
+        let mut body = self.synthesize_auto_inits(trait_id, with_traits, body_stmts, &init_pos)?;
         for s in body_stmts {
             body.push(self.stmt(s)?);
         }
@@ -153,8 +155,8 @@ impl<'a> Lowerer<'a> {
 
     /// `(param_count, init_name)` for a trait that declares an explicit `init`, else `None`
     /// (a defaulted-only trait has only a virtual empty init).
-    fn trait_init(&self, trait_sym: Symbol) -> Option<(usize, Symbol)> {
-        let td = self.ast_type(&self.lookup_trait(trait_sym)?);
+    fn trait_init(&self, composer_id: AstId<Stmt>, trait_sym: Symbol) -> Option<(usize, Symbol)> {
+        let td = self.ast_type(&self.names.provided_trait(&composer_id, trait_sym)?);
         let fd = self.ast_fn(&td.init?);
         Some((fd.params.len(), td.init_name))
     }
@@ -162,12 +164,12 @@ impl<'a> Lowerer<'a> {
     /// Synthesizes `this.<Trait.init>()` calls for each `with`-mixed trait with a
     /// **parameterless** explicit init that the declared body does not call itself — these
     /// run automatically (like a synthesised `super()`).
-    fn synthesize_auto_inits(&mut self, with_traits: &[Symbol], declared_body: &[AstId<Stmt>], pos: &SourcePosition) -> Result<Vec<HirId<HirStmt>>, anyhow::Error> {
+    fn synthesize_auto_inits(&mut self, composer_id: AstId<Stmt>, with_traits: &[Symbol], declared_body: &[AstId<Stmt>], pos: &SourcePosition) -> Result<Vec<HirId<HirStmt>>, anyhow::Error> {
         let called = self.explicit_init_calls(declared_body);
         let mut autos = Vec::new();
         for t in with_traits {
             if called.contains_key(t) { continue; }
-            if let Some((0, init_name)) = self.trait_init(*t) {
+            if let Some((0, init_name)) = self.trait_init(composer_id, *t) {
                 let method_name = self.hir.text(init_name).to_string();
                 let call = HirExpr::Call(self.this_method(&method_name, pos), Vec::new());
                 let call = self.hir.add(call, pos.clone());

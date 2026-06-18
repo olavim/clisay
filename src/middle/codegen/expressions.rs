@@ -2,7 +2,7 @@ use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, UnOp};
 use crate::middle::ir::Inst;
-use crate::middle::resolve::{FnKind, Member, Place};
+use crate::middle::bind::{FnKind, Member, Place};
 
 use super::Compiler;
 

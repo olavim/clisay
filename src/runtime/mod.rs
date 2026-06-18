@@ -17,7 +17,7 @@ use crate::core::stack::{CachedStack, Stack};
 use crate::core::value::Value;
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
-use crate::core::objects::{self, ClassMember, NativeFn, ObjArray, ObjDict, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
+use crate::core::objects::{self, TypeMember, NativeFn, ObjArray, ObjDict, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::opcode::{self, OpCode};
@@ -30,7 +30,7 @@ const INDEX_CACHE_SIZE: usize = 2048;
 struct IndexCache {
     site: usize,
     class: *mut ObjType,
-    member: ClassMember
+    member: TypeMember
 }
 
 struct NativeTypes {
@@ -156,7 +156,7 @@ impl Vm {
             try_frames: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
-            index_cache: vec![IndexCache { site: 0, class: std::ptr::null_mut(), member: ClassMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
+            index_cache: vec![IndexCache { site: 0, class: std::ptr::null_mut(), member: TypeMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
             pending_invokes: Vec::new(),
             out: Vec::new()
         };

@@ -1,8 +1,8 @@
-use crate::core::objects::{ClassMember, ObjType, ObjFn, ObjString};
+use crate::core::objects::{TypeMember, ObjType, ObjFn, ObjString};
 use crate::core::value::Value;
 use crate::middle::hir::{HirTypeDecl, HirId, HirStmt};
 use crate::middle::ir::Inst;
-use crate::middle::resolve::FnKind;
+use crate::middle::bind::FnKind;
 
 use super::Compiler;
 
@@ -11,9 +11,9 @@ impl<'a> Compiler<'a> {
         let slot = self.bindings.slot(stmt);
 
         // Build the class from the resolver-computed member layout.
-        let layout = self.bindings.class_layout(stmt);
+        let layout = self.bindings.type_layout(stmt);
         let class_name = self.gc.intern(self.hir.text(layout.name));
-        let superclass = layout.superclass;
+        let superclass = layout.supertype;
         let mut class = ObjType::new(class_name);
         for (&sym, &member) in &layout.members {
             let name = self.gc.intern(self.hir.text(sym));
@@ -22,7 +22,6 @@ impl<'a> Compiler<'a> {
         for &field_id in &layout.fields {
             class.fields.insert(field_id);
         }
-        class.non_public = layout.non_public.clone();
         class.member_count = layout.member_count;
         class.getter_id = layout.getter_id;
         class.setter_id = layout.setter_id;
@@ -52,11 +51,14 @@ impl<'a> Compiler<'a> {
             self.install_method(&mut class, stmt_id, name)?;
         }
 
-        // Per-trait private/qualified slots are named `"<Trait>.<name>"` and are reached only
-        // internally by member id (resolved at compile time). They must not be visible to external
-        // string-keyed access (`obj["x"]` / `obj.x`); dropping them from the runtime name map keeps
-        // that exclusion off the hot property path entirely (a `.` can't occur in a source name).
-        class.members.retain(|&name, _| !unsafe { &*name }.value.contains('.'));
+        // Drop non-public members (private/`inner`, and the per-trait renamed `"<Trait>.<name>"`
+        // slots) from the runtime name map: they're reached only internally by member id, so keeping
+        // them out means external `obj.x` simply doesn't find them.
+        let non_public = &self.bindings.type_layout(stmt).non_public;
+        class.members.retain(|_, member| {
+            let (TypeMember::Field(id) | TypeMember::Method(id)) = member;
+            !non_public.contains(id)
+        });
 
         class.build_template();
         let class = self.gc.alloc(class);
@@ -81,7 +83,7 @@ impl<'a> Compiler<'a> {
     /// Compiles a method and installs its `ObjFn` at the member id.
     fn install_method(&mut self, class: &mut ObjType, stmt: &HirId<HirStmt>, name: *mut ObjString) -> Result<(), anyhow::Error> {
         let function_ptr = self.compile_fn(stmt, FnKind::Method)?;
-        let ClassMember::Method(id) = class.resolve(name).unwrap() else { unreachable!() };
+        let TypeMember::Method(id) = class.resolve(name).unwrap() else { unreachable!() };
         class.methods.insert(id, function_ptr.into());
         Ok(())
     }

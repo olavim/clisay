@@ -1,5 +1,8 @@
-//! Name resolution. A single lexical walk of the HIR that decides what every
-//! identifier binds to. Produces a [`Bindings`] table that `codegen` consumes.
+//! Binding and layout. A single lexical walk of the HIR that assigns each name its runtime location.
+//! Produces a [`Bindings`] table that `codegen` consumes.
+//!
+//! Name-level questions (what is in scope, name collisions, trait references) are settled earlier in
+//! `middle::names`; this pass assumes a well-formed namespace and only decides *where* things live.
 
 use anyhow::anyhow;
 use anyhow::bail;
@@ -7,7 +10,7 @@ use fnv::FnvHashMap;
 use nohash_hasher::IntSet;
 
 use crate::compiler_error;
-use crate::core::objects::{ClassMember, UpvalueLocation};
+use crate::core::objects::{TypeMember, UpvalueLocation};
 use crate::middle::hir::{
     Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol,
 };
@@ -17,7 +20,7 @@ use crate::middle::hir::{
 pub enum Place {
     Local(u8),
     Upvalue(u8),
-    /// An implicit-`this` class field, by member id.
+    /// An implicit-`this` type field, by member id.
     Field(u8),
     /// A global, by symbol (codegen interns its text into the constant pool).
     Global(Symbol),
@@ -48,19 +51,19 @@ pub enum FnKind {
     Initializer,
 }
 
-/// The member layout of a class, for codegen to build its `ObjType`.
+/// The member layout of a type, for codegen to build its `ObjType`.
 #[derive(Clone)]
 pub struct TypeLayout {
     pub name: Symbol,
-    /// Superclass name
-    pub superclass: Option<Symbol>,
+    /// Supertype name
+    pub supertype: Option<Symbol>,
     /// Field and regular-method names to id. Includes inherited members.
-    pub members: FnvHashMap<Symbol, ClassMember>,
+    pub members: FnvHashMap<Symbol, TypeMember>,
     /// Field member ids. Includes inherited members.
     pub fields: Vec<u8>,
     /// Member ids that are **not** externally accessible (private or `inner`).
-    /// Includes inherited non-public members. Consumed by the VM to reject external
-    /// `obj.member` access at the dynamic boundary.
+    /// Includes inherited non-public members. Consumed by codegen to omit these
+    /// from the runtime name map.
     pub non_public: IntSet<u8>,
     pub member_count: u8,
 
@@ -73,29 +76,45 @@ pub struct TypeLayout {
 }
 
 impl TypeLayout {
-    fn resolve(&self, name: Symbol) -> Option<ClassMember> {
+    /// A layout with no members yet, ready to be filled by a type/trait declaration.
+    fn empty(name: Symbol, supertype: Option<Symbol>) -> TypeLayout {
+        TypeLayout {
+            name,
+            supertype,
+            members: FnvHashMap::default(),
+            fields: Vec::new(),
+            non_public: IntSet::default(),
+            getter_id: None,
+            setter_id: None,
+            init_id: 0,
+            member_count: 0,
+        }
+    }
+
+    fn resolve(&self, name: Symbol) -> Option<TypeMember> {
         self.members.get(&name).copied()
     }
 
     fn resolve_id(&self, name: Symbol) -> Option<u8> {
         self.resolve(name).map(|m| match m {
-            ClassMember::Field(id) | ClassMember::Method(id) => id,
+            TypeMember::Field(id) | TypeMember::Method(id) => id,
         })
     }
 }
 
 /// The output of resolution: per-node binding decisions consumed by codegen.
+#[derive(Default)]
 pub struct Bindings {
     /// Identifier uses and assignment targets => their binding.
     places: FnvHashMap<HirId<HirExpr>, Place>,
     /// `this`/`super` member accesses => their resolution.
     members: FnvHashMap<HirId<HirExpr>, Member>,
-    /// `say`/`fn`/`class` statements => the local slot they occupy.
+    /// `say`/`fn`/`type` statements => the local slot they occupy.
     slots: FnvHashMap<HirId<HirStmt>, u8>,
     /// Function bodies => the captured upvalues of that function.
     upvalues: FnvHashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
-    /// Class declarations => their member layout.
-    classes: FnvHashMap<HirId<HirStmt>, TypeLayout>,
+    /// Type declarations => their member layout.
+    types: FnvHashMap<HirId<HirStmt>, TypeLayout>,
     /// Scope nodes (by HIR node index) => locals to clean up on exit.
     cleanups: FnvHashMap<usize, Vec<Cleanup>>,
 }
@@ -117,8 +136,8 @@ impl Bindings {
         &self.upvalues[body]
     }
 
-    pub fn class_layout(&self, id: &HirId<HirStmt>) -> &TypeLayout {
-        &self.classes[id]
+    pub fn type_layout(&self, id: &HirId<HirStmt>) -> &TypeLayout {
+        &self.types[id]
     }
 
     pub fn cleanup<T>(&self, scope: &HirId<T>) -> &[Cleanup] {
@@ -127,7 +146,7 @@ impl Bindings {
 }
 
 struct Local {
-    /// `None` for the callee/`this` slot of a method or initializer — it's
+    /// `None` for the callee/`this` slot of a method or initializer: it's
     /// addressed positionally (slot 0), never resolved by name.
     name: Option<Symbol>,
     depth: u8,
@@ -138,13 +157,13 @@ struct Local {
 struct FnFrame {
     upvalues: Vec<UpvalueLocation>,
     local_offset: u8,
-    class_frame: Option<u8>,
+    type_frame: Option<u8>,
     body: HirId<HirExpr>,
 }
 
-struct ClassFrame {
+struct TypeFrame {
     layout: TypeLayout,
-    superclass: Option<TypeLayout>,
+    supertype: Option<TypeLayout>,
     /// Per trait, its private members' plain name -> renamed slot name (from the HIR). The
     /// resolver scopes a trait body's accesses to its own trait's entry. See `lower::traits`.
     trait_privates: std::collections::HashMap<Symbol, std::collections::HashMap<Symbol, Symbol>>,
@@ -159,11 +178,9 @@ pub struct Resolver<'a> {
     locals: Vec<Local>,
     scope_depth: u8,
     fn_frames: Vec<FnFrame>,
-    class_frames: Vec<ClassFrame>,
-    classes: FnvHashMap<Symbol, TypeLayout>,
-    /// The trait whose method body is currently being resolved (`None` for host members,
-    /// accessors, the host initializer, free functions, and lambdas outside a trait method).
-    /// Selects which `ClassFrame::trait_privates` entry scopes `this.x` / bare `x`.
+    type_frames: Vec<TypeFrame>,
+    types: FnvHashMap<Symbol, TypeLayout>,
+    /// The trait whose method body is currently being resolved.
     current_trait: Option<Symbol>,
     /// `true` while validating a standalone `trait` against its declared surface.
     validating_trait: bool,
@@ -172,19 +189,12 @@ pub struct Resolver<'a> {
 pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
     let mut resolver = Resolver {
         hir,
-        bindings: Bindings {
-            places: FnvHashMap::default(),
-            members: FnvHashMap::default(),
-            slots: FnvHashMap::default(),
-            upvalues: FnvHashMap::default(),
-            classes: FnvHashMap::default(),
-            cleanups: FnvHashMap::default(),
-        },
+        bindings: Bindings::default(),
         locals: Vec::new(),
         scope_depth: 0,
         fn_frames: Vec::new(),
-        class_frames: Vec::new(),
-        classes: FnvHashMap::default(),
+        type_frames: Vec::new(),
+        types: FnvHashMap::default(),
         current_trait: None,
         validating_trait: false,
     };
@@ -220,15 +230,12 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn declare_local<T: 'static>(&mut self, name: Symbol, is_mutable: bool, node_id: &HirId<T>) -> Result<u8, anyhow::Error> {
+    fn declare_local(&mut self, name: Symbol, is_mutable: bool) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
         }
 
-        if self.locals.iter().rev().any(|local| local.depth == self.scope_depth && local.name == Some(name)) {
-            compiler_error!(self, node_id, "'{}' already declared in this scope", self.hir.text(name));
-        }
-
+        // Duplicate-name collisions across the whole namespace are caught earlier, in `middle::names`.
         self.locals.push(Local { name: Some(name), depth: self.scope_depth, is_mutable, is_captured: false });
 
         let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
@@ -253,18 +260,19 @@ impl<'a> Resolver<'a> {
         if self.fn_frames.is_empty() {
             return Ok(None);
         }
-        let max_class_frame = self.resolve_member_class(name);
-        self.resolve_frame_upvalue(name, self.fn_frames.len() - 1, max_class_frame)
+        let max_type_frame = self.resolve_member_type(name);
+        self.resolve_frame_upvalue(name, self.fn_frames.len() - 1, max_type_frame)
     }
 
-    fn resolve_frame_upvalue(&mut self, name: Symbol, frame_idx: usize, max_class_frame: Option<u8>) -> Result<Option<u8>, anyhow::Error> {
-        let class_frame = self.fn_frames[frame_idx].class_frame;
+    fn resolve_frame_upvalue(&mut self, name: Symbol, frame_idx: usize, max_type_frame: Option<u8>) -> Result<Option<u8>, anyhow::Error> {
+        let type_frame = self.fn_frames[frame_idx].type_frame;
 
-        if max_class_frame.is_some() && class_frame.is_some() && class_frame.unwrap() < max_class_frame.unwrap() {
-            return Ok(None);
-        }
-        if max_class_frame.is_some() && class_frame.is_none() {
-            return Ok(None);
+        // A member-resolvable name must not capture past the type frame that owns it: stop if this
+        // frame is outside that type (no type frame, or one nested shallower than the owner).
+        if let Some(max) = max_type_frame {
+            if type_frame.map_or(true, |cf| cf < max) {
+                return Ok(None);
+            }
         }
 
         let range_start = if frame_idx == 0 { 0 } else { self.fn_frames[frame_idx - 1].local_offset };
@@ -279,7 +287,7 @@ impl<'a> Resolver<'a> {
             return Ok(None);
         }
 
-        if let Some(idx) = self.resolve_frame_upvalue(name, frame_idx - 1, max_class_frame)? {
+        if let Some(idx) = self.resolve_frame_upvalue(name, frame_idx - 1, max_type_frame)? {
             return Ok(Some(self.add_upvalue(idx, false, frame_idx)?));
         }
 
@@ -287,22 +295,20 @@ impl<'a> Resolver<'a> {
     }
 
     fn add_upvalue(&mut self, location: u8, is_local: bool, frame_idx: usize) -> Result<u8, anyhow::Error> {
-        for i in 0..self.fn_frames[frame_idx].upvalues.len() {
-            let upvalue = &self.fn_frames[frame_idx].upvalues[i];
-            if upvalue.location == location && upvalue.is_local == is_local {
-                return Ok(i as u8);
-            }
+        let upvalues = &mut self.fn_frames[frame_idx].upvalues;
+        if let Some(i) = upvalues.iter().position(|u| u.location == location && u.is_local == is_local) {
+            return Ok(i as u8);
         }
-        if self.fn_frames[frame_idx].upvalues.len() >= u8::MAX as usize {
+        if upvalues.len() >= u8::MAX as usize {
             bail!("Too many upvalues");
         }
-        self.fn_frames[frame_idx].upvalues.push(UpvalueLocation { location, is_local });
-        Ok((self.fn_frames[frame_idx].upvalues.len() - 1) as u8)
+        upvalues.push(UpvalueLocation { location, is_local });
+        Ok((upvalues.len() - 1) as u8)
     }
 
-    fn resolve_member_class(&self, name: Symbol) -> Option<u8> {
-        for i in (0..self.class_frames.len()).rev() {
-            if self.class_frames[i].layout.resolve(name).is_some() {
+    fn resolve_member_type(&self, name: Symbol) -> Option<u8> {
+        for i in (0..self.type_frames.len()).rev() {
+            if self.type_frames[i].layout.resolve(name).is_some() {
                 return Some(i as u8);
             }
         }
@@ -313,8 +319,24 @@ impl<'a> Resolver<'a> {
     /// currently being resolved. Handles implicit-`this` private lookup.
     fn private_member(&self, name: Symbol) -> Option<Symbol> {
         let trait_sym = self.current_trait?;
-        let frame = self.class_frames.last()?;
+        let frame = self.type_frames.last()?;
         frame.trait_privates.get(&trait_sym).and_then(|m| m.get(&name)).copied()
+    }
+
+    /// The member id `name` resolves to as an implicit-`this` field of the enclosing type: a trait
+    /// body's own private member resolves to its per-trait slot, otherwise the plain name.
+    fn this_field_id(&self, name: Symbol) -> Option<u8> {
+        let layout = &self.type_frames.last()?.layout;
+        layout.resolve_id(self.private_member(name).unwrap_or(name))
+    }
+
+    /// Reports a member that exists only inside some trait as private rather than missing. An
+    /// implicit-`this` bare name and an explicit `this.x` resolve alike, so both route here.
+    fn deny_private<T: 'static>(&self, name: Symbol, node: &HirId<T>) -> Result<(), anyhow::Error> {
+        if self.type_frames.last().is_some_and(|f| f.private_names.contains(&name)) {
+            compiler_error!(self, node, "Member '{}' is private", self.hir.text(name));
+        }
+        Ok(())
     }
 
     fn resolve_place(&mut self, name: Symbol, node: &HirId<HirExpr>) -> Result<Place, anyhow::Error> {
@@ -322,17 +344,10 @@ impl<'a> Resolver<'a> {
             Place::Local(slot)
         } else if let Some(idx) = self.resolve_upvalue(name)? {
             Place::Upvalue(idx)
-        // A trait body's bare reference to its own private member.
-        } else if let Some(id) = self.private_member(name).and_then(|n| self.class_frames.last().and_then(|f| f.layout.resolve_id(n))) {
+        } else if let Some(id) = self.this_field_id(name) {
             Place::Field(id)
-        } else if let Some(id) = self.class_frames.last().and_then(|f| f.layout.resolve_id(name)) {
-            Place::Field(id)
-        } else if self.class_frames.last().is_some_and(|f| f.private_names.contains(&name)) {
-            // A bare reference to a private member not visible from here (another trait's, or any
-            // from the host) — like `this.x`, report it as private rather than falling through to a
-            // global lookup (implicit `this`: bare `x` and `this.x` resolve alike).
-            compiler_error!(self, node, "Member '{}' is private", self.hir.text(name));
         } else {
+            self.deny_private(name, node)?;
             Place::Global(name)
         };
         Ok(place)
@@ -352,7 +367,7 @@ impl<'a> Resolver<'a> {
                     self.enter_scope();
                     if let Some(param) = &catch.param {
                         let HirExpr::Identifier(name) = self.hir.get(param) else { unreachable!() };
-                        self.declare_local(*name, false, param)?;
+                        self.declare_local(*name, false)?;
                     }
                     // catch body is a HirExpr::Block compiled inline (no extra scope).
                     let HirExpr::Block(stmts) = self.hir.get(&catch.body) else { unreachable!() };
@@ -370,10 +385,10 @@ impl<'a> Resolver<'a> {
                 self.bindings.slots.insert(*stmt_id, slot);
                 self.function(decl, FnKind::Function)?;
             },
-            HirStmt::Type(decl) => self.class_declaration(stmt_id, decl)?,
+            HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
             HirStmt::Trait(decl) => self.trait_declaration(stmt_id, decl)?,
             HirStmt::Say(field) => {
-                let slot = self.declare_local(field.name, true, stmt_id)?;
+                let slot = self.declare_local(field.name, true)?;
                 self.bindings.slots.insert(*stmt_id, slot);
                 if let Some(expr) = &field.value {
                     self.expression(expr)?;
@@ -396,7 +411,7 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn statement_body(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
+    fn statement_body(&mut self, body: &[HirId<HirStmt>]) -> Result<(), anyhow::Error> {
         self.hoist_declarations(body)?;
         for stmt_id in body {
             self.statement(stmt_id)?;
@@ -404,21 +419,21 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn scoped_body<T: 'static>(&mut self, body: &Vec<HirId<HirStmt>>, node_id: &HirId<T>) -> Result<(), anyhow::Error> {
+    fn scoped_body<T: 'static>(&mut self, body: &[HirId<HirStmt>], node_id: &HirId<T>) -> Result<(), anyhow::Error> {
         self.enter_scope();
         self.statement_body(body)?;
         self.exit_scope(node_id);
         Ok(())
     }
 
-    fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
+    fn hoist_declarations(&mut self, body: &[HirId<HirStmt>]) -> Result<(), anyhow::Error> {
         for stmt_id in body {
             let name = match self.hir.get(stmt_id) {
                 HirStmt::Fn(decl) => decl.name,
                 HirStmt::Type(decl) => decl.name,
                 _ => continue,
             };
-            self.declare_local(name, false, stmt_id)?;
+            self.declare_local(name, false)?;
         }
         Ok(())
     }
@@ -439,8 +454,8 @@ impl<'a> Resolver<'a> {
                 let place = self.resolve_place(*name, expr)?;
                 self.bindings.places.insert(*expr, place);
             },
-            HirExpr::This => self.require_class(expr)?,
-            HirExpr::Super => { self.require_superclass(expr)?; },
+            HirExpr::This => self.require_type(expr)?,
+            HirExpr::Super => { self.require_supertype(expr)?; },
         };
         Ok(())
     }
@@ -455,8 +470,6 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 let place = self.resolve_place(name, lhs)?;
-                // Script code can't create or reassign globals (only native fns live
-                // there); an assignment target that resolves to a global is undefined.
                 if let Place::Global(_) = place {
                     compiler_error!(self, lhs, "Cannot assign to undefined variable '{}'", self.hir.text(name));
                 }
@@ -467,11 +480,7 @@ impl<'a> Resolver<'a> {
             HirExpr::Index(obj, member, _) => {
                 let (obj, member) = (*obj, *member);
                 if matches!(self.hir.get(&obj), HirExpr::This | HirExpr::Super) {
-                    self.class_member(&obj, &member, true)?;
-                    // An accessor store evaluates the member expression as a call arg.
-                    if let Member::ByAccessor(_) = self.bindings.members[&obj] {
-                        self.expression(&member)?;
-                    }
+                    self.this_member_access(&obj, &member, true)?;
                     self.expression(rhs)?;
                 } else {
                     self.expression(rhs)?;
@@ -487,12 +496,7 @@ impl<'a> Resolver<'a> {
     /// Resolves an index load (`a[b]`, `a.b`).
     fn index(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
-            self.class_member(target, member, false)?;
-            // An accessor load evaluates the member expression as a call arg.
-            if let Member::ByAccessor(_) = self.bindings.members[target] {
-                self.expression(member)?;
-            }
-            return Ok(());
+            return self.this_member_access(target, member, false);
         }
 
         self.expression(target)?;
@@ -500,33 +504,43 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
+    /// Resolves a `this`/`super` member access, plus the member expression that becomes
+    /// the getter/setter call's argument.
+    fn this_member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_store: bool) -> Result<(), anyhow::Error> {
+        self.type_member(target, member, is_store)?;
+        if let Member::ByAccessor(_) = self.bindings.members[target] {
+            self.expression(member)?;
+        }
+        Ok(())
+    }
+
     /// Resolves a `this`/`super` member access.
-    fn class_member(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_store: bool) -> Result<(), anyhow::Error> {
+    fn type_member(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_store: bool) -> Result<(), anyhow::Error> {
         let is_super = matches!(self.hir.get(target), HirExpr::Super);
         let member_name = match self.hir.get(member) {
             HirExpr::Literal(HirLiteral::String(name)) => self.hir.symbol_of(name),
             _ => None,
         };
 
-        let class = if is_super {
-            self.require_superclass(target)?
+        let target_type = if is_super {
+            self.require_supertype(target)?
         } else {
-            self.require_class(target)?;
-            self.current_class().clone()
+            self.require_type(target)?;
+            self.current_type().clone()
         };
 
         // Inside a trait body, `this.x` for the trait's own private member resolves to its
-        // per-trait slot (own members shadow exposed ones, §5); otherwise the plain name.
+        // per-trait slot, otherwise the plain name.
         let lookup = member_name.map(|name| match is_super {
             false => self.private_member(name).unwrap_or(name),
             true => name,
         });
-        if let Some(member_id) = lookup.and_then(|name| class.resolve_id(name)) {
+        if let Some(member_id) = lookup.and_then(|name| target_type.resolve_id(name)) {
             self.bindings.members.insert(*target, Member::ById(member_id));
             return Ok(());
         }
 
-        let accessor = if is_store { class.setter_id } else { class.getter_id };
+        let accessor = if is_store { target_type.setter_id } else { target_type.getter_id };
 
         if let Some(accessor_id) = accessor {
             self.bindings.members.insert(*target, Member::ByAccessor(accessor_id));
@@ -538,32 +552,30 @@ impl<'a> Resolver<'a> {
         if self.validating_trait {
             if let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) {
                 compiler_error!(self, target, "Trait '{}' accesses 'this.{}', which it does not declare (provide it via `with`, `req`, or `req fn`)",
-                    self.hir.text(class.name), name);
+                    self.hir.text(target_type.name), name);
             }
         }
 
         // A name that resolved to nothing but is some trait's private member is reported as
         // private (it exists, but only inside its declaring trait), not as missing.
         if let Some(name) = member_name {
-            if !is_super && self.class_frames.last().is_some_and(|f| f.private_names.contains(&name)) {
-                compiler_error!(self, target, "Member '{}' is private", self.hir.text(name));
-            }
+            if !is_super { self.deny_private(name, target)?; }
         }
 
-        let class_name = self.hir.text(class.name);
+        let type_name = self.hir.text(target_type.name);
         let accessor_name = if is_store { "setter" } else { "getter" };
         if let Some(member_name) = member_name {
             let member_name = self.hir.text(member_name);
-            compiler_error!(self, target, "Invalid index: {class_name} doesn't have member {member_name} and doesn't have a {accessor_name}")
+            compiler_error!(self, target, "Invalid index: {type_name} doesn't have member {member_name} and doesn't have a {accessor_name}")
         } else {
-            compiler_error!(self, target, "Invalid index: {class_name} doesn't have a {accessor_name}")
+            compiler_error!(self, target, "Invalid index: {type_name} doesn't have a {accessor_name}")
         }
     }
 
-    fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &Vec<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
+    fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         if matches!(self.hir.get(callee), HirExpr::Super) {
-            let superclass = self.require_superclass(callee)?;
-            self.bindings.members.insert(*callee, Member::SuperInit(superclass.init_id));
+            let supertype = self.require_supertype(callee)?;
+            self.bindings.members.insert(*callee, Member::SuperInit(supertype.init_id));
         } else {
             self.expression(callee)?;
         }
@@ -596,25 +608,25 @@ impl<'a> Resolver<'a> {
         self.function(decl, FnKind::Function)
     }
 
-    fn require_class(&self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if self.class_frames.is_empty() {
+    fn require_type(&self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if self.type_frames.is_empty() {
             compiler_error!(self, node, "Cannot use 'this' outside of a type method");
         }
         Ok(())
     }
 
-    fn require_superclass(&self, node: &HirId<HirExpr>) -> Result<TypeLayout, anyhow::Error> {
-        let Some(frame) = self.class_frames.last() else {
+    fn require_supertype(&self, node: &HirId<HirExpr>) -> Result<TypeLayout, anyhow::Error> {
+        let Some(frame) = self.type_frames.last() else {
             compiler_error!(self, node, "Cannot use 'super' outside of a type method");
         };
-        let Some(superclass) = &frame.superclass else {
+        let Some(supertype) = &frame.supertype else {
             compiler_error!(self, node, "Cannot use 'super' outside of a child type method");
         };
-        Ok(superclass.clone())
+        Ok(supertype.clone())
     }
 
-    fn current_class(&self) -> &TypeLayout {
-        &self.class_frames.last().unwrap().layout
+    fn current_type(&self) -> &TypeLayout {
+        &self.type_frames.last().unwrap().layout
     }
 
     fn function(&mut self, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
@@ -631,7 +643,7 @@ impl<'a> Resolver<'a> {
         self.fn_frames.push(FnFrame {
             upvalues: Vec::new(),
             local_offset,
-            class_frame: self.class_frames.last().map(|_| self.class_frames.len() as u8 - 1),
+            type_frame: self.type_frames.last().map(|_| self.type_frames.len() as u8 - 1),
             body: decl.body,
         });
 
@@ -639,61 +651,38 @@ impl<'a> Resolver<'a> {
             let HirExpr::Identifier(param_name) = self.hir.get(param) else {
                 unreachable!("parser guarantees parameters are identifiers");
             };
-            self.declare_local(*param_name, true, param)?;
+            self.declare_local(*param_name, true)?;
         }
 
         self.expression(&decl.body)?;
 
         let frame = self.fn_frames.pop().unwrap();
         self.scope_depth -= 1;
-        while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
-            self.locals.pop();
-        }
+        // The frame's callee slot and params (the body's own locals are popped by its block scope).
+        self.locals.truncate(frame.local_offset as usize);
 
         self.bindings.upvalues.insert(frame.body, frame.upvalues);
         Ok(())
     }
 
-    fn class_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &Box<HirTypeDecl>) -> Result<(), anyhow::Error> {
-        let name = decl.name;
-        let slot = self.resolve_local(name).expect("class declarations are reserved by hoisting");
-        self.bindings.slots.insert(*stmt, slot);
-        self.enter_scope();
-
-        let superclass = match &decl.superclass {
-            Some(super_name) => {
-                let layout = self.classes.get(super_name)
-                    .ok_or(anyhow!("Type '{}' not declared", self.hir.text(*super_name)))?;
-                Some(layout.clone())
-            },
-            None => None,
-        };
-
-        let mut layout = TypeLayout {
-            name: decl.name,
-            superclass: decl.superclass,
-            members: FnvHashMap::default(),
-            fields: Vec::new(),
-            non_public: IntSet::default(),
-            getter_id: None,
-            setter_id: None,
-            init_id: 0,
-            member_count: 0,
-        };
+    /// Builds a type's runtime [`TypeLayout`], assigning each member its id: inherited members
+    /// first (ids preserved), then own fields, methods, accessors, and the initializer.
+    fn build_layout(&self, decl: &HirTypeDecl, supertype: Option<&TypeLayout>) -> TypeLayout {
+        let mut layout = TypeLayout::empty(decl.name, decl.supertype);
 
         let mut next_member_id: u8 = 0;
-        if let Some(superclass) = &superclass {
-            layout.members = superclass.members.clone();
-            layout.fields = superclass.fields.clone();
-            layout.non_public = superclass.non_public.clone();
+        if let Some(supertype) = supertype {
+            layout.members = supertype.members.clone();
+            layout.fields = supertype.fields.clone();
+            layout.non_public = supertype.non_public.clone();
             // Accessors are inherited unless overridden below; the initializer is not.
-            layout.getter_id = superclass.getter_id;
-            layout.setter_id = superclass.setter_id;
-            next_member_id = superclass.member_count;
+            layout.getter_id = supertype.getter_id;
+            layout.setter_id = supertype.setter_id;
+            next_member_id = supertype.member_count;
         }
 
         for field in &decl.fields {
-            layout.members.insert(*field, ClassMember::Field(next_member_id));
+            layout.members.insert(*field, TypeMember::Field(next_member_id));
             layout.fields.push(next_member_id);
             if !decl.pub_members.contains(field) {
                 layout.non_public.insert(next_member_id);
@@ -702,7 +691,7 @@ impl<'a> Resolver<'a> {
         }
         for stmt_id in &decl.methods {
             let method = self.fn_decl(stmt_id);
-            layout.members.insert(method.name, ClassMember::Method(next_member_id));
+            layout.members.insert(method.name, TypeMember::Method(next_member_id));
             if !decl.pub_members.contains(&method.name) {
                 layout.non_public.insert(next_member_id);
             }
@@ -716,21 +705,42 @@ impl<'a> Resolver<'a> {
             layout.setter_id = Some(next_member_id);
             next_member_id += 1;
         }
-        // Every class has its own initializer (declared or virtual).
+        // Every type has its own initializer (declared or virtual).
         layout.init_id = next_member_id;
         next_member_id += 1;
         layout.member_count = next_member_id;
+        layout
+    }
 
+    /// Pushes the type frame that method bodies resolve against, deriving the private-name set
+    /// (plain names of every trait's private members) from the declaration's per-trait map.
+    fn push_type_frame(&mut self, layout: TypeLayout, supertype: Option<TypeLayout>, decl: &HirTypeDecl) {
         let private_names = decl.trait_privates.values().flat_map(|m| m.keys().copied()).collect();
-        self.class_frames.push(ClassFrame {
-            layout: layout.clone(),
-            superclass,
+        self.type_frames.push(TypeFrame {
+            layout,
+            supertype,
             trait_privates: decl.trait_privates.clone(),
             private_names,
         });
+    }
+
+    fn type_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+        let slot = self.resolve_local(decl.name).expect("type declarations are reserved by hoisting");
+        self.bindings.slots.insert(*stmt, slot);
+        self.enter_scope();
+
+        let supertype = match &decl.supertype {
+            Some(super_name) => Some(self.types.get(super_name)
+                .ok_or(anyhow!("Type '{}' not declared", self.hir.text(*super_name)))?
+                .clone()),
+            None => None,
+        };
+
+        let layout = self.build_layout(decl, supertype.as_ref());
+        self.push_type_frame(layout.clone(), supertype, decl);
 
         // Method bodies resolve under the declaring trait's private scope (host members: none).
-        // Save/restore around the whole class so a nested type declaration doesn't leak its scope.
+        // Save/restore around the whole type so a nested type declaration doesn't leak its scope.
         let outer_trait = self.current_trait.take();
 
         if let Some(stmt_id) = &decl.getter {
@@ -752,11 +762,11 @@ impl<'a> Resolver<'a> {
         }
 
         self.current_trait = outer_trait;
-        self.class_frames.pop();
+        self.type_frames.pop();
         self.exit_scope(stmt);
 
-        self.classes.insert(decl.name, layout.clone());
-        self.bindings.classes.insert(*stmt, layout);
+        self.types.insert(decl.name, layout.clone());
+        self.bindings.types.insert(*stmt, layout);
         Ok(())
     }
 
@@ -764,36 +774,23 @@ impl<'a> Resolver<'a> {
     /// declared `surface`, so a `this.x` outside the surface is a self-containment error. If a
     /// trait fails self-containment validation, it will emit compile errors even if the trait is
     /// never used.
-    fn trait_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &Box<HirTypeDecl>) -> Result<(), anyhow::Error> {
+    fn trait_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         self.enter_scope();
 
-        // A validation layout: every surface name (and every renamed private slot) resolves to a
-        // throwaway id — codegen never sees this layout, so the ids are immaterial; only membership
-        // matters. A `this.x` whose name is absent is the self-containment violation.
-        let mut layout = TypeLayout {
-            name: decl.name,
-            superclass: None,
-            members: FnvHashMap::default(),
-            fields: Vec::new(),
-            non_public: IntSet::default(),
-            getter_id: None,
-            setter_id: None,
-            init_id: 0,
-            member_count: 0,
-        };
+        // A validation layout: every surface name (and every renamed private slot) resolves to a throwaway id.
+        let mut surface = TypeLayout::empty(decl.name, None);
         let mut id: u8 = 0;
         for name in &decl.surface {
-            layout.members.entry(*name).or_insert(ClassMember::Method(id));
+            surface.members.entry(*name).or_insert(TypeMember::Method(id));
             id = id.wrapping_add(1);
         }
         for renamed in decl.trait_privates.values().flat_map(|m| m.values()) {
-            layout.members.entry(*renamed).or_insert(ClassMember::Method(id));
+            surface.members.entry(*renamed).or_insert(TypeMember::Method(id));
             id = id.wrapping_add(1);
         }
-        layout.member_count = id;
+        surface.member_count = id;
 
-        let private_names = decl.trait_privates.values().flat_map(|m| m.keys().copied()).collect();
-        self.class_frames.push(ClassFrame { layout, superclass: None, trait_privates: decl.trait_privates.clone(), private_names });
+        self.push_type_frame(surface, None, decl);
 
         let outer_trait = std::mem::replace(&mut self.current_trait, Some(decl.name));
         let was_validating = std::mem::replace(&mut self.validating_trait, true);
@@ -804,7 +801,7 @@ impl<'a> Resolver<'a> {
         self.validating_trait = was_validating;
         self.current_trait = outer_trait;
 
-        self.class_frames.pop();
+        self.type_frames.pop();
         self.exit_scope(stmt);
         Ok(())
     }

@@ -2,7 +2,7 @@ use crate::core::objects::ObjFn;
 use crate::core::value::Value;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId};
 use crate::middle::ir::Inst;
-use crate::middle::resolve::FnKind;
+use crate::middle::bind::FnKind;
 
 use super::Compiler;
 

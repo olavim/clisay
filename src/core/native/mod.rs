@@ -1,5 +1,5 @@
 use super::gc::Gc;
-use super::objects::{ClassMember, ObjType, ObjNativeFn, ObjString};
+use super::objects::{TypeMember, ObjType, ObjNativeFn, ObjString};
 
 pub mod array;
 pub mod dict;
@@ -21,7 +21,7 @@ pub trait NativeType {
 
         let mut member_id = 0;
         for (name, method) in self.methods(gc) {
-            class.members.insert(name, ClassMember::Method(member_id));
+            class.members.insert(name, TypeMember::Method(member_id));
             class.methods.insert(member_id, gc.alloc(method).into());
             member_id += 1;
         }

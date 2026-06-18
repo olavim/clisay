@@ -7,25 +7,23 @@
 mod init;
 mod traits;
 
-use std::collections::HashMap;
-
 use anyhow::anyhow;
 
 use crate::ast::{Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
     BinOp, Hir, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirStmt, UnOp,
 };
+use crate::middle::names::NameBindings;
 
-pub fn lower(mut ast: Ast) -> Result<Hir, anyhow::Error> {
+pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
     let root = ast.get_root();
     let (ident_ids, ident_texts) = ast.take_idents();
     let mut lowerer = Lowerer {
         ast: &ast,
+        names,
         hir: Hir::new(ident_ids, ident_texts),
-        trait_scopes: Vec::new(),
         provided_traits: std::collections::HashSet::new(),
         emitted_aliases: std::collections::HashSet::new(),
-        trait_flatten_cache: HashMap::new(),
     };
     lowerer.stmt(&root)?;
     Ok(lowerer.hir)
@@ -33,9 +31,11 @@ pub fn lower(mut ast: Ast) -> Result<Hir, anyhow::Error> {
 
 struct Lowerer<'a> {
     ast: &'a Ast,
+    /// Name-resolution facts resolved over the AST before lowering: each `type`/`trait`'s flattened
+    /// `with`-set and resolved `req` traits, and which identifiers name an in-scope trait. See
+    /// `middle::names`.
+    names: &'a NameBindings,
     hir: Hir,
-    /// A lexical stack of trait declarations in scope (one map per scope). See `traits`.
-    trait_scopes: Vec<HashMap<Symbol, AstId<Stmt>>>,
     /// The traits the composer currently being lowered provides (its flattened `with`-set).
     /// Used to validate qualified `T.method(...)` calls. Empty outside a composer body.
     provided_traits: std::collections::HashSet<Symbol>,
@@ -44,9 +44,6 @@ struct Lowerer<'a> {
     /// reachable via `T.method(...)`. A qualified call resolves to an alias if one exists,
     /// else to the plain method name.
     emitted_aliases: std::collections::HashSet<String>,
-    /// Memoized flattened `with`-sets, keyed by a trait's declaration. A trait shared across
-    /// composers (and re-examined for `req`/surface) is flattened and cycle-checked once.
-    trait_flatten_cache: HashMap<AstId<Stmt>, Vec<(Symbol, &'a TypeDecl)>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -110,10 +107,10 @@ impl<'a> Lowerer<'a> {
                 if decl.is_trait {
                     // A trait emits no runtime type, but it's validated on its own.
                     self.check_provide_require_exclusive(decl, &pos)?;
-                    self.check_init_orchestration(decl, &pos)?;
-                    HirStmt::Trait(Box::new(self.lower_trait(decl, &pos)?))
+                    self.check_init_orchestration(*stmt_id, decl, &pos)?;
+                    HirStmt::Trait(Box::new(self.lower_trait(*stmt_id, decl, &pos)?))
                 } else {
-                    HirStmt::Type(Box::new(self.lower_type(decl, &pos)?))
+                    HirStmt::Type(Box::new(self.lower_type(*stmt_id, decl, &pos)?))
                 }
             },
         };
@@ -131,11 +128,7 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(expr_id).clone();
         let kind = match self.ast.get(expr_id) {
             Expr::Block(stmts) => {
-                // Each block is its own lexical scope for trait declarations (see `traits`).
-                let scope = self.scan_traits(stmts)?;
-                self.trait_scopes.push(scope);
                 let lowered = stmts.iter().map(|s| self.stmt(s)).collect::<Result<Vec<_>, _>>()?;
-                self.trait_scopes.pop();
                 HirExpr::Block(lowered)
             },
             Expr::Unary(op, operand) => HirExpr::Unary(lower_unop(op), self.expr(operand)?),
@@ -166,7 +159,7 @@ impl<'a> Lowerer<'a> {
             },
             Expr::Literal(lit) => HirExpr::Literal(self.literal(lit)?),
             Expr::Identifier(name) => {
-                if self.is_trait_in_scope(*name) {
+                if self.names.trait_ref(*expr_id).is_some() {
                     return Err(self.error(format!("'{}' is a trait and cannot be used as a value (traits are not instantiable)", self.hir.text(*name)), expr_id));
                 }
                 HirExpr::Identifier(*name)
