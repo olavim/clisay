@@ -22,6 +22,25 @@ mod runtime;
 pub(crate) use frontend::ast;
 pub use output::Output;
 
+/// Exposes compiler internals for unit tests under `tests/`. Hidden from docs
+/// and not a stable public API.
+#[doc(hidden)]
+pub mod internals {
+    pub use crate::ast::{Ast, AstId, Expr, FieldInit, FnDecl, Literal, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
+    pub use crate::frontend::lex::{ContextualKeyword, Token, TokenType};
+
+    use crate::frontend::lex::{tokenize, TokenStream};
+    use crate::frontend::parse::Parser;
+
+    pub fn lex(src: &str) -> Vec<Token> {
+        tokenize(String::new(), src.to_string()).expect("lex error")
+    }
+
+    pub fn parse(src: &str) -> Ast {
+        Parser::parse(&mut TokenStream::new(&lex(src))).expect("parse error")
+    }
+}
+
 use crate::backend::assemble::assemble;
 use crate::core::gc::Gc;
 use crate::frontend::lex::{tokenize, TokenStream};

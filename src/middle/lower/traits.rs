@@ -118,7 +118,7 @@ impl<'a> Lowerer<'a> {
         let mut surface: HashSet<Symbol> = HashSet::new();
         for field in &decl.fields { surface.insert(*field); }
         for method in &decl.methods { surface.insert(self.ast_fn(method).name); }
-        for (name, _) in &decl.req_fns { surface.insert(*name); }
+        for (name, _, _) in &decl.req_fns { surface.insert(*name); }
         for name in &decl.req_members { surface.insert(*name); }
 
         for (_, type_decl) in &self.flattened_with(type_id) {
@@ -278,7 +278,7 @@ impl<'a> Lowerer<'a> {
 
         let req_fns = decl.req_fns.iter().copied()
             .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_fns.iter().copied()));
-        for (func_sym, arity) in req_fns {
+        for (func_sym, arity, _) in req_fns {
             if !exposed.contains(&(func_sym, arity)) {
                 return Err(anyhow!("Unsatisfied `req fn {}` (arity {arity}): needs an `inner`/`pub` method '{}' taking {arity} argument(s)\n\tat {}",
                     self.hir.text(func_sym), self.hir.text(func_sym), pos));
@@ -356,7 +356,7 @@ impl<'a> Lowerer<'a> {
     fn lower_method_named(&mut self, fn_stmt: &AstId<Stmt>, name: Symbol) -> Result<HirId<HirStmt>, anyhow::Error> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
-        let params = self.exprs(&decl.params)?;
+        let params = self.param_names(&decl.params)?;
         let body = self.expr(&decl.body)?;
         Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, params, body }), pos))
     }
