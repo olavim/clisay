@@ -1,7 +1,7 @@
 //! Initializer assembly.
 //!
-//! Builds a `type`'s initializer: field defaults, a virtual `super()` for child types,
-//! the declared body, and the `gives` delegate-verification checks.
+//! Builds a `type`'s initializer: field defaults, the declared body, and the `gives`
+//! delegate-verification checks.
 
 use crate::ast::{AstId, Expr, Stmt, Symbol, TypeDecl};
 use crate::frontend::lex::SourcePosition;
@@ -10,20 +10,18 @@ use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, UnOp};
 use super::Lowerer;
 
 impl<'a> Lowerer<'a> {
-    /// Lowers a `type`'s initializer: field defaults, then a virtual `super()` (child types),
-    /// then the declared body, then `gives` delegate verification.
+    /// Lowers a `type`'s initializer: field defaults, then the declared body, then `gives`
+    /// delegate verification.
     pub(super) fn lower_type_init(&mut self, composer_id: AstId<Stmt>, decl: &TypeDecl, field_inits: &[(Symbol, AstId<Expr>)], type_pos: &SourcePosition) -> Result<HirId<HirStmt>, anyhow::Error> {
-        let is_child = decl.superclass.is_some();
-        let (params, body_stmts, has_super, init_pos): (_, &[AstId<Stmt>], _, _) = match &decl.init {
+        let (params, body_stmts, init_pos): (_, &[AstId<Stmt>], _) = match &decl.init {
             Some(init_id) => {
                 let init_pos = self.ast.pos(init_id).clone();
                 let fn_decl = self.ast_fn(init_id);
                 let params = self.exprs(&fn_decl.params)?;
                 let stmts = self.ast_block(&fn_decl.body);
-                let has_super = stmts.first().is_some_and(|s| self.is_super_call(s));
-                (params, stmts, has_super, init_pos)
+                (params, stmts, init_pos)
             },
-            None => (Vec::new(), &[], false, type_pos.clone()),
+            None => (Vec::new(), &[], type_pos.clone()),
         };
 
         let mut body = Vec::new();
@@ -35,11 +33,7 @@ impl<'a> Lowerer<'a> {
             let assign = self.hir.add(HirExpr::Assign(target, value), type_pos.clone());
             body.push(self.hir.add(HirStmt::Expression(assign), type_pos.clone()));
         }
-        // A virtual `super()` for a child type that didn't write one.
-        if is_child && !has_super {
-            body.push(self.virtual_super_call(&init_pos));
-        }
-        // The declared body (which may itself open with an explicit `super(...)`).
+        // The declared body.
         for stmt_id in body_stmts {
             body.push(self.stmt(stmt_id)?);
         }
@@ -72,19 +66,6 @@ impl<'a> Lowerer<'a> {
             out.push(self.hir.add(HirStmt::If(not_check, then_block, None), pos.clone()));
         }
         Ok(out)
-    }
-
-    /// Whether `stmt` is a `super(...)` call statement.
-    fn is_super_call(&self, stmt: &AstId<Stmt>) -> bool {
-        let Stmt::Expression(expr) = self.ast.get(stmt) else { return false };
-        let Expr::Call(callee, _) = self.ast.get(expr) else { return false };
-        matches!(self.ast.get(callee), Expr::Super)
-    }
-
-    fn virtual_super_call(&mut self, pos: &SourcePosition) -> HirId<HirStmt> {
-        let super_expr = self.hir.add(HirExpr::Super, pos.clone());
-        let call = self.hir.add(HirExpr::Call(super_expr, Vec::new()), pos.clone());
-        self.hir.add(HirStmt::Expression(call), pos.clone())
     }
 
     /// A `this.<name>` member-access callee (a dotted access), used to build internal calls

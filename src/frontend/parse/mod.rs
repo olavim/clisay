@@ -18,7 +18,7 @@ enum Visibility { Pub, Inner, Private }
 pub struct Parser<'parser, 'vm> {
     tokens: &'vm mut TokenStream<'vm>,
     ast: &'parser mut Ast,
-    current_class: Option<String>,
+    current_type: Option<String>,
     /// True while parsing a condition (`if`/`while`), where a trailing `{` is the body
     /// block, not a brace construction. Reset inside parens/brackets/braces so a
     /// construction can still appear in a sub-expression there.
@@ -32,7 +32,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut parser = Parser {
             tokens,
             ast: &mut ast,
-            current_class: None,
+            current_type: None,
             prevent_construct: false,
         };
 
@@ -134,37 +134,19 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         })
     }
 
-    fn parse_accessor(&mut self, name: String, arity: usize, arity_error: &str) -> Result<AstId<Stmt>, anyhow::Error> {
-        let token = self.tokens.peek(0).clone();
-        let name = self.ast.intern(&name);
-        let fn_decl = self.parse_fn_decl(name)?;
-        if fn_decl.params.len() != arity {
-            parse_error!(self, &token.pos, "{}", arity_error)
-        }
-        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), token.pos))
-    }
-
     fn init_name(&mut self) -> Symbol {
-        let class = self.current_class.clone().expect("init parsed outside a class");
-        self.ast.intern(&format!("{}.init", class))
+        let ty = self.current_type.clone().expect("init parsed outside a type");
+        self.ast.intern(&format!("{}.init", ty))
     }
 
-    fn parse_init(&mut self, has_superclass: bool) -> Result<AstId<Stmt>, anyhow::Error> {
+    fn parse_init(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let name = self.init_name();
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
         self.tokens.expect(TokenType::LeftBrace)?;
 
-        let mut stmts = Vec::new();
-        if has_superclass && matches!(
-            (self.tokens.peek(0).kind, self.tokens.peek(1).kind),
-            (TokenType::Super, TokenType::LeftParen)
-        ) {
-            stmts.push(self.parse_super_call()?);
-        }
-
-        stmts.extend(self.parse_stmts()?);
+        let stmts = self.parse_stmts()?;
         self.tokens.expect(TokenType::RightBrace)?;
 
         let body = self.ast.add_expr(Expr::Block(stmts), pos.clone());
@@ -245,25 +227,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
         let keyword = if is_trait { TokenType::Trait } else { TokenType::Type };
         let pos = self.tokens.expect(keyword)?.pos.clone();
-        let class_name = self.parse_identifier()?;
-        let class_sym = self.ast.intern(&class_name);
+        let type_name = self.parse_identifier()?;
+        let type_sym = self.ast.intern(&type_name);
 
-        let prev_class = std::mem::replace(&mut self.current_class, Some(class_name.clone()));
+        let prev_type = std::mem::replace(&mut self.current_type, Some(type_name.clone()));
 
         let (with_traits, req_traits) = self.parse_composition_header()?;
-
-        // `: Super` inheritance is types-only (and is being removed in a later step).
-        let superclass = if !is_trait {
-            match self.tokens.next_if(TokenType::Colon) {
-                Some(_) => {
-                    let super_name = self.parse_identifier()?;
-                    Some(self.ast.intern(&super_name))
-                },
-                None => None
-            }
-        } else {
-            None
-        };
 
         self.tokens.expect(TokenType::LeftBrace)?;
 
@@ -276,8 +245,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut req_members: Vec<Symbol> = Vec::new();
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
-        let mut getter = None;
-        let mut setter = None;
 
         while !self.tokens.match_next(TokenType::RightBrace) {
             let member_pos = self.tokens.peek(0).pos.clone();
@@ -313,21 +280,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 TokenType::Identifier => {
                     let name = self.parse_identifier()?;
 
-                    // `init`/`get`/`set` are specially-named methods (normal method syntax); they
-                    // take no visibility modifier.
+                    // `init` is a specially-named method (normal method syntax); it
+                    // takes no visibility modifier.
                     match name.as_str() {
                         "init" => {
                             if is_trait { parse_error!(self, &member_pos, "A trait cannot declare an `init`; put initialization on the host type"); }
                             if visibility != Visibility::Private { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
-                            init = Some(self.parse_init(superclass.is_some())?);
-                        },
-                        "get" => {
-                            if visibility != Visibility::Private { parse_error!(self, &member_pos, "An accessor cannot have a visibility modifier"); }
-                            getter = Some(self.parse_accessor(name, 1, "Getter must have exactly one parameter")?);
-                        },
-                        "set" => {
-                            if visibility != Visibility::Private { parse_error!(self, &member_pos, "An accessor cannot have a visibility modifier"); }
-                            setter = Some(self.parse_accessor(name, 2, "Setter must have exactly two parameters")?);
+                            init = Some(self.parse_init()?);
                         },
                         _ => {
                             // Field declaration, optionally with a `gives Trait` delegation suffix.
@@ -369,21 +328,18 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
         self.tokens.expect(TokenType::RightBrace)?;
 
-        let init_name = self.ast.intern(&format!("{}.init", class_name));
+        let init_name = self.ast.intern(&format!("{}.init", type_name));
 
-        let class_decl = Box::new(TypeDecl {
-            name: class_sym,
+        let type_decl = Box::new(TypeDecl {
+            name: type_sym,
             is_trait,
             with_traits,
             req_traits,
             req_fns,
             req_members,
             gives,
-            superclass,
             init_name,
             init,
-            getter,
-            setter,
             fields,
             field_inits,
             methods: method_stmts,
@@ -391,8 +347,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             inner_members,
         });
 
-        self.current_class = prev_class;
-        Ok(self.ast.add_stmt(Stmt::Type(class_decl), pos))
+        self.current_type = prev_type;
+        Ok(self.ast.add_stmt(Stmt::Type(type_decl), pos))
     }
 
     fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -783,48 +739,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::True => Expr::Literal(Literal::Boolean(true)),
             TokenType::False => Expr::Literal(Literal::Boolean(false)),
             TokenType::This => Expr::This,
-            // The super keyword is not a valid expression on its own,
-            // so it makes sense to consider something like `super.x` as an "atom".
-            TokenType::Super => return self.parse_super(),
             TokenType::Identifier => Expr::Identifier(self.ast.intern(&token.lexeme)),
             _ => parse_error!(self, &pos, "Unexpected token {token}")
         };
 
         Ok(self.ast.add_expr(kind, pos))
-    }
-
-    fn parse_super(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        let token = self.tokens.next();
-        let pos = token.pos.clone();
-
-        match token.kind {
-            TokenType::Dot => {
-                let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-                let id = self.parse_identifier()?;
-                let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                let expr = self.ast.add_expr(Expr::Index(super_expr, id, true), pos.clone()); // `super.name`
-                Ok(expr)
-            },
-            TokenType::LeftBracket => {
-                let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-                let expr = self.parse_expr()?;
-                self.tokens.expect(TokenType::RightBracket)?;
-                let expr = self.ast.add_expr(Expr::Index(super_expr, expr, false), pos.clone()); // `super[expr]`
-                Ok(expr)
-            },
-            TokenType::LeftParen => parse_error!(self, &pos, "Super call must be the first statement in an init block"),
-            _ => parse_error!(self, &pos, "Unexpected token {token}"),
-        }
-    }
-
-    fn parse_super_call(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
-        let pos = self.tokens.expect(TokenType::Super)?.pos.clone();
-        self.tokens.expect(TokenType::LeftParen)?;
-        let args = self.parse_call_arguments()?;
-        self.tokens.expect(TokenType::Semicolon)?;
-        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-        let expr = self.ast.add_expr(Expr::Call(super_expr, args), pos.clone());
-        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
     }
 
     fn parse_call_arguments(&mut self) -> Result<Vec<AstId<Expr>>, anyhow::Error> {

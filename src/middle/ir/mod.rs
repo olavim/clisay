@@ -24,7 +24,7 @@ pub enum Inst {
     /// instance is allocated, those fields are set from the stack, and `init` runs with the args.
     Construct(u16, u8),
     /// Fused method call `recv.name(args)`: `Invoke(name_const, arg_count)` resolves
-    /// the method on the receiver's class and pushes the frame directly, avoiding
+    /// the method on the receiver's type and pushes the frame directly, avoiding
     /// the bound-method allocation that `GetIndex` + `Call` would incur.
     Invoke(u8, u8),
     Jump(Label),
@@ -56,7 +56,7 @@ pub enum Inst {
     PushTrue,
     PushFalse,
     PushClosure(u8),
-    PushClass(u8),
+    PushType(u8),
 
     // Variables and properties
     GetGlobal(u8),

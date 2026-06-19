@@ -29,7 +29,7 @@ const INDEX_CACHE_SIZE: usize = 2048;
 #[derive(Clone, Copy)]
 struct IndexCache {
     site: usize,
-    class: *mut ObjType,
+    ty: *mut ObjType,
     member: TypeMember
 }
 
@@ -107,8 +107,8 @@ fn disassemble(chunk: &BytecodeChunk) {
 }
 
 fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjType {
-    let class = native_type.build_class(gc);
-    gc.alloc(class)
+    let ty = native_type.build_type(gc);
+    gc.alloc(ty)
 }
 
 /// Executes a compiled `chunk`, returning captured output.
@@ -156,7 +156,7 @@ impl Vm {
             try_frames: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
-            index_cache: vec![IndexCache { site: 0, class: std::ptr::null_mut(), member: TypeMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
+            index_cache: vec![IndexCache { site: 0, ty: std::ptr::null_mut(), member: TypeMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
             pending_invokes: Vec::new(),
             out: Vec::new()
         };
@@ -554,7 +554,7 @@ impl Vm {
                             }
                         }
                     }
-                    // Slow path: native fns, bound methods, classes, arity errors.
+                    // Slow path: native fns, bound methods, types, arity errors.
                     self.ip = ip;
                     self.call(arg_count, value)?;
                     ip = self.ip;
@@ -578,7 +578,7 @@ impl Vm {
                 opcode::ARRAY => delegate!(self.op_array()),
                 opcode::DICT => delegate!(self.op_dict()),
                 opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
-                opcode::PUSH_CLASS => delegate!(self.op_push_class()),
+                opcode::PUSH_TYPE => delegate!(self.op_push_type()),
                 opcode::GET_GLOBAL => delegate!(self.op_get_global()?),
                 opcode::INVOKE => delegate!(self.op_invoke()?),
                 opcode::GET_INDEX => delegate!(self.op_get_index()?),

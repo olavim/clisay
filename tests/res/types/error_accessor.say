@@ -1,0 +1,6 @@
+// Catch-all `get`/`set` accessors were removed.
+type A {
+    get(prop) { // error: Unexpected token: Expected ';' but found '('
+        return prop;
+    }
+}

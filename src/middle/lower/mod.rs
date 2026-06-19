@@ -163,7 +163,7 @@ impl<'a> Lowerer<'a> {
             Expr::Is(target, name) => HirExpr::Is(self.expr(target)?, *name),
             Expr::Construct(callee, fields) => {
                 // The callee is a bare type name `C` or a call `C(args)`. Split off the args; the
-                // remaining type expression is evaluated to the class value at runtime.
+                // remaining type expression is evaluated to the type value at runtime.
                 let (callee, args) = match self.ast.get(callee) {
                     Expr::Call(c, a) => (self.expr(c)?, self.exprs(a)?),
                     _ => (self.expr(callee)?, Vec::new()),
@@ -175,7 +175,6 @@ impl<'a> Lowerer<'a> {
                 HirExpr::Construct(callee, args, brace)
             },
             Expr::This => HirExpr::This,
-            Expr::Super => HirExpr::Super,
         };
         Ok(self.hir.add(kind, pos))
     }

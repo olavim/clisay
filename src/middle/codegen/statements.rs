@@ -98,7 +98,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::SetLocal(slot), stmt_id);
                 self.emit(Inst::Pop, stmt_id);
             },
-            HirStmt::Type(decl) => self.class_declaration(stmt_id, decl)?,
+            HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
             // Traits emit no runtime type; they exist only for self-containment validation in resolve.
             HirStmt::Trait(_) => {},
             HirStmt::Say(HirFieldInit { value, .. }) => {
@@ -185,7 +185,7 @@ impl<'a> Compiler<'a> {
         self.expression_stmt(finally)
     }
 
-    /// Emit a `PUSH_NULL` placeholder for every `fn`/`class` declared directly in
+    /// Emit a `PUSH_NULL` placeholder for every `fn`/`type` declared directly in
     /// `body`, holding its (resolver-assigned) slot until the declaration is
     /// compiled into it - which is what lets forward references resolve.
     fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {

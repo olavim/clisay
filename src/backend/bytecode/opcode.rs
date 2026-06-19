@@ -97,7 +97,7 @@ opcodes! {
     PushTrue => PUSH_TRUE,
     PushFalse => PUSH_FALSE,
     PushClosure => PUSH_CLOSURE(Const),
-    PushClass => PUSH_CLASS(Const),
+    PushType => PUSH_TYPE(Const),
 
     // Gets/sets
     GetGlobal => GET_GLOBAL(Const),

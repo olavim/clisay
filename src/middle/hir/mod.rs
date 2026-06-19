@@ -65,7 +65,6 @@ pub enum HirExpr {
     /// `init` args, then the brace field initializers.
     Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
     This,
-    Super,
 }
 
 pub struct HirFieldInit {
@@ -87,10 +86,7 @@ pub struct HirCatchClause {
 
 pub struct HirTypeDecl {
     pub name: Symbol,
-    pub supertype: Option<Symbol>,
     pub init: HirId<HirStmt>,
-    pub getter: Option<HirId<HirStmt>>,
-    pub setter: Option<HirId<HirStmt>>,
     pub fields: HashSet<Symbol>,
     pub methods: Vec<HirId<HirStmt>>,
     /// The declaring trait of each method in `methods` (parallel), or `None` for a member
@@ -108,9 +104,7 @@ pub struct HirTypeDecl {
     /// For a standalone trait (`HirStmt::Trait`): its **declared surface**.
     pub surface: HashSet<Symbol>,
     /// The trait/type names this type **provides** for `x is T`: its own name plus every
-    /// transitively `with`-mixed trait. Empty for a standalone trait (no runtime type). The
-    /// supertype's provided set is unioned in later (`bind`/codegen), so this holds only the
-    /// declaration's own contribution.
+    /// transitively `with`-mixed trait. Empty for a standalone trait (no runtime type).
     pub provides: Vec<Symbol>,
 }
 

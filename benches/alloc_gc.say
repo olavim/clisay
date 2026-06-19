@@ -1,8 +1,8 @@
 // Allocation- and GC-heavy: instantiate a short-lived object every iteration so
-// the collector runs repeatedly. Exercises class instantiation, the GC
+// the collector runs repeatedly. Exercises type instantiation, the GC
 // threshold/marking, and per-call allocation.
-class Box {
-    v;
+type Box {
+    pub v;
     init(v) {
         this.v = v;
     }

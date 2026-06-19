@@ -21,18 +21,18 @@ type Service with Logger { init() { this["Logger.log"]("hello"); } } // error: I
 trait Logger { fn log(m) { print(m); } }
 type Service with Logger {}
 say s = Service();
-s.log("hello"); // error: Invalid index: Service doesn't have member "log" and doesn't have a getter
+s.log("hello"); // error: Invalid index: Service doesn't have member "log"
 
 // @split
 
 trait Logger { fn log(m) { print(m); } }
 type Service with Logger {}
 say s = Service();
-s["log"]("hello"); // error: Invalid index: Service doesn't have member "log" and doesn't have a getter
+s["log"]("hello"); // error: Invalid index: Service doesn't have member "log"
 
 // @split
 
 trait Logger { fn log(m) { print(m); } }
 type Service with Logger {}
 say s = Service();
-s["Logger.log"]("hello"); // error: Invalid index: Service doesn't have member "Logger.log" and doesn't have a getter
+s["Logger.log"]("hello"); // error: Invalid index: Service doesn't have member "Logger.log"

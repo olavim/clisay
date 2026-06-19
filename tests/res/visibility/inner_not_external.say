@@ -8,4 +8,4 @@ type Widget {
 say w = Widget("ready");
 print(w.read()); // expect: ready
 // An `inner` member is invisible to external code, so the access is "no such member".
-print(w.state); // error: Invalid index: Widget doesn't have member "state" and doesn't have a getter
+print(w.state); // error: Invalid index: Widget doesn't have member "state"

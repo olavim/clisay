@@ -7,4 +7,4 @@ type Service {
 say s = Service();
 print(s.run()); // expect: 7
 // A private method is invisible externally, so the call is "no such member".
-print(s.helper()); // error: Invalid index: Service doesn't have member "helper" and doesn't have a getter
+print(s.helper()); // error: Invalid index: Service doesn't have member "helper"

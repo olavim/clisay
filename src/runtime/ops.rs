@@ -141,7 +141,7 @@ impl Vm {
         self.stack.push(Value::from(dict));
     }
 
-    pub(super) fn op_push_class(&mut self) {
+    pub(super) fn op_push_type(&mut self) {
         let const_idx = self.read_next() as usize;
         let value = self.chunk.constants[const_idx];
         self.stack.push(value);
@@ -165,7 +165,7 @@ impl Vm {
         let name = self.chunk.constants[const_idx].as_object().as_string_ptr();
         let receiver = self.stack.pop();
         let provides = matches!(receiver.kind(), ValueKind::Object(ObjectKind::Instance))
-            && unsafe { &*(*receiver.as_object().as_instance_ptr()).class }.provided.contains(&name);
+            && unsafe { &*(*receiver.as_object().as_instance_ptr()).ty }.provided.contains(&name);
         self.stack.push(Value::from(provides));
     }
 

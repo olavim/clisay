@@ -27,7 +27,7 @@ pub const TAG_CLOSURE: u8 = 3;
 pub const TAG_FUNCTION: u8 = 4;
 pub const TAG_NATIVE_FUNCTION: u8 = 5;
 pub const TAG_BOUND_METHOD: u8 = 6;
-pub const TAG_CLASS: u8 = 7;
+pub const TAG_TYPE: u8 = 7;
 
 const PTR_TAG: usize = 0b111;
 const PTR_TAG_U8: u8 = 0b111;
@@ -119,7 +119,7 @@ objects! {
     NativeFunction => ObjNativeFn,    native_function, as_native_function_ptr,  TAG_NATIVE_FUNCTION, "function";
     BoundMethod    => ObjBoundMethod, bound_method,    as_bound_method_ptr,     TAG_BOUND_METHOD,    "function";
     Closure        => ObjClosure,     closure,         as_closure_ptr,          TAG_CLOSURE,         "function";
-    Type           => ObjType,        class,           as_class_ptr,            TAG_CLASS,           "type";
+    Type           => ObjType,        ty,              as_type_ptr,             TAG_TYPE,            "type";
     Dict           => ObjDict,         dict,            as_dict_ptr,             TAG_HEADER,          "dict";
 }
 
@@ -381,7 +381,7 @@ pub struct ObjType {
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
-    /// `None` for native classes, which have no initializer.
+    /// `None` for native types, which have no initializer.
     pub init_id: Option<MemberId>,
     /// Prebuilt initial instance values (method slots filled, fields `NULL`).
     pub template: Box<[Value]>
@@ -472,18 +472,18 @@ impl GcTraceable for ObjType {
 #[repr(C)]
 pub struct ObjInstance {
     pub header: ObjectHeader,
-    pub class: *mut ObjType,
+    pub ty: *mut ObjType,
     /// Member values indexed directly by member id.
     pub values: Box<[Value]>
 }
 
 impl ObjInstance {
-    pub fn new(class_ptr: *mut ObjType) -> ObjInstance {
-        let class = unsafe { &*class_ptr };
+    pub fn new(type_ptr: *mut ObjType) -> ObjInstance {
+        let ty = unsafe { &*type_ptr };
         ObjInstance {
             header: ObjectHeader::new(ObjectKind::Instance),
-            class: class_ptr,
-            values: class.template.clone()
+            ty: type_ptr,
+            values: ty.template.clone()
         }
     }
 
@@ -500,12 +500,12 @@ impl ObjInstance {
 
 impl GcTraceable for ObjInstance {
     fn fmt(&self) -> String {
-        let class = unsafe { &*self.class };
-        format!("<instance {}>", class.fmt())
+        let ty = unsafe { &*self.ty };
+        format!("<instance {}>", ty.fmt())
     }
 
     fn mark(&self, gc: &mut Gc) {
-        gc.mark_object(self.class);
+        gc.mark_object(self.ty);
         for value in self.values.iter() {
             value.mark(gc);
         }

@@ -36,7 +36,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::Is(idx), expr);
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
-            HirExpr::This | HirExpr::Super => self.emit(Inst::GetLocal(0), expr),
+            HirExpr::This => self.emit(Inst::GetLocal(0), expr),
         };
 
         Ok(())
@@ -63,7 +63,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles a brace construction. Source order: push the class, the `init` args, then the
+    /// Compiles a brace construction. Source order: push the type, the `init` args, then the
     /// brace values; the `Construct` op allocates, sets the brace fields, and runs `init`.
     fn construct_expression(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
         self.expression(callee)?;
@@ -167,12 +167,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, is_dot: bool, op: IndexOp) -> Result<(), anyhow::Error> {
-        if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
-            match self.bindings.member(target) {
-                Member::ById(member_id) => return self.index_member_by_id(target, member_id, op),
-                Member::ByAccessor(accessor_id) => return self.index_member_by_accessor(target, accessor_id, member_expr_id, op),
-                Member::SuperInit(_) => unreachable!("super-call resolution on a member access"),
-            }
+        if matches!(self.hir.get(target), HirExpr::This) {
+            let Member::ById(member_id) = self.bindings.member(target);
+            return self.index_member_by_id(target, member_id, op);
         }
 
         // `.name` (member, `is_dot`) and `[expr]` (data) use the same stack protocol
@@ -212,27 +209,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn index_member_by_accessor(&mut self, target_expr: &HirId<HirExpr>, accessor_id: u8, member_expr_id: &HirId<HirExpr>, op: IndexOp) -> Result<(), anyhow::Error> {
-        self.expression(target_expr)?;
-        self.emit(Inst::GetPropertyId(accessor_id), target_expr);
-
-        self.expression(member_expr_id)?;
-        let arg_count = match op {
-            IndexOp::Load => 1,
-            IndexOp::Store { rhs, .. } => {
-                self.expression(&rhs)?;
-                2
-            }
-        };
-        self.emit(Inst::Call(arg_count), target_expr);
-
-        // A setter call returns a value; drop it in statement position.
-        if let IndexOp::Store { discarded: true, .. } = op {
-            self.emit(Inst::Pop, target_expr);
-        }
-        Ok(())
-    }
-
     fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &Vec<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
         // Fuse `recv.name(args)` into a single INVOKE when the receiver is an
         // arbitrary expression (not `this`/`super`, which have their own member
@@ -249,16 +225,7 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
-        match self.hir.get(callee) {
-            HirExpr::Super => {
-                let Member::SuperInit(member_id) = self.bindings.member(callee) else {
-                    unreachable!("super call resolved to a non-init member");
-                };
-                self.emit(Inst::GetLocal(0), callee);
-                self.emit(Inst::GetPropertyId(member_id), callee);
-            },
-            _ => { self.expression(callee)? }
-        };
+        self.expression(callee)?;
 
         for arg in args {
             self.expression(arg)?;
@@ -268,7 +235,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// If `callee` is `recv.name` where `recv` is not `this`/`super` and `name` is
+    /// If `callee` is `recv.name` where `recv` is not `this` and `name` is
     /// a literal, returns the receiver expression and the member name.
     fn as_method_invoke(&self, callee: &HirId<HirExpr>) -> Option<(HirId<HirExpr>, String)> {
         let HirExpr::Index(target, member, is_dot) = self.hir.get(callee) else { return None };
@@ -277,7 +244,7 @@ impl<'a> Compiler<'a> {
         if !is_dot {
             return None;
         }
-        if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
+        if matches!(self.hir.get(target), HirExpr::This) {
             return None;
         }
         let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) else { return None };

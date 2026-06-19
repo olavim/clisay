@@ -1,1 +1,0 @@
-print(super.x); // error: Cannot use 'super' outside of a type method

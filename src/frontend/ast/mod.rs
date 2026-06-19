@@ -80,7 +80,6 @@ pub enum Expr {
     /// constructed callee (`C` or `C(args)`); the list is the brace field initializers.
     Construct(AstId<Expr>, Vec<(Symbol, AstId<Expr>)>),
     This,
-    Super
 }
 
 pub struct FieldInit {
@@ -117,21 +116,18 @@ pub struct TypeDecl {
     /// Delegation fields declared via `field gives Trait;`: `(field, trait)`. The field provides
     /// `Trait` by forwarding, so for example `is Trait` is true.
     pub gives: Vec<(Symbol, Symbol)>,
-    pub superclass: Option<Symbol>,
-    /// The initializer's runtime name (`"{class}.init"`), used whether the init is
+    /// The initializer's runtime name (`"{type}.init"`), used whether the init is
     /// declared or synthesised during lowering.
     pub init_name: Symbol,
-    /// The declared initializer (`Stmt::Fn`). When the class has none lowering
+    /// The declared initializer (`Stmt::Fn`). When the type has none lowering
     /// synthesises a virtual init in that case.
     pub init: Option<AstId<Stmt>>,
-    pub getter: Option<AstId<Stmt>>,
-    pub setter: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,
     /// Members (fields/methods) declared `pub` are externally accessible. Members not
-    /// listed are private or `inner`, reachable only through `this`/`super`.
+    /// listed are private or `inner`, reachable only through `this`.
     pub pub_members: HashSet<Symbol>,
     /// Members declared `inner`: object-internal (host and sibling traits but not external code).
     pub inner_members: HashSet<Symbol>,

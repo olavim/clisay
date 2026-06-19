@@ -91,8 +91,6 @@ impl<'a> Lowerer<'a> {
         self.lower_gives(type_id, &host_methods, type_pos, &mut composed)?;
 
         let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
-        let getter = decl.getter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
-        let setter = decl.setter.as_ref().map(|stmt| self.stmt(stmt)).transpose()?;
 
         // Restore the previous composer context so sibling types in the same scope
         // don't see this type's traits or aliases.
@@ -108,10 +106,7 @@ impl<'a> Lowerer<'a> {
 
         Ok(HirTypeDecl {
             name: decl.name,
-            supertype: decl.superclass,
             init,
-            getter,
-            setter,
             fields: composed.fields,
             methods: composed.methods,
             method_traits: composed.method_traits,
@@ -136,10 +131,7 @@ impl<'a> Lowerer<'a> {
 
         Ok(HirTypeDecl {
             name: decl.name,
-            supertype: None,
             init,
-            getter: None,
-            setter: None,
             fields: composed.fields,
             methods: composed.methods,
             method_traits: composed.method_traits,

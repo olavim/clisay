@@ -29,15 +29,11 @@ pub enum Place {
     Global(Symbol),
 }
 
-/// How a `this`/`super` member access (`this.x`, `super.m`, `super(...)`) resolves.
+/// How a `this` member access (`this.x`, `this["x"]`) resolves: a direct member slot
+/// (`GET`/`SET_PROPERTY_ID`).
 #[derive(Clone, Copy)]
 pub enum Member {
-    /// A direct member slot (`GET`/`SET_PROPERTY_ID`).
     ById(u8),
-    /// A getter/setter call: the accessor's member id.
-    ByAccessor(u8),
-    /// A `super(...)` call: the supertype initializer's member id.
-    SuperInit(u8),
 }
 
 /// A local cleanup emitted when a scope exits, top of stack first.
@@ -58,22 +54,15 @@ pub enum FnKind {
 #[derive(Clone)]
 pub struct TypeLayout {
     pub name: Symbol,
-    /// Supertype name
-    pub supertype: Option<Symbol>,
-    /// Field and regular-method names to id. Includes inherited members.
+    /// Field and regular-method names to id.
     pub members: FnvHashMap<Symbol, TypeMember>,
-    /// Field member ids. Includes inherited members.
+    /// Field member ids.
     pub fields: Vec<u8>,
     /// Member ids that are **not** externally accessible (private or `inner`).
-    /// Includes inherited non-public members. Consumed by codegen to omit these
-    /// from the runtime name map.
+    /// Consumed by codegen to omit these from the runtime name map.
     pub non_public: IntSet<u8>,
     pub member_count: u8,
 
-    /// Member id of the getter function.
-    pub getter_id: Option<u8>,
-    /// Member id of the setter function.
-    pub setter_id: Option<u8>,
     /// Member id of the initializer function.
     pub init_id: u8,
     /// The initializer's parameter count (the paren arity of a construction).
@@ -85,15 +74,12 @@ pub struct TypeLayout {
 
 impl TypeLayout {
     /// A layout with no members yet, ready to be filled by a type/trait declaration.
-    fn empty(name: Symbol, supertype: Option<Symbol>) -> TypeLayout {
+    fn empty(name: Symbol) -> TypeLayout {
         TypeLayout {
             name,
-            supertype,
             members: FnvHashMap::default(),
             fields: Vec::new(),
             non_public: IntSet::default(),
-            getter_id: None,
-            setter_id: None,
             init_id: 0,
             member_count: 0,
             init_arity: 0,
@@ -179,7 +165,6 @@ struct FnFrame {
 
 struct TypeFrame {
     layout: TypeLayout,
-    supertype: Option<TypeLayout>,
     /// Per trait, its private members' plain name -> renamed slot name (from the HIR). The
     /// resolver scopes a trait body's accesses to its own trait's entry. See `lower::traits`.
     trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
@@ -486,7 +471,6 @@ impl<'a> Resolver<'a> {
                 self.construct(expr, &callee, &args, &brace)?;
             },
             HirExpr::This => self.require_type(expr)?,
-            HirExpr::Super => { self.require_supertype(expr)?; },
         };
         Ok(())
     }
@@ -555,7 +539,7 @@ impl<'a> Resolver<'a> {
             },
             HirExpr::Index(obj, member, _) => {
                 let (obj, member) = (*obj, *member);
-                if matches!(self.hir.get(&obj), HirExpr::This | HirExpr::Super) {
+                if matches!(self.hir.get(&obj), HirExpr::This) {
                     self.this_member_access(&obj, &member, true)?;
                     self.expression(rhs)?;
                 } else {
@@ -571,7 +555,7 @@ impl<'a> Resolver<'a> {
 
     /// Resolves an index load (`a[b]`, `a.b`).
     fn index(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
+        if matches!(self.hir.get(target), HirExpr::This) {
             return self.this_member_access(target, member, false);
         }
 
@@ -580,46 +564,24 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// Resolves a `this`/`super` member access, plus the member expression that becomes
-    /// the getter/setter call's argument.
-    fn this_member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_store: bool) -> Result<(), anyhow::Error> {
-        self.type_member(target, member, is_store)?;
-        if let Member::ByAccessor(_) = self.bindings.members[target] {
-            self.expression(member)?;
-        }
-        Ok(())
-    }
+    /// Resolves a `this` member access (`this.x`, `this["x"]`) to a member id.
+    fn this_member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, _is_store: bool) -> Result<(), anyhow::Error> {
+        self.require_type(target)?;
+        let target_type = self.current_type().clone();
 
-    /// Resolves a `this`/`super` member access.
-    fn type_member(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_store: bool) -> Result<(), anyhow::Error> {
-        let is_super = matches!(self.hir.get(target), HirExpr::Super);
+        // Members on `this` are statically known. A string-literal key names a member; a
+        // computed `this[expr]` has no statically-known member and is rejected.
         let member_name = match self.hir.get(member) {
             HirExpr::Literal(HirLiteral::String(name)) => self.hir.symbol_of(name),
-            _ => None,
-        };
-
-        let target_type = if is_super {
-            self.require_supertype(target)?
-        } else {
-            self.require_type(target)?;
-            self.current_type().clone()
+            HirExpr::Literal(_) => compiler_error!(self, target, "Invalid index: only member names index an instance"),
+            _ => compiler_error!(self, target, "Invalid index: 'this' has no computed member; member names are statically known"),
         };
 
         // Inside a trait body, `this.x` for the trait's own private member resolves to its
         // per-trait slot, otherwise the plain name.
-        let lookup = member_name.map(|name| match is_super {
-            false => self.private_member(name).unwrap_or(name),
-            true => name,
-        });
+        let lookup = member_name.map(|name| self.private_member(name).unwrap_or(name));
         if let Some(member_id) = lookup.and_then(|name| target_type.resolve_id(name)) {
             self.bindings.members.insert(*target, Member::ById(member_id));
-            return Ok(());
-        }
-
-        let accessor = if is_store { target_type.setter_id } else { target_type.getter_id };
-
-        if let Some(accessor_id) = accessor {
-            self.bindings.members.insert(*target, Member::ByAccessor(accessor_id));
             return Ok(());
         }
 
@@ -635,26 +597,20 @@ impl<'a> Resolver<'a> {
         // A name that resolved to nothing but is some trait's private member is reported as
         // private (it exists, but only inside its declaring trait), not as missing.
         if let Some(name) = member_name {
-            if !is_super { self.deny_private(name, target)?; }
+            self.deny_private(name, target)?;
         }
 
         let type_name = self.hir.text(target_type.name);
-        let accessor_name = if is_store { "setter" } else { "getter" };
         if let Some(member_name) = member_name {
             let member_name = self.hir.text(member_name);
-            compiler_error!(self, target, "Invalid index: {type_name} doesn't have member {member_name} and doesn't have a {accessor_name}")
+            compiler_error!(self, target, "Invalid index: {type_name} doesn't have member {member_name}")
         } else {
-            compiler_error!(self, target, "Invalid index: {type_name} doesn't have a {accessor_name}")
+            compiler_error!(self, target, "Invalid index: {type_name} doesn't have that member")
         }
     }
 
     fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
-        if matches!(self.hir.get(callee), HirExpr::Super) {
-            let supertype = self.require_supertype(callee)?;
-            self.bindings.members.insert(*callee, Member::SuperInit(supertype.init_id));
-        } else {
-            self.expression(callee)?;
-        }
+        self.expression(callee)?;
         for arg in args {
             self.expression(arg)?;
         }
@@ -689,16 +645,6 @@ impl<'a> Resolver<'a> {
             compiler_error!(self, node, "Cannot use 'this' outside of a type method");
         }
         Ok(())
-    }
-
-    fn require_supertype(&self, node: &HirId<HirExpr>) -> Result<TypeLayout, anyhow::Error> {
-        let Some(frame) = self.type_frames.last() else {
-            compiler_error!(self, node, "Cannot use 'super' outside of a type method");
-        };
-        let Some(supertype) = &frame.supertype else {
-            compiler_error!(self, node, "Cannot use 'super' outside of a child type method");
-        };
-        Ok(supertype.clone())
     }
 
     fn current_type(&self) -> &TypeLayout {
@@ -741,22 +687,12 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// Builds a type's runtime [`TypeLayout`], assigning each member its id: inherited members
-    /// first (ids preserved), then own fields, methods, accessors, and the initializer.
-    fn build_layout(&self, decl: &HirTypeDecl, supertype: Option<&TypeLayout>) -> TypeLayout {
-        let mut layout = TypeLayout::empty(decl.name, decl.supertype);
+    /// Builds a type's runtime [`TypeLayout`], assigning each member its id: own fields,
+    /// methods, then the initializer.
+    fn build_layout(&self, decl: &HirTypeDecl) -> TypeLayout {
+        let mut layout = TypeLayout::empty(decl.name);
 
         let mut next_member_id: u8 = 0;
-        if let Some(supertype) = supertype {
-            layout.members = supertype.members.clone();
-            layout.fields = supertype.fields.clone();
-            layout.non_public = supertype.non_public.clone();
-            // Accessors are inherited unless overridden below; the initializer is not.
-            layout.getter_id = supertype.getter_id;
-            layout.setter_id = supertype.setter_id;
-            next_member_id = supertype.member_count;
-        }
-
         for field in &decl.fields {
             layout.members.insert(*field, TypeMember::Field(next_member_id));
             layout.fields.push(next_member_id);
@@ -771,14 +707,6 @@ impl<'a> Resolver<'a> {
             if !decl.pub_members.contains(&method.name) {
                 layout.non_public.insert(next_member_id);
             }
-            next_member_id += 1;
-        }
-        if decl.getter.is_some() {
-            layout.getter_id = Some(next_member_id);
-            next_member_id += 1;
-        }
-        if decl.setter.is_some() {
-            layout.setter_id = Some(next_member_id);
             next_member_id += 1;
         }
         // Every type has its own initializer (declared or virtual).
@@ -852,11 +780,10 @@ impl<'a> Resolver<'a> {
 
     /// Pushes the type frame that method bodies resolve against, deriving the private-name set
     /// (plain names of every trait's private members) from the declaration's per-trait map.
-    fn push_type_frame(&mut self, layout: TypeLayout, supertype: Option<TypeLayout>, decl: &HirTypeDecl) {
+    fn push_type_frame(&mut self, layout: TypeLayout, decl: &HirTypeDecl) {
         let private_names = decl.trait_privates.values().flat_map(|m| m.keys().copied()).collect();
         self.type_frames.push(TypeFrame {
             layout,
-            supertype,
             trait_privates: decl.trait_privates.clone(),
             private_names,
         });
@@ -867,28 +794,12 @@ impl<'a> Resolver<'a> {
         self.bindings.slots.insert(*stmt, slot);
         self.enter_scope();
 
-        let supertype = match &decl.supertype {
-            Some(super_name) => Some(self.types.get(super_name)
-                .ok_or(anyhow!("Type '{}' not declared", self.hir.text(*super_name)))?
-                .clone()),
-            None => None,
-        };
-
-        let layout = self.build_layout(decl, supertype.as_ref());
-        self.push_type_frame(layout.clone(), supertype, decl);
+        let layout = self.build_layout(decl);
+        self.push_type_frame(layout.clone(), decl);
 
         // Method bodies resolve under the declaring trait's private scope (host members: none).
         // Save/restore around the whole type so a nested type declaration doesn't leak its scope.
         let outer_trait = self.current_trait.take();
-
-        if let Some(stmt_id) = &decl.getter {
-            let getter = self.fn_decl(stmt_id);
-            self.function(getter, FnKind::Method)?;
-        }
-        if let Some(stmt_id) = &decl.setter {
-            let setter = self.fn_decl(stmt_id);
-            self.function(setter, FnKind::Method)?;
-        }
 
         let init = self.fn_decl(&decl.init);
         self.function(init, FnKind::Initializer)?;
@@ -916,19 +827,19 @@ impl<'a> Resolver<'a> {
         self.enter_scope();
 
         // A validation layout: every surface name (and every renamed private slot) resolves to a throwaway id.
-        let mut surface = TypeLayout::empty(decl.name, None);
+        let mut layout = TypeLayout::empty(decl.name);
         let mut id: u8 = 0;
         for name in &decl.surface {
-            surface.members.entry(*name).or_insert(TypeMember::Method(id));
+            layout.members.entry(*name).or_insert(TypeMember::Method(id));
             id = id.wrapping_add(1);
         }
         for renamed in decl.trait_privates.values().flat_map(|m| m.values()) {
-            surface.members.entry(*renamed).or_insert(TypeMember::Method(id));
+            layout.members.entry(*renamed).or_insert(TypeMember::Method(id));
             id = id.wrapping_add(1);
         }
-        surface.member_count = id;
+        layout.member_count = id;
 
-        self.push_type_frame(surface, None, decl);
+        self.push_type_frame(layout, decl);
 
         let outer_trait = std::mem::replace(&mut self.current_trait, Some(decl.name));
         let was_validating = std::mem::replace(&mut self.validating_trait, true);

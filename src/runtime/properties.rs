@@ -2,15 +2,15 @@ use super::*;
 
 impl Vm {
     #[inline]
-    fn resolve_cached_class_property(&mut self, class_ptr: *mut ObjType, prop: *mut ObjString) -> Option<TypeMember> {
+    fn resolve_cached_type_property(&mut self, type_ptr: *mut ObjType, prop: *mut ObjString) -> Option<TypeMember> {
         let site = self.ip as usize;
         let slot = (site >> 4) & (INDEX_CACHE_SIZE - 1);
         let entry = unsafe { self.index_cache.get_unchecked_mut(slot) };
-        if entry.site == site && entry.class == class_ptr {
+        if entry.site == site && entry.ty == type_ptr {
             return Some(entry.member);
         }
-        let member = unsafe { &*class_ptr }.resolve(prop)?;
-        *entry = IndexCache { site, class: class_ptr, member };
+        let member = unsafe { &*type_ptr }.resolve(prop)?;
+        *entry = IndexCache { site, ty: type_ptr, member };
         Some(member)
     }
 
@@ -34,9 +34,9 @@ impl Vm {
         let receiver = self.stack.peek(arg_count);
 
         if matches!(receiver.kind(), ValueKind::Object(ObjectKind::Instance)) {
-            let class_ptr = unsafe { (*receiver.as_object().as_instance_ptr()).class };
-            if let Some(TypeMember::Method(id)) = self.resolve_cached_class_property(class_ptr, name) {
-                let method = unsafe { &*class_ptr }.get_method(id);
+            let type_ptr = unsafe { (*receiver.as_object().as_instance_ptr()).ty };
+            if let Some(TypeMember::Method(id)) = self.resolve_cached_type_property(type_ptr, name) {
+                let method = unsafe { &*type_ptr }.get_method(id);
                 if method.tag() == objects::TAG_FUNCTION {
                     return self.invoke_method(method, arg_count);
                 }
@@ -111,27 +111,14 @@ impl Vm {
         Ok(())
     }
 
-    fn invoke_accessor(&mut self, accessor: Object, arg_count: usize) -> Result<(), anyhow::Error> {
-        match accessor.tag() {
-            objects::TAG_FUNCTION => {
-                let func_ptr = accessor.as_function_ptr();
-                let closure = self.create_closure(func_ptr);
-                let ip_start = unsafe { (*func_ptr).ip_start };
-                self.push_frame(closure.as_closure_ptr(), self.stack.offset(arg_count), ip_start)
-            },
-            objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, accessor.as_native_function_ptr()),
-            _ => unsafe { std::hint::unreachable_unchecked() }
-        }
-    }
-
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
         let instance = unsafe { &*instance_ptr };
-        let class = unsafe { &*instance.class };
+        let ty = unsafe { &*instance.ty };
 
-        match self.resolve_cached_class_property(instance.class, prop) {
+        match self.resolve_cached_type_property(instance.ty, prop) {
             Some(TypeMember::Field(id)) => Some(unsafe { (*instance_ptr).get(id) }),
             Some(TypeMember::Method(id)) => {
-                let method = class.get_method(id);
+                let method = ty.get_method(id);
                 Some(self.bind_method(instance_ptr.into(), method))
             },
             None => None
@@ -146,13 +133,13 @@ impl Vm {
         }
     }
 
-    fn get_native_type_index(&mut self, native_class_ptr: *mut ObjType, target: Value, prop: Value) -> Result<(), anyhow::Error> {
-        let native_class = unsafe { &*native_class_ptr };
+    fn get_native_type_index(&mut self, native_type_ptr: *mut ObjType, target: Value, prop: Value) -> Result<(), anyhow::Error> {
+        let native_type = unsafe { &*native_type_ptr };
 
         if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
-            let Some(method) = native_class.resolve_method(prop.as_object().as_string_ptr()) else {
-                return match native_class_ptr {
-                    _ if native_class_ptr == self.native_types.array => self.error(format!("Invalid array index: {}", prop.fmt())),
+            let Some(method) = native_type.resolve_method(prop.as_object().as_string_ptr()) else {
+                return match native_type_ptr {
+                    _ if native_type_ptr == self.native_types.array => self.error(format!("Invalid array index: {}", prop.fmt())),
                     _ => self.error(format!("Invalid index: {} does not have method {}", target.fmt(), prop.fmt())),
                 }
             };
@@ -162,15 +149,15 @@ impl Vm {
             return Ok(());
         }
 
-        let getter = native_class.getter().unwrap();
+        let getter = native_type.getter().unwrap();
         self.stack.push(target);
         self.stack.push(prop);
         return self.call_native(1, getter.as_native_function_ptr());
     }
 
-    fn set_native_type_index(&mut self, native_class_ptr: *mut ObjType, target: Value, prop: Value) -> Result<(), anyhow::Error> {
-        let native_class = unsafe { &*native_class_ptr };
-        let setter = native_class.setter().unwrap();
+    fn set_native_type_index(&mut self, native_type_ptr: *mut ObjType, target: Value, prop: Value) -> Result<(), anyhow::Error> {
+        let native_type = unsafe { &*native_type_ptr };
+        let setter = native_type.setter().unwrap();
         let value = self.stack.pop();
         self.stack.push(target);
         self.stack.push(prop);
@@ -180,28 +167,28 @@ impl Vm {
 
     fn get_instance_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let instance_ref = target.as_object().as_instance_ptr();
+        let ty = unsafe { &*(*instance_ref).ty };
 
-        if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
-            let prop_str = prop.as_object().as_string_ptr();
-            // Only externally-visible members are in the name map: private/`inner` members aren't
-            // found here (internal `this.x` resolves to a member id and never reaches this path).
-            if let Some(value) = self.get_instance_property(instance_ref, prop_str) {
-                self.stack.push(value);
-                return Ok(());
-            }
+        // A type instance is indexed only by member name (a string). `inst["x"]` reads the same
+        // member as `inst.x`; any non-string key is an error (instances have no keyed data).
+        if !matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
+            return self.error(format!(
+                "Invalid index: {} is indexed by member name, not {}",
+                unsafe { &*ty.name }.value, prop.fmt()
+            ));
         }
 
-        let class = unsafe { &*(*instance_ref).class };
-
-        if let Some(getter) = class.getter() {
-            self.stack.push(target);
-            self.stack.push(prop);
-            return self.invoke_accessor(getter, 1);
+        let prop_str = prop.as_object().as_string_ptr();
+        // Only externally-visible members are in the name map: private/`inner` members aren't
+        // found here (internal `this.x` resolves to a member id and never reaches this path).
+        if let Some(value) = self.get_instance_property(instance_ref, prop_str) {
+            self.stack.push(value);
+            return Ok(());
         }
 
         self.error(format!(
-            "Invalid index: {} doesn't have member {} and doesn't have a getter",
-            unsafe { &*class.name }.value,
+            "Invalid index: {} doesn't have member {}",
+            unsafe { &*ty.name }.value,
             prop.fmt()
         ))
     }
@@ -209,35 +196,29 @@ impl Vm {
     fn set_instance_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
         let instance_ref = target.as_object().as_instance_ptr();
         let instance = unsafe { &mut *instance_ref };
-        let class = unsafe { &*instance.class };
+        let ty = unsafe { &*instance.ty };
 
-        if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
-            let member = class.resolve(prop.as_object().as_string_ptr());
-
-            if let Some(member) = member {
-                if let TypeMember::Field(id) = member {
-                    let value = self.stack.peek(0);
-                    instance.set(id, value);
-                    return Ok(());
-                }
-
-                return self.error(format!("Cannot assign to method '{}'", prop.as_object().as_string()));
-            }
+        // Same name-only rule as reads: a non-string key has no member to assign.
+        if !matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
+            return self.error(format!(
+                "Invalid index: {} is indexed by member name, not {}",
+                unsafe { &*ty.name }.value, prop.fmt()
+            ));
         }
 
-        if let Some(setter) = class.setter() {
-            let value = self.stack.pop();
-            self.stack.push(target);
-            self.stack.push(prop);
-            self.stack.push(value);
-            return self.invoke_accessor(setter, 2);
+        match ty.resolve(prop.as_object().as_string_ptr()) {
+            Some(TypeMember::Field(id)) => {
+                let value = self.stack.peek(0);
+                instance.set(id, value);
+                Ok(())
+            },
+            Some(TypeMember::Method(_)) => self.error(format!("Cannot assign to method '{}'", prop.as_object().as_string())),
+            None => self.error(format!(
+                "Invalid index: {} doesn't have member {}",
+                unsafe { &*ty.name }.value,
+                prop.fmt()
+            )),
         }
-
-        self.error(format!(
-            "Invalid index: {} doesn't have member {} and doesn't have a setter",
-            unsafe { &*class.name }.value,
-            prop.fmt()
-        ))
     }
 
     pub(super) fn op_set_property_by_id_pop(&mut self) -> Result<(), anyhow::Error> {
@@ -323,9 +304,9 @@ impl Vm {
 
     /// Resolves `dict.name` to a bound method of the `dict` method surface.
     fn get_dict_method(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
-        let dict_class = unsafe { &*self.native_types.dict };
+        let dict_type = unsafe { &*self.native_types.dict };
         if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
-            if let Some(method) = dict_class.resolve_method(prop.as_object().as_string_ptr()) {
+            if let Some(method) = dict_type.resolve_method(prop.as_object().as_string_ptr()) {
                 let bound = self.alloc(ObjBoundMethod::new(target, method));
                 self.stack.push(Value::from(bound));
                 return Ok(());
