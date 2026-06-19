@@ -10,14 +10,19 @@ pub enum Operand {
     Const,
     /// A `u16` bytecode offset.
     Jump,
+    /// A `u8` count followed by that many raw bytes. Variable length; the
+    /// disassembler reads the count then the bytes.
+    List,
 }
 
 impl Operand {
-    /// The number of bytes this operand occupies in the encoded instruction.
-    pub fn size(&self) -> usize {
+    /// The fixed number of bytes this operand occupies, or `None` for a
+    /// variable-length operand (`List`), which the reader sizes from its count.
+    pub fn size(&self) -> Option<usize> {
         match self {
-            Operand::Byte | Operand::Local | Operand::Const => 1,
-            Operand::Jump => 2,
+            Operand::Byte | Operand::Local | Operand::Const => Some(1),
+            Operand::Jump => Some(2),
+            Operand::List => None,
         }
     }
 }
@@ -56,6 +61,7 @@ macro_rules! opcodes {
 
 opcodes! {
     Call => CALL(Byte),
+    Construct => CONSTRUCT(List, Byte),
     Invoke => INVOKE(Const, Byte),
     Jump => JUMP(Jump),
     JumpIfFalse => JUMP_IF_FALSE(Jump),

@@ -15,6 +15,7 @@ pub struct Label(usize);
 pub enum Inst {
     // Control flow
     Call(u8),
+    Construct(u16, u8),
     Invoke(u8, u8),
     Jump(Label),
     JumpIfFalse(Label),
@@ -100,6 +101,9 @@ pub struct Ir {
     labels: Vec<Option<usize>>,
     /// Function entry points.
     entries: Vec<(*mut ObjFn, Label)>,
+    /// Brace-construction field-id lists, referenced by index from `Inst::Construct`.
+    /// Kept out of the instruction so `Inst` stays `Copy`.
+    construct_fields: Vec<Vec<u8>>,
 }
 
 impl Ir {
@@ -111,7 +115,20 @@ impl Ir {
             constant_indices: FnvHashMap::default(),
             labels: Vec::new(),
             entries: Vec::new(),
+            construct_fields: Vec::new(),
         }
+    }
+
+    pub fn add_construct_fields(&mut self, fields: Vec<u8>) -> Result<u16, anyhow::Error> {
+        if self.construct_fields.len() >= u16::MAX as usize {
+            bail!("Too many brace constructions");
+        }
+        self.construct_fields.push(fields);
+        Ok((self.construct_fields.len() - 1) as u16)
+    }
+
+    pub fn construct_fields(&self, idx: u16) -> &[u8] {
+        &self.construct_fields[idx as usize]
     }
 
     pub fn emit(&mut self, inst: Inst, pos: &SourcePosition) {
@@ -194,6 +211,6 @@ impl Ir {
             .map(|target| target.map(|idx| old_to_new[idx]))
             .collect();
 
-        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, entries: self.entries }
+        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, entries: self.entries, construct_fields: self.construct_fields }
     }
 }

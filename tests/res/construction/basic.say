@@ -1,0 +1,20 @@
+// Brace construction sets `pub` fields by name. With no init, all pub fields are brace-args.
+type Point { pub x; pub y; }
+say p = Point { x: 1, y: 2 };
+print(p.x); // expect: 1
+print(p.y); // expect: 2
+
+// The paren part feeds init; the brace sets a pub field the init does not assign.
+type Tagged {
+    pub tag;
+    pub count;
+    init(c) { this.count = c; }
+}
+say t = Tagged(5) { tag: "hi" };
+print(t.tag);   // expect: hi
+print(t.count); // expect: 5
+
+// Empty brace is allowed; shorthand `{ x }` means `{ x: x }`.
+say x = 9;
+say q = Point { x, y: 0 };
+print(q.x); // expect: 9

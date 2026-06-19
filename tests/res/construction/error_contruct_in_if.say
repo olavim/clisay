@@ -1,0 +1,2 @@
+type T { pub x; }
+if T { x: true }.x { } // error: Unexpected token: Expected ';' but found ':'

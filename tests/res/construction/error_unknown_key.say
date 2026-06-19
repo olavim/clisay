@@ -1,0 +1,2 @@
+type Point { pub x; pub y; }
+say p = Point { x: 1, z: 3 }; // error: 'Point' has no field 'z'
