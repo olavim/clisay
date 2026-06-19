@@ -11,7 +11,7 @@ thread_local! {
 
 macro_rules! tokens {
     ($($token:ident => $lexeme:literal),*) => {
-        #[derive(Clone, Copy, PartialEq)]
+        #[derive(Clone, Copy, PartialEq, Debug)]
         pub enum TokenType {
             Identifier,
             NumericLiteral, StringLiteral,
@@ -53,13 +53,14 @@ macro_rules! tokens {
     };
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ContextualKeyword {
     With,
     Req,
     Gives,
     Pub,
     Inner,
+    Mut,
 }
 
 impl ContextualKeyword {
@@ -70,6 +71,7 @@ impl ContextualKeyword {
             "gives" => ContextualKeyword::Gives,
             "pub" => ContextualKeyword::Pub,
             "inner" => ContextualKeyword::Inner,
+            "mut" => ContextualKeyword::Mut,
             _ => return None,
         })
     }
@@ -83,6 +85,7 @@ impl fmt::Display for ContextualKeyword {
             ContextualKeyword::Gives => "gives",
             ContextualKeyword::Pub => "pub",
             ContextualKeyword::Inner => "inner",
+            ContextualKeyword::Mut => "mut",
         })
     }
 }
@@ -158,6 +161,7 @@ tokens! {
     LeftBracket => "[",
     RightBracket => "]",
     Exclamation => "!",
+    Question => "?",
     Semicolon => ";",
     Colon => ":",
     Comma => ",",
