@@ -80,17 +80,49 @@ pub enum Expr {
     /// constructed callee (`C` or `C(args)`); the list is the brace field initializers.
     Construct(AstId<Expr>, Vec<(Symbol, AstId<Expr>)>),
     This,
+    /// Safe navigation `a?.b` / `a?[i]`: short-circuits to null when the target is null.
+    /// `SafeAccess(target, index, is_dot)`.
+    SafeAccess(AstId<Expr>, AstId<Expr>, bool),
+    /// The non-null assertion `a!`: yields the value, checking against null at runtime.
+    Assert(AstId<Expr>),
 }
 
 pub struct FieldInit {
     pub name: Symbol,
-    pub value: Option<AstId<Expr>>
+    pub value: Option<AstId<Expr>>,
+    /// Declared nullable with a `?` marker (`say x?`). Non-null otherwise.
+    pub nullable: bool,
+    /// Declared reassignable with a `mut` modifier (`say mut x`). Immutable otherwise.
+    pub mutable: bool,
+}
+
+/// A function/method/lambda parameter: the bound identifier plus its declared
+/// nullability and mutability markers (`fn f(mut x?)`).
+pub struct Param {
+    pub name: AstId<Expr>,
+    pub nullable: bool,
+    pub mutable: bool,
+}
+
+/// A function/method/lambda's declared return shape, the postfix marker after the
+/// parameter list. Lambdas carry `Inferred` since their shape comes from the body.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReturnShape {
+    /// `fn f()!` returns a non-null value.
+    NonNull,
+    /// `fn f()?` returns a nullable value.
+    Nullable,
+    /// `fn f()` returns no value.
+    Void,
+    /// A lambda, whose return shape is inferred from its body.
+    Inferred,
 }
 
 pub struct FnDecl {
     pub name: Symbol,
-    pub params: Vec<AstId<Expr>>,
-    pub body: AstId<Expr>
+    pub params: Vec<Param>,
+    pub body: AstId<Expr>,
+    pub ret: ReturnShape,
 }
 
 /// A `catch (param) { … }` clause of a try statement.
@@ -108,8 +140,8 @@ pub struct TypeDecl {
     pub with_traits: Vec<Symbol>,
     /// Traits depended on via `req T1, T2, ...`.
     pub req_traits: Vec<Symbol>,
-    /// Method holes declared via `req fn f(params);`.
-    pub req_fns: Vec<(Symbol, usize)>,
+    /// Method holes declared via `req fn f(params);`: `(name, arity, return shape)`.
+    pub req_fns: Vec<(Symbol, usize, ReturnShape)>,
     /// Member holes declared via `req name;`: a field/member the host must provide, allowing
     /// usage of `this.name` in the trait's bodies.
     pub req_members: Vec<Symbol>,
@@ -123,6 +155,10 @@ pub struct TypeDecl {
     /// synthesises a virtual init in that case.
     pub init: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
+    /// Fields declared nullable with a `?` marker (`next?;`).
+    pub nullable_fields: HashSet<Symbol>,
+    /// Fields declared reassignable with a `mut` modifier (`mut count;`).
+    pub mut_fields: HashSet<Symbol>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,

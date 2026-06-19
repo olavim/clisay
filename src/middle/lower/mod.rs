@@ -9,7 +9,7 @@ mod traits;
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol, TypeDecl};
+use crate::ast::{Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, Operator, Param, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
     BinOp, Hir, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirStmt, UnOp,
 };
@@ -175,6 +175,10 @@ impl<'a> Lowerer<'a> {
                 HirExpr::Construct(callee, args, brace)
             },
             Expr::This => HirExpr::This,
+            // Safe navigation and the non-null assertion belong to the nullability layer.
+            // It lowers them to dedicated HIR nodes. Not yet supported.
+            Expr::SafeAccess(_, _, _) => return Err(self.error("safe navigation (`?.`/`?[`) is not yet supported".to_string(), expr_id)),
+            Expr::Assert(_) => return Err(self.error("the non-null assertion (`!`) is not yet supported".to_string(), expr_id)),
         };
         Ok(self.hir.add(kind, pos))
     }
@@ -191,6 +195,8 @@ impl<'a> Lowerer<'a> {
             },
             Operator::MemberAccess => HirExpr::Index(self.expr(left)?, self.expr(right)?, true),
             Operator::Comma => return Err(self.error("Unexpected ','", right)),
+            // The null-coalescing operator is part of the nullability layer, lowered later.
+            Operator::Coalesce => return Err(self.error("the null-coalescing operator (`??`) is not yet supported", right)),
             _ => HirExpr::Binary(lower_binop(op), self.expr(left)?, self.expr(right)?),
         };
         Ok(self.hir.add(kind, pos))
@@ -218,10 +224,16 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// Lowers a parameter list to its identifier exprs. Markers are threaded onto
+    /// declarations elsewhere. Here we only bind the names.
+    pub(super) fn param_names(&mut self, params: &[Param]) -> Result<Vec<HirId<HirExpr>>, anyhow::Error> {
+        params.iter().map(|p| self.expr(&p.name)).collect()
+    }
+
     fn fn_decl(&mut self, decl: &FnDecl) -> Result<HirFnDecl, anyhow::Error> {
         Ok(HirFnDecl {
             name: decl.name,
-            params: self.exprs(&decl.params)?,
+            params: self.param_names(&decl.params)?,
             body: self.expr(&decl.body)?,
         })
     }

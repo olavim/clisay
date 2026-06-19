@@ -190,8 +190,8 @@ impl<'a> Resolver<'a> {
     fn visit_fn(&mut self, decl: &FnDecl) -> Result<(), anyhow::Error> {
         self.push_scope();
         for param in &decl.params {
-            let Expr::Identifier(name) = self.ast.get(param) else { unreachable!("a parameter is an identifier") };
-            self.declare(*name, param)?;
+            let Expr::Identifier(name) = self.ast.get(&param.name) else { unreachable!("a parameter is an identifier") };
+            self.declare(*name, &param.name)?;
         }
         self.visit_expr(&decl.body)?;
         self.pop_scope();
@@ -258,6 +258,8 @@ impl<'a> Resolver<'a> {
                 for (_, value) in fields { self.visit_expr(value)?; }
             },
             Expr::This => {},
+            Expr::SafeAccess(target, member, _) => { self.visit_expr(target)?; self.visit_expr(member)?; },
+            Expr::Assert(operand) => self.visit_expr(operand)?,
         }
         Ok(())
     }

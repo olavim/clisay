@@ -17,7 +17,7 @@ impl<'a> Lowerer<'a> {
             Some(init_id) => {
                 let init_pos = self.ast.pos(init_id).clone();
                 let fn_decl = self.ast_fn(init_id);
-                let params = self.exprs(&fn_decl.params)?;
+                let params = self.param_names(&fn_decl.params)?;
                 let stmts = self.ast_block(&fn_decl.body);
                 (params, stmts, init_pos)
             },

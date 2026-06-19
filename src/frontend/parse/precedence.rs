@@ -33,6 +33,11 @@ impl Operator {
 
         let op = loop {
             current_op = match (&current_op, &stream.peek(peek).kind) {
+                (None, TokenType::Question) if stream.peek(1).kind == TokenType::Question => {
+                    peek += 1;
+                    Some(Operator::Coalesce)
+                },
+
                 (None, TokenType::LessThan) => Some(Operator::LessThan),
                 (None, TokenType::GreaterThan) => Some(Operator::GreaterThan),
                 (None, TokenType::Plus) => Some(Operator::Add),
@@ -84,9 +89,13 @@ impl Operator {
     /// Parses a postfix operator on top of the token stream.
     /// The token stream is advanced only if a valid postfix operator is found.
     pub fn parse_postfix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
-        let op = match &stream.peek(0).kind {
-            TokenType::LeftParen => Operator::Call,
-            TokenType::LeftBracket => Operator::Index,
+        let (op, advance) = match (&stream.peek(0).kind, &stream.peek(1).kind) {
+            (TokenType::LeftParen, _) => (Operator::Call, 1),
+            (TokenType::LeftBracket, _) => (Operator::Index, 1),
+            (TokenType::Question, TokenType::Dot) => (Operator::SafeMemberAccess, 2),
+            (TokenType::Question, TokenType::LeftBracket) => (Operator::SafeIndex, 2),
+            // `a!` is the non-null assertion. `!=` is a comparison, so leave it for the infix parser.
+            (TokenType::Exclamation, k) if *k != TokenType::Equal => (Operator::Assert, 1),
             _ => return None
         };
 
@@ -94,8 +103,8 @@ impl Operator {
             return None;
         }
 
-        stream.next();
-        return Some(op.clone());
+        stream.advance(advance);
+        return Some(op);
     }
 
     fn has_lower_prefix_precedence(&self, precedence: u8) -> bool {
@@ -117,6 +126,7 @@ impl Operator {
         let bp = match self {
             Operator::Comma => 1,
             Operator::Assign(_) | Operator::Arrow => 2,
+            Operator::Coalesce => 3,
             Operator::LogicalOr => 4,
             Operator::LogicalAnd => 5,
             Operator::LogicalEqual | Operator::LogicalNotEqual => 6,
@@ -147,6 +157,7 @@ impl Operator {
     pub fn postfix_precedence(&self) -> Option<u8> {
         let bp = match self {
             Operator::Call | Operator::Index => 16,
+            Operator::SafeMemberAccess | Operator::SafeIndex | Operator::Assert => 16,
             _ => return None
         };
         Some(bp)
