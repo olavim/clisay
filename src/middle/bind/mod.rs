@@ -15,7 +15,7 @@ use nohash_hasher::IntSet;
 use crate::compiler_error;
 use crate::core::objects::{TypeMember, UpvalueLocation};
 use crate::middle::hir::{
-    Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol,
+    Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnShape, Symbol,
 };
 
 /// Where a bare identifier binds.
@@ -61,6 +61,10 @@ pub struct TypeLayout {
     /// Member ids that are **not** externally accessible (private or `inner`).
     /// Consumed by codegen to omit these from the runtime name map.
     pub non_public: IntSet<u8>,
+    /// Member ids whose declared type is nullable: `?` fields and nullable-returning methods.
+    pub nullable: IntSet<u8>,
+    /// Member ids that are reassignable: `mut` fields.
+    pub mutable: IntSet<u8>,
     pub member_count: u8,
 
     /// Member id of the initializer function.
@@ -80,6 +84,8 @@ impl TypeLayout {
             members: FnvHashMap::default(),
             fields: Vec::new(),
             non_public: IntSet::default(),
+            nullable: IntSet::default(),
+            mutable: IntSet::default(),
             init_id: 0,
             member_count: 0,
             init_arity: 0,
@@ -95,6 +101,14 @@ impl TypeLayout {
         self.resolve(name).map(|m| match m {
             TypeMember::Field(id) | TypeMember::Method(id) => id,
         })
+    }
+
+    pub fn is_nullable(&self, name: Symbol) -> bool {
+        self.resolve_id(name).is_some_and(|id| self.nullable.contains(&id))
+    }
+
+    pub fn is_mutable(&self, name: Symbol) -> bool {
+        self.resolve_id(name).is_some_and(|id| self.mutable.contains(&id))
     }
 }
 
@@ -709,6 +723,12 @@ impl<'a> Resolver<'a> {
             if !decl.pub_members.contains(field) {
                 layout.non_public.insert(next_member_id);
             }
+            if decl.nullable_fields.contains(field) {
+                layout.nullable.insert(next_member_id);
+            }
+            if decl.mut_fields.contains(field) {
+                layout.mutable.insert(next_member_id);
+            }
             next_member_id += 1;
         }
         for stmt_id in &decl.methods {
@@ -716,6 +736,10 @@ impl<'a> Resolver<'a> {
             layout.members.insert(method.name, TypeMember::Method(next_member_id));
             if !decl.pub_members.contains(&method.name) {
                 layout.non_public.insert(next_member_id);
+            }
+            // A method member's nullability is its return nullability.
+            if method.ret == ReturnShape::Nullable {
+                layout.nullable.insert(next_member_id);
             }
             next_member_id += 1;
         }
