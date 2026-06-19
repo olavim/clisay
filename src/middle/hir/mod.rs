@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::marker::PhantomData;
 
-pub use crate::frontend::ast::Symbol;
+pub use crate::frontend::ast::{ReturnShape, Symbol};
 use crate::frontend::lex::SourcePosition;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -65,17 +65,39 @@ pub enum HirExpr {
     /// `init` args, then the brace field initializers.
     Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
     This,
+    /// Null-coalescing `a ?? b`: yields `a` when non-null, else `b`. Short-circuit
+    /// lowering is deferred to codegen.
+    Coalesce(HirId<HirExpr>, HirId<HirExpr>),
+    /// Safe navigation `a?.b` / `a?[i]`: yields null when the target is null. `is_dot`
+    /// distinguishes `.name` from `[expr]`. See `HirExpr::Index`.
+    SafeAccess(HirId<HirExpr>, HirId<HirExpr>, bool),
+    /// The non-null assertion `a!`: yields the value, checking against null at runtime.
+    Assert(HirId<HirExpr>),
 }
 
 pub struct HirFieldInit {
     pub name: Symbol,
     pub value: Option<HirId<HirExpr>>,
+    /// Declared nullable with a `?` marker (`say x?`). Non-null otherwise.
+    pub nullable: bool,
+    /// Declared reassignable with a `mut` modifier (`say mut x`). Immutable otherwise.
+    pub mutable: bool,
+}
+
+/// A function/method/lambda parameter: its bound identifier plus the declared
+/// nullability and mutability markers (`fn f(mut x?)`).
+pub struct HirParam {
+    pub name: HirId<HirExpr>,
+    pub nullable: bool,
+    pub mutable: bool,
 }
 
 pub struct HirFnDecl {
     pub name: Symbol,
-    pub params: Vec<HirId<HirExpr>>,
+    pub params: Vec<HirParam>,
     pub body: HirId<HirExpr>,
+    /// The declared return shape (the postfix marker after the parameter list).
+    pub ret: ReturnShape,
 }
 
 /// A `catch (param) { … }` clause of a try statement.
@@ -88,6 +110,10 @@ pub struct HirTypeDecl {
     pub name: Symbol,
     pub init: HirId<HirStmt>,
     pub fields: HashSet<Symbol>,
+    /// Fields declared nullable with a `?` marker (`next?;`).
+    pub nullable_fields: HashSet<Symbol>,
+    /// Fields declared reassignable with a `mut` modifier (`mut count;`).
+    pub mut_fields: HashSet<Symbol>,
     pub methods: Vec<HirId<HirStmt>>,
     /// The declaring trait of each method in `methods` (parallel), or `None` for a member
     /// the host type declares itself. Lets the resolver scope each trait method's body to

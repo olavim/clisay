@@ -475,6 +475,12 @@ impl<'a> Resolver<'a> {
                 self.construct(expr, &callee, &args, &brace)?;
             },
             HirExpr::This => self.require_type(expr)?,
+            HirExpr::Coalesce(left, right) => {
+                self.expression(left)?;
+                self.expression(right)?;
+            },
+            HirExpr::SafeAccess(target, member, _) => self.index(target, member)?,
+            HirExpr::Assert(operand) => self.expression(operand)?,
         };
         Ok(())
     }
@@ -674,7 +680,7 @@ impl<'a> Resolver<'a> {
         });
 
         for param in &decl.params {
-            let HirExpr::Identifier(param_name) = self.hir.get(param) else {
+            let HirExpr::Identifier(param_name) = self.hir.get(&param.name) else {
                 unreachable!("parser guarantees parameters are identifiers");
             };
             self.declare_local(*param_name, true)?;
@@ -756,7 +762,8 @@ impl<'a> Resolver<'a> {
                 for a in args { self.collect_assigned_fields(a, out); }
                 for (_, v) in brace { self.collect_assigned_fields(v, out); }
             },
-            // Literals (including lambda bodies), identifiers, this/super: no direct `this.f =`.
+            HirExpr::Coalesce(l, r) | HirExpr::SafeAccess(l, r, _) => { self.collect_assigned_fields(l, out); self.collect_assigned_fields(r, out); },
+            HirExpr::Assert(x) => self.collect_assigned_fields(x, out),
             _ => {},
         }
     }

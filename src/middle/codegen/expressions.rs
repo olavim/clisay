@@ -37,6 +37,10 @@ impl<'a> Compiler<'a> {
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
             HirExpr::This => self.emit(Inst::GetLocal(0), expr),
+            // The nullability operators lower to runtime checks in a later codegen pass.
+            HirExpr::Coalesce(_, _) => compiler_error!(self, expr, "the null-coalescing operator (`??`) is not yet supported"),
+            HirExpr::SafeAccess(_, _, _) => compiler_error!(self, expr, "safe navigation (`?.`/`?[`) is not yet supported"),
+            HirExpr::Assert(_) => compiler_error!(self, expr, "the non-null assertion (`!`) is not yet supported"),
         };
 
         Ok(())

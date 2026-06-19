@@ -9,9 +9,9 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{AstId, Expr, Literal, Stmt, Symbol, TypeDecl};
+use crate::ast::{AstId, Expr, Literal, ReturnShape, Stmt, Symbol, TypeDecl};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl};
 
 use super::Lowerer;
 
@@ -108,6 +108,8 @@ impl<'a> Lowerer<'a> {
             name: decl.name,
             init,
             fields: composed.fields,
+            nullable_fields: decl.nullable_fields.clone(),
+            mut_fields: decl.mut_fields.clone(),
             methods: composed.methods,
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
@@ -127,12 +129,14 @@ impl<'a> Lowerer<'a> {
 
         // A placeholder empty init: a trait's init body is validated at the composing type.
         let empty = self.hir.add(HirExpr::Block(Vec::new()), pos.clone());
-        let init = self.hir.add(HirStmt::Fn(HirFnDecl { name: decl.init_name, params: Vec::new(), body: empty }), pos.clone());
+        let init = self.hir.add(HirStmt::Fn(HirFnDecl { name: decl.init_name, params: Vec::new(), body: empty, ret: ReturnShape::NonNull }), pos.clone());
 
         Ok(HirTypeDecl {
             name: decl.name,
             init,
             fields: composed.fields,
+            nullable_fields: decl.nullable_fields.clone(),
+            mut_fields: decl.mut_fields.clone(),
             methods: composed.methods,
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
@@ -253,8 +257,9 @@ impl<'a> Lowerer<'a> {
                     if host_methods.contains(&name) { continue; }
                     if !forwarded.insert(name) { continue; }
                     let arity = fd.params.len();
+                    let ret = fd.ret;
                     let is_pub = type_decl.pub_members.contains(&name);
-                    let forwarder = self.make_forwarder(field, name, arity, pos);
+                    let forwarder = self.make_forwarder(field, name, arity, ret, pos);
                     composed.methods.push(forwarder);
                     composed.method_traits.push(None);
                     if is_pub { composed.pub_members.insert(name); }
@@ -265,7 +270,8 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Builds a forwarder `fn <method>($g0, …) { return this.<field>.<method>($g0, …); }`.
-    fn make_forwarder(&mut self, field: Symbol, method: Symbol, arity: usize, pos: &SourcePosition) -> HirId<HirStmt> {
+    /// The forwarder carries the delegated method's return shape so it conforms to the trait.
+    fn make_forwarder(&mut self, field: Symbol, method: Symbol, arity: usize, ret: ReturnShape, pos: &SourcePosition) -> HirId<HirStmt> {
         let field_name = self.hir.text(field).to_string();
         let method_name = self.hir.text(method).to_string();
 
@@ -273,7 +279,11 @@ impl<'a> Lowerer<'a> {
         let mut args = Vec::with_capacity(arity);
         for i in 0..arity {
             let psym = self.hir.intern(&format!("$g{i}"));
-            params.push(self.hir.add(HirExpr::Identifier(psym), pos.clone()));
+            params.push(HirParam {
+                name: self.hir.add(HirExpr::Identifier(psym), pos.clone()),
+                nullable: false,
+                mutable: false,
+            });
             args.push(self.hir.add(HirExpr::Identifier(psym), pos.clone()));
         }
 
@@ -283,9 +293,9 @@ impl<'a> Lowerer<'a> {
         let method_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(method_name)), pos.clone());
         let method_access = self.hir.add(HirExpr::Index(field_access, method_lit, true), pos.clone());
         let call = self.hir.add(HirExpr::Call(method_access, args), pos.clone());
-        let ret = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
-        let body = self.hir.add(HirExpr::Block(vec![ret]), pos.clone());
-        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, params, body }), pos.clone())
+        let ret_stmt = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
+        let body = self.hir.add(HirExpr::Block(vec![ret_stmt]), pos.clone());
+        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, params, body, ret }), pos.clone())
     }
 
     /// At an instantiable type, every `req T`, `req fn`, and `req <member>` of the flattened trait
@@ -418,9 +428,10 @@ impl<'a> Lowerer<'a> {
     fn lower_method_named(&mut self, fn_stmt: &AstId<Stmt>, name: Symbol) -> Result<HirId<HirStmt>, anyhow::Error> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
-        let params = self.param_names(&decl.params)?;
+        let params = self.params(&decl.params)?;
+        let ret = decl.ret;
         let body = self.expr(&decl.body)?;
-        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, params, body }), pos))
+        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, params, body, ret }), pos))
     }
 
     pub(super) fn as_qualified_method_call(&self, callee: &AstId<Expr>) -> Option<(Symbol, String)> {
