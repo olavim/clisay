@@ -1,0 +1,8 @@
+type Service {
+    fn helper() { return 7; }
+    pub fn run() { return this.helper(); }
+    init() {}
+}
+say s = Service();
+print(s.run()); // expect: 7
+print(s.helper()); // error: Invalid index: Service doesn't have member "helper"

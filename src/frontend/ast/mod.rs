@@ -30,6 +30,7 @@ pub enum Literal {
     Number(f64),
     String(String),
     Array(Vec<AstId<Expr>>),
+    Dict(Vec<(AstId<Expr>, AstId<Expr>)>),
     Lambda(FnDecl)
 }
 
@@ -41,6 +42,7 @@ impl fmt::Display for Literal {
             Literal::Number(n) => write!(f, "{}", n),
             Literal::String(s) => write!(f, "\"{}\"", s),
             Literal::Array(_) => write!(f, "[]"),
+            Literal::Dict(_) => write!(f, "{{}}"),
             Literal::Lambda(_) => write!(f, "<lambda>")
         }
     }
@@ -51,11 +53,14 @@ pub enum Expr {
     Unary(Operator, AstId<Expr>),
     Binary(Operator, AstId<Expr>, AstId<Expr>),
     Call(AstId<Expr>, Vec<AstId<Expr>>),
-    Index(AstId<Expr>, AstId<Expr>),
+    Index(AstId<Expr>, AstId<Expr>, bool),
     Literal(Literal),
     Identifier(Symbol),
+    Is(AstId<Expr>, Symbol),
+    /// Brace construction `C(args) { field: value, ... }`. The first expr is the
+    /// constructed callee (`C` or `C(args)`); the list is the brace field initializers.
+    Construct(AstId<Expr>, Vec<(Symbol, AstId<Expr>)>),
     This,
-    Super
 }
 
 pub struct FieldInit {
@@ -75,17 +80,26 @@ pub struct CatchClause {
     pub body: AstId<Expr>
 }
 
-pub struct ClassDecl {
+pub struct TypeDecl {
     pub name: Symbol,
-    pub superclass: Option<Symbol>,
+    pub is_trait: bool,
+    /// Traits mixed in via `with T1, T2, ...`.
+    pub with_traits: Vec<Symbol>,
+    /// Traits depended on via `req T1, T2, ...`.
+    pub req_traits: Vec<Symbol>,
+    pub req_fns: Vec<(Symbol, usize)>,
+    pub req_members: Vec<Symbol>,
+    pub gives: Vec<(Symbol, Symbol)>,
     pub init_name: Symbol,
+    /// The declared initializer (`Stmt::Fn`). When the type has none lowering
+    /// synthesises a virtual init in that case.
     pub init: Option<AstId<Stmt>>,
-    pub getter: Option<AstId<Stmt>>,
-    pub setter: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
-    pub methods: Vec<AstId<Stmt>>
+    pub methods: Vec<AstId<Stmt>>,
+    pub pub_members: HashSet<Symbol>,
+    pub inner_members: HashSet<Symbol>,
 }
 
 pub enum Stmt {
@@ -101,7 +115,7 @@ pub enum Stmt {
     Block(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
-    Class(Box<ClassDecl>)
+    Type(Box<TypeDecl>)
 }
 
 pub enum NodeKind {
@@ -213,6 +227,10 @@ impl Ast {
 
     pub fn pos<T>(&self, id: &AstId<T>) -> &SourcePosition {
         &self.nodes[id.id].pos
+    }
+
+    pub fn text(&self, sym: Symbol) -> &str {
+        &self.ident_texts[sym.index()]
     }
 
     pub fn get_root(&self) -> AstId<Stmt> {

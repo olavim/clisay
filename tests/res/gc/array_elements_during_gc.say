@@ -2,8 +2,8 @@
 
 gcStress(true);
 
-class Box {
-    v;
+type Box {
+    pub v;
     init(x) {
         this.v = x;
     }

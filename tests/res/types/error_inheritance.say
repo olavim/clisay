@@ -1,0 +1,3 @@
+// Type-to-type inheritance was removed in favor of trait composition.
+type A {}
+type B : A {} // error: Unexpected token: Expected '{' but found ':'

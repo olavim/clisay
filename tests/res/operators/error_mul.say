@@ -31,27 +31,27 @@ func1 * func2; // error: Operator '*' cannot be applied to operands function and
 
 // @split
 
-class A {}
-A * 1; // error: Operator '*' cannot be applied to operands class and number
+type A {}
+A * 1; // error: Operator '*' cannot be applied to operands type and number
 
 // @split
 
-class A {}
-A * "str"; // error: Operator '*' cannot be applied to operands class and string
+type A {}
+A * "str"; // error: Operator '*' cannot be applied to operands type and string
 
 // @split
 
-class A {}
-A * true; // error: Operator '*' cannot be applied to operands class and boolean
+type A {}
+A * true; // error: Operator '*' cannot be applied to operands type and boolean
 
 // @split
 
-class A {}
+type A {}
 fn func() {}
-A * func; // error: Operator '*' cannot be applied to operands class and function
+A * func; // error: Operator '*' cannot be applied to operands type and function
 
 // @split
 
-class A {}
-class B {}
-A * B; // error: Operator '*' cannot be applied to operands class and class
+type A {}
+type B {}
+A * B; // error: Operator '*' cannot be applied to operands type and type

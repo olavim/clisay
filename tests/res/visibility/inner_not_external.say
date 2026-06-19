@@ -1,0 +1,8 @@
+type Widget {
+    inner state;
+    pub fn read() { return this.state; }
+    init(s) { this.state = s; }
+}
+say w = Widget("ready");
+print(w.read()); // expect: ready
+print(w.state); // error: Invalid index: Widget doesn't have member "state"

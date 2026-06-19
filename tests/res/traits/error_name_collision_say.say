@@ -1,0 +1,2 @@
+trait Foo { pub fn f() { return 1; } }
+say Foo = 1; // error: 'Foo' already declared in this scope

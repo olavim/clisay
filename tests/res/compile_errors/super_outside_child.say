@@ -1,7 +1,0 @@
-class A {
-    fn getX() {
-        return super.x; // error: Cannot use 'super' outside of a child class method
-    }
-}
-
-A();

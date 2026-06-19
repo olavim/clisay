@@ -1,0 +1,6 @@
+say x = 1;
+{
+  say x = 2;
+  print(x); // expect: 2
+}
+print(x); // expect: 1

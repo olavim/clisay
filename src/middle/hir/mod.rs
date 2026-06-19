@@ -43,6 +43,7 @@ pub enum HirLiteral {
     Number(f64),
     String(String),
     Array(Vec<HirId<HirExpr>>),
+    Dict(Vec<(HirId<HirExpr>, HirId<HirExpr>)>),
     Lambda(HirFnDecl),
 }
 
@@ -52,11 +53,14 @@ pub enum HirExpr {
     Binary(BinOp, HirId<HirExpr>, HirId<HirExpr>),
     Assign(HirId<HirExpr>, HirId<HirExpr>),
     Call(HirId<HirExpr>, Vec<HirId<HirExpr>>),
-    Index(HirId<HirExpr>, HirId<HirExpr>),
+    Index(HirId<HirExpr>, HirId<HirExpr>, bool),
     Literal(HirLiteral),
     Identifier(Symbol),
+    Is(HirId<HirExpr>, Symbol),
+    /// Brace construction `C(args) { field: value, ... }`: the callee type expression, the
+    /// `init` args, then the brace field initializers.
+    Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
     This,
-    Super,
 }
 
 pub struct HirFieldInit {
@@ -75,14 +79,16 @@ pub struct HirCatchClause {
     pub body: HirId<HirExpr>,
 }
 
-pub struct HirClassDecl {
+pub struct HirTypeDecl {
     pub name: Symbol,
-    pub superclass: Option<Symbol>,
     pub init: HirId<HirStmt>,
-    pub getter: Option<HirId<HirStmt>>,
-    pub setter: Option<HirId<HirStmt>>,
     pub fields: HashSet<Symbol>,
     pub methods: Vec<HirId<HirStmt>>,
+    pub method_traits: Vec<Option<Symbol>>,
+    pub pub_members: HashSet<Symbol>,
+    pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
+    pub surface: HashSet<Symbol>,
+    pub provides: Vec<Symbol>,
 }
 
 pub enum HirStmt {
@@ -95,7 +101,8 @@ pub enum HirStmt {
     Block(HirId<HirExpr>),
     Say(HirFieldInit),
     Fn(HirFnDecl),
-    Class(Box<HirClassDecl>),
+    Type(Box<HirTypeDecl>),
+    Trait(Box<HirTypeDecl>),
 }
 
 pub enum HirNodeKind {
@@ -174,6 +181,16 @@ impl Hir {
 
     pub fn symbol_of(&self, text: &str) -> Option<Symbol> {
         self.ident_ids.get(text).copied().map(Symbol::from_raw)
+    }
+
+    pub(crate) fn intern(&mut self, text: &str) -> Symbol {
+        if let Some(&id) = self.ident_ids.get(text) {
+            return Symbol::from_raw(id);
+        }
+        let id = self.ident_texts.len() as u32;
+        self.ident_texts.push(text.to_string());
+        self.ident_ids.insert(text.to_string(), id);
+        Symbol::from_raw(id)
     }
 
     pub fn get<T: HirNode>(&self, id: &HirId<T>) -> &T {

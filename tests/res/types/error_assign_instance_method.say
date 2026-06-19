@@ -1,0 +1,13 @@
+type B {
+    pub me = "B";
+    pub fn getMe() { return this.me; }
+}
+
+type A {
+    pub me = "A";
+    pub fn getMe() { return this.me; }
+}
+
+say objA = A();
+say objB = B();
+objA.getMe = objB.getMe; // error: Cannot assign to method 'getMe'

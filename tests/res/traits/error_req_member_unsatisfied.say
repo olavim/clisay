@@ -1,0 +1,5 @@
+trait Counter {
+    req count;
+    pub fn inc() { this.count = this.count + 1; }
+}
+type Widget with Counter { init() {} } // error: Unsatisfied `req count`: needs an `inner`/`pub` member 'count'

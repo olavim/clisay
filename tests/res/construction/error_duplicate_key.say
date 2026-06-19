@@ -1,0 +1,2 @@
+type Point { pub x; pub y; }
+say p = Point { x: 1, x: 2 }; // error: Duplicate field 'x' in construction of 'Point'
