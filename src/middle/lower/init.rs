@@ -22,7 +22,8 @@ impl<'a> Lowerer<'a> {
         let mut body = Vec::new();
 
         for (field, value) in field_inits {
-            let target = self.hir.add(HirExpr::Identifier(*field), type_pos.clone());
+            let field_name = self.hir.text(*field).to_string();
+            let target = self.this_method(&field_name, type_pos);
             let value = self.expr(value)?;
             let assign = self.hir.add(HirExpr::Assign(target, value), type_pos.clone());
             body.push(self.hir.add(HirStmt::Expression(assign), type_pos.clone()));
