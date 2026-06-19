@@ -341,12 +341,16 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_place(&mut self, name: Symbol, node: &HirId<HirExpr>) -> Result<Place, anyhow::Error> {
+        // Order: a same-function local/param shadows everything, then an implicit-`this` member of
+        // the enclosing type, then a captured enclosing-scope local, then a global. The member is
+        // consulted before the upvalue so a bare name matching a field/method means that member, not
+        // a same-named outer variable (`x` and `this.x` name the same member).
         let place = if let Some(slot) = self.resolve_local(name) {
             Place::Local(slot)
-        } else if let Some(idx) = self.resolve_upvalue(name)? {
-            Place::Upvalue(idx)
         } else if let Some(id) = self.this_field_id(name) {
             Place::Field(id)
+        } else if let Some(idx) = self.resolve_upvalue(name)? {
+            Place::Upvalue(idx)
         } else {
             self.deny_private(name, node)?;
             Place::Global(name)
