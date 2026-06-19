@@ -1,8 +1,8 @@
 //! Initializer assembly.
 
-use crate::ast::{AstId, Expr, Stmt, Symbol, TypeDecl};
+use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, UnOp};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp};
 
 use super::Lowerer;
 
@@ -12,7 +12,7 @@ impl<'a> Lowerer<'a> {
             Some(init_id) => {
                 let init_pos = self.ast.pos(init_id).clone();
                 let fn_decl = self.ast_fn(init_id);
-                let params = self.param_names(&fn_decl.params)?;
+                let params = self.params(&fn_decl.params)?;
                 let stmts = self.ast_block(&fn_decl.body);
                 (params, stmts, init_pos)
             },
@@ -65,9 +65,9 @@ impl<'a> Lowerer<'a> {
         self.hir.add(HirExpr::Index(this_expr, name_lit, true), pos.clone())
     }
 
-    fn make_init_fn(&mut self, name: Symbol, params: Vec<HirId<HirExpr>>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
+    fn make_init_fn(&mut self, name: Symbol, params: Vec<HirParam>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
         let body = self.hir.add(HirExpr::Block(body), pos.clone());
-        let fn_decl = HirFnDecl { name, params, body };
+        let fn_decl = HirFnDecl { name, params, body, ret: ReturnShape::NonNull };
         self.hir.add(HirStmt::Fn(fn_decl), pos.clone())
     }
 }

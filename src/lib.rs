@@ -28,6 +28,9 @@ pub use output::Output;
 pub mod internals {
     pub use crate::ast::{Ast, AstId, Expr, FieldInit, FnDecl, Literal, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
     pub use crate::frontend::lex::{ContextualKeyword, Token, TokenType};
+    pub use crate::middle::hir::{
+        Hir, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl,
+    };
 
     use crate::frontend::lex::{tokenize, TokenStream};
     use crate::frontend::parse::Parser;
@@ -38,6 +41,12 @@ pub mod internals {
 
     pub fn parse(src: &str) -> Ast {
         Parser::parse(&mut TokenStream::new(&lex(src))).expect("parse error")
+    }
+
+    pub fn lower(src: &str) -> Hir {
+        let ast = parse(src);
+        let names = crate::middle::names::resolve(&ast).expect("name resolution error");
+        crate::middle::lower::lower(ast, &names).expect("lower error")
     }
 }
 
