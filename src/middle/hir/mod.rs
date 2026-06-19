@@ -1,6 +1,5 @@
 //! The high-level IR (HIR): a post-lowering node hierarchy in which surface-only
-//! constructs are unrepresentable. Produced by [`crate::middle::lower`] and consumed
-//! by `bind` and `codegen`.
+//! constructs are unrepresentable.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -57,13 +56,11 @@ pub enum HirExpr {
     Index(HirId<HirExpr>, HirId<HirExpr>, bool),
     Literal(HirLiteral),
     Identifier(Symbol),
-    /// `expr is T`: a nominal capability test against the type/trait named `T`.
     Is(HirId<HirExpr>, Symbol),
     /// Brace construction `C(args) { field: value, ... }`: the callee type expression, the
     /// `init` args, then the brace field initializers.
     Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
     This,
-    Super,
 }
 
 pub struct HirFieldInit {
@@ -84,21 +81,13 @@ pub struct HirCatchClause {
 
 pub struct HirTypeDecl {
     pub name: Symbol,
-    pub supertype: Option<Symbol>,
     pub init: HirId<HirStmt>,
-    pub getter: Option<HirId<HirStmt>>,
-    pub setter: Option<HirId<HirStmt>>,
     pub fields: HashSet<Symbol>,
     pub methods: Vec<HirId<HirStmt>>,
     pub method_traits: Vec<Option<Symbol>>,
     pub pub_members: HashSet<Symbol>,
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
-    /// For a standalone trait (`HirStmt::Trait`): its **declared surface**.
     pub surface: HashSet<Symbol>,
-    /// The trait/type names this type **provides** for `x is T`: its own name plus every
-    /// transitively `with`-mixed trait. Empty for a standalone trait (no runtime type). The
-    /// supertype's provided set is unioned in later (`bind`/codegen), so this holds only the
-    /// declaration's own contribution.
     pub provides: Vec<Symbol>,
 }
 

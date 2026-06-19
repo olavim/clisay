@@ -1,0 +1,14 @@
+// A type instance is indexed by member name: `inst["x"]` reads and writes the same
+// member as `inst.x`, honoring visibility. This is the dict->type graduation path.
+type Point {
+    pub x = 1;
+    pub y = 2;
+}
+
+say p = Point();
+print(p["x"]); // expect: 1
+print(p.x);    // expect: 1
+
+p["y"] = 9;
+print(p.y);    // expect: 9
+print(p["y"]); // expect: 9

@@ -1,0 +1,7 @@
+
+type A {
+    pub x;
+}
+
+say obj = A();
+obj.y = true; // error: Invalid index: A doesn't have member "y"

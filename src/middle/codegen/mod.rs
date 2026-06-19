@@ -15,7 +15,7 @@ use crate::middle::hir::HirStmt;
 mod expressions;
 mod statements;
 mod functions;
-mod classes;
+mod types;
 
 #[derive(Clone, Copy)]
 enum TryCatchPosition {
@@ -39,7 +39,7 @@ pub struct Compiler<'a> {
     /// The kind of each enclosing function, for initializer return handling.
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
-    classes: FnvHashMap<*mut ObjString, *mut ObjType>
+    types: FnvHashMap<*mut ObjString, *mut ObjType>
 }
 
 #[macro_export]
@@ -56,7 +56,7 @@ impl<'a> Compiler<'a> {
             bindings,
             fn_kinds: Vec::new(),
             try_frames: Vec::new(),
-            classes: FnvHashMap::default()
+            types: FnvHashMap::default()
         };
 
         let stmt_id = compiler.hir.get_root();

@@ -53,8 +53,8 @@ fn parser(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
-#[test_resources("tests/res/classes")]
-fn classes(resource: &str) -> Result<(), Failed> {
+#[test_resources("tests/res/types")]
+fn types(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
@@ -80,21 +80,6 @@ fn construction(resource: &str) -> Result<(), Failed> {
 
 #[test_resources("tests/res/this")]
 fn this(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/super")]
-fn super_kw(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/get")]
-fn getter(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/set")]
-fn setter(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 

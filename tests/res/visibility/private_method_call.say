@@ -1,10 +1,8 @@
-// A private method is callable internally (via `this`) but not externally.
 type Service {
-    fn helper() { return 7; } // private method
-    pub fn run() { return this.helper(); } // internal call: ok
+    fn helper() { return 7; }
+    pub fn run() { return this.helper(); }
     init() {}
 }
 say s = Service();
 print(s.run()); // expect: 7
-// A private method is invisible externally, so the call is "no such member".
-print(s.helper()); // error: Invalid index: Service doesn't have member "helper" and doesn't have a getter
+print(s.helper()); // error: Invalid index: Service doesn't have member "helper"

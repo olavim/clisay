@@ -56,14 +56,11 @@ pub enum Expr {
     Index(AstId<Expr>, AstId<Expr>, bool),
     Literal(Literal),
     Identifier(Symbol),
-    /// `expr is T`: a nominal capability test against a static type/trait *name*
-    /// resolved at runtime.
     Is(AstId<Expr>, Symbol),
     /// Brace construction `C(args) { field: value, ... }`. The first expr is the
     /// constructed callee (`C` or `C(args)`); the list is the brace field initializers.
     Construct(AstId<Expr>, Vec<(Symbol, AstId<Expr>)>),
     This,
-    Super
 }
 
 pub struct FieldInit {
@@ -90,25 +87,17 @@ pub struct TypeDecl {
     pub with_traits: Vec<Symbol>,
     /// Traits depended on via `req T1, T2, ...`.
     pub req_traits: Vec<Symbol>,
-    /// Method holes declared via `req fn f(params);`.
     pub req_fns: Vec<(Symbol, usize)>,
-    /// Member holes declared via `req name;`: a field/member the host must provide, allowing
-    /// usage of `this.name` in the trait's bodies.
     pub req_members: Vec<Symbol>,
-    /// Delegation fields declared via `field gives Trait;`: `(field, trait)`. The field provides
-    /// `Trait` by forwarding, so for example `is Trait` is true.
     pub gives: Vec<(Symbol, Symbol)>,
-    pub superclass: Option<Symbol>,
     pub init_name: Symbol,
+    /// The declared initializer (`Stmt::Fn`). When the type has none lowering
+    /// synthesises a virtual init in that case.
     pub init: Option<AstId<Stmt>>,
-    pub getter: Option<AstId<Stmt>>,
-    pub setter: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,
-    /// Members (fields/methods) declared `pub` are externally accessible. Members not
-    /// listed are private or `inner`, reachable only through `this`/`super`.
     pub pub_members: HashSet<Symbol>,
     pub inner_members: HashSet<Symbol>,
 }
@@ -240,7 +229,6 @@ impl Ast {
         &self.nodes[id.id].pos
     }
 
-    /// The interned text of a symbol. Valid until [`Ast::take_idents`] moves the table out.
     pub fn text(&self, sym: Symbol) -> &str {
         &self.ident_texts[sym.index()]
     }

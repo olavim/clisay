@@ -1,0 +1,7 @@
+// A type instance has no keyed data: a non-string index is a runtime error.
+type A {
+    pub x = 1;
+}
+
+say a = A();
+print(a[0]); // error: Invalid index: A is indexed by member name, not 0

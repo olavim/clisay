@@ -1,6 +1,6 @@
 // A type declared inside a block becomes unreachable once the block exits.
 // After collection the heap must return to the pre-block baseline, proving
-// ObjClass (and its method/field graph) is actually freed.
+// ObjType (and its method/field graph) is actually freed.
 
 say bytesStart = gcHeapSize();
 

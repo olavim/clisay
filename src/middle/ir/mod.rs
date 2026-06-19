@@ -43,7 +43,7 @@ pub enum Inst {
     PushTrue,
     PushFalse,
     PushClosure(u8),
-    PushClass(u8),
+    PushType(u8),
 
     // Variables and properties
     GetGlobal(u8),

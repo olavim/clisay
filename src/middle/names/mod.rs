@@ -184,8 +184,6 @@ impl<'a> Resolver<'a> {
 
         for method in &decl.methods { self.visit_stmt(method)?; }
         if let Some(init) = &decl.init { self.visit_stmt(init)?; }
-        if let Some(getter) = &decl.getter { self.visit_stmt(getter)?; }
-        if let Some(setter) = &decl.setter { self.visit_stmt(setter)?; }
         for (_, value) in &decl.field_inits { self.visit_expr(value)?; }
         Ok(())
     }
@@ -220,7 +218,7 @@ impl<'a> Resolver<'a> {
                 self.visit_expr(callee)?;
                 for (_, value) in fields { self.visit_expr(value)?; }
             },
-            Expr::This | Expr::Super => {},
+            Expr::This => {},
         }
         Ok(())
     }
