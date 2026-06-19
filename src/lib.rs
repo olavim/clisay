@@ -31,6 +31,7 @@ pub mod internals {
     pub use crate::middle::hir::{
         Hir, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl,
     };
+    pub use crate::middle::bind::{Bindings, TypeLayout};
 
     use crate::frontend::lex::{tokenize, TokenStream};
     use crate::frontend::parse::Parser;
@@ -47,6 +48,12 @@ pub mod internals {
         let ast = parse(src);
         let names = crate::middle::names::resolve(&ast).expect("name resolution error");
         crate::middle::lower::lower(ast, &names).expect("lower error")
+    }
+
+    pub fn bind(src: &str) -> (Hir, Bindings) {
+        let hir = lower(src);
+        let bindings = crate::middle::bind::resolve(&hir).expect("bind error");
+        (hir, bindings)
     }
 }
 
