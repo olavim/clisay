@@ -1,0 +1,7 @@
+say d = { a: "a" };
+d["c"] = { c: "c" };          // a dict value inside a dict
+print(d["c"]["c"]);           // expect: c
+
+say config = { name: "app", limits: { max: 10 } };
+print(config["name"]);        // expect: app
+print(config["limits"]["max"]); // expect: 10

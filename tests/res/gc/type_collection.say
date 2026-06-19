@@ -1,0 +1,25 @@
+// A type declared inside a block becomes unreachable once the block exits.
+// After collection the heap must return to the pre-block baseline, proving
+// ObjType (and its method/field graph) is actually freed.
+
+say bytesStart = gcHeapSize();
+
+{
+    type Local {
+        pub a;
+        pub b;
+        init() {
+            this.a = "a";
+            this.b = "b";
+        }
+        pub fn first() {
+            return this.a;
+        }
+        pub fn second() {
+            return this.b;
+        }
+    }
+}
+
+gcCollect();
+print(gcHeapSize() - bytesStart); // expect: 0

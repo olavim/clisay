@@ -1,0 +1,10 @@
+// Private members are per-trait: two traits may each declare a private `helper`; they are distinct
+// slots and never collide.
+trait Adder  { fn helper() { return 1; }  pub fn add(n)  { return n + helper(); } }
+trait Subber { fn helper() { return 10; } pub fn sub(n)  { return n - helper(); } }
+
+type Calc with Adder, Subber { init() {} }
+say c = Calc();
+print(c.add(5)); // expect: 6
+print(c.sub(5)); // expect: -5
+print(c.add(0)); // expect: 1

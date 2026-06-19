@@ -4,17 +4,25 @@ mod precedence;
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, ClassDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol};
-use crate::frontend::lex::{SourcePosition, TokenStream, TokenType};
+use crate::ast::{Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol};
+use crate::frontend::lex::{ContextualKeyword, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
     ($self:ident, $pos:expr, $($arg:tt)*) => { return Err($self.error(format!($($arg)*), $pos)) };
 }
 
+/// A member's declared visibility (from a `pub`/`inner` modifier, or private by default).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Visibility { Pub, Inner, Private }
+
 pub struct Parser<'parser, 'vm> {
     tokens: &'vm mut TokenStream<'vm>,
     ast: &'parser mut Ast,
-    current_class: Option<String>
+    current_type: Option<String>,
+    /// True while parsing a condition (`if`/`while`), where a trailing `{` is the body
+    /// block, not a brace construction. Reset inside parens/brackets/braces so a
+    /// construction can still appear in a sub-expression there.
+    prevent_construct: bool,
 }
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
@@ -24,7 +32,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut parser = Parser {
             tokens,
             ast: &mut ast,
-            current_class: None
+            current_type: None,
+            prevent_construct: false,
         };
 
         let pos = parser.tokens.peek(0).pos.clone();
@@ -59,7 +68,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Say => self.parse_say(),
             TokenType::While => self.parse_while(),
             TokenType::Fn => self.parse_fn(),
-            TokenType::Class => self.parse_class(),
+            TokenType::Type => self.parse_type_decl(false),
+            TokenType::Trait => self.parse_type_decl(true),
             TokenType::Return => self.parse_return(),
             TokenType::Throw => self.parse_throw(),
             TokenType::Try => self.parse_trycatch(),
@@ -71,7 +81,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_if_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::If)?.pos.clone();
-        let condition = self.parse_expr()?;
+        let condition = self.parse_expr_prevent_construct()?;
         let then = self.parse_block_or_stmt()?;
         let otherwise = match self.tokens.next_if(TokenType::Else) {
             Some(_) => match self.tokens.peek(0).kind {
@@ -124,37 +134,19 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         })
     }
 
-    fn parse_accessor(&mut self, name: String, arity: usize, arity_error: &str) -> Result<AstId<Stmt>, anyhow::Error> {
-        let token = self.tokens.peek(0).clone();
-        let name = self.ast.intern(&name);
-        let fn_decl = self.parse_fn_decl(name)?;
-        if fn_decl.params.len() != arity {
-            parse_error!(self, &token.pos, "{}", arity_error)
-        }
-        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), token.pos))
-    }
-
     fn init_name(&mut self) -> Symbol {
-        let class = self.current_class.clone().expect("init parsed outside a class");
-        self.ast.intern(&format!("{}.init", class))
+        let ty = self.current_type.clone().expect("init parsed outside a type");
+        self.ast.intern(&format!("{}.init", ty))
     }
 
-    fn parse_init(&mut self, has_superclass: bool) -> Result<AstId<Stmt>, anyhow::Error> {
+    fn parse_init(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let name = self.init_name();
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
         self.tokens.expect(TokenType::LeftBrace)?;
 
-        let mut stmts = Vec::new();
-        if has_superclass && matches!(
-            (self.tokens.peek(0).kind, self.tokens.peek(1).kind),
-            (TokenType::Super, TokenType::LeftParen)
-        ) {
-            stmts.push(self.parse_super_call()?);
-        }
-
-        stmts.extend(self.parse_stmts()?);
+        let stmts = self.parse_stmts()?;
         self.tokens.expect(TokenType::RightBrace)?;
 
         let body = self.ast.add_expr(Expr::Block(stmts), pos.clone());
@@ -181,60 +173,148 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(params)
     }
 
-    fn parse_class(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
-        let pos = self.tokens.expect(TokenType::Class)?.pos.clone();
-        let class_name = self.parse_identifier()?;
-        let class_sym = self.ast.intern(&class_name);
+    /// Parses the composition header: an optional `with T1, T2, ...` clause then an optional
+    /// `req T1, T2, ...` clause (each at most once, in that order).
+    fn parse_composition_header(&mut self) -> Result<(Vec<Symbol>, Vec<Symbol>), anyhow::Error> {
+        let with_traits = self.parse_trait_clause(ContextualKeyword::With)?;
+        let req_traits = self.parse_trait_clause(ContextualKeyword::Req)?;
 
-        let prev_class = std::mem::replace(&mut self.current_class, Some(class_name.clone()));
+        // A header is `with ... req ...`; any further `with`/`req` here is a duplicate or misordered clause.
+        let tok = self.tokens.peek(0);
+        match tok.contextual() {
+            Some(kw @ (ContextualKeyword::With | ContextualKeyword::Req)) =>
+                parse_error!(self, &tok.pos, "Unexpected '{kw}' clause: a type/trait header allows at most one `with` clause followed by at most one `req` clause"),
+            _ => Ok((with_traits, req_traits)),
+        }
+    }
 
-        let superclass = match self.tokens.next_if(TokenType::Colon) {
-            Some(_) => {
-                let super_name = self.parse_identifier()?;
-                Some(self.ast.intern(&super_name))
-            },
-            None => None
-        };
+    /// Parses a single `<keyword> T1, T2, ...` trait-list clause.
+    fn parse_trait_clause(&mut self, keyword: ContextualKeyword) -> Result<Vec<Symbol>, anyhow::Error> {
+        let present = self.tokens.peek(0).contextual() == Some(keyword);
+        let mut traits = Vec::new();
+        if present {
+            self.tokens.next();
+            loop {
+                let name = self.parse_identifier()?;
+                traits.push(self.ast.intern(&name));
+                if self.tokens.next_if(TokenType::Comma).is_none() { break; }
+            }
+        }
+        Ok(traits)
+    }
+
+    /// Reads an optional leading member-visibility modifier (`pub`/`inner`), consuming it if
+    /// present; absent means private.
+    fn parse_visibility(&mut self) -> Visibility {
+        match self.tokens.peek(0).contextual() {
+            Some(ContextualKeyword::Pub) => { self.tokens.next(); Visibility::Pub },
+            Some(ContextualKeyword::Inner) => { self.tokens.next(); Visibility::Inner },
+            _ => Visibility::Private,
+        }
+    }
+
+    /// Parses a `req fn f(params);` method hole, returning its name and arity.
+    fn parse_req_fn(&mut self) -> Result<(Symbol, usize), anyhow::Error> {
+        self.tokens.expect(TokenType::Fn)?;
+        let name = self.parse_identifier()?;
+        let name = self.ast.intern(&name);
+        self.tokens.expect(TokenType::LeftParen)?;
+        let params = self.parse_params(TokenType::RightParen)?;
+        self.tokens.expect(TokenType::Semicolon)?;
+        Ok((name, params.len()))
+    }
+
+    fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
+        let keyword = if is_trait { TokenType::Trait } else { TokenType::Type };
+        let pos = self.tokens.expect(keyword)?.pos.clone();
+        let type_name = self.parse_identifier()?;
+        let type_sym = self.ast.intern(&type_name);
+
+        let prev_type = std::mem::replace(&mut self.current_type, Some(type_name.clone()));
+
+        let (with_traits, req_traits) = self.parse_composition_header()?;
 
         self.tokens.expect(TokenType::LeftBrace)?;
 
         let mut fields: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
         let mut field_inits: Vec<(Symbol, AstId<Expr>)> = Vec::new();
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
+        let mut pub_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
+        let mut inner_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
+        let mut req_fns: Vec<(Symbol, usize)> = Vec::new();
+        let mut req_members: Vec<Symbol> = Vec::new();
+        let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
-        let mut getter = None;
-        let mut setter = None;
 
         while !self.tokens.match_next(TokenType::RightBrace) {
+            let member_pos = self.tokens.peek(0).pos.clone();
+            let visibility = self.parse_visibility();
+
+            // `req fn f(params);` (method hole) or `req name;` (member/state hole)
+            if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Req) {
+                if visibility != Visibility::Private { parse_error!(self, &member_pos, "A `req` declaration cannot have a visibility modifier"); }
+                self.tokens.next(); // consume `req`
+                if self.tokens.match_next(TokenType::Fn) {
+                    req_fns.push(self.parse_req_fn()?);
+                } else {
+                    let name = self.parse_identifier()?;
+                    self.tokens.expect(TokenType::Semicolon)?;
+                    req_members.push(self.ast.intern(&name));
+                }
+                continue;
+            }
+
             let kind = self.tokens.peek(0).kind;
             match kind {
                 TokenType::Fn => {
-                    method_stmts.push(self.parse_fn()?);
+                    let stmt = self.parse_fn()?;
+                    if let Stmt::Fn(decl) = self.ast.get(&stmt) {
+                        match visibility {
+                            Visibility::Pub => { pub_members.insert(decl.name); },
+                            Visibility::Inner => { inner_members.insert(decl.name); },
+                            Visibility::Private => {},
+                        }
+                    }
+                    method_stmts.push(stmt);
                 },
                 TokenType::Identifier => {
                     let name = self.parse_identifier()?;
 
-                    // Some identifiers have special meaning in classes but are not outright keywords
+                    // `init` is a specially-named method (normal method syntax); it
+                    // takes no visibility modifier.
                     match name.as_str() {
                         "init" => {
-                            init = Some(self.parse_init(superclass.is_some())?);
-                        },
-                        "get" => {
-                            getter = Some(self.parse_accessor(name, 1, "Getter must have exactly one parameter")?);
-                        },
-                        "set" => {
-                            setter = Some(self.parse_accessor(name, 2, "Setter must have exactly two parameters")?);
+                            if is_trait { parse_error!(self, &member_pos, "A trait cannot declare an `init`; put initialization on the host type"); }
+                            if visibility != Visibility::Private { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
+                            init = Some(self.parse_init()?);
                         },
                         _ => {
-                            // Field declaration
+                            // Field declaration, optionally with a `gives Trait` delegation suffix.
+                            if is_trait { parse_error!(self, &member_pos, "A trait cannot declare fields; `req` the state it needs and let the host type hold it"); }
+                            let field = self.ast.intern(&name);
+                            let give = if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Gives) {
+                                self.tokens.next();
+                                let trait_name = self.parse_identifier()?;
+                                Some(self.ast.intern(&trait_name))
+                            } else {
+                                None
+                            };
+
                             let value = self.tokens.next_if(TokenType::Equal)
                                 .map(|_| self.parse_expr())
                                 .transpose()?;
 
                             self.tokens.expect(TokenType::Semicolon)?;
-                            let field = self.ast.intern(&name);
                             fields.insert(field);
+                            match visibility {
+                                Visibility::Pub => { pub_members.insert(field); },
+                                Visibility::Inner => { inner_members.insert(field); },
+                                Visibility::Private => {},
+                            }
 
+                            if let Some(trait_sym) = give {
+                                gives.push((field, trait_sym));
+                            }
                             if let Some(value) = value {
                                 field_inits.push((field, value));
                             }
@@ -248,27 +328,32 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
         self.tokens.expect(TokenType::RightBrace)?;
 
-        let init_name = self.ast.intern(&format!("{}.init", class_name));
+        let init_name = self.ast.intern(&format!("{}.init", type_name));
 
-        let class_decl = Box::new(ClassDecl {
-            name: class_sym,
-            superclass,
+        let type_decl = Box::new(TypeDecl {
+            name: type_sym,
+            is_trait,
+            with_traits,
+            req_traits,
+            req_fns,
+            req_members,
+            gives,
             init_name,
             init,
-            getter,
-            setter,
             fields,
             field_inits,
-            methods: method_stmts
+            methods: method_stmts,
+            pub_members,
+            inner_members,
         });
 
-        self.current_class = prev_class;
-        Ok(self.ast.add_stmt(Stmt::Class(class_decl), pos))
+        self.current_type = prev_type;
+        Ok(self.ast.add_stmt(Stmt::Type(type_decl), pos))
     }
 
     fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::While)?.pos.clone();
-        let condition = self.parse_expr()?;
+        let condition = self.parse_expr_prevent_construct()?;
         let body = self.parse_block_or_stmt()?;
         Ok(self.ast.add_stmt(Stmt::While(condition, body), pos))
     }
@@ -380,7 +465,54 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn parse_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        self.parse_expr_precedence(0)
+        let prev = std::mem::replace(&mut self.prevent_construct, false);
+        let result = self.parse_expr_precedence(0);
+        self.prevent_construct = prev;
+        result
+    }
+
+    /// Parses an expression with a trailing `{`. Prevent construction to disambiguate.
+    fn parse_expr_prevent_construct(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        let prev = std::mem::replace(&mut self.prevent_construct, true);
+        let result = self.parse_expr_precedence(0);
+        self.prevent_construct = prev;
+        result
+    }
+
+    /// Whether `expr` can be brace-constructed: a bare type name `C` or a call `C(args)`.
+    fn is_constructible(&self, expr: AstId<Expr>) -> bool {
+        match self.ast.get(&expr) {
+            Expr::Identifier(_) => true,
+            Expr::Call(callee, _) => matches!(self.ast.get(callee), Expr::Identifier(_)),
+            _ => false,
+        }
+    }
+
+    /// Parses `{ field: value, ... }` after a constructible callee into an `Expr::Construct`.
+    fn parse_construction(&mut self, callee: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
+        let pos = self.ast.pos(&callee).clone();
+        self.tokens.expect(TokenType::LeftBrace)?;
+        let prev = std::mem::replace(&mut self.prevent_construct, false);
+
+        // Parse each value tighter than `,` so the comma separates fields, not the value expression.
+        let value_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
+        let mut fields: Vec<(Symbol, AstId<Expr>)> = Vec::new();
+        while !self.tokens.match_next(TokenType::RightBrace) {
+            let key_pos = self.tokens.peek(0).pos.clone();
+            let name = self.parse_identifier()?;
+            let field = self.ast.intern(&name);
+            let value = if self.tokens.next_if(TokenType::Colon).is_some() {
+                self.parse_expr_precedence(value_precedence)?
+            } else {
+                self.ast.add_expr(Expr::Identifier(field), key_pos) // shorthand `{ x }` == `{ x: x }`
+            };
+            fields.push((field, value));
+            if self.tokens.next_if(TokenType::Comma).is_none() { break; }
+        }
+
+        self.prevent_construct = prev;
+        self.tokens.expect(TokenType::RightBrace)?;
+        Ok(self.ast.add_expr(Expr::Construct(callee, fields), pos))
     }
 
     fn parse_expr_precedence(&mut self, min_precedence: u8) -> Result<AstId<Expr>, anyhow::Error> {
@@ -390,7 +522,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         loop {
-            if let Some(op) = Operator::parse_postfix(self.tokens, min_precedence) {
+            // A `{` after a type name or call is a brace construction, unless we are parsing a
+            // condition where the `{` opens the body block.
+            if !self.prevent_construct
+                && self.tokens.match_next(TokenType::LeftBrace)
+                && self.is_constructible(left)
+            {
+                left = self.parse_construction(left)?;
+            } else if let Some(op) = Operator::parse_postfix(self.tokens, min_precedence) {
                 left = self.parse_expr_postfix(op, left)?;
             } else if let Some(op) = Operator::parse_infix(self.tokens, min_precedence) {
                 left = self.parse_expr_infix(op, left)?;
@@ -409,7 +548,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Operator::MemberAccess => {
                 let id = self.parse_identifier()?;
                 let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                Expr::Index(expr, id)
+                Expr::Index(expr, id, true) // `.name` member access
+            },
+            Operator::Is => {
+                // The right operand is a static type/trait name, not an expression.
+                let name = self.parse_identifier()?;
+                Expr::Is(expr, self.ast.intern(&name))
             },
             Operator::Arrow => {
                 let right = self.parse_block_or_expr(op.infix_precedence().unwrap())?;
@@ -461,6 +605,101 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
                 return Ok(self.ast.add_expr(Expr::Literal(Literal::Array(elements)), pos));
             },
+            Operator::Dict => {
+                let mut pairs: Vec<(AstId<Expr>, AstId<Expr>)> = Vec::new();
+                // Statically-known keys, tagged by value type so a value-equal pair
+                // collides (`{ a, "a" }`, `{ 1, 1.0 }`) but a cross-type pair does not
+                // (`{ 1, "1" }`). Computed `[expr]` keys are not tracked here.
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                // Parse the value tighter than `,` so the comma separates pairs.
+                let value_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
+
+                if self.tokens.next_if(TokenType::RightBrace).is_none() {
+                    loop {
+                        let tok = self.tokens.peek(0).clone();
+                        let key_pos = tok.pos.clone();
+
+                        // Each arm yields (key expr, value expr, optional static dedup key).
+                        let (key_expr, value_expr, dup_key): (AstId<Expr>, AstId<Expr>, Option<String>) = match tok.kind {
+                            // Computed key: the key is the runtime VALUE of the expression.
+                            TokenType::LeftBracket => {
+                                self.tokens.next();
+                                let key = self.parse_expr()?;
+                                self.tokens.expect(TokenType::RightBracket)?;
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, None)
+                            },
+                            // Identifier: a name → string key. `:` gives an explicit value,
+                            // otherwise it's shorthand `{ x }` ≡ `{ x: x }`.
+                            TokenType::Identifier => {
+                                self.tokens.next();
+                                let name = tok.lexeme.clone();
+                                let key = self.ast.add_expr(Expr::Literal(Literal::String(name.clone())), key_pos.clone());
+                                let value = if self.tokens.next_if(TokenType::Colon).is_some() {
+                                    self.parse_expr_precedence(value_precedence)?
+                                } else {
+                                    let sym = self.ast.intern(&name);
+                                    self.ast.add_expr(Expr::Identifier(sym), key_pos.clone())
+                                };
+                                (key, value, Some(format!("s:{name}")))
+                            },
+                            // String literal → string key.
+                            TokenType::StringLiteral => {
+                                self.tokens.next();
+                                let raw = tok.lexeme.clone();
+                                let s = String::from(&raw[1..raw.len() - 1]); // strip quotes
+                                let key = self.ast.add_expr(Expr::Literal(Literal::String(s.clone())), key_pos.clone());
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, Some(format!("s:{s}")))
+                            },
+                            // Number literal → number key (no coercion; `{ 1: v }` is read by `d[1]`).
+                            TokenType::NumericLiteral => {
+                                self.tokens.next();
+                                let n: f64 = tok.lexeme.parse().unwrap();
+                                let key = self.ast.add_expr(Expr::Literal(Literal::Number(n)), key_pos.clone());
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, Some(format!("n:{n}")))
+                            },
+                            // Keyword literals → their bool/null value key (quote for the string).
+                            TokenType::True | TokenType::False => {
+                                self.tokens.next();
+                                let b = matches!(tok.kind, TokenType::True);
+                                let key = self.ast.add_expr(Expr::Literal(Literal::Boolean(b)), key_pos.clone());
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, Some(format!("b:{b}")))
+                            },
+                            TokenType::Null => {
+                                self.tokens.next();
+                                let key = self.ast.add_expr(Expr::Literal(Literal::Null), key_pos.clone());
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, Some(String::from("null")))
+                            },
+                            _ => parse_error!(self, &key_pos, "Unexpected token {}: expected a dict key", tok)
+                        };
+
+                        if let Some(dup) = dup_key {
+                            if !seen.insert(dup) {
+                                parse_error!(self, &key_pos, "Duplicate dict key '{}'", tok.lexeme);
+                            }
+                        }
+                        pairs.push((key_expr, value_expr));
+
+                        if self.tokens.next_if(TokenType::Comma).is_some() {
+                            if self.tokens.match_next(TokenType::RightBrace) { break; } // trailing comma
+                        } else {
+                            break;
+                        }
+                    }
+                    self.tokens.expect(TokenType::RightBrace)?;
+                }
+
+                return Ok(self.ast.add_expr(Expr::Literal(Literal::Dict(pairs)), pos));
+            },
             _ => {
                 let right = self.parse_expr_precedence(op.prefix_precedence().unwrap())?;
                 Expr::Unary(op, right)
@@ -479,7 +718,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Operator::Index => {
                 let index = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightBracket)?;
-                Ok(self.ast.add_expr(Expr::Index(expr, index), pos))
+                Ok(self.ast.add_expr(Expr::Index(expr, index, false), pos)) // `[expr]` data access
             },
             _ => unreachable!()
         }
@@ -500,48 +739,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::True => Expr::Literal(Literal::Boolean(true)),
             TokenType::False => Expr::Literal(Literal::Boolean(false)),
             TokenType::This => Expr::This,
-            // The super keyword is not a valid expression on its own,
-            // so it makes sense to consider something like `super.x` as an "atom".
-            TokenType::Super => return self.parse_super(),
             TokenType::Identifier => Expr::Identifier(self.ast.intern(&token.lexeme)),
             _ => parse_error!(self, &pos, "Unexpected token {token}")
         };
 
         Ok(self.ast.add_expr(kind, pos))
-    }
-
-    fn parse_super(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        let token = self.tokens.next();
-        let pos = token.pos.clone();
-
-        match token.kind {
-            TokenType::Dot => {
-                let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-                let id = self.parse_identifier()?;
-                let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                let expr = self.ast.add_expr(Expr::Index(super_expr, id), pos.clone());
-                Ok(expr)
-            },
-            TokenType::LeftBracket => {
-                let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-                let expr = self.parse_expr()?;
-                self.tokens.expect(TokenType::RightBracket)?;
-                let expr = self.ast.add_expr(Expr::Index(super_expr, expr), pos.clone());
-                Ok(expr)
-            },
-            TokenType::LeftParen => parse_error!(self, &pos, "Super call must be the first statement in an init block"),
-            _ => parse_error!(self, &pos, "Unexpected token {token}"),
-        }
-    }
-
-    fn parse_super_call(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
-        let pos = self.tokens.expect(TokenType::Super)?.pos.clone();
-        self.tokens.expect(TokenType::LeftParen)?;
-        let args = self.parse_call_arguments()?;
-        self.tokens.expect(TokenType::Semicolon)?;
-        let super_expr = self.ast.add_expr(Expr::Super, pos.clone());
-        let expr = self.ast.add_expr(Expr::Call(super_expr, args), pos.clone());
-        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
     }
 
     fn parse_call_arguments(&mut self) -> Result<Vec<AstId<Expr>>, anyhow::Error> {

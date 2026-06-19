@@ -2,10 +2,10 @@ use anyhow::anyhow;
 use fnv::FnvHashMap;
 
 use crate::core::gc::Gc;
-use crate::core::objects::ObjClass;
+use crate::core::objects::ObjType;
 use crate::core::objects::ObjString;
 use crate::middle::ir::{Inst, Ir, Label};
-use crate::middle::resolve::{Bindings, Cleanup, FnKind};
+use crate::middle::bind::{Bindings, Cleanup, FnKind};
 use crate::middle::hir::Hir;
 use crate::middle::hir::HirExpr;
 use crate::middle::hir::HirFnDecl;
@@ -15,7 +15,7 @@ use crate::middle::hir::HirStmt;
 mod expressions;
 mod statements;
 mod functions;
-mod classes;
+mod types;
 
 #[derive(Clone, Copy)]
 enum TryCatchPosition {
@@ -39,7 +39,7 @@ pub struct Compiler<'a> {
     /// The kind of each enclosing function, for initializer return handling.
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
-    classes: FnvHashMap<*mut ObjString, *mut ObjClass>
+    types: FnvHashMap<*mut ObjString, *mut ObjType>
 }
 
 #[macro_export]
@@ -56,7 +56,7 @@ impl<'a> Compiler<'a> {
             bindings,
             fn_kinds: Vec::new(),
             try_frames: Vec::new(),
-            classes: FnvHashMap::default()
+            types: FnvHashMap::default()
         };
 
         let stmt_id = compiler.hir.get_root();

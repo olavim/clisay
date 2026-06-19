@@ -1,0 +1,4 @@
+// Traits are stateless: a trait may not declare an `init`.
+trait Counter {
+    init() {} // error: A trait cannot declare an `init`; put initialization on the host type
+}

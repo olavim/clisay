@@ -1,0 +1,12 @@
+type A {
+    pub a;
+    pub b = 1;
+    pub c = true;
+    pub d = "hello";
+}
+
+say obj = A();
+print(obj.a); // expect: null
+print(obj.b); // expect: 1
+print(obj.c); // expect: true
+print(obj.d); // expect: hello

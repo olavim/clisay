@@ -1,0 +1,3 @@
+// A bare key must be an identifier, a string/number/keyword literal, or a
+// computed `[expr]` key. An arbitrary operator token is not a valid key.
+say d = { *: 1 }; // error: Unexpected token *: expected a dict key

@@ -1,0 +1,10 @@
+type A {
+    pub a = "a";
+    init() {
+        print("init");
+        a = "b";
+    }
+}
+
+say obj = A(); // expect: init
+print(obj.a); // expect: b

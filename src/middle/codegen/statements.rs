@@ -1,7 +1,7 @@
 use crate::compiler_error;
 use crate::middle::hir::{HirCatchClause, HirExpr, HirFieldInit, HirId, HirStmt};
 use crate::middle::ir::Inst;
-use crate::middle::resolve::FnKind;
+use crate::middle::bind::FnKind;
 
 use super::{Compiler, TryCatchPosition, TryFrame};
 
@@ -27,7 +27,7 @@ impl<'a> Compiler<'a> {
 
                 if let FnKind::Initializer = *self.fn_kinds.last().unwrap() {
                     if expr.is_some() {
-                        compiler_error!(self, stmt_id, "Cannot return a value from a class initializer");
+                        compiler_error!(self, stmt_id, "Cannot return a value from a type initializer");
                     }
 
                     self.emit(Inst::GetLocal(0), stmt_id);
@@ -98,7 +98,9 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::SetLocal(slot), stmt_id);
                 self.emit(Inst::Pop, stmt_id);
             },
-            HirStmt::Class(decl) => self.class_declaration(stmt_id, decl)?,
+            HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
+            // Traits emit no runtime type; they exist only for self-containment validation in resolve.
+            HirStmt::Trait(_) => {},
             HirStmt::Say(HirFieldInit { value, .. }) => {
                 let slot = self.bindings.slot(stmt_id);
 
@@ -183,12 +185,12 @@ impl<'a> Compiler<'a> {
         self.expression_stmt(finally)
     }
 
-    /// Emit a `PUSH_NULL` placeholder for every `fn`/`class` declared directly in
+    /// Emit a `PUSH_NULL` placeholder for every `fn`/`type` declared directly in
     /// `body`, holding its (resolver-assigned) slot until the declaration is
     /// compiled into it - which is what lets forward references resolve.
     fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
-            if matches!(self.hir.get(stmt_id), HirStmt::Fn(_) | HirStmt::Class(_)) {
+            if matches!(self.hir.get(stmt_id), HirStmt::Fn(_) | HirStmt::Type(_)) {
                 self.emit(Inst::PushNull, stmt_id);
             }
         }

@@ -1,0 +1,11 @@
+say d = { a: 1 };
+d["a"] = 2;        // overwrite existing key
+print(d["a"]);     // expect: 2
+
+d["c"] = 3;        // add a new key
+print(d["c"]);     // expect: 3
+
+// assignment is an expression yielding the value
+say v = (d["a"] = 9);
+print(v);          // expect: 9
+print(d["a"]);     // expect: 9

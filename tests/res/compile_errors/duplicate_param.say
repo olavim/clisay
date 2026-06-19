@@ -1,0 +1,2 @@
+// Two parameters with the same name collide.
+fn f(x, x) { return x; } // error: 'x' already declared in this scope

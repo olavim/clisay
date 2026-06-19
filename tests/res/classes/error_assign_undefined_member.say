@@ -1,7 +1,0 @@
-
-class A {
-    x;
-}
-
-say obj = A();
-obj.y = true; // error: Invalid index: A doesn't have member "y" and doesn't have a setter

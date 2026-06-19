@@ -1,0 +1,3 @@
+// Two traits with the same name in one scope collide.
+trait Foo { pub fn a() { return 1; } }
+trait Foo { pub fn b() { return 2; } } // error: 'Foo' already declared in this scope

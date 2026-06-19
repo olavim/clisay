@@ -1,20 +1,17 @@
-class A {
-    x;
+// A parameter shadows a same-named member for bare access, while `this.x` always names
+// the member. (`this` member access is resolved statically, independent of locals.)
+type A {
+    pub x;
 
-    fn a() {
-        print(this.x);
+    init(v) {
+        this.x = v;
+    }
+
+    pub fn withParam(x) {
+        return this.x + "/" + x;
     }
 }
 
-class B : A {
-    x;
-
-    fn b() {
-        print(this.x);
-    }
-}
-
-say obj = B();
-obj.x = "b";
-obj.a(); // expect: null
-obj.b(); // expect: b
+say a = A("member");
+print(a.withParam("param")); // expect: member/param
+print(a.x);                  // expect: member

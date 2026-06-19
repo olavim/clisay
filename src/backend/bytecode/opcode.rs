@@ -13,14 +13,19 @@ pub enum Operand {
     Const,
     /// A `u16` bytecode offset (jump target).
     Jump,
+    /// A `u8` count followed by that many raw bytes. Variable length; the
+    /// disassembler reads the count then the bytes.
+    List,
 }
 
 impl Operand {
-    /// The number of bytes this operand occupies in the encoded instruction.
-    pub fn size(&self) -> usize {
+    /// The fixed number of bytes this operand occupies, or `None` for a
+    /// variable-length operand (`List`), which the reader sizes from its count.
+    pub fn size(&self) -> Option<usize> {
         match self {
-            Operand::Byte | Operand::Local | Operand::Const => 1,
-            Operand::Jump => 2,
+            Operand::Byte | Operand::Local | Operand::Const => Some(1),
+            Operand::Jump => Some(2),
+            Operand::List => None,
         }
     }
 }
@@ -61,6 +66,7 @@ macro_rules! opcodes {
 
 opcodes! {
     Call => CALL(Byte),
+    Construct => CONSTRUCT(List, Byte),
     Invoke => INVOKE(Const, Byte),
     Jump => JUMP(Jump),
     JumpIfFalse => JUMP_IF_FALSE(Jump),
@@ -78,6 +84,7 @@ opcodes! {
     JumpIfLtLocalConst => JUMP_IF_LT_LOCAL_CONST(Jump, Local, Const),
     CloseUpvalue => CLOSE_UPVALUE(Byte),
     Array => ARRAY(Byte),
+    Dict => DICT(Byte),
     Return => RETURN,
     Throw => THROW,
     PushTry => PUSH_TRY(Jump),
@@ -90,7 +97,7 @@ opcodes! {
     PushTrue => PUSH_TRUE,
     PushFalse => PUSH_FALSE,
     PushClosure => PUSH_CLOSURE(Const),
-    PushClass => PUSH_CLASS(Const),
+    PushType => PUSH_TYPE(Const),
 
     // Gets/sets
     GetGlobal => GET_GLOBAL(Const),
@@ -103,6 +110,8 @@ opcodes! {
     SetUpvaluePop => SET_UPVALUE_POP(Byte),
     GetIndex => GET_INDEX,
     SetIndex => SET_INDEX,
+    GetProperty => GET_PROPERTY,
+    SetProperty => SET_PROPERTY,
     GetPropertyId => GET_PROPERTY_ID(Byte),
     SetPropertyId => SET_PROPERTY_ID(Byte),
     SetPropertyIdPop => SET_PROPERTY_ID_POP(Byte),
@@ -110,6 +119,7 @@ opcodes! {
     // Arithmetic
     Add => ADD,
     AddLocalConst => ADD_LOCAL_CONST(Local, Const),
+    AddConstLocal => ADD_CONST_LOCAL(Const, Local),
     Subtract => SUBTRACT,
     SubLocalConst => SUB_LOCAL_CONST(Local, Const),
     SubConstLocal => SUB_CONST_LOCAL(Const, Local),
@@ -131,4 +141,5 @@ opcodes! {
     LessThanEqual => LESS_THAN_EQUAL,
     GreaterThan => GREATER_THAN,
     GreaterThanEqual => GREATER_THAN_EQUAL,
+    Is => IS(Const),
 }

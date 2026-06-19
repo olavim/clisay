@@ -11,12 +11,13 @@ use crate::core::value::ValueKind;
 use crate::frontend::lex::SourcePosition;
 
 use crate::core::native::array::NativeArray;
+use crate::core::native::dict::NativeDict;
 use crate::core::native::NativeType;
 use crate::core::stack::{CachedStack, Stack};
 use crate::core::value::Value;
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
-use crate::core::objects::{self, ClassMember, NativeFn, ObjArray, ObjClass, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
+use crate::core::objects::{self, TypeMember, NativeFn, ObjArray, ObjDict, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::opcode::{self, OpCode};
@@ -28,17 +29,19 @@ const INDEX_CACHE_SIZE: usize = 2048;
 #[derive(Clone, Copy)]
 struct IndexCache {
     site: usize,
-    class: *mut ObjClass,
-    member: ClassMember
+    ty: *mut ObjType,
+    member: TypeMember
 }
 
 struct NativeTypes {
-    array: *mut ObjClass
+    array: *mut ObjType,
+    dict: *mut ObjType
 }
 
 impl GcTraceable for NativeTypes {
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.array);
+        gc.mark_object(self.dict);
     }
     
     fn fmt(&self) -> String {
@@ -64,9 +67,9 @@ pub struct TryFrame {
     stack_start: *mut Value
 }
 
-/// A method invoke (`INVOKE`) whose member resolved through a getter — itself a
-/// frame call. The arguments are parked here until the getter frame returns its
-/// value (at call-stack depth `depth`), at which point the value is called.
+/// A method invoke (`INVOKE`) whose member resolved through a getter.
+/// The arguments are parked here until the getter frame returns its value,
+/// at which point the value is called.
 struct PendingInvoke {
     args: SmallVec<[Value; 4]>,
     depth: usize
@@ -103,9 +106,9 @@ fn disassemble(chunk: &BytecodeChunk) {
     Output::println("================");
 }
 
-fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjClass {
-    let class = native_type.build_class(gc);
-    gc.alloc(class)
+fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjType {
+    let ty = native_type.build_type(gc);
+    gc.alloc(ty)
 }
 
 /// Executes a compiled `chunk`, returning captured output.
@@ -139,7 +142,8 @@ impl Vm {
         }
 
         let native_types = NativeTypes {
-            array: build_native_type(&mut gc, NativeArray)
+            array: build_native_type(&mut gc, NativeArray),
+            dict: build_native_type(&mut gc, NativeDict)
         };
 
         let mut vm = Vm {
@@ -152,7 +156,7 @@ impl Vm {
             try_frames: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
-            index_cache: vec![IndexCache { site: 0, class: std::ptr::null_mut(), member: ClassMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
+            index_cache: vec![IndexCache { site: 0, ty: std::ptr::null_mut(), member: TypeMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
             pending_invokes: Vec::new(),
             out: Vec::new()
         };
@@ -204,6 +208,12 @@ impl Vm {
             vm.push(Value::NULL);
             Ok(())
         });
+
+        // The registered built-ins must match the list `middle::bind` checks references against,
+        // or a valid call to a native would be rejected as an undefined variable (or vice versa).
+        debug_assert_eq!(vm.globals.len(), crate::core::builtins::NAMES.len(), "built-in registration drifted from core::builtins::NAMES");
+        debug_assert!(crate::core::builtins::NAMES.iter().all(|n| vm.globals.contains_key(&vm.gc.intern(*n))),
+            "a name in core::builtins::NAMES was not registered as a native");
 
         Ok(vm.interpret()?)
     }
@@ -454,7 +464,24 @@ impl Vm {
                     let b_idx = read_byte!() as usize;
                     let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
                     let b = self.chunk.constants[b_idx];
-                    if a.is_number() {
+                    if a.is_number() && b.is_number() {
+                        self.stack.push(Value::from(a.as_number() + b.as_number()));
+                    } else {
+                        self.stack.push(a);
+                        self.stack.push(b);
+                        self.ip = ip;
+                        self.op_add()?;
+                        ip = self.ip;
+                    }
+                },
+                // Fused value-producing `const + local`. `+` does not commute for string concat,
+                // so the const operand stays first (unlike the numeric case it would be equivalent).
+                opcode::ADD_CONST_LOCAL => {
+                    let a_idx = read_byte!() as usize;
+                    let b_idx = read_byte!() as usize;
+                    let a = self.chunk.constants[a_idx];
+                    let b = unsafe { *(*self.frames.top()).stack_start.add(b_idx) };
+                    if a.is_number() && b.is_number() {
                         self.stack.push(Value::from(a.as_number() + b.as_number()));
                     } else {
                         self.stack.push(a);
@@ -470,7 +497,7 @@ impl Vm {
                     let b_idx = read_byte!() as usize;
                     let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
                     let b = self.chunk.constants[b_idx];
-                    if a.is_number() {
+                    if a.is_number() && b.is_number() {
                         self.stack.push(Value::from(a.as_number() - b.as_number()));
                     } else {
                         self.stack.push(a);
@@ -486,7 +513,7 @@ impl Vm {
                     let b_idx = read_byte!() as usize;
                     let a = self.chunk.constants[a_idx];
                     let b = unsafe { *(*self.frames.top()).stack_start.add(b_idx) };
-                    if b.is_number() {
+                    if a.is_number() && b.is_number() {
                         self.stack.push(Value::from(a.as_number() - b.as_number()));
                     } else {
                         self.stack.push(a);
@@ -527,7 +554,7 @@ impl Vm {
                             }
                         }
                     }
-                    // Slow path: native fns, bound methods, classes, arity errors.
+                    // Slow path: native fns, bound methods, types, arity errors.
                     self.ip = ip;
                     self.call(arg_count, value)?;
                     ip = self.ip;
@@ -539,6 +566,7 @@ impl Vm {
                     }
                     ip = self.ip;
                 },
+                opcode::CONSTRUCT => delegate!(self.op_construct()?),
                 opcode::THROW => delegate!(self.op_throw()?),
                 opcode::PUSH_TRY => delegate!(self.op_push_try()),
                 opcode::POP_TRY => self.op_pop_try(),
@@ -548,12 +576,15 @@ impl Vm {
                 opcode::JUMP_IF_TRUE_OR_POP => delegate!(self.op_jump_if_true_or_pop()),
                 opcode::CLOSE_UPVALUE => delegate!(self.op_close_upvalue()),
                 opcode::ARRAY => delegate!(self.op_array()),
+                opcode::DICT => delegate!(self.op_dict()),
                 opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
-                opcode::PUSH_CLASS => delegate!(self.op_push_class()),
+                opcode::PUSH_TYPE => delegate!(self.op_push_type()),
                 opcode::GET_GLOBAL => delegate!(self.op_get_global()?),
                 opcode::INVOKE => delegate!(self.op_invoke()?),
                 opcode::GET_INDEX => delegate!(self.op_get_index()?),
                 opcode::SET_INDEX => delegate!(self.op_set_index()?),
+                opcode::GET_PROPERTY => delegate!(self.op_get_property()?),
+                opcode::SET_PROPERTY => delegate!(self.op_set_property()?),
                 opcode::GET_PROPERTY_ID => delegate!(self.op_get_property_by_id()?),
                 opcode::SET_PROPERTY_ID => delegate!(self.op_set_property_by_id()?),
                 opcode::SET_PROPERTY_ID_POP => delegate!(self.op_set_property_by_id_pop()?),
@@ -571,6 +602,7 @@ impl Vm {
                 opcode::LESS_THAN_EQUAL => delegate!(self.op_less_than_equal()?),
                 opcode::GREATER_THAN => delegate!(self.op_greater_than()?),
                 opcode::GREATER_THAN_EQUAL => delegate!(self.op_greater_than_equal()?),
+                opcode::IS => delegate!(self.op_is()),
                 _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }

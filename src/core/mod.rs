@@ -1,5 +1,6 @@
 pub(crate) mod native;
 
+pub mod builtins;
 pub mod value;
 pub mod objects;
 pub mod gc;

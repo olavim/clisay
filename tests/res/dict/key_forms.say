@@ -1,0 +1,29 @@
+// identifier shorthand: { name } == { name: name }
+say name = "app";
+say d = { name };
+print(d["name"]); // expect: app
+
+// computed key is the VALUE of the expression, distinct from a literal identifier key
+say e = { [name]: 1, name: 2 };
+print(e["app"]);  // expect: 1
+print(e["name"]); // expect: 2
+
+// number key, no coercion: read by d[1], not d["1"]
+say f = { 1: "one" };
+print(f[1]);   // expect: one
+print(f["1"]); // expect: null
+
+// keyword literal keys take their bool/null value
+say g = { true: "t", false: "f", null: "n" };
+print(g[true]);  // expect: t
+print(g[false]); // expect: f
+print(g[null]);  // expect: n
+
+// quote to get the string key, which is distinct from the bool key
+say h = { true: "bool", "true": "str" };
+print(h[true]);   // expect: bool
+print(h["true"]); // expect: str
+
+// computed key from a call expression
+say k = { [(() => true)()]: "called" };
+print(k[true]); // expect: called

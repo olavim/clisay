@@ -1,0 +1,16 @@
+// `pub` members are externally accessible (read, write, call). A private member
+// is reachable from the type's own methods via `this`.
+type Point {
+    pub x;
+    pub y;
+    secret = 99; // private by default
+    pub fn sum() { return this.x + this.y + this.secret; } // reads private via this
+    init(x, y) { this.x = x; this.y = y; }
+}
+
+say p = Point(3, 4);
+print(p.x); // expect: 3
+print(p.y); // expect: 4
+p.x = 10; // external write to a pub field
+print(p.x); // expect: 10
+print(p.sum()); // expect: 113

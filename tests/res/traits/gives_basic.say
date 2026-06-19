@@ -1,0 +1,27 @@
+// `field gives Trait`: the held delegate provides the trait by forwarding, and the type `is` it.
+trait Powered {
+    pub fn start() { return "vroom"; }
+    pub fn stop() { return "stop"; }
+}
+type Engine with Powered { init() {} }
+
+type Car {
+    engine gives Powered;
+    init() { this.engine = Engine(); }
+}
+
+say c = Car();
+print(c.start());    // expect: vroom
+print(c.stop());     // expect: stop
+print(c is Powered); // expect: true
+print(c is Car);     // expect: true
+
+type Car2 {
+    engine gives Powered = Engine();
+}
+
+say c2 = Car2();
+print(c2.start());    // expect: vroom
+print(c2.stop());     // expect: stop
+print(c2 is Powered); // expect: true
+print(c2 is Car2);     // expect: true

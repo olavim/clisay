@@ -1,0 +1,7 @@
+type Box {
+    value; // private by default
+    init(v) { this.value = v; }
+}
+say b = Box(1);
+// A private member is invisible to external code, so an external write is "no such member".
+b.value = 5; // error: Invalid index: Box doesn't have member "value"

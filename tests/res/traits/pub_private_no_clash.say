@@ -1,0 +1,13 @@
+// A `pub`/`inner` (exposed) member and a same-named private member in a different trait do not clash.
+trait Greeter {
+    pub fn greet() { return "hello"; }
+}
+trait Secret {
+    fn greet() { return "shh"; } // private; distinct from Greeter.greet
+    pub fn reveal() { return this.greet(); } // calls its own private greet
+}
+
+type Person with Greeter, Secret {}
+say p = Person();
+print(p.greet());   // expect: hello
+print(p.reveal());  // expect: shh

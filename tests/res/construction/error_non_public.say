@@ -1,0 +1,2 @@
+type Box { pub x; secret; }
+say b = Box { x: 1, secret: 2 }; // error: Field 'secret' of 'Box' is not public

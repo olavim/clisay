@@ -1,0 +1,9 @@
+// A composer may not both `with`-provide and `req`-depend on the same trait.
+trait Clock { pub fn tick() { return 1; } }
+type Player with Clock req Clock { init() {} } // error: Trait 'Clock' appears in both `with` and `req`; keep only one
+// @split
+trait Clock { pub fn tick() { return 1; } }
+type Player with Clock { clock gives Clock; } // error: Trait 'Clock' appears in both `with` and `gives`; keep only one
+// @split
+trait Clock { pub fn tick() { return 1; } }
+type Player req Clock { clock gives Clock; } // error: Trait 'Clock' appears in both `req` and `gives`; keep only one

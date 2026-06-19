@@ -1,6 +1,6 @@
 use std::{fmt, mem};
 
-use fnv::FnvHashMap;
+use fnv::{FnvHashMap, FnvHashSet};
 use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
@@ -27,7 +27,7 @@ pub const TAG_CLOSURE: u8 = 3;
 pub const TAG_FUNCTION: u8 = 4;
 pub const TAG_NATIVE_FUNCTION: u8 = 5;
 pub const TAG_BOUND_METHOD: u8 = 6;
-pub const TAG_CLASS: u8 = 7;
+pub const TAG_TYPE: u8 = 7;
 
 const PTR_TAG: usize = 0b111;
 const PTR_TAG_U8: u8 = 0b111;
@@ -82,7 +82,7 @@ macro_rules! objects {
             }
 
             /// Drops the object's owned data in place but does **not** deallocate
-            /// the backing block — that is left to the GC's free list so the
+            /// the backing block, which is left to the GC's free list so the
             /// allocation can be recycled.
             pub fn free(self) -> (usize, usize) {
                 match self.kind() {
@@ -119,7 +119,8 @@ objects! {
     NativeFunction => ObjNativeFn,    native_function, as_native_function_ptr,  TAG_NATIVE_FUNCTION, "function";
     BoundMethod    => ObjBoundMethod, bound_method,    as_bound_method_ptr,     TAG_BOUND_METHOD,    "function";
     Closure        => ObjClosure,     closure,         as_closure_ptr,          TAG_CLOSURE,         "function";
-    Class          => ObjClass,       class,           as_class_ptr,            TAG_CLASS,           "class";
+    Type           => ObjType,        ty,              as_type_ptr,             TAG_TYPE,            "type";
+    Dict           => ObjDict,         dict,            as_dict_ptr,             TAG_HEADER,          "dict";
 }
 
 impl Object {
@@ -358,38 +359,43 @@ impl GcTraceable for ObjBoundMethod {
 type MemberId = u8;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum ClassMember {
+pub enum TypeMember {
     Field(MemberId),
     Method(MemberId)
 }
 
 #[repr(align(8))]
 #[repr(C)]
-pub struct ObjClass {
+pub struct ObjType {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
     /// Field and regular-method names. The accessors/initializer are *not* here;
     /// they're addressed structurally via the id fields below.
-    pub members: FnvHashMap<*mut ObjString, ClassMember>,
+    pub members: FnvHashMap<*mut ObjString, TypeMember>,
     pub fields: IntSet<MemberId>,
     pub methods: IntMap<MemberId, Object>,
+    /// Interned names of every trait/type this type **provides** (own name + transitively
+    /// `with`-mixed traits + inherited). Drives `x is T`: membership is pointer equality on the
+    /// gc-interned name.
+    pub provided: FnvHashSet<*mut ObjString>,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
-    /// `None` for native classes, which have no initializer.
+    /// `None` for native types, which have no initializer.
     pub init_id: Option<MemberId>,
     /// Prebuilt initial instance values (method slots filled, fields `NULL`).
     pub template: Box<[Value]>
 }
 
-impl ObjClass {
-    pub fn new(name: *mut ObjString) -> ObjClass {
-        ObjClass {
-            header: ObjectHeader::new(ObjectKind::Class),
+impl ObjType {
+    pub fn new(name: *mut ObjString) -> ObjType {
+        ObjType {
+            header: ObjectHeader::new(ObjectKind::Type),
             name,
             members: FnvHashMap::default(),
             fields: IntSet::default(),
             methods: IntMap::default(),
+            provided: FnvHashSet::default(),
             member_count: 0,
             getter_id: None,
             setter_id: None,
@@ -408,13 +414,13 @@ impl ObjClass {
         self.template = values;
     }
 
-    pub fn resolve(&self, name: *mut ObjString) -> Option<ClassMember> {
+    pub fn resolve(&self, name: *mut ObjString) -> Option<TypeMember> {
         self.members.get(&name).copied()
     }
 
     pub fn resolve_method(&self, name: *mut ObjString) -> Option<Object> {
         match self.members.get(&name) {
-            Some(ClassMember::Method(id)) => self.methods.get(id).copied(),
+            Some(TypeMember::Method(id)) => self.methods.get(id).copied(),
             _ => None
         }
     }
@@ -436,9 +442,9 @@ impl ObjClass {
     }
 }
 
-impl GcTraceable for ObjClass {
+impl GcTraceable for ObjType {
     fn fmt(&self) -> String {
-        format!("<class {}>", unsafe { &(*self.name).value })
+        format!("<type {}>", unsafe { &(*self.name).value })
     }
 
     fn mark(&self, gc: &mut Gc) {
@@ -449,11 +455,15 @@ impl GcTraceable for ObjClass {
         for (_, &method) in &self.methods {
             gc.mark_object(method);
         }
+        for &name in &self.provided {
+            gc.mark_object(name);
+        }
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<ObjClass>()
-            + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<ClassMember>())
+        mem::size_of::<ObjType>()
+            + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<TypeMember>())
+            + self.provided.capacity() * mem::size_of::<*mut ObjString>()
             + self.template.len() * mem::size_of::<Value>()
     }
 }
@@ -462,18 +472,18 @@ impl GcTraceable for ObjClass {
 #[repr(C)]
 pub struct ObjInstance {
     pub header: ObjectHeader,
-    pub class: *mut ObjClass,
+    pub ty: *mut ObjType,
     /// Member values indexed directly by member id.
     pub values: Box<[Value]>
 }
 
 impl ObjInstance {
-    pub fn new(class_ptr: *mut ObjClass) -> ObjInstance {
-        let class = unsafe { &*class_ptr };
+    pub fn new(type_ptr: *mut ObjType) -> ObjInstance {
+        let ty = unsafe { &*type_ptr };
         ObjInstance {
             header: ObjectHeader::new(ObjectKind::Instance),
-            class: class_ptr,
-            values: class.template.clone()
+            ty: type_ptr,
+            values: ty.template.clone()
         }
     }
 
@@ -490,12 +500,12 @@ impl ObjInstance {
 
 impl GcTraceable for ObjInstance {
     fn fmt(&self) -> String {
-        let class = unsafe { &*self.class };
-        format!("<instance {}>", class.fmt())
+        let ty = unsafe { &*self.ty };
+        format!("<instance {}>", ty.fmt())
     }
 
     fn mark(&self, gc: &mut Gc) {
-        gc.mark_object(self.class);
+        gc.mark_object(self.ty);
         for value in self.values.iter() {
             value.mark(gc);
         }
@@ -572,5 +582,42 @@ impl GcTraceable for ObjArray {
 
     fn size(&self) -> usize {
         mem::size_of::<ObjArray>() + self.values.capacity() * mem::size_of::<Value>()
+    }
+}
+
+/// The loose tier: an open, value-keyed map. Keys are `Value`s compared by
+/// identity/equality with no coercion (`5`, `"5"`, and `true` are distinct keys).
+/// Data lives here, keyed by `[]`; methods live on the native `dict` surface.
+#[repr(align(8))]
+#[repr(C)]
+pub struct ObjDict {
+    pub header: ObjectHeader,
+    pub entries: FnvHashMap<Value, Value>
+}
+
+impl ObjDict {
+    pub fn new(entries: FnvHashMap<Value, Value>) -> ObjDict {
+        ObjDict {
+            header: ObjectHeader::new(ObjectKind::Dict),
+            entries
+        }
+    }
+}
+
+impl GcTraceable for ObjDict {
+    fn fmt(&self) -> String {
+        format!("<dict {}>", self.entries.len())
+    }
+
+    fn mark(&self, gc: &mut Gc) {
+        for (key, value) in &self.entries {
+            key.mark(gc);
+            value.mark(gc);
+        }
+    }
+
+    fn size(&self) -> usize {
+        mem::size_of::<ObjDict>()
+            + self.entries.capacity() * (mem::size_of::<Value>() + mem::size_of::<Value>())
     }
 }

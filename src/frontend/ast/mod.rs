@@ -32,6 +32,9 @@ pub enum Literal {
     Number(f64),
     String(String),
     Array(Vec<AstId<Expr>>),
+    /// A `dict` literal: `{ key: value, ... }`. Each key is a string-literal expr
+    /// (identifier keys intern to strings); duplicate keys are rejected at parse.
+    Dict(Vec<(AstId<Expr>, AstId<Expr>)>),
     Lambda(FnDecl)
 }
 
@@ -43,6 +46,7 @@ impl fmt::Display for Literal {
             Literal::Number(n) => write!(f, "{}", n),
             Literal::String(s) => write!(f, "\"{}\"", s),
             Literal::Array(_) => write!(f, "[]"),
+            Literal::Dict(_) => write!(f, "{{}}"),
             Literal::Lambda(_) => write!(f, "<lambda>")
         }
     }
@@ -61,13 +65,21 @@ pub enum Expr {
     /// A function call: Call(callee, arguments)
     Call(AstId<Expr>, Vec<AstId<Expr>>),
 
-    /// An index expression: Index(target, index)
-    Index(AstId<Expr>, AstId<Expr>),
+    /// An access expression: `Index(target, index, is_dot)`. `is_dot` marks `.name`
+    /// (member access via `.`) versus `[expr]` (data access via `[]`). The two
+    /// resolve identically for instances/arrays; they diverge only at dynamic-boundary
+    /// values (`dict`), where `.` is the method surface and `[]` is keyed data.
+    Index(AstId<Expr>, AstId<Expr>, bool),
 
     Literal(Literal),
     Identifier(Symbol),
+    /// `expr is T`: a nominal capability test against a static type/trait *name*
+    /// resolved at runtime.
+    Is(AstId<Expr>, Symbol),
+    /// Brace construction `C(args) { field: value, ... }`. The first expr is the
+    /// constructed callee (`C` or `C(args)`); the list is the brace field initializers.
+    Construct(AstId<Expr>, Vec<(Symbol, AstId<Expr>)>),
     This,
-    Super
 }
 
 pub struct FieldInit {
@@ -87,21 +99,38 @@ pub struct CatchClause {
     pub body: AstId<Expr>
 }
 
-pub struct ClassDecl {
+pub struct TypeDecl {
     pub name: Symbol,
-    pub superclass: Option<Symbol>,
-    /// The initializer's runtime name (`"{class}.init"`), used whether the init is
+    /// `true` for a `trait` declaration (a non-instantiable, mixable bundle), `false`
+    /// for a `type`. Traits are expanded into composers during lowering (`with`).
+    pub is_trait: bool,
+    /// Traits mixed in via `with T1, T2, ...`.
+    pub with_traits: Vec<Symbol>,
+    /// Traits depended on via `req T1, T2, ...`.
+    pub req_traits: Vec<Symbol>,
+    /// Method holes declared via `req fn f(params);`.
+    pub req_fns: Vec<(Symbol, usize)>,
+    /// Member holes declared via `req name;`: a field/member the host must provide, allowing
+    /// usage of `this.name` in the trait's bodies.
+    pub req_members: Vec<Symbol>,
+    /// Delegation fields declared via `field gives Trait;`: `(field, trait)`. The field provides
+    /// `Trait` by forwarding, so for example `is Trait` is true.
+    pub gives: Vec<(Symbol, Symbol)>,
+    /// The initializer's runtime name (`"{type}.init"`), used whether the init is
     /// declared or synthesised during lowering.
     pub init_name: Symbol,
-    /// The declared initializer (`Stmt::Fn`), or `None` when the class has none —
-    /// lowering synthesises a virtual init in that case.
+    /// The declared initializer (`Stmt::Fn`). When the type has none lowering
+    /// synthesises a virtual init in that case.
     pub init: Option<AstId<Stmt>>,
-    pub getter: Option<AstId<Stmt>>,
-    pub setter: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
-    pub methods: Vec<AstId<Stmt>>
+    pub methods: Vec<AstId<Stmt>>,
+    /// Members (fields/methods) declared `pub` are externally accessible. Members not
+    /// listed are private or `inner`, reachable only through `this`.
+    pub pub_members: HashSet<Symbol>,
+    /// Members declared `inner`: object-internal (host and sibling traits but not external code).
+    pub inner_members: HashSet<Symbol>,
 }
 
 pub enum Stmt {
@@ -118,7 +147,7 @@ pub enum Stmt {
     Block(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
-    Class(Box<ClassDecl>)
+    Type(Box<TypeDecl>)
 }
 
 pub enum NodeKind {
@@ -233,6 +262,11 @@ impl Ast {
 
     pub fn pos<T>(&self, id: &AstId<T>) -> &SourcePosition {
         &self.nodes[id.id].pos
+    }
+
+    /// The interned text of a symbol. Valid until [`Ast::take_idents`] moves the table out.
+    pub fn text(&self, sym: Symbol) -> &str {
+        &self.ident_texts[sym.index()]
     }
 
     pub fn get_root(&self) -> AstId<Stmt> {

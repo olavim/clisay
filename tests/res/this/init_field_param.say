@@ -1,5 +1,5 @@
-class A {
-    val;
+type A {
+    pub val;
     init(x) {
         this.val = x;
     }

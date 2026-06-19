@@ -1,0 +1,13 @@
+// Keys are values compared without coercion: 5, "5", and true are distinct keys.
+say d = {};
+d[5] = "num";
+d["5"] = "str";
+d[true] = "bool";
+
+print(d[5]);    // expect: num
+print(d["5"]);  // expect: str
+print(d[true]); // expect: bool
+
+// number keys are by value: 5 and 5.0 are the same key
+d[5.0] = "again";
+print(d[5]);    // expect: again

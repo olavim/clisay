@@ -1,30 +1,78 @@
 //! Lowering: AST to HIR transformation.
+//!
+//! The generic statement/expression transform lives here. The trait-composition
+//! concern is split out: `traits` handles trait scoping and member folding (`with`),
+//! and `init` handles initializer assembly and `init` orchestration.
+
+mod init;
+mod traits;
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, ClassDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt};
-use crate::frontend::lex::SourcePosition;
+use crate::ast::{Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirCatchClause, HirClassDecl, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral,
-    HirStmt, UnOp,
+    BinOp, Hir, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirStmt, UnOp,
 };
+use crate::middle::names::NameBindings;
 
-pub fn lower(mut ast: Ast) -> Result<Hir, anyhow::Error> {
+pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
     let root = ast.get_root();
     let (ident_ids, ident_texts) = ast.take_idents();
-    let mut lowerer = Lowerer { ast: &ast, hir: Hir::new(ident_ids, ident_texts) };
+    let mut lowerer = Lowerer {
+        ast: &ast,
+        names,
+        hir: Hir::new(ident_ids, ident_texts),
+        provided_traits: std::collections::HashSet::new(),
+        emitted_aliases: std::collections::HashSet::new(),
+    };
     lowerer.stmt(&root)?;
     Ok(lowerer.hir)
 }
 
 struct Lowerer<'a> {
     ast: &'a Ast,
+    /// Name-resolution facts resolved over the AST before lowering: each `type`/`trait`'s flattened
+    /// `with`-set and resolved `req` traits, and which identifiers name an in-scope trait. See
+    /// `middle::names`.
+    names: &'a NameBindings,
     hir: Hir,
+    /// The traits the composer currently being lowered provides (its flattened `with`-set).
+    /// Used to validate qualified `T.method(...)` calls. Empty outside a composer body.
+    provided_traits: std::collections::HashSet<Symbol>,
+    /// Qualified-call alias method names (`"<Trait>.<method>"`) emitted for the current
+    /// composer: the methods a host override shadowed out of the plain namespace, still
+    /// reachable via `T.method(...)`. A qualified call resolves to an alias if one exists,
+    /// else to the plain method name.
+    emitted_aliases: std::collections::HashSet<String>,
 }
 
 impl<'a> Lowerer<'a> {
     fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &AstId<T>) -> anyhow::Error {
         anyhow!("{}\n\tat {}", msg.into(), self.ast.pos(node_id))
+    }
+
+    /// The `TypeDecl` of a `type`/`trait` declaration statement.
+    fn ast_type(&self, id: &AstId<Stmt>) -> &'a TypeDecl {
+        match self.ast.get(id) {
+            Stmt::Type(decl) => decl,
+            _ => unreachable!("expected a type/trait declaration"),
+        }
+    }
+
+    /// The `FnDecl` of a function/method/init declaration statement.
+    fn ast_fn(&self, id: &AstId<Stmt>) -> &'a FnDecl {
+        match self.ast.get(id) {
+            Stmt::Fn(decl) => decl,
+            _ => unreachable!("expected a function declaration"),
+        }
+    }
+
+    /// The statements of a block expression.
+    fn ast_block(&self, id: &AstId<Expr>) -> &'a [AstId<Stmt>] {
+        match self.ast.get(id) {
+            Expr::Block(stmts) => stmts,
+            _ => unreachable!("expected a block expression"),
+        }
     }
 
     fn stmt(&mut self, stmt_id: &AstId<Stmt>) -> Result<HirId<HirStmt>, anyhow::Error> {
@@ -55,7 +103,15 @@ impl<'a> Lowerer<'a> {
             Stmt::Block(body) => HirStmt::Block(self.expr(body)?),
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),
-            Stmt::Class(decl) => HirStmt::Class(Box::new(self.class_decl(decl, &pos)?)),
+            Stmt::Type(decl) => {
+                if decl.is_trait {
+                    // A trait emits no runtime type, but it's validated on its own.
+                    self.check_provide_require_exclusive(decl, &pos)?;
+                    HirStmt::Trait(Box::new(self.lower_trait(*stmt_id, decl, &pos)?))
+                } else {
+                    HirStmt::Type(Box::new(self.lower_type(*stmt_id, decl, &pos)?))
+                }
+            },
         };
         Ok(self.hir.add(kind, pos))
     }
@@ -71,17 +127,54 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(expr_id).clone();
         let kind = match self.ast.get(expr_id) {
             Expr::Block(stmts) => {
-                let stmts = stmts.iter().map(|s| self.stmt(s)).collect::<Result<Vec<_>, _>>()?;
-                HirExpr::Block(stmts)
+                let lowered = stmts.iter().map(|s| self.stmt(s)).collect::<Result<Vec<_>, _>>()?;
+                HirExpr::Block(lowered)
             },
             Expr::Unary(op, operand) => HirExpr::Unary(lower_unop(op), self.expr(operand)?),
             Expr::Binary(op, left, right) => return self.binary(expr_id, op, left, right),
-            Expr::Call(callee, args) => HirExpr::Call(self.expr(callee)?, self.exprs(args)?),
-            Expr::Index(target, member) => HirExpr::Index(self.expr(target)?, self.expr(member)?),
+            Expr::Call(callee, args) => {
+                if let Some((trait_sym, method)) = self.as_qualified_method_call(callee) {
+                    let lowered_args = self.exprs(args)?;
+                    self.qualified_method_call(trait_sym, &method, lowered_args, callee, &pos)?
+                } else {
+                    HirExpr::Call(self.expr(callee)?, self.exprs(args)?)
+                }
+            },
+            Expr::Index(target, member, is_dot) => {
+                // The per-trait renamed slot names (`"<Trait>.<name>"`) are an internal artifact;
+                // a `.` can't appear in a source identifier, so `this["<Trait>.x"]` is an attempt
+                // to reach one. Reject it so private/qualified slots can't be probed by name.
+                if matches!(self.ast.get(target), Expr::This) {
+                    if let Expr::Literal(Literal::String(name)) = self.ast.get(member) {
+                        if name.contains('.') {
+                            return Err(self.error(format!("Invalid member access: '{name}' is not a member"), expr_id));
+                        }
+                    }
+                }
+                HirExpr::Index(self.expr(target)?, self.expr(member)?, *is_dot)
+            },
             Expr::Literal(lit) => HirExpr::Literal(self.literal(lit)?),
-            Expr::Identifier(name) => HirExpr::Identifier(*name),
+            Expr::Identifier(name) => {
+                if self.names.trait_ref(*expr_id).is_some() {
+                    return Err(self.error(format!("'{}' is a trait and cannot be used as a value (traits are not instantiable)", self.hir.text(*name)), expr_id));
+                }
+                HirExpr::Identifier(*name)
+            },
+            Expr::Is(target, name) => HirExpr::Is(self.expr(target)?, *name),
+            Expr::Construct(callee, fields) => {
+                // The callee is a bare type name `C` or a call `C(args)`. Split off the args; the
+                // remaining type expression is evaluated to the type value at runtime.
+                let (callee, args) = match self.ast.get(callee) {
+                    Expr::Call(c, a) => (self.expr(c)?, self.exprs(a)?),
+                    _ => (self.expr(callee)?, Vec::new()),
+                };
+                let mut brace = Vec::with_capacity(fields.len());
+                for (name, value) in fields {
+                    brace.push((*name, self.expr(value)?));
+                }
+                HirExpr::Construct(callee, args, brace)
+            },
             Expr::This => HirExpr::This,
-            Expr::Super => HirExpr::Super,
         };
         Ok(self.hir.add(kind, pos))
     }
@@ -96,7 +189,7 @@ impl<'a> Lowerer<'a> {
                 let right = self.hir.add(normalized_binop, self.ast.pos(right).clone());
                 HirExpr::Assign(self.expr(left)?, right)
             },
-            Operator::MemberAccess => HirExpr::Index(self.expr(left)?, self.expr(right)?),
+            Operator::MemberAccess => HirExpr::Index(self.expr(left)?, self.expr(right)?, true),
             Operator::Comma => return Err(self.error("Unexpected ','", right)),
             _ => HirExpr::Binary(lower_binop(op), self.expr(left)?, self.expr(right)?),
         };
@@ -114,6 +207,13 @@ impl<'a> Lowerer<'a> {
             Literal::Number(n) => HirLiteral::Number(*n),
             Literal::String(s) => HirLiteral::String(s.clone()),
             Literal::Array(elements) => HirLiteral::Array(self.exprs(elements)?),
+            Literal::Dict(pairs) => {
+                let mut lowered = Vec::with_capacity(pairs.len());
+                for (key, value) in pairs {
+                    lowered.push((self.expr(key)?, self.expr(value)?));
+                }
+                HirLiteral::Dict(lowered)
+            },
             Literal::Lambda(decl) => HirLiteral::Lambda(self.fn_decl(decl)?),
         })
     }
@@ -139,85 +239,6 @@ impl<'a> Lowerer<'a> {
             None => None,
         };
         Ok(HirCatchClause { param, body: self.expr(&catch.body)? })
-    }
-
-    fn class_decl(&mut self, decl: &ClassDecl, class_pos: &SourcePosition) -> Result<HirClassDecl, anyhow::Error> {
-        let init = self.lower_init(decl, class_pos)?;
-        let getter = match &decl.getter {
-            Some(stmt) => Some(self.stmt(stmt)?),
-            None => None,
-        };
-        let setter = match &decl.setter {
-            Some(stmt) => Some(self.stmt(stmt)?),
-            None => None,
-        };
-        let methods = decl.methods.iter().map(|m| self.stmt(m)).collect::<Result<Vec<_>, _>>()?;
-        Ok(HirClassDecl {
-            name: decl.name,
-            superclass: decl.superclass,
-            init,
-            getter,
-            setter,
-            fields: decl.fields.clone(),
-            methods,
-        })
-    }
-
-    /// Assembles the class initializer: field initializers first, then a `super()`
-    /// call for a child class (the explicit one, or a synthesised virtual one), then
-    /// the declared body. A class without a declared init gets an empty-bodied one.
-    fn lower_init(&mut self, decl: &ClassDecl, class_pos: &SourcePosition) -> Result<HirId<HirStmt>, anyhow::Error> {
-        let is_child = decl.superclass.is_some();
-
-        // The declared init's params, body, and whether it already opens with super().
-        let (params, body_stmts, has_super, init_pos): (_, &[AstId<Stmt>], _, _) = match &decl.init {
-            Some(init_id) => {
-                let init_pos = self.ast.pos(init_id).clone();
-                let Stmt::Fn(fn_decl) = self.ast.get(init_id) else { unreachable!() };
-                let params = self.exprs(&fn_decl.params)?;
-                let Expr::Block(stmts) = self.ast.get(&fn_decl.body) else { unreachable!() };
-                let has_super = stmts.first().is_some_and(|s| self.is_super_call(s));
-                (params, stmts.as_slice(), has_super, init_pos)
-            },
-            None => (Vec::new(), &[], false, class_pos.clone()),
-        };
-
-        let mut body = Vec::new();
-
-        // 1. Field initializers (`this.f = v`), spliced ahead of everything.
-        for (field, value) in &decl.field_inits {
-            let target = self.hir.add(HirExpr::Identifier(*field), class_pos.clone());
-            let value = self.expr(value)?;
-            let assign = self.hir.add(HirExpr::Assign(target, value), class_pos.clone());
-            body.push(self.hir.add(HirStmt::Expression(assign), class_pos.clone()));
-        }
-
-        // 2. A virtual `super()` for a child class that didn't write one.
-        if is_child && !has_super {
-            body.push(self.virtual_super_call(&init_pos));
-        }
-
-        // 3. The declared body (which may itself open with an explicit `super(...)`).
-        for stmt_id in body_stmts {
-            body.push(self.stmt(stmt_id)?);
-        }
-
-        let body = self.hir.add(HirExpr::Block(body), init_pos.clone());
-        let fn_decl = HirFnDecl { name: decl.init_name, params, body };
-        Ok(self.hir.add(HirStmt::Fn(fn_decl), init_pos))
-    }
-
-    /// Whether `stmt` is a `super(...)` call statement.
-    fn is_super_call(&self, stmt: &AstId<Stmt>) -> bool {
-        let Stmt::Expression(expr) = self.ast.get(stmt) else { return false };
-        let Expr::Call(callee, _) = self.ast.get(expr) else { return false };
-        matches!(self.ast.get(callee), Expr::Super)
-    }
-
-    fn virtual_super_call(&mut self, pos: &SourcePosition) -> HirId<HirStmt> {
-        let super_expr = self.hir.add(HirExpr::Super, pos.clone());
-        let call = self.hir.add(HirExpr::Call(super_expr, Vec::new()), pos.clone());
-        self.hir.add(HirStmt::Expression(call), pos.clone())
     }
 }
 

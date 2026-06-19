@@ -1,0 +1,4 @@
+// A trait reaching a member it doesn't declare is a compile error.
+trait Mover {
+    pub fn step() { return this.stuff(1); } // error: Trait 'Mover' accesses undeclared member 'this.stuff'; use `with`, `req`, or `req fn` to provide it
+}

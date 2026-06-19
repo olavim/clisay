@@ -1,0 +1,5 @@
+// Two different traits exposing a method of the same name clash; without a host override to
+// resolve it, that is a compile error.
+trait Logger  { pub fn log(m) { print("log"); } }
+trait Auditor { pub fn log(m) { print("audit"); } }
+type Service with Logger, Auditor { init() {} } // error: Exposed method 'log' clashes between traits 'Logger' and 'Auditor'; declare 'log' in the host type to resolve it

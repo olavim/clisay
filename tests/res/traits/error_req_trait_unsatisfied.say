@@ -1,0 +1,4 @@
+// A `req T` left unsatisfied at an instantiable type is an error.
+trait Clock { pub fn tick() { return 1; } }
+trait Mover req Clock { pub fn step() { return this.tick(); } }
+type Player with Mover { init() {} } // error: Unsatisfied requirement: trait 'Clock' (required by trait 'Mover') is not provided by any `with`

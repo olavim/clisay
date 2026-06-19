@@ -1,1 +1,1 @@
-print(this); // error: Cannot use 'this' outside of a class method
+print(this); // error: Cannot use 'this' outside of a type method

@@ -6,8 +6,8 @@
 // wrongly freed, its slot would be reused and `b.v` would read back garbage
 // instead of "foo".
 
-class Box {
-    v;
+type Box {
+    pub v;
     init(v) {
         this.v = v;
     }

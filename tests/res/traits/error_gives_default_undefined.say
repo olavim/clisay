@@ -1,0 +1,6 @@
+// A `gives` default referencing an undefined name is now caught at compile time (not deferred to
+// construction), even though the type is never instantiated.
+trait Powered { pub fn start() { return "vroom"; } }
+type Car {
+    engine gives Powered = Engine(); // error: Undefined variable 'Engine'
+}

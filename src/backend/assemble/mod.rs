@@ -3,7 +3,7 @@
 use anyhow::bail;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
-use crate::backend::bytecode::opcode::{self, OpCode, Operand};
+use crate::backend::bytecode::opcode;
 use crate::frontend::lex::SourcePosition;
 use crate::middle::ir::{Inst, Ir, Label};
 
@@ -12,7 +12,7 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     let mut size = 0usize;
     for inst in ir.code() {
         offsets.push(size);
-        size += encoded_len(opcode::opcode_of(inst));
+        size += encoded_len(inst, &ir);
     }
 
     if size > u16::MAX as usize {
@@ -33,9 +33,21 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     Ok(chunk)
 }
 
-/// The encoded byte length of an instruction: its opcode plus operand bytes.
-fn encoded_len(op: OpCode) -> usize {
-    1 + opcode::operands(op).iter().map(Operand::size).sum::<usize>()
+/// The encoded byte length of an instruction: its opcode plus operand bytes. A
+/// variable-length `List` operand is sized from the instruction's own data.
+fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
+    let op = opcode::opcode_of(inst);
+    let mut len = 1;
+    for operand in opcode::operands(op) {
+        match operand.size() {
+            Some(sz) => len += sz,
+            None => {
+                let Inst::Construct(fields_idx, _) = *inst else { unreachable!("only Construct has a List operand") };
+                len += 1 + ir.construct_fields(fields_idx).len(); // count byte + ids
+            }
+        }
+    }
+    len
 }
 
 fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, pos: &SourcePosition) {
@@ -56,16 +68,19 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Pop
         | PushNull | PushTrue | PushFalse
         | GetIndex | SetIndex
+        | GetProperty | SetProperty
         | Add | Subtract | Multiply | Divide | Negate | Not
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
         | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual => {}
 
         Call(b)
         | Array(b)
-        | PushConstant(b) | PushClosure(b) | PushClass(b)
+        | Dict(b)
+        | PushConstant(b) | PushClosure(b) | PushType(b)
         | GetGlobal(b) | GetLocal(b) | SetLocal(b) | SetLocalPop(b)
         | CloseUpvalue(b) | GetUpvalue(b) | SetUpvalue(b) | SetUpvaluePop(b)
-        | GetPropertyId(b) | SetPropertyId(b) | SetPropertyIdPop(b) => chunk.write(b, pos),
+        | GetPropertyId(b) | SetPropertyId(b) | SetPropertyIdPop(b)
+        | Is(b) => chunk.write(b, pos),
 
         Jump(l)
         | JumpIfFalse(l)
@@ -94,7 +109,16 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(arg_count, pos);
         }
 
-        SubConstLocal(c, local) => {
+        Construct(fields_idx, arg_count) => {
+            let fields = ir.construct_fields(fields_idx);
+            chunk.write(fields.len() as u8, pos);
+            for &id in fields {
+                chunk.write(id, pos);
+            }
+            chunk.write(arg_count, pos);
+        }
+
+        SubConstLocal(c, local) | AddConstLocal(c, local) => {
             chunk.write(c, pos);
             chunk.write(local, pos);
         }

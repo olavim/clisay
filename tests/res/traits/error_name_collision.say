@@ -1,0 +1,3 @@
+// A trait shares the one-name-per-scope namespace with type/fn/say.
+trait Shape { pub fn area() { return 0; } }
+type Shape { init() {} } // error: 'Shape' already declared in this scope

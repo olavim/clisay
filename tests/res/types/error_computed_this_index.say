@@ -1,0 +1,8 @@
+// `this` members are statically known: a computed `this[expr]` is rejected.
+type A {
+    pub x = 1;
+
+    pub fn get(key) {
+        return this[key]; // error: Invalid index: 'this' has no computed member; member names are statically known
+    }
+}

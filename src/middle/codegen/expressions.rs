@@ -1,8 +1,8 @@
 use crate::compiler_error;
 use crate::core::value::Value;
-use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, UnOp};
+use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
 use crate::middle::ir::Inst;
-use crate::middle::resolve::{FnKind, Member, Place};
+use crate::middle::bind::{FnKind, Member, Place};
 
 use super::Compiler;
 
@@ -23,13 +23,20 @@ impl<'a> Compiler<'a> {
             HirExpr::Binary(op, left, right) => self.binary_expression(*op, left, right)?,
             HirExpr::Assign(left, right) => self.compile_assign(left, right, false)?,
             HirExpr::Call(callee, args) => self.call_expression(callee, args)?,
-            HirExpr::Index(target, member) => self.index(target, member, IndexOp::Load)?,
+            HirExpr::Index(target, member, is_dot) => self.index(target, member, *is_dot, IndexOp::Load)?,
             HirExpr::Literal(lit) => self.literal(expr, lit)?,
             HirExpr::Identifier(_) => {
                 let place = self.bindings.place(expr);
                 self.emit_load(place, expr)?;
             },
-            HirExpr::This | HirExpr::Super => self.emit(Inst::GetLocal(0), expr),
+            HirExpr::Is(target, name) => {
+                self.expression(target)?;
+                let name_ref = self.gc.intern(self.hir.text(*name));
+                let idx = self.ir.add_constant(Value::from(name_ref))?;
+                self.emit(Inst::Is(idx), expr);
+            },
+            HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
+            HirExpr::This => self.emit(Inst::GetLocal(0), expr),
         };
 
         Ok(())
@@ -53,6 +60,22 @@ impl<'a> Compiler<'a> {
     fn unary_expression(&mut self, op: UnOp, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.expression(expr)?;
         self.emit(unop_inst(op), expr);
+        Ok(())
+    }
+
+    /// Compiles a brace construction. Source order: push the type, the `init` args, then the
+    /// brace values; the `Construct` op allocates, sets the brace fields, and runs `init`.
+    fn construct_expression(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
+        self.expression(callee)?;
+        for arg in args {
+            self.expression(arg)?;
+        }
+        for (_, value) in brace {
+            self.expression(value)?;
+        }
+        let field_ids = self.bindings.construct_fields(expr).to_vec();
+        let fields_idx = self.ir.add_construct_fields(field_ids)?;
+        self.emit(Inst::Construct(fields_idx, args.len() as u8), expr);
         Ok(())
     }
 
@@ -103,9 +126,9 @@ impl<'a> Compiler<'a> {
                 self.emit_store(place, discarded, lhs)?;
                 Ok(())
             },
-            HirExpr::Index(obj, member) => {
-                let (obj, member) = (*obj, *member);
-                self.index(&obj, &member, IndexOp::Store { rhs: *rhs, discarded })
+            HirExpr::Index(obj, member, is_dot) => {
+                let (obj, member, is_dot) = (*obj, *member, *is_dot);
+                self.index(&obj, &member, is_dot, IndexOp::Store { rhs: *rhs, discarded })
             },
             _ => compiler_error!(self, lhs, "Invalid assignment")
         }
@@ -143,26 +166,26 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, op: IndexOp) -> Result<(), anyhow::Error> {
-        if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
-            match self.bindings.member(target) {
-                Member::ById(member_id) => return self.index_member_by_id(target, member_id, op),
-                Member::ByAccessor(accessor_id) => return self.index_member_by_accessor(target, accessor_id, member_expr_id, op),
-                Member::SuperInit(_) => unreachable!("super-call resolution on a member access"),
-            }
+    fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, is_dot: bool, op: IndexOp) -> Result<(), anyhow::Error> {
+        if matches!(self.hir.get(target), HirExpr::This) {
+            let Member::ById(member_id) = self.bindings.member(target);
+            return self.index_member_by_id(target, member_id, op);
         }
 
+        // `.name` (member, `is_dot`) and `[expr]` (data) use the same stack protocol
+        // but distinct opcodes, so the VM can route the dynamic-boundary `dict` to its
+        // method surface (`.`) vs its keyed data (`[]`).
         match op {
             IndexOp::Load => {
                 self.expression(target)?;
                 self.expression(member_expr_id)?;
-                self.emit(Inst::GetIndex, target);
+                self.emit(if is_dot { Inst::GetProperty } else { Inst::GetIndex }, target);
             },
             IndexOp::Store { rhs, discarded } => {
                 self.expression(&rhs)?;
                 self.expression(target)?;
                 self.expression(member_expr_id)?;
-                self.emit(Inst::SetIndex, target);
+                self.emit(if is_dot { Inst::SetProperty } else { Inst::SetIndex }, target);
                 if discarded {
                     self.emit(Inst::Pop, target);
                 }
@@ -186,27 +209,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn index_member_by_accessor(&mut self, target_expr: &HirId<HirExpr>, accessor_id: u8, member_expr_id: &HirId<HirExpr>, op: IndexOp) -> Result<(), anyhow::Error> {
-        self.expression(target_expr)?;
-        self.emit(Inst::GetPropertyId(accessor_id), target_expr);
-
-        self.expression(member_expr_id)?;
-        let arg_count = match op {
-            IndexOp::Load => 1,
-            IndexOp::Store { rhs, .. } => {
-                self.expression(&rhs)?;
-                2
-            }
-        };
-        self.emit(Inst::Call(arg_count), target_expr);
-
-        // A setter call returns a value; drop it in statement position.
-        if let IndexOp::Store { discarded: true, .. } = op {
-            self.emit(Inst::Pop, target_expr);
-        }
-        Ok(())
-    }
-
     fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &Vec<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
         // Fuse `recv.name(args)` into a single INVOKE when the receiver is an
         // arbitrary expression (not `this`/`super`, which have their own member
@@ -223,16 +225,7 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
-        match self.hir.get(callee) {
-            HirExpr::Super => {
-                let Member::SuperInit(member_id) = self.bindings.member(callee) else {
-                    unreachable!("super call resolved to a non-init member");
-                };
-                self.emit(Inst::GetLocal(0), callee);
-                self.emit(Inst::GetPropertyId(member_id), callee);
-            },
-            _ => { self.expression(callee)? }
-        };
+        self.expression(callee)?;
 
         for arg in args {
             self.expression(arg)?;
@@ -242,12 +235,16 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// If `callee` is `recv.name` where `recv` is not `this`/`super` and `name` is
-    /// a literal, returns the receiver expression and the member name — the shape
-    /// that compiles to a fused `INVOKE`.
+    /// If `callee` is `recv.name` where `recv` is not `this` and `name` is
+    /// a literal, returns the receiver expression and the member name.
     fn as_method_invoke(&self, callee: &HirId<HirExpr>) -> Option<(HirId<HirExpr>, String)> {
-        let HirExpr::Index(target, member) = self.hir.get(callee) else { return None };
-        if matches!(self.hir.get(target), HirExpr::This | HirExpr::Super) {
+        let HirExpr::Index(target, member, is_dot) = self.hir.get(callee) else { return None };
+        // Only `recv.name(args)` (a `.`-call) is a method invoke. `recv["k"](args)` is a
+        // call of the *data* at key "k", which must not route to the method surface.
+        if !is_dot {
+            return None;
+        }
+        if matches!(self.hir.get(target), HirExpr::This) {
             return None;
         }
         let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) else { return None };
@@ -279,6 +276,13 @@ impl<'a> Compiler<'a> {
                     self.expression(element)?;
                 }
                 self.emit(Inst::Array(elements.len() as u8), expr);
+            },
+            HirLiteral::Dict(pairs) => {
+                for (key, value) in pairs {
+                    self.expression(key)?;
+                    self.expression(value)?;
+                }
+                self.emit(Inst::Dict(pairs.len() as u8), expr);
             },
             HirLiteral::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };

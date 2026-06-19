@@ -1,0 +1,15 @@
+// Implicit `this`: inside a trait body, bare references to the trait's own members resolve to `this.<member>`.
+trait Counter {
+    fn step() { return 1; } // private method
+    pub fn bump() { return step() + step(); } // bare `step()` (implicit this)
+    pub fn shadow(step) { return step; } // param `step` shadows the private method
+}
+trait Other {
+    fn step() { return 100; } // a different private `step` (must not collide)
+    pub fn other() { return step(); }
+}
+type Widget with Counter, Other { init() {} }
+say w = Widget();
+print(w.bump());      // expect: 2
+print(w.shadow(40));  // expect: 40
+print(w.other());     // expect: 100

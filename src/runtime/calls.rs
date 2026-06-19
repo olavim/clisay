@@ -44,7 +44,7 @@ impl Vm {
             objects::TAG_CLOSURE => self.call_closure(arg_count, object.as_closure_ptr()),
             objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, object.as_native_function_ptr()),
             objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object.as_bound_method_ptr()),
-            objects::TAG_CLASS => self.call_class(arg_count, object.as_class_ptr()),
+            objects::TAG_TYPE => self.call_type(arg_count, object.as_type_ptr()),
             _ => unsafe { std::hint::unreachable_unchecked() }
         }
     }
@@ -87,9 +87,52 @@ impl Vm {
         Ok(())
     }
 
-    fn call_class(&mut self, arg_count: usize, class_ptr: *mut ObjClass) -> Result<(), anyhow::Error> {
-        let class = unsafe { &*class_ptr };
-        let init_method_obj = class.initializer().unwrap();
+    /// Brace construction `C(args) { f: v, ... }`. Reads the brace field ids then the init arg
+    /// count, allocates the instance, sets the brace fields from the stack, then runs `init`.
+    /// The stack holds `[C, args.., brace values..]` in source order.
+    pub(super) fn op_construct(&mut self) -> Result<(), anyhow::Error> {
+        let field_count = self.read_next() as usize;
+        let mut field_ids = [0u8; u8::MAX as usize + 1];
+        for slot in field_ids.iter_mut().take(field_count) {
+            *slot = self.read_next();
+        }
+        let arg_count = self.read_next() as usize;
+
+        let type_val = self.stack.peek(field_count + arg_count);
+        if !type_val.is_object() || type_val.as_object().tag() != objects::TAG_TYPE {
+            return self.error(format!("Cannot construct: {} is not a type", type_val.fmt()));
+        }
+        let type_ptr = type_val.as_object().as_type_ptr();
+        let ty = unsafe { &*type_ptr };
+        let init_obj = ty.initializer().unwrap();
+        if init_obj.tag() != objects::TAG_FUNCTION {
+            return self.error("Cannot brace-construct this type");
+        }
+        let init_ref = init_obj.as_function_ptr();
+        let init = unsafe { &*init_ref };
+        check_arity!(self, arg_count, init.arity, init.name);
+
+        // Allocate, rooting the init closure across the allocation (it can trigger GC).
+        let closure = self.create_closure(init_ref);
+        self.stack.push(Value::from(closure));
+        let instance_ptr = self.alloc(ObjInstance::new(type_ptr));
+        self.stack.pop();
+
+        // Brace values sit on top of the stack in field order; set them before init runs.
+        let instance = unsafe { &mut *instance_ptr };
+        for j in 0..field_count {
+            let value = self.stack.peek(field_count - 1 - j);
+            instance.set(field_ids[j], value);
+        }
+        // Drop the brace values, then run init on the instance (it returns `this`).
+        self.stack.truncate(field_count);
+        let stack_start = self.stack.set(arg_count, Value::from(instance_ptr));
+        self.push_frame(closure.as_closure_ptr(), stack_start, init.ip_start)
+    }
+
+    fn call_type(&mut self, arg_count: usize, type_ptr: *mut ObjType) -> Result<(), anyhow::Error> {
+        let ty = unsafe { &*type_ptr };
+        let init_method_obj = ty.initializer().unwrap();
         match init_method_obj.tag() {
             objects::TAG_FUNCTION => {
                 let init_method_ref = init_method_obj.as_function_ptr();
@@ -100,7 +143,7 @@ impl Vm {
                 // Root the fresh closure on the value stack: it isn't reachable yet and
                 // the instance allocation below can trigger GC.
                 self.stack.push(Value::from(closure));
-                let instance = self.alloc(ObjInstance::new(class_ptr));
+                let instance = self.alloc(ObjInstance::new(type_ptr));
                 self.stack.pop();
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure.as_closure_ptr(), stack_start, init_method.ip_start)

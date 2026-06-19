@@ -19,8 +19,12 @@ pub struct Label(usize);
 pub enum Inst {
     // Control flow
     Call(u8),
+    /// Brace construction `C(args) { f: v, ... }`: `Construct(fields_idx, arg_count)`.
+    /// The brace field ids live in `Ir::construct_fields` at `fields_idx`; at runtime the
+    /// instance is allocated, those fields are set from the stack, and `init` runs with the args.
+    Construct(u16, u8),
     /// Fused method call `recv.name(args)`: `Invoke(name_const, arg_count)` resolves
-    /// the method on the receiver's class and pushes the frame directly, avoiding
+    /// the method on the receiver's type and pushes the frame directly, avoiding
     /// the bound-method allocation that `GetIndex` + `Call` would incur.
     Invoke(u8, u8),
     Jump(Label),
@@ -52,7 +56,7 @@ pub enum Inst {
     PushTrue,
     PushFalse,
     PushClosure(u8),
-    PushClass(u8),
+    PushType(u8),
 
     // Variables and properties
     GetGlobal(u8),
@@ -66,14 +70,20 @@ pub enum Inst {
     CloseUpvalue(u8),
     GetIndex,
     SetIndex,
+    /// Dynamic member access by name (`.name`): same stack protocol as Get/SetIndex,
+    /// but routes the dynamic-boundary `dict` to its method surface instead of data.
+    GetProperty,
+    SetProperty,
     GetPropertyId(u8),
     SetPropertyId(u8),
     SetPropertyIdPop(u8),
     Array(u8),
+    Dict(u8),
 
     // Arithmetic
     Add,
     AddLocalConst(u8, u8),   // local + const
+    AddConstLocal(u8, u8),   // const + local
     Subtract,
     SubLocalConst(u8, u8),   // local - const
     SubConstLocal(u8, u8),   // const - local
@@ -95,6 +105,9 @@ pub enum Inst {
     LessThanEqual,
     GreaterThan,
     GreaterThanEqual,
+    /// `x is T`: pop the receiver, push whether its type provides the trait/type named by the
+    /// constant-pool string operand.
+    Is(u8),
 }
 
 /// A whole program's worth of IR: the instruction stream (with a source position
@@ -112,6 +125,9 @@ pub struct Ir {
     /// Function entry points: each `ObjFn`'s `ip_start` is patched to its body
     /// label's byte offset at assembly time (offsets aren't known until then).
     entries: Vec<(*mut ObjFn, Label)>,
+    /// Brace-construction field-id lists, referenced by index from `Inst::Construct`.
+    /// Kept out of the instruction so `Inst` stays `Copy`.
+    construct_fields: Vec<Vec<u8>>,
 }
 
 impl Ir {
@@ -123,7 +139,22 @@ impl Ir {
             constant_indices: FnvHashMap::default(),
             labels: Vec::new(),
             entries: Vec::new(),
+            construct_fields: Vec::new(),
         }
+    }
+
+    /// Records a brace-construction field-id list, returning its index for `Inst::Construct`.
+    pub fn add_construct_fields(&mut self, fields: Vec<u8>) -> Result<u16, anyhow::Error> {
+        if self.construct_fields.len() >= u16::MAX as usize {
+            bail!("Too many brace constructions");
+        }
+        self.construct_fields.push(fields);
+        Ok((self.construct_fields.len() - 1) as u16)
+    }
+
+    /// The brace field-id list at `idx` (from `Inst::Construct`).
+    pub fn construct_fields(&self, idx: u16) -> &[u8] {
+        &self.construct_fields[idx as usize]
     }
 
     /// Appends an instruction, attributing it to `pos`.
@@ -212,6 +243,6 @@ impl Ir {
             .map(|target| target.map(|idx| old_to_new[idx]))
             .collect();
 
-        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, entries: self.entries }
+        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, entries: self.entries, construct_fields: self.construct_fields }
     }
 }
