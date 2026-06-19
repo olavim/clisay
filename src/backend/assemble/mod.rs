@@ -3,7 +3,7 @@
 use anyhow::bail;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
-use crate::backend::bytecode::opcode::{self, OpCode, Operand};
+use crate::backend::bytecode::opcode;
 use crate::frontend::lex::SourcePosition;
 use crate::middle::ir::{Inst, Ir, Label};
 
@@ -12,7 +12,7 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     let mut size = 0usize;
     for inst in ir.code() {
         offsets.push(size);
-        size += encoded_len(opcode::opcode_of(inst));
+        size += encoded_len(inst, &ir);
     }
 
     if size > u16::MAX as usize {
@@ -33,9 +33,21 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     Ok(chunk)
 }
 
-/// The encoded byte length of an instruction: its opcode plus operand bytes.
-fn encoded_len(op: OpCode) -> usize {
-    1 + opcode::operands(op).iter().map(Operand::size).sum::<usize>()
+/// The encoded byte length of an instruction: its opcode plus operand bytes. A
+/// variable-length `List` operand is sized from the instruction's own data.
+fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
+    let op = opcode::opcode_of(inst);
+    let mut len = 1;
+    for operand in opcode::operands(op) {
+        match operand.size() {
+            Some(sz) => len += sz,
+            None => {
+                let Inst::Construct(fields_idx, _) = *inst else { unreachable!("only Construct has a List operand") };
+                len += 1 + ir.construct_fields(fields_idx).len(); // count byte + ids
+            }
+        }
+    }
+    len
 }
 
 fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, pos: &SourcePosition) {
@@ -94,6 +106,15 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
 
         Invoke(name, arg_count) => {
             chunk.write(name, pos);
+            chunk.write(arg_count, pos);
+        }
+
+        Construct(fields_idx, arg_count) => {
+            let fields = ir.construct_fields(fields_idx);
+            chunk.write(fields.len() as u8, pos);
+            for &id in fields {
+                chunk.write(id, pos);
+            }
             chunk.write(arg_count, pos);
         }
 

@@ -87,6 +87,49 @@ impl Vm {
         Ok(())
     }
 
+    /// Brace construction `C(args) { f: v, ... }`. Reads the brace field ids then the init arg
+    /// count, allocates the instance, sets the brace fields from the stack, then runs `init`.
+    /// The stack holds `[C, args.., brace values..]` in source order.
+    pub(super) fn op_construct(&mut self) -> Result<(), anyhow::Error> {
+        let field_count = self.read_next() as usize;
+        let mut field_ids = [0u8; u8::MAX as usize + 1];
+        for slot in field_ids.iter_mut().take(field_count) {
+            *slot = self.read_next();
+        }
+        let arg_count = self.read_next() as usize;
+
+        let class_val = self.stack.peek(field_count + arg_count);
+        if !class_val.is_object() || class_val.as_object().tag() != objects::TAG_CLASS {
+            return self.error(format!("Cannot construct: {} is not a type", class_val.fmt()));
+        }
+        let class_ptr = class_val.as_object().as_class_ptr();
+        let class = unsafe { &*class_ptr };
+        let init_obj = class.initializer().unwrap();
+        if init_obj.tag() != objects::TAG_FUNCTION {
+            return self.error("Cannot brace-construct this type");
+        }
+        let init_ref = init_obj.as_function_ptr();
+        let init = unsafe { &*init_ref };
+        check_arity!(self, arg_count, init.arity, init.name);
+
+        // Allocate, rooting the init closure across the allocation (it can trigger GC).
+        let closure = self.create_closure(init_ref);
+        self.stack.push(Value::from(closure));
+        let instance_ptr = self.alloc(ObjInstance::new(class_ptr));
+        self.stack.pop();
+
+        // Brace values sit on top of the stack in field order; set them before init runs.
+        let instance = unsafe { &mut *instance_ptr };
+        for j in 0..field_count {
+            let value = self.stack.peek(field_count - 1 - j);
+            instance.set(field_ids[j], value);
+        }
+        // Drop the brace values, then run init on the instance (it returns `this`).
+        self.stack.truncate(field_count);
+        let stack_start = self.stack.set(arg_count, Value::from(instance_ptr));
+        self.push_frame(closure.as_closure_ptr(), stack_start, init.ip_start)
+    }
+
     fn call_class(&mut self, arg_count: usize, class_ptr: *mut ObjType) -> Result<(), anyhow::Error> {
         let class = unsafe { &*class_ptr };
         let init_method_obj = class.initializer().unwrap();

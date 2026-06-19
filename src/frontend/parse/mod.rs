@@ -18,7 +18,11 @@ enum Visibility { Pub, Inner, Private }
 pub struct Parser<'parser, 'vm> {
     tokens: &'vm mut TokenStream<'vm>,
     ast: &'parser mut Ast,
-    current_class: Option<String>
+    current_class: Option<String>,
+    /// True while parsing a condition (`if`/`while`), where a trailing `{` is the body
+    /// block, not a brace construction. Reset inside parens/brackets/braces so a
+    /// construction can still appear in a sub-expression there.
+    prevent_construct: bool,
 }
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
@@ -28,7 +32,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut parser = Parser {
             tokens,
             ast: &mut ast,
-            current_class: None
+            current_class: None,
+            prevent_construct: false,
         };
 
         let pos = parser.tokens.peek(0).pos.clone();
@@ -76,7 +81,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_if_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::If)?.pos.clone();
-        let condition = self.parse_expr()?;
+        let condition = self.parse_expr_prevent_construct()?;
         let then = self.parse_block_or_stmt()?;
         let otherwise = match self.tokens.next_if(TokenType::Else) {
             Some(_) => match self.tokens.peek(0).kind {
@@ -392,7 +397,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::While)?.pos.clone();
-        let condition = self.parse_expr()?;
+        let condition = self.parse_expr_prevent_construct()?;
         let body = self.parse_block_or_stmt()?;
         Ok(self.ast.add_stmt(Stmt::While(condition, body), pos))
     }
@@ -504,7 +509,54 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn parse_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        self.parse_expr_precedence(0)
+        let prev = std::mem::replace(&mut self.prevent_construct, false);
+        let result = self.parse_expr_precedence(0);
+        self.prevent_construct = prev;
+        result
+    }
+
+    /// Parses an expression with a trailing `{`. Prevent construction to disambiguate.
+    fn parse_expr_prevent_construct(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        let prev = std::mem::replace(&mut self.prevent_construct, true);
+        let result = self.parse_expr_precedence(0);
+        self.prevent_construct = prev;
+        result
+    }
+
+    /// Whether `expr` can be brace-constructed: a bare type name `C` or a call `C(args)`.
+    fn is_constructible(&self, expr: AstId<Expr>) -> bool {
+        match self.ast.get(&expr) {
+            Expr::Identifier(_) => true,
+            Expr::Call(callee, _) => matches!(self.ast.get(callee), Expr::Identifier(_)),
+            _ => false,
+        }
+    }
+
+    /// Parses `{ field: value, ... }` after a constructible callee into an `Expr::Construct`.
+    fn parse_construction(&mut self, callee: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
+        let pos = self.ast.pos(&callee).clone();
+        self.tokens.expect(TokenType::LeftBrace)?;
+        let prev = std::mem::replace(&mut self.prevent_construct, false);
+
+        // Parse each value tighter than `,` so the comma separates fields, not the value expression.
+        let value_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
+        let mut fields: Vec<(Symbol, AstId<Expr>)> = Vec::new();
+        while !self.tokens.match_next(TokenType::RightBrace) {
+            let key_pos = self.tokens.peek(0).pos.clone();
+            let name = self.parse_identifier()?;
+            let field = self.ast.intern(&name);
+            let value = if self.tokens.next_if(TokenType::Colon).is_some() {
+                self.parse_expr_precedence(value_precedence)?
+            } else {
+                self.ast.add_expr(Expr::Identifier(field), key_pos) // shorthand `{ x }` == `{ x: x }`
+            };
+            fields.push((field, value));
+            if self.tokens.next_if(TokenType::Comma).is_none() { break; }
+        }
+
+        self.prevent_construct = prev;
+        self.tokens.expect(TokenType::RightBrace)?;
+        Ok(self.ast.add_expr(Expr::Construct(callee, fields), pos))
     }
 
     fn parse_expr_precedence(&mut self, min_precedence: u8) -> Result<AstId<Expr>, anyhow::Error> {
@@ -514,7 +566,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         loop {
-            if let Some(op) = Operator::parse_postfix(self.tokens, min_precedence) {
+            // A `{` after a type name or call is a brace construction, unless we are parsing a
+            // condition where the `{` opens the body block.
+            if !self.prevent_construct
+                && self.tokens.match_next(TokenType::LeftBrace)
+                && self.is_constructible(left)
+            {
+                left = self.parse_construction(left)?;
+            } else if let Some(op) = Operator::parse_postfix(self.tokens, min_precedence) {
                 left = self.parse_expr_postfix(op, left)?;
             } else if let Some(op) = Operator::parse_infix(self.tokens, min_precedence) {
                 left = self.parse_expr_infix(op, left)?;

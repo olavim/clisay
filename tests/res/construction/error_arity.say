@@ -1,0 +1,2 @@
+type Tagged { pub tag; init(c) { } }
+say t = Tagged { tag: "hi" }; // error: 'Tagged' is constructed with 0 argument(s), but its init takes 1

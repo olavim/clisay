@@ -1,0 +1,2 @@
+type Counter { pub count; init() { this.count = 0; } }
+say c = Counter { count: 5 }; // error: Field 'count' of 'Counter' is set by its init and cannot be brace-provided

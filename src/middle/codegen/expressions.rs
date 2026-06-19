@@ -1,6 +1,6 @@
 use crate::compiler_error;
 use crate::core::value::Value;
-use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, UnOp};
+use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
 use crate::middle::ir::Inst;
 use crate::middle::bind::{FnKind, Member, Place};
 
@@ -35,6 +35,7 @@ impl<'a> Compiler<'a> {
                 let idx = self.ir.add_constant(Value::from(name_ref))?;
                 self.emit(Inst::Is(idx), expr);
             },
+            HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
             HirExpr::This | HirExpr::Super => self.emit(Inst::GetLocal(0), expr),
         };
 
@@ -59,6 +60,22 @@ impl<'a> Compiler<'a> {
     fn unary_expression(&mut self, op: UnOp, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.expression(expr)?;
         self.emit(unop_inst(op), expr);
+        Ok(())
+    }
+
+    /// Compiles a brace construction. Source order: push the class, the `init` args, then the
+    /// brace values; the `Construct` op allocates, sets the brace fields, and runs `init`.
+    fn construct_expression(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
+        self.expression(callee)?;
+        for arg in args {
+            self.expression(arg)?;
+        }
+        for (_, value) in brace {
+            self.expression(value)?;
+        }
+        let field_ids = self.bindings.construct_fields(expr).to_vec();
+        let fields_idx = self.ir.add_construct_fields(field_ids)?;
+        self.emit(Inst::Construct(fields_idx, args.len() as u8), expr);
         Ok(())
     }
 

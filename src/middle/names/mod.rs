@@ -255,6 +255,10 @@ impl<'a> Resolver<'a> {
                     return Err(self.error(format!("'{}' is not a type or trait", self.ast.text(*name)), e));
                 }
             },
+            Expr::Construct(callee, fields) => {
+                self.visit_expr(callee)?;
+                for (_, value) in fields { self.visit_expr(value)?; }
+            },
             Expr::This | Expr::Super => {},
         }
         Ok(())

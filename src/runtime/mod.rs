@@ -566,6 +566,7 @@ impl Vm {
                     }
                     ip = self.ip;
                 },
+                opcode::CONSTRUCT => delegate!(self.op_construct()?),
                 opcode::THROW => delegate!(self.op_throw()?),
                 opcode::PUSH_TRY => delegate!(self.op_push_try()),
                 opcode::POP_TRY => self.op_pop_try(),

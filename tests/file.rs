@@ -73,6 +73,11 @@ fn traits(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
+#[test_resources("tests/res/construction")]
+fn construction(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
 #[test_resources("tests/res/this")]
 fn this(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)

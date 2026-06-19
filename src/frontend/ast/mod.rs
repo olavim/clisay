@@ -76,6 +76,9 @@ pub enum Expr {
     /// `expr is T`: a nominal capability test against a static type/trait *name*
     /// resolved at runtime.
     Is(AstId<Expr>, Symbol),
+    /// Brace construction `C(args) { field: value, ... }`. The first expr is the
+    /// constructed callee (`C` or `C(args)`); the list is the brace field initializers.
+    Construct(AstId<Expr>, Vec<(Symbol, AstId<Expr>)>),
     This,
     Super
 }

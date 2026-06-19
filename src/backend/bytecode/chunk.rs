@@ -56,6 +56,12 @@ impl GcTraceable for BytecodeChunk {
                     Operand::Local => format!("L{}", byte!()),
                     Operand::Const => self.constants[byte!() as usize].fmt(),
                     Operand::Jump => format!("<{}>", short!()),
+                    // A count followed by that many raw bytes.
+                    Operand::List => {
+                        let count = byte!();
+                        let items: Vec<String> = (0..count).map(|_| format!("{}", byte!())).collect();
+                        format!("[{}]", items.join(", "))
+                    }
                 };
                 string.push(' ');
                 string.push_str(&rendered);

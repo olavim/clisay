@@ -4,6 +4,9 @@
 //! Name-level questions (what is in scope, name collisions, trait references) are settled earlier in
 //! `middle::names`; this pass assumes a well-formed namespace and only decides *where* things live.
 
+use std::collections::HashMap;
+use std::collections::HashSet;
+
 use anyhow::anyhow;
 use anyhow::bail;
 use fnv::FnvHashMap;
@@ -73,6 +76,11 @@ pub struct TypeLayout {
     pub setter_id: Option<u8>,
     /// Member id of the initializer function.
     pub init_id: u8,
+    /// The initializer's parameter count (the paren arity of a construction).
+    pub init_arity: u8,
+    /// Field names the initializer assigns (defaults plus `init`-body `this.f =`). A brace
+    /// construction may not also provide these.
+    pub init_assigned: HashSet<Symbol>,
 }
 
 impl TypeLayout {
@@ -88,6 +96,8 @@ impl TypeLayout {
             setter_id: None,
             init_id: 0,
             member_count: 0,
+            init_arity: 0,
+            init_assigned: HashSet::new(),
         }
     }
 
@@ -117,6 +127,8 @@ pub struct Bindings {
     types: FnvHashMap<HirId<HirStmt>, TypeLayout>,
     /// Scope nodes (by HIR node index) => locals to clean up on exit.
     cleanups: FnvHashMap<usize, Vec<Cleanup>>,
+    /// Brace-construction expressions => the resolved member ids of their brace fields, in order.
+    construct_fields: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
 }
 
 impl Bindings {
@@ -143,6 +155,10 @@ impl Bindings {
     pub fn cleanup<T>(&self, scope: &HirId<T>) -> &[Cleanup] {
         self.cleanups.get(&scope.index()).map_or(&[], Vec::as_slice)
     }
+
+    pub fn construct_fields(&self, id: &HirId<HirExpr>) -> &[u8] {
+        &self.construct_fields[id]
+    }
 }
 
 struct Local {
@@ -166,10 +182,10 @@ struct TypeFrame {
     supertype: Option<TypeLayout>,
     /// Per trait, its private members' plain name -> renamed slot name (from the HIR). The
     /// resolver scopes a trait body's accesses to its own trait's entry. See `lower::traits`.
-    trait_privates: std::collections::HashMap<Symbol, std::collections::HashMap<Symbol, Symbol>>,
+    trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
     /// The plain names of every trait private member (any trait) for diagnostics: an access
     /// that misses but names one of these is reported as private rather than missing.
-    private_names: std::collections::HashSet<Symbol>,
+    private_names: HashSet<Symbol>,
 }
 
 pub struct Resolver<'a> {
@@ -463,9 +479,60 @@ impl<'a> Resolver<'a> {
             },
             // `x is T`: bind the receiver; `T` is a static name resolved at codegen.
             HirExpr::Is(target, _) => self.expression(target)?,
+            HirExpr::Construct(callee, args, brace) => {
+                let callee = *callee;
+                let args = args.clone();
+                let brace = brace.clone();
+                self.construct(expr, &callee, &args, &brace)?;
+            },
             HirExpr::This => self.require_type(expr)?,
             HirExpr::Super => { self.require_supertype(expr)?; },
         };
+        Ok(())
+    }
+
+    /// Resolves and validates a brace construction `C(args) { field: value, ... }`: the type must
+    /// be known, the paren args must match its `init` arity, and each brace field must be a `pub`
+    /// field the `init` does not assign, with no duplicates. Records the resolved field ids.
+    fn construct(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
+        self.expression(callee)?;
+        for a in args { self.expression(a)?; }
+        for (_, v) in brace { self.expression(v)?; }
+
+        let HirExpr::Identifier(type_name) = self.hir.get(callee) else {
+            compiler_error!(self, callee, "Brace construction requires a type name");
+        };
+        let type_name = *type_name;
+        let Some(layout) = self.types.get(&type_name).cloned() else {
+            compiler_error!(self, callee, "'{}' is not a type", self.hir.text(type_name));
+        };
+
+        if args.len() != layout.init_arity as usize {
+            compiler_error!(self, expr, "'{}' is constructed with {} argument(s), but its init takes {}",
+                self.hir.text(type_name), args.len(), layout.init_arity);
+        }
+
+        let mut seen: HashSet<Symbol> = HashSet::new();
+        let mut ids = Vec::with_capacity(brace.len());
+        for (field, _) in brace {
+            if !seen.insert(*field) {
+                compiler_error!(self, expr, "Duplicate field '{}' in construction of '{}'", self.hir.text(*field), self.hir.text(type_name));
+            }
+            match layout.resolve(*field) {
+                Some(TypeMember::Field(id)) => {
+                    if layout.non_public.contains(&id) {
+                        compiler_error!(self, expr, "Field '{}' of '{}' is not public", self.hir.text(*field), self.hir.text(type_name));
+                    }
+                    if layout.init_assigned.contains(field) {
+                        compiler_error!(self, expr, "Field '{}' of '{}' is set by its init and cannot be brace-provided", self.hir.text(*field), self.hir.text(type_name));
+                    }
+                    ids.push(id);
+                },
+                Some(TypeMember::Method(_)) => compiler_error!(self, expr, "'{}' is a method of '{}', not a field", self.hir.text(*field), self.hir.text(type_name)),
+                None => compiler_error!(self, expr, "'{}' has no field '{}'", self.hir.text(type_name), self.hir.text(*field)),
+            }
+        }
+        self.bindings.construct_fields.insert(*expr, ids);
         Ok(())
     }
 
@@ -718,7 +785,69 @@ impl<'a> Resolver<'a> {
         layout.init_id = next_member_id;
         next_member_id += 1;
         layout.member_count = next_member_id;
+
+        // Construction facts: the init's arity, and the fields it assigns (defaults + body), which
+        // a brace construction may not also provide.
+        let init = self.fn_decl(&decl.init);
+        layout.init_arity = init.params.len() as u8;
+        let mut assigned = HashSet::new();
+        self.collect_assigned_fields(&init.body, &mut assigned);
+        layout.init_assigned = assigned;
+
         layout
+    }
+
+    /// Collects the field names a body assigns through `this.<field> = ...`, walking control flow
+    /// but not nested functions/lambdas (whose execution isn't guaranteed).
+    fn collect_assigned_fields(&self, expr: &HirId<HirExpr>, out: &mut HashSet<Symbol>) {
+        match self.hir.get(expr) {
+            HirExpr::Assign(target, value) => {
+                if let HirExpr::Index(obj, member, true) = self.hir.get(target) {
+                    if matches!(self.hir.get(obj), HirExpr::This) {
+                        if let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) {
+                            if let Some(sym) = self.hir.symbol_of(name) { out.insert(sym); }
+                        }
+                    }
+                }
+                self.collect_assigned_fields(value, out);
+            },
+            HirExpr::Block(stmts) => for s in stmts { self.collect_assigned_fields_stmt(s, out); },
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) => self.collect_assigned_fields(x, out),
+            HirExpr::Binary(_, l, r) => { self.collect_assigned_fields(l, out); self.collect_assigned_fields(r, out); },
+            HirExpr::Call(c, args) => {
+                self.collect_assigned_fields(c, out);
+                for a in args { self.collect_assigned_fields(a, out); }
+            },
+            HirExpr::Index(t, m, _) => { self.collect_assigned_fields(t, out); self.collect_assigned_fields(m, out); },
+            HirExpr::Construct(c, args, brace) => {
+                self.collect_assigned_fields(c, out);
+                for a in args { self.collect_assigned_fields(a, out); }
+                for (_, v) in brace { self.collect_assigned_fields(v, out); }
+            },
+            // Literals (including lambda bodies), identifiers, this/super: no direct `this.f =`.
+            _ => {},
+        }
+    }
+
+    fn collect_assigned_fields_stmt(&self, stmt: &HirId<HirStmt>, out: &mut HashSet<Symbol>) {
+        match self.hir.get(stmt) {
+            HirStmt::Expression(e) | HirStmt::Throw(e) | HirStmt::Block(e) => self.collect_assigned_fields(e, out),
+            HirStmt::Return(opt) => if let Some(e) = opt { self.collect_assigned_fields(e, out); },
+            HirStmt::While(c, b) => { self.collect_assigned_fields(c, out); self.collect_assigned_fields(b, out); },
+            HirStmt::If(c, then, otherwise) => {
+                self.collect_assigned_fields(c, out);
+                self.collect_assigned_fields(then, out);
+                if let Some(s) = otherwise { self.collect_assigned_fields_stmt(s, out); }
+            },
+            HirStmt::Try(body, catch, finally) => {
+                self.collect_assigned_fields(body, out);
+                if let Some(c) = catch { self.collect_assigned_fields(&c.body, out); }
+                if let Some(f) = finally { self.collect_assigned_fields(f, out); }
+            },
+            HirStmt::Say(field) => if let Some(v) = &field.value { self.collect_assigned_fields(v, out); },
+            // Nested functions/types do not establish init assignment in this body.
+            HirStmt::Fn(_) | HirStmt::Type(_) | HirStmt::Trait(_) => {},
+        }
     }
 
     /// Pushes the type frame that method bodies resolve against, deriving the private-name set

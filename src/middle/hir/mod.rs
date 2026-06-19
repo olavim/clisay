@@ -61,6 +61,9 @@ pub enum HirExpr {
     Identifier(Symbol),
     /// `expr is T`: a nominal capability test against the type/trait named `T`.
     Is(HirId<HirExpr>, Symbol),
+    /// Brace construction `C(args) { field: value, ... }`: the callee type expression, the
+    /// `init` args, then the brace field initializers.
+    Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
     This,
     Super,
 }
