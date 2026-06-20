@@ -2,7 +2,7 @@ use std::fmt;
 use std::panic;
 
 use anyhow::Error;
-use clisay::run;
+use clisay::{run, run_checked};
 use clisay::Output;
 use libtest_mimic::Failed;
 use regex::Regex;
@@ -22,6 +22,15 @@ fn eq_or_fail<T: PartialEq + fmt::Debug>(expected: T, actual: T) -> Result<(), F
 }
 
 pub fn test_file(file: &str) -> Result<(), Failed> {
+    test_file_with(file, run)
+}
+
+/// Like [`test_file`] but runs each section with the `nullck` nullability pass enabled.
+pub fn test_file_checked(file: &str) -> Result<(), Failed> {
+    test_file_with(file, run_checked)
+}
+
+fn test_file_with(file: &str, run: fn(&str, &str) -> Result<Vec<String>, Error>) -> Result<(), Failed> {
     let skip_regex = Regex::new(REGEX_SKIP).unwrap();
     let src = std::fs::read_to_string(file).unwrap();
     let src = Regex::new(r"\r\n|\r|\n").unwrap()
