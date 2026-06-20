@@ -1,0 +1,24 @@
+// An annotated program run with nullck enabled. Phase one collects its signatures.
+// Nothing is enforced yet, so it runs to completion.
+type Box {
+    pub mut value;
+    init(v) {
+        value = v;
+    }
+    pub fn get()! {
+        return this.value;
+    }
+}
+
+fn makeBox(v)! {
+    return Box(v);
+}
+
+fn describe(b?)! {
+    return "a box";
+}
+
+say b = makeBox(10);
+b.value = 20;
+print(b.get()); // expect: 20
+print(describe(b)); // expect: a box
