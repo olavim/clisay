@@ -72,6 +72,8 @@ opcodes! {
     JumpIfFalse => JUMP_IF_FALSE(Jump),
     JumpIfFalseOrPop => JUMP_IF_FALSE_OR_POP(Jump),
     JumpIfTrueOrPop => JUMP_IF_TRUE_OR_POP(Jump),
+    JumpIfNotNullOrPop => JUMP_IF_NOT_NULL_OR_POP(Jump),
+    JumpIfNull => JUMP_IF_NULL(Jump),
     JumpIfGe => JUMP_IF_GE(Jump),
     JumpIfGt => JUMP_IF_GT(Jump),
     JumpIfLe => JUMP_IF_LE(Jump),
@@ -89,6 +91,7 @@ opcodes! {
     Throw => THROW,
     PushTry => PUSH_TRY(Jump),
     PopTry => POP_TRY,
+    AssertNonNull => ASSERT_NON_NULL,
 
     // Explicit stack manipulation
     Pop => POP,

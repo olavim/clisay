@@ -91,11 +91,13 @@ fn run_pipeline(file_name: &str, src: &str, nullck: bool) -> Result<Vec<String>,
     let names = resolve_names(&ast)?;
     let hir = lower(ast, &names)?;
     let bindings = resolve_bindings(&hir)?;
-    if nullck {
-        // The barrier crossings are consumed by codegen in a later step.
-        let _barriers = check_nullability(&hir, &bindings)?;
-    }
-    let ir = Compiler::compile(&hir, &mut gc, &bindings)?;
+    // With nullck off the corpus emits no barriers; codegen sees an empty set.
+    let barriers = if nullck {
+        check_nullability(&hir, &bindings)?
+    } else {
+        Default::default()
+    };
+    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers)?;
     let ir = optimize(ir);
     let chunk = assemble(ir)?;
     runtime::execute(chunk, gc)
