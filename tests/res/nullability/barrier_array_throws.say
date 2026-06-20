@@ -1,0 +1,3 @@
+// An array element is a dynamic-boundary read; a null one into a non-null local throws.
+say a = [null];
+say z = a[0]; // error: unexpected null

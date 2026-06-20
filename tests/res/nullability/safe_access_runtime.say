@@ -1,0 +1,4 @@
+// `?.` short-circuits to null when the receiver is null, without accessing the member.
+say n? = null;
+say r? = n?.foo;
+print(r); // expect: null

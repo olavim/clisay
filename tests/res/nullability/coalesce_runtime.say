@@ -1,0 +1,4 @@
+// `??` yields the fallback when the left is null, with no barrier on the non-null result.
+say d = { a: null };
+say x = d["a"] ?? 5;
+print(x); // expect: 5

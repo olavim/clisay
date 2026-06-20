@@ -6,6 +6,7 @@ use crate::core::objects::ObjType;
 use crate::core::objects::ObjString;
 use crate::middle::ir::{Inst, Ir, Label};
 use crate::middle::bind::{Bindings, Cleanup, FnKind};
+use crate::middle::nullck::Barriers;
 use crate::middle::hir::Hir;
 use crate::middle::hir::HirExpr;
 use crate::middle::hir::HirFnDecl;
@@ -36,6 +37,8 @@ pub struct Compiler<'a> {
     hir: &'a Hir,
     gc: &'a mut Gc,
     bindings: &'a Bindings,
+    /// Nodes whose value needs a runtime null-barrier, from `nullck`. Empty when nullck is off.
+    barriers: &'a Barriers,
     /// The kind of each enclosing function, for initializer return handling.
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
@@ -48,12 +51,13 @@ macro_rules! compiler_error {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings) -> Result<Ir, anyhow::Error> {
+    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
             ir: Ir::new(),
             hir,
             gc,
             bindings,
+            barriers,
             fn_kinds: Vec::new(),
             try_frames: Vec::new(),
             types: FnvHashMap::default()

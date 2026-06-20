@@ -65,6 +65,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         Return
         | Throw
         | PopTry
+        | AssertNonNull
         | Pop
         | PushNull | PushTrue | PushFalse
         | GetIndex | SetIndex
@@ -85,6 +86,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         Jump(l)
         | JumpIfFalse(l)
         | JumpIfFalseOrPop(l) | JumpIfTrueOrPop(l)
+        | JumpIfNotNullOrPop(l) | JumpIfNull(l)
         | JumpIfGe(l) | JumpIfGt(l)
         | JumpIfLe(l) | JumpIfLt(l)
         | JumpIfEq(l) | JumpIfNeq(l)
