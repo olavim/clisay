@@ -3,6 +3,7 @@
 mod collect;
 mod narrow;
 mod native;
+mod seal;
 
 use std::collections::{HashMap, HashSet};
 
@@ -10,6 +11,7 @@ use anyhow::anyhow;
 
 use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
+use self::seal::Seal;
 use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
 /// A function's per-parameter nullability and return shape.
@@ -66,8 +68,7 @@ pub fn check(hir: &Hir, bindings: &Bindings) -> Result<Barriers, anyhow::Error> 
         frame_start: 0,
         current_type: None,
         narrowed: HashSet::new(),
-        init_assigned: None,
-        this_seen: false,
+        seal: Seal::default(),
         current_trait_surface: None,
         current_return: None,
         barriers: HashSet::new(),
@@ -187,12 +188,8 @@ struct Checker<'a> {
     current_type: Option<Symbol>,
     /// Places narrowed to non-null on the current path.
     narrowed: HashSet<NarrowKey>,
-    /// While checking a type's `init`, the fields assigned so far. The construction seal uses
-    /// this for read-before-assignment and rejects any other use of a bare `this`.
-    init_assigned: Option<HashSet<Symbol>>,
-    /// Whether `this` was used since this flag was last reset, used to catch a closure in `init`
-    /// capturing the partially-constructed `this`.
-    this_seen: bool,
+    /// The construction seal while checking a type's `init`.
+    seal: Seal,
     current_trait_surface: Option<HashSet<Symbol>>,
     current_return: Option<ReturnShape>,
     /// Nodes where an `unknown` value enters a non-null slot and needs a runtime barrier.
@@ -322,7 +319,7 @@ impl<'a> Checker<'a> {
     /// During init, binding or assigning `this` would let a half-built object outlive the
     /// init. Rejecting it here gives a clearer message than the generic value-use check.
     fn reject_this_store(&self, value: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if self.init_assigned.is_some() && matches!(self.hir.get(value), HirExpr::This) {
+        if self.seal.in_init() && matches!(self.hir.get(value), HirExpr::This) {
             return Err(self.this_seal_error(value, "cannot be stored"));
         }
         Ok(())
@@ -350,7 +347,7 @@ impl<'a> Checker<'a> {
     }
 
     fn function(&mut self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
-        let saved_seal = self.init_assigned.take();
+        let saved_seal = self.seal.suspend();
         // A lambda's shape is inferred, so it is not checked against a declaration.
         let saved_return = std::mem::replace(&mut self.current_return, match decl.ret {
             ReturnShape::Inferred => None,
@@ -365,7 +362,7 @@ impl<'a> Checker<'a> {
             Ok(())
         });
         self.current_return = saved_return;
-        self.init_assigned = saved_seal;
+        self.seal.restore(saved_seal);
         result
     }
 
@@ -505,9 +502,9 @@ impl<'a> Checker<'a> {
         let saved_return = self.current_return.take();
         let result = self.with_frame(&decl.params, |c| {
             // Brace-provided fields are assigned before the init body runs.
-            c.init_assigned = Some(c.brace_provided_fields(type_name));
+            let saved_seal = c.seal.enter(c.brace_provided_fields(type_name));
             c.expr(&decl.body)?;
-            c.init_assigned = None;
+            c.seal.restore(saved_seal);
             Ok(())
         });
         self.current_return = saved_return;
@@ -528,8 +525,8 @@ impl<'a> Checker<'a> {
             HirExpr::Literal(lit) => { self.literal_children(lit, expr)?; Typed::nonnull() },
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
             HirExpr::This => {
-                self.this_seen = true;
-                if self.init_assigned.is_some() {
+                self.seal.set_this_seen(true);
+                if self.seal.in_init() {
                     return Err(self.this_seal_error(expr, "cannot be used as a value here"));
                 }
                 self.this_typed()
@@ -596,12 +593,11 @@ impl<'a> Checker<'a> {
 
     /// Checks a lambda body. A closure defined in `init` may not capture the partially-built `this`.
     fn lambda(&mut self, decl: &HirFnDecl, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let in_init = self.init_assigned.is_some();
-        let outer_seen = self.this_seen;
-        self.this_seen = false;
+        let in_init = self.seal.in_init();
+        let outer_seen = self.seal.take_this_seen();
         self.function(decl)?;
-        let captured_this = self.this_seen;
-        self.this_seen = outer_seen;
+        let captured_this = self.seal.this_seen();
+        self.seal.set_this_seen(outer_seen);
         if in_init && captured_this {
             return Err(self.error("a closure in init cannot capture the partially-constructed 'this'".to_string(), node));
         }
@@ -683,16 +679,15 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         if !mutable {
-            match &self.init_assigned {
-                Some(assigned) if assigned.contains(&field) =>
-                    return Err(self.error(format!("Immutable field '{}' is assigned more than once; declare it 'mut'", self.hir.text(field)), lhs)),
-                Some(_) => {},
-                None =>
-                    return Err(self.error(format!("Cannot assign immutable field '{}' in a method; declare it 'mut'", self.hir.text(field)), lhs)),
+            if !self.seal.in_init() {
+                return Err(self.error(format!("Cannot assign immutable field '{}' in a method; declare it 'mut'", self.hir.text(field)), lhs));
+            }
+            if self.seal.is_assigned(field) {
+                return Err(self.error(format!("Immutable field '{}' is assigned more than once; declare it 'mut'", self.hir.text(field)), lhs));
             }
         }
         self.check_into_field(value, nullable, field, rhs)?;
-        self.mark_field_assigned(field);
+        self.seal.mark_assigned(field);
         Ok(())
     }
 
@@ -740,12 +735,6 @@ impl<'a> Checker<'a> {
             None => return Ok(()),
         };
         self.check_into_field(value, nullable, field, node)
-    }
-
-    fn mark_field_assigned(&mut self, field: Symbol) {
-        if let Some(assigned) = self.init_assigned.as_mut() {
-            assigned.insert(field);
-        }
     }
 
     /// A construction must supply every non-null public field the `init` does not assign.
@@ -898,8 +887,7 @@ impl<'a> Checker<'a> {
                     let nullness = match member_kind {
                         TypeMember::Field(_) => {
                             // Inside init, a non-null field read before its assignment is unsound.
-                            if on_this && !layout.is_nullable(field)
-                                && self.init_assigned.as_ref().is_some_and(|a| !a.contains(&field)) {
+                            if on_this && !layout.is_nullable(field) && self.seal.reads_before_assign(field) {
                                 return Err(self.error(format!("Field '{}' is read before it is assigned in init", self.hir.text(field)), member));
                             }
                             let narrowed = key.is_some_and(|k| self.narrowed.contains(&k));
@@ -926,7 +914,7 @@ impl<'a> Checker<'a> {
     /// Evaluates a receiver, requiring it to be non-null.
     fn receiver(&mut self, receiver: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         if matches!(self.hir.get(receiver), HirExpr::This) {
-            self.this_seen = true;
+            self.seal.set_this_seen(true);
             return Ok(self.this_typed());
         }
         let typed = self.expr(receiver)?;
