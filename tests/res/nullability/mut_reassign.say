@@ -1,0 +1,4 @@
+// A `mut` binding may be reassigned.
+say mut x = 1;
+x = 2;
+print(x); // expect: 2
