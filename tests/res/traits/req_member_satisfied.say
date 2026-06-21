@@ -2,10 +2,10 @@
 trait Counter {
     req count;
     pub fn inc() { this.count = this.count + 1; }
-    pub fn get() { return this.count; }
+    pub fn get()! { return this.count; }
 }
 type Widget with Counter {
-    pub count = 0;   // the host holds the state the trait requires
+    pub mut count = 0;   // the host holds the state the trait requires
     init() {}
 }
 

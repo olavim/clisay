@@ -1,0 +1,6 @@
+// A `!` function must return a non-null value on every path.
+fn get()! { // error: This function can finish without returning a value; a '!' return must produce one on every path
+    if (true) {
+        return 1;
+    }
+}

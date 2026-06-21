@@ -1,5 +1,5 @@
-say i = 0;
-say x = 0;
+say mut i = 0;
+say mut x = 0;
 while i < 2000000 {
     x = x + i;
     i = i + 1;

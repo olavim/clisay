@@ -9,9 +9,9 @@ mod traits;
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol, TypeDecl};
+use crate::ast::{Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, Operator, Param, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirStmt, UnOp,
+    BinOp, Hir, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp,
 };
 use crate::middle::names::NameBindings;
 
@@ -175,6 +175,10 @@ impl<'a> Lowerer<'a> {
                 HirExpr::Construct(callee, args, brace)
             },
             Expr::This => HirExpr::This,
+            // Safe navigation and the non-null assertion stay as dedicated HIR nodes.
+            // Codegen desugars them later.
+            Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
+            Expr::Assert(operand) => HirExpr::Assert(self.expr(operand)?),
         };
         Ok(self.hir.add(kind, pos))
     }
@@ -191,6 +195,8 @@ impl<'a> Lowerer<'a> {
             },
             Operator::MemberAccess => HirExpr::Index(self.expr(left)?, self.expr(right)?, true),
             Operator::Comma => return Err(self.error("Unexpected ','", right)),
+            // Null-coalescing stays a dedicated HIR node. Codegen short-circuits it later.
+            Operator::Coalesce => HirExpr::Coalesce(self.expr(left)?, self.expr(right)?),
             _ => HirExpr::Binary(lower_binop(op), self.expr(left)?, self.expr(right)?),
         };
         Ok(self.hir.add(kind, pos))
@@ -218,11 +224,21 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// Lowers a parameter list, carrying each param's nullability and mutability markers.
+    pub(super) fn params(&mut self, params: &[Param]) -> Result<Vec<HirParam>, anyhow::Error> {
+        params.iter().map(|p| Ok(HirParam {
+            name: self.expr(&p.name)?,
+            nullable: p.nullable,
+            mutable: p.mutable,
+        })).collect()
+    }
+
     fn fn_decl(&mut self, decl: &FnDecl) -> Result<HirFnDecl, anyhow::Error> {
         Ok(HirFnDecl {
             name: decl.name,
-            params: self.exprs(&decl.params)?,
+            params: self.params(&decl.params)?,
             body: self.expr(&decl.body)?,
+            ret: decl.ret,
         })
     }
 
@@ -230,6 +246,8 @@ impl<'a> Lowerer<'a> {
         Ok(HirFieldInit {
             name: field.name,
             value: self.opt_expr(&field.value)?,
+            nullable: field.nullable,
+            mutable: field.mutable,
         })
     }
 

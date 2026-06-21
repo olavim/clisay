@@ -1,0 +1,11 @@
+// An `is`-test recovers tracking on an untyped value.
+type Cache {
+    pub fn find()? {
+        return null;
+    }
+}
+fn lookup(x) {
+    if (x is Cache) {
+        say hit = x.find(); // error: Cannot assign a nullable value to non-null binding 'hit'
+    }
+}

@@ -1,0 +1,11 @@
+// A self-typed method keeps the receiver's tag, so a fluent chain stays tracked.
+type Builder {
+    pub fn withX(n)! {
+        return this;
+    }
+    pub fn maybe()? {
+        return null;
+    }
+}
+say b = Builder();
+say out = b.withX(1).withX(2).maybe(); // error: Cannot assign a nullable value to non-null binding 'out'

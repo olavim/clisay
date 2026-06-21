@@ -1,7 +1,7 @@
 // Array get/set heavy: exercises NativeArray indexing (bounds/type checks).
 say arr = [0, 0, 0, 0, 0, 0, 0, 0];
-say i = 0;
-say sum = 0;
+say mut i = 0;
+say mut sum = 0;
 while i < 300000 {
     say idx = i & 7;
     arr[idx] = idx;

@@ -1,0 +1,4 @@
+// A nullable argument into a non-null parameter is rejected.
+fn f(x) { print(x); }
+say y? = null;
+f(y); // error: Argument 1 may be null but the parameter is non-null; narrow it before the call

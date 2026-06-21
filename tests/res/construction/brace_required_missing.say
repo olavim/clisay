@@ -1,0 +1,6 @@
+// A non-null public field that the init does not assign must be brace-provided.
+type Point {
+    pub x;
+    pub y;
+}
+say p = Point { x: 1 }; // error: Construction of 'Point' is missing non-null field 'y'

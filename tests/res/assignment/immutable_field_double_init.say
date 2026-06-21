@@ -1,0 +1,8 @@
+// An immutable field may be assigned only once, even within init.
+type T {
+    pub value;
+    init() {
+        this.value = 1;
+        this.value = 2; // error: Immutable field 'value' is assigned more than once; declare it 'mut'
+    }
+}

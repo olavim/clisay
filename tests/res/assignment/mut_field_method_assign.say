@@ -1,0 +1,13 @@
+// A `mut` field may be reassigned from a method.
+type T {
+    pub mut value;
+    init() {
+        this.value = 1;
+    }
+    pub fn set() {
+        this.value = 2;
+    }
+}
+say t = T();
+t.set();
+print(t.value); // expect: 2

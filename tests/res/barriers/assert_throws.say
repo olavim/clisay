@@ -1,0 +1,3 @@
+// `!` on a null value throws at the assertion.
+say maybe? = null;
+say w = maybe!; // error: unexpected null

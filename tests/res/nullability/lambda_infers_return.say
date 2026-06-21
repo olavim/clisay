@@ -1,0 +1,8 @@
+// A lambda infers its return shape, so it is exempt from the definite-return check that a
+// named `!` function would fail.
+say f = (x) => {
+    if (x) {
+        return 1;
+    }
+};
+print("ok"); // expect: ok

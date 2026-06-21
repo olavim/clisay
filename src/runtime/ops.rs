@@ -108,6 +108,34 @@ impl Vm {
         }
     }
 
+    /// `??`: keep the top value and jump to the end when it is non-null (the result is the left
+    /// operand); otherwise pop it and fall through to evaluate the fallback.
+    pub(super) fn op_jump_if_not_null_or_pop(&mut self) {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        if !self.stack.peek(0).is_null() {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        } else {
+            self.stack.truncate(1);
+        }
+    }
+
+    /// `?.`/`?[`: keep the top value and jump to the end when it is null (the result is null);
+    /// otherwise leave the receiver and fall through to the member access.
+    pub(super) fn op_jump_if_null(&mut self) {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        if self.stack.peek(0).is_null() {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        }
+    }
+
+    /// The null-barrier: throw when the top of the stack is null, else leave it for the consumer.
+    pub(super) fn op_assert_non_null(&mut self) -> Result<(), anyhow::Error> {
+        if self.stack.peek(0).is_null() {
+            return self.error("unexpected null");
+        }
+        Ok(())
+    }
+
     pub(super) fn op_array(&mut self) {
         let len = self.read_next() as usize;
         // Copy the elements without popping them first: they must stay on the stack

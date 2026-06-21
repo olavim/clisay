@@ -11,7 +11,7 @@ thread_local! {
 
 macro_rules! tokens {
     ($($token:ident => $lexeme:literal),*) => {
-        #[derive(Clone, Copy, PartialEq)]
+        #[derive(Clone, Copy, PartialEq, Debug)]
         pub enum TokenType {
             Identifier,
             NumericLiteral, StringLiteral,
@@ -54,13 +54,14 @@ macro_rules! tokens {
 }
 
 /// Identifiers that act as keywords only in specific positions.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ContextualKeyword {
     With,
     Req,
     Gives,
     Pub,
     Inner,
+    Mut,
 }
 
 impl ContextualKeyword {
@@ -71,6 +72,7 @@ impl ContextualKeyword {
             "gives" => ContextualKeyword::Gives,
             "pub" => ContextualKeyword::Pub,
             "inner" => ContextualKeyword::Inner,
+            "mut" => ContextualKeyword::Mut,
             _ => return None,
         })
     }
@@ -84,6 +86,7 @@ impl fmt::Display for ContextualKeyword {
             ContextualKeyword::Gives => "gives",
             ContextualKeyword::Pub => "pub",
             ContextualKeyword::Inner => "inner",
+            ContextualKeyword::Mut => "mut",
         })
     }
 }
@@ -110,7 +113,7 @@ impl Token {
     }
 
     /// The contextual keyword this token spells, if it is an identifier spelling one
-    /// (`with`/`req`/`pub`/`inner`). `None` for any other token.
+    /// (`with`/`req`/`gives`/`pub`/`inner`/`mut`). `None` for any other token.
     pub fn contextual(&self) -> Option<ContextualKeyword> {
         match self.kind {
             TokenType::Identifier => ContextualKeyword::from_lexeme(&self.lexeme),
@@ -161,6 +164,7 @@ tokens! {
     LeftBracket => "[",
     RightBracket => "]",
     Exclamation => "!",
+    Question => "?",
     Semicolon => ";",
     Colon => ":",
     Comma => ",",

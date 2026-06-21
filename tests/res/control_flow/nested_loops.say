@@ -1,0 +1,12 @@
+// Nested loops: count total inner iterations.
+say mut i = 0;
+say mut count = 0;
+while (i < 3) {
+    say mut j = 0;
+    while (j < 4) {
+        count += 1;
+        j += 1;
+    }
+    i += 1;
+}
+print(count); // expect: 12

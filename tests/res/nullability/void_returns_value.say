@@ -1,0 +1,4 @@
+// A void function may not return a value.
+fn log(m) {
+    return 5; // error: A void function cannot return a value
+}

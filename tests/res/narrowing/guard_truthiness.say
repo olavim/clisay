@@ -1,0 +1,6 @@
+// A bare truthiness test narrows a nullable binding, so arithmetic on it is allowed.
+say a = 5;
+say h? = a;
+if (h) {
+    print(h + 1); // expect: 6
+}

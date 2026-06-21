@@ -2,9 +2,11 @@
 
 mod precedence;
 
+use std::collections::HashSet;
+
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, Operator, Stmt, Symbol};
+use crate::ast::{Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, Operator, Param, ReturnShape, Stmt, Symbol};
 use crate::frontend::lex::{ContextualKeyword, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -49,6 +51,32 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn error(&self, message: impl Into<String>, pos: &SourcePosition) -> anyhow::Error {
         anyhow!(format!("{}\nat {}", message.into(), pos))
+    }
+
+    /// Consumes a leading `mut` modifier if present, reporting whether it was there.
+    fn parse_mut(&mut self) -> bool {
+        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
+            self.tokens.next();
+            return true;
+        }
+        false
+    }
+
+    /// Consumes an optional trailing `?` nullability marker.
+    fn parse_nullable(&mut self) -> bool {
+        self.tokens.next_if(TokenType::Question).is_some()
+    }
+
+    /// Parses a return shape marker after a parameter list: `!` non-null, `?` nullable,
+    /// or nothing for void.
+    fn parse_return_shape(&mut self) -> ReturnShape {
+        if self.tokens.next_if(TokenType::Exclamation).is_some() {
+            ReturnShape::NonNull
+        } else if self.tokens.next_if(TokenType::Question).is_some() {
+            ReturnShape::Nullable
+        } else {
+            ReturnShape::Void
+        }
     }
 
     fn parse_identifier(&mut self) -> Result<String, anyhow::Error> {
@@ -101,8 +129,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_say(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Say)?.pos.clone();
+        let mutable = self.parse_mut();
         let name = self.parse_identifier()?;
         let name = self.ast.intern(&name);
+        let nullable = self.parse_nullable();
 
         let expr = if let Some(_) = self.tokens.next_if(TokenType::Equal) {
             Some(self.parse_expr()?)
@@ -111,7 +141,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         self.tokens.expect(TokenType::Semicolon)?;
-        let field_init = FieldInit { name, value: expr };
+        let field_init = FieldInit { name, value: expr, nullable, mutable };
         Ok(self.ast.add_stmt(Stmt::Say(field_init), pos))
     }
 
@@ -126,11 +156,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_fn_decl(&mut self, name: Symbol) -> Result<FnDecl, anyhow::Error> {
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
+        let ret = self.parse_return_shape();
         let body = self.parse_block()?;
         Ok(FnDecl {
             name,
             params,
-            body
+            body,
+            ret,
         })
     }
 
@@ -150,11 +182,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.tokens.expect(TokenType::RightBrace)?;
 
         let body = self.ast.add_expr(Expr::Block(stmts), pos.clone());
-        let fn_decl = FnDecl { name, params, body };
+        // An `init` takes no return marker. It produces no value.
+        let fn_decl = FnDecl { name, params, body, ret: ReturnShape::Void };
         Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    fn parse_params(&mut self, end_token: TokenType) -> Result<Vec<AstId<Expr>>, anyhow::Error> {
+    /// Parses a parameter list up to `end_token`. Each parameter is `[mut] name [?]`.
+    fn parse_params(&mut self, end_token: TokenType) -> Result<Vec<Param>, anyhow::Error> {
         let params = match self.tokens.next_if(end_token) {
             Some(_) => Vec::new(),
             None => {
@@ -163,7 +197,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     if params.len() > 0 {
                         self.tokens.expect(TokenType::Comma)?;
                     }
-                    params.push(self.parse_identifier_expr()?);
+                    let mutable = self.parse_mut();
+                    let name = self.parse_identifier_expr()?;
+                    let nullable = self.parse_nullable();
+                    params.push(Param { name, nullable, mutable });
                 }
                 self.tokens.expect(end_token)?;
                 params
@@ -213,15 +250,17 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
     }
 
-    /// Parses a `req fn f(params);` method hole, returning its name and arity.
-    fn parse_req_fn(&mut self) -> Result<(Symbol, usize), anyhow::Error> {
+    /// Parses a `req fn f(params)<marker>;` method hole, returning its name, arity, and
+    /// declared return shape.
+    fn parse_req_fn(&mut self) -> Result<(Symbol, usize, ReturnShape), anyhow::Error> {
         self.tokens.expect(TokenType::Fn)?;
         let name = self.parse_identifier()?;
         let name = self.ast.intern(&name);
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
+        let ret = self.parse_return_shape();
         self.tokens.expect(TokenType::Semicolon)?;
-        Ok((name, params.len()))
+        Ok((name, params.len(), ret))
     }
 
     fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -236,12 +275,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         self.tokens.expect(TokenType::LeftBrace)?;
 
-        let mut fields: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
+        let mut fields: HashSet<Symbol> = HashSet::default();
+        let mut nullable_fields: HashSet<Symbol> = HashSet::default();
+        let mut mut_fields: HashSet<Symbol> = HashSet::default();
         let mut field_inits: Vec<(Symbol, AstId<Expr>)> = Vec::new();
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
-        let mut pub_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
-        let mut inner_members: std::collections::HashSet<Symbol> = std::collections::HashSet::default();
-        let mut req_fns: Vec<(Symbol, usize)> = Vec::new();
+        let mut pub_members: HashSet<Symbol> = HashSet::default();
+        let mut inner_members: HashSet<Symbol> = HashSet::default();
+        let mut req_fns: Vec<(Symbol, usize, ReturnShape)> = Vec::new();
         let mut req_members: Vec<Symbol> = Vec::new();
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
@@ -264,9 +305,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 continue;
             }
 
+            // `mut` is a field modifier. Methods and `init` reject it.
+            let mutable = self.parse_mut();
+
             let kind = self.tokens.peek(0).kind;
             match kind {
                 TokenType::Fn => {
+                    if mutable { parse_error!(self, &member_pos, "Only fields can be `mut`"); }
                     let stmt = self.parse_fn()?;
                     if let Stmt::Fn(decl) = self.ast.get(&stmt) {
                         match visibility {
@@ -286,12 +331,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                         "init" => {
                             if is_trait { parse_error!(self, &member_pos, "A trait cannot declare an `init`; put initialization on the host type"); }
                             if visibility != Visibility::Private { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
+                            if mutable { parse_error!(self, &member_pos, "Only fields can be `mut`"); }
                             init = Some(self.parse_init()?);
                         },
                         _ => {
                             // Field declaration, optionally with a `gives Trait` delegation suffix.
                             if is_trait { parse_error!(self, &member_pos, "A trait cannot declare fields; `req` the state it needs and let the host type hold it"); }
                             let field = self.ast.intern(&name);
+                            let nullable = self.parse_nullable();
                             let give = if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Gives) {
                                 self.tokens.next();
                                 let trait_name = self.parse_identifier()?;
@@ -306,6 +353,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
                             self.tokens.expect(TokenType::Semicolon)?;
                             fields.insert(field);
+                            if nullable { nullable_fields.insert(field); }
+                            if mutable { mut_fields.insert(field); }
                             match visibility {
                                 Visibility::Pub => { pub_members.insert(field); },
                                 Visibility::Inner => { inner_members.insert(field); },
@@ -341,6 +390,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             init_name,
             init,
             fields,
+            nullable_fields,
+            mut_fields,
             field_inits,
             methods: method_stmts,
             pub_members,
@@ -395,7 +446,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     if params.len() != 1 {
                         parse_error!(self, &catch_pos, "Expected one parameter in catch block")
                     }
-                    Some(params[0])
+                    Some(params[0].name)
                 },
                 _ => None
             };
@@ -455,7 +506,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn make_lambda(&mut self, params: Vec<AstId<Expr>>, body: AstId<Expr>) -> Expr {
         let name = self.ast.intern("lambda");
-        Expr::Literal(Literal::Lambda(FnDecl { name, params, body }))
+        // Lambda parameters take no markers. The return shape is inferred from the body.
+        let params = params.into_iter()
+            .map(|name| Param { name, nullable: false, mutable: false })
+            .collect();
+        Expr::Literal(Literal::Lambda(FnDecl { name, params, body, ret: ReturnShape::Inferred }))
     }
 
     fn parse_expr_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -610,7 +665,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 // Statically-known keys, tagged by value type so a value-equal pair
                 // collides (`{ a, "a" }`, `{ 1, 1.0 }`) but a cross-type pair does not
                 // (`{ 1, "1" }`). Computed `[expr]` keys are not tracked here.
-                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut seen: HashSet<String> = HashSet::new();
                 // Parse the value tighter than `,` so the comma separates pairs.
                 let value_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
 
@@ -720,6 +775,17 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 self.tokens.expect(TokenType::RightBracket)?;
                 Ok(self.ast.add_expr(Expr::Index(expr, index, false), pos)) // `[expr]` data access
             },
+            Operator::SafeMemberAccess => {
+                let id = self.parse_identifier()?;
+                let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                Ok(self.ast.add_expr(Expr::SafeAccess(expr, id, true), pos)) // `?.name`
+            },
+            Operator::SafeIndex => {
+                let index = self.parse_expr()?;
+                self.tokens.expect(TokenType::RightBracket)?;
+                Ok(self.ast.add_expr(Expr::SafeAccess(expr, index, false), pos)) // `?[expr]`
+            },
+            Operator::Assert => Ok(self.ast.add_expr(Expr::Assert(expr), pos)),
             _ => unreachable!()
         }
     }

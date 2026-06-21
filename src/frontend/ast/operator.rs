@@ -24,6 +24,7 @@ pub enum Operator {
     MemberAccess, // expr.member
     Comma, // expr, expr
     Arrow, // expr => expr
+    Coalesce, // a ?? b
     Assign(Option<Box<Operator>>),
 
     // Prefix
@@ -36,7 +37,10 @@ pub enum Operator {
 
     // Postfix
     Call,  // expr(expr, ...)
-    Index  // expr[expr]
+    Index, // expr[expr]
+    SafeMemberAccess, // expr?.member
+    SafeIndex, // expr?[expr]
+    Assert // expr!
 }
 
 impl Operator {
@@ -76,7 +80,11 @@ impl fmt::Display for Operator {
             Operator::Array => "<array>",
             Operator::Dict => "<dict>",
             Operator::Arrow => "=>",
+            Operator::Coalesce => "??",
             Operator::Index => "<index>",
+            Operator::SafeMemberAccess => "?.",
+            Operator::SafeIndex => "?[",
+            Operator::Assert => "!",
             Operator::Assign(None) => "=",
             Operator::Assign(Some(op)) => match **op {
                 Operator::Add => "+=",

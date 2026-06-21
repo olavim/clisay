@@ -1,0 +1,14 @@
+// `return` out of a while loop inside a function.
+fn firstOver(limit)! {
+    say mut n = 0;
+    while (n < 1000) {
+        if (n > limit) {
+            return n;
+        }
+        n += 1;
+    }
+    return -1;
+}
+
+print(firstOver(5));  // expect: 6
+print(firstOver(0));  // expect: 1

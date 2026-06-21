@@ -1,14 +1,14 @@
-fn getAdder(a, b, c, d, e) {
-    say sum = 0;
-    fn addA() {
+fn getAdder(a, b, c, d, e)! {
+    say mut sum = 0;
+    fn addA()! {
         sum = sum + a;
-        fn addB() {
+        fn addB()! {
             sum = sum + b;
-            fn addC() {
+            fn addC()! {
                 sum = sum + c;
-                fn addD() {
+                fn addD()! {
                     sum = sum + d;
-                    fn addE() {
+                    fn addE()! {
                         sum = sum + e;
                         return sum;
                     }
@@ -23,7 +23,7 @@ fn getAdder(a, b, c, d, e) {
     return addA;
 }
 
-say i = 0;
+say mut i = 0;
 while i < 100000 {
     getAdder(1, 2, 3, 4, 5)()()()()();
     i = i + 1;

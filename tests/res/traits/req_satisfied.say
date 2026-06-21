@@ -1,12 +1,12 @@
 // `req T` is satisfied by a sibling `with T`, and a `req fn` hole by an `inner` method of
 // matching arity.
-trait Clock { pub fn tick() { return 1; } }
+trait Clock { pub fn tick()! { return 1; } }
 trait Mover req Clock {
-    req fn onMove(d);
-    pub fn step() { return this.tick() + this.onMove(2); }
+    req fn onMove(d)!;
+    pub fn step()! { return this.tick() + this.onMove(2); }
 }
 type Player with Mover, Clock { // provides Mover and Clock; Mover's `req Clock` is satisfied
-    inner fn onMove(d) { return d * 10; } // satisfies `req fn onMove(d)` (inner, arity 1)
+    inner fn onMove(d)! { return d * 10; } // satisfies `req fn onMove(d)` (inner, arity 1)
     init() {}
 }
 say p = Player();

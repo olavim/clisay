@@ -37,8 +37,39 @@ impl<'a> Compiler<'a> {
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
             HirExpr::This => self.emit(Inst::GetLocal(0), expr),
+            HirExpr::Coalesce(left, right) => self.coalesce(left, right)?,
+            HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(target, member, *is_dot)?,
+            // `!` leaves its operand's value; the barrier below guards it when the check pass flagged it.
+            HirExpr::Assert(operand) => self.expression(operand)?,
         };
 
+        // A value that the check pass marked as an `unknown` crossing into a non-null slot is guarded.
+        if self.barriers.has(expr) {
+            self.emit(Inst::AssertNonNull, expr);
+        }
+        Ok(())
+    }
+
+    /// Compiles `a ?? b`: yield `a` when it is non-null, else `b`. The fallback is evaluated only
+    /// when `a` is null.
+    fn coalesce(&mut self, left: &HirId<HirExpr>, right: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let end = self.ir.new_label();
+        self.expression(left)?;
+        self.emit(Inst::JumpIfNotNullOrPop(end), left);
+        self.expression(right)?;
+        self.ir.bind(end);
+        Ok(())
+    }
+
+    /// Compiles `a?.b` / `a?[i]`: yield null when `a` is null, else the member access. The access
+    /// runs only when `a` is non-null.
+    fn safe_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_dot: bool) -> Result<(), anyhow::Error> {
+        let end = self.ir.new_label();
+        self.expression(target)?;
+        self.emit(Inst::JumpIfNull(end), target);
+        self.expression(member)?;
+        self.emit(if is_dot { Inst::GetProperty } else { Inst::GetIndex }, target);
+        self.ir.bind(end);
         Ok(())
     }
 

@@ -1,0 +1,3 @@
+// A nullable value passed to a non-null native parameter is rejected.
+say x? = null;
+gcStress(x); // error: Argument 1 may be null but the parameter is non-null; narrow it before the call

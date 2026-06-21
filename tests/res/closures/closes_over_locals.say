@@ -1,6 +1,6 @@
-fn getCounter() {
-    say n = 0;
-    fn inc() {
+fn getCounter()! {
+    say mut n = 0;
+    fn inc()! {
         n += 1;
         return n;
     }

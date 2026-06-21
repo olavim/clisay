@@ -3,9 +3,9 @@
 //! Builds a `type`'s initializer: field defaults, the declared body, and the `gives`
 //! delegate-verification checks.
 
-use crate::ast::{AstId, Expr, Stmt, Symbol, TypeDecl};
+use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, UnOp};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp};
 
 use super::Lowerer;
 
@@ -17,7 +17,7 @@ impl<'a> Lowerer<'a> {
             Some(init_id) => {
                 let init_pos = self.ast.pos(init_id).clone();
                 let fn_decl = self.ast_fn(init_id);
-                let params = self.exprs(&fn_decl.params)?;
+                let params = self.params(&fn_decl.params)?;
                 let stmts = self.ast_block(&fn_decl.body);
                 (params, stmts, init_pos)
             },
@@ -26,9 +26,11 @@ impl<'a> Lowerer<'a> {
 
         let mut body = Vec::new();
 
-        // Field initializers (`this.f = v`), spliced ahead of everything.
+        // Field initializers, spliced ahead of everything. The target is an explicit `this.<field>`
+        // member store so the default always lands on the field, never on a same-named outer local.
         for (field, value) in field_inits {
-            let target = self.hir.add(HirExpr::Identifier(*field), type_pos.clone());
+            let field_name = self.hir.text(*field).to_string();
+            let target = self.this_method(&field_name, type_pos);
             let value = self.expr(value)?;
             let assign = self.hir.add(HirExpr::Assign(target, value), type_pos.clone());
             body.push(self.hir.add(HirStmt::Expression(assign), type_pos.clone()));
@@ -76,10 +78,11 @@ impl<'a> Lowerer<'a> {
         self.hir.add(HirExpr::Index(this_expr, name_lit, true), pos.clone())
     }
 
-    /// Wraps an init body into its `HirStmt::Fn`.
-    fn make_init_fn(&mut self, name: Symbol, params: Vec<HirId<HirExpr>>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
+    /// Wraps an init body into its `HirStmt::Fn`. An init always yields the constructed
+    /// instance, so its return shape is non-null.
+    fn make_init_fn(&mut self, name: Symbol, params: Vec<HirParam>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
         let body = self.hir.add(HirExpr::Block(body), pos.clone());
-        let fn_decl = HirFnDecl { name, params, body };
+        let fn_decl = HirFnDecl { name, params, body, ret: ReturnShape::NonNull };
         self.hir.add(HirStmt::Fn(fn_decl), pos.clone())
     }
 }

@@ -2,7 +2,7 @@
 // (in this phase, with no traits yet) not externally accessible.
 type Widget {
     inner state;
-    pub fn read() { return this.state; } // internal: ok
+    pub fn read()! { return this.state; } // internal: ok
     init(s) { this.state = s; }
 }
 say w = Widget("ready");

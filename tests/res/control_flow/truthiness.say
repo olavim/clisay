@@ -1,0 +1,11 @@
+// Only null and false are falsy in conditions; everything else is truthy.
+if null { print("then-null"); } else { print("else-null"); }     // expect: else-null
+if false { print("then-false"); } else { print("else-false"); }  // expect: else-false
+if 0 { print("then-zero"); } else { print("else-zero"); }        // expect: then-zero
+if "" { print("then-empty"); } else { print("else-empty"); }     // expect: then-empty
+if true { print("then-true"); } else { print("else-true"); }     // expect: then-true
+
+// A null condition never enters the loop body.
+say mut ran = false;
+while null { ran = true; }
+print(ran);                                                       // expect: false

@@ -1,6 +1,0 @@
-
-type T {
-    pub v = 1;
-    init() { this.v = 2; }
-}
-say t = T();

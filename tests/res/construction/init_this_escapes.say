@@ -1,0 +1,8 @@
+// Binding the raw `this` in init would let a half-built object outlive construction.
+type T {
+    pub x;
+    init() {
+        this.x = 1;
+        say self = this; // error: the partially-constructed 'this' cannot be stored; inside init it may only assign or read its own fields
+    }
+}
