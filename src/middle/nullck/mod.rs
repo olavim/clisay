@@ -101,6 +101,23 @@ enum Nullness {
     Void,
 }
 
+impl Nullness {
+    fn is_void(self) -> bool {
+        self == Nullness::Void
+    }
+
+    fn is_null_or_nullable(self) -> bool {
+        matches!(self, Nullness::Null | Nullness::Nullable)
+    }
+}
+
+/// Why a value fails to satisfy a non-null target.
+enum Violation {
+    Void,
+    Null,
+    Nullable,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum TypeTag {
     Concrete(Symbol),
@@ -411,11 +428,10 @@ impl<'a> Checker<'a> {
     fn check_return(&mut self, nullness: Nullness, shape: ReturnShape, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match shape {
             ReturnShape::Void => Err(self.error("A void function cannot return a value".to_string(), node)),
-            ReturnShape::NonNull => match nullness {
-                Nullness::Void => Err(self.error("Cannot return a void result from a '!' function".to_string(), node)),
-                Nullness::Null | Nullness::Nullable => Err(self.error("A '!' function must return a non-null value".to_string(), node)),
-                Nullness::NonNull => Ok(()),
-                Nullness::Unknown => { self.add_barrier(node); Ok(()) },
+            ReturnShape::NonNull => match self.non_null_violation(nullness, node) {
+                None => Ok(()),
+                Some(Violation::Void) => Err(self.error("Cannot return a void result from a '!' function".to_string(), node)),
+                Some(Violation::Null | Violation::Nullable) => Err(self.error("A '!' function must return a non-null value".to_string(), node)),
             },
             ReturnShape::Nullable => match nullness {
                 Nullness::Void => Err(self.error("Cannot return a void result".to_string(), node)),
@@ -725,17 +741,17 @@ impl<'a> Checker<'a> {
 
     /// Checks a value moving into a field per the field's nullability.
     fn check_into_field(&mut self, nullness: Nullness, field_nullable: bool, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if nullness == Nullness::Void {
-            return Err(self.error(format!("Cannot assign a void result to field '{}'; the call returns no value", self.hir.text(field)), node));
-        }
+        let text = self.hir.text(field);
+        let void = || format!("Cannot assign a void result to field '{text}'; the call returns no value");
         if field_nullable {
-            return Ok(());
+            // A nullable field still rejects a void result, which is not a value.
+            return if nullness.is_void() { Err(self.error(void(), node)) } else { Ok(()) };
         }
-        match nullness {
-            Nullness::Null => Err(self.error(format!("Cannot assign null to non-null field '{}'", self.hir.text(field)), node)),
-            Nullness::Nullable => Err(self.error(format!("Cannot assign a nullable value to non-null field '{}'", self.hir.text(field)), node)),
-            Nullness::Unknown => { self.add_barrier(node); Ok(()) },
-            Nullness::NonNull | Nullness::Void => Ok(()),
+        match self.non_null_violation(nullness, node) {
+            None => Ok(()),
+            Some(Violation::Void) => Err(self.error(void(), node)),
+            Some(Violation::Null) => Err(self.error(format!("Cannot assign null to non-null field '{text}'"), node)),
+            Some(Violation::Nullable) => Err(self.error(format!("Cannot assign a nullable value to non-null field '{text}'"), node)),
         }
     }
 
@@ -845,12 +861,11 @@ impl<'a> Checker<'a> {
     /// Checks a single argument value against a non-null parameter slot.
     fn check_arg(&mut self, nullness: Nullness, position: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let n = position + 1;
-        match nullness {
-            Nullness::Void => Err(self.error(format!("Argument {n} is a void result; the call returns no value"), node)),
-            Nullness::Null => Err(self.error(format!("Cannot pass null as argument {n}; the parameter is non-null"), node)),
-            Nullness::Nullable => Err(self.error(format!("Argument {n} may be null but the parameter is non-null; narrow it before the call"), node)),
-            Nullness::Unknown => { self.add_barrier(node); Ok(()) },
-            Nullness::NonNull => Ok(()),
+        match self.non_null_violation(nullness, node) {
+            None => Ok(()),
+            Some(Violation::Void) => Err(self.error(format!("Argument {n} is a void result; the call returns no value"), node)),
+            Some(Violation::Null) => Err(self.error(format!("Cannot pass null as argument {n}; the parameter is non-null"), node)),
+            Some(Violation::Nullable) => Err(self.error(format!("Argument {n} may be null but the parameter is non-null; narrow it before the call"), node)),
         }
     }
 
@@ -860,20 +875,31 @@ impl<'a> Checker<'a> {
         self.barriers.insert(*node);
     }
 
+    /// Classifies a value entering a non-null target.
+    fn non_null_violation(&mut self, value_nullness: Nullness, target: &HirId<HirExpr>) -> Option<Violation> {
+        match value_nullness {
+            Nullness::NonNull => None,
+            Nullness::Unknown => { self.add_barrier(target); None },
+            Nullness::Void => Some(Violation::Void),
+            Nullness::Null => Some(Violation::Null),
+            Nullness::Nullable => Some(Violation::Nullable),
+        }
+    }
+
     /// Checks if moving a value into a slot is allowed per its nullability. A nullable or null value into a
     /// non-null slot is an error. `Unknown` is always allowed and gets a runtime barrier.
     fn check_into_slot(&mut self, nullness: Nullness, slot_nullable: bool, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if nullness == Nullness::Void {
-            return Err(self.error(format!("Cannot assign a void result to '{}'; the call returns no value", self.hir.text(name)), node));
-        }
+        let text = self.hir.text(name);
+        let void = || format!("Cannot assign a void result to '{text}'; the call returns no value");
         if slot_nullable {
-            return Ok(());
+            // A nullable slot still rejects a void result, which is not a value.
+            return if nullness.is_void() { Err(self.error(void(), node)) } else { Ok(()) };
         }
-        match nullness {
-            Nullness::Null => Err(self.error(format!("Cannot assign null to non-null binding '{}'", self.hir.text(name)), node)),
-            Nullness::Nullable => Err(self.error(format!("Cannot assign a nullable value to non-null binding '{}'", self.hir.text(name)), node)),
-            Nullness::Unknown => { self.add_barrier(node); Ok(()) },
-            Nullness::NonNull | Nullness::Void => Ok(()),
+        match self.non_null_violation(nullness, node) {
+            None => Ok(()),
+            Some(Violation::Void) => Err(self.error(void(), node)),
+            Some(Violation::Null) => Err(self.error(format!("Cannot assign null to non-null binding '{text}'"), node)),
+            Some(Violation::Nullable) => Err(self.error(format!("Cannot assign a nullable value to non-null binding '{text}'"), node)),
         }
     }
 
@@ -982,10 +1008,10 @@ impl<'a> Checker<'a> {
 
     /// Rejects an operation that requires a value when the operand may be null or is void.
     fn require_value(&self, nullness: Nullness, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if nullness == Nullness::Void {
+        if nullness.is_void() {
             return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), operand));
         }
-        if !matches!(nullness, Nullness::Nullable | Nullness::Null) {
+        if !nullness.is_null_or_nullable() {
             return Ok(());
         }
         let msg = match self.hir.get(operand) {
