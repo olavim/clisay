@@ -39,11 +39,11 @@ impl<'a> Compiler<'a> {
             HirExpr::This => self.emit(Inst::GetLocal(0), expr),
             HirExpr::Coalesce(left, right) => self.coalesce(left, right)?,
             HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(target, member, *is_dot)?,
-            // `!` leaves its operand's value; the barrier below guards it when nullck flagged it.
+            // `!` leaves its operand's value; the barrier below guards it when the check pass flagged it.
             HirExpr::Assert(operand) => self.expression(operand)?,
         };
 
-        // A value that `nullck` marked as an `unknown` crossing into a non-null slot is guarded.
+        // A value that the check pass marked as an `unknown` crossing into a non-null slot is guarded.
         if self.barriers.has(expr) {
             self.emit(Inst::AssertNonNull, expr);
         }

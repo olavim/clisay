@@ -32,7 +32,7 @@ pub mod internals {
         Hir, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl,
     };
     pub use crate::middle::bind::{Bindings, TypeLayout};
-    pub use crate::middle::nullck::Barriers;
+    pub use crate::middle::check::Barriers;
 
     use crate::frontend::lex::{tokenize, TokenStream};
     use crate::frontend::parse::Parser;
@@ -59,7 +59,7 @@ pub mod internals {
 
     pub fn nullck(src: &str) -> Barriers {
         let (hir, bindings) = bind(src);
-        crate::middle::nullck::check(&hir, &bindings).expect("nullck error")
+        crate::middle::check::check(&hir, &bindings).expect("nullck error")
     }
 }
 
@@ -70,7 +70,7 @@ use crate::frontend::parse::Parser;
 use crate::middle::codegen::Compiler;
 use crate::middle::lower::lower;
 use crate::middle::names::resolve as resolve_names;
-use crate::middle::nullck::check as check_nullability;
+use crate::middle::check::check as check_nullability;
 use crate::middle::optimize::optimize;
 use crate::middle::bind::resolve as resolve_bindings;
 
