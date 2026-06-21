@@ -2,12 +2,12 @@
 
 mod native;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
 use crate::middle::bind::Bindings;
-use crate::middle::hir::{Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ReturnShape, Symbol};
+use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
 /// A function's declared nullability signature: per-parameter nullability and return shape.
 pub struct FnSig {
@@ -28,9 +28,17 @@ pub struct Signatures {
     pub fns: HashMap<HirId<HirStmt>, FnSig>,
 }
 
-pub fn check(hir: &Hir, _bindings: &Bindings) -> Result<(), anyhow::Error> {
+pub fn check(hir: &Hir, bindings: &Bindings) -> Result<(), anyhow::Error> {
     let sigs = Collector::collect(hir);
-    let mut checker = Checker { hir, sigs: &sigs, locals: Vec::new(), frame_start: 0 };
+    let mut checker = Checker {
+        hir,
+        bindings,
+        sigs: &sigs,
+        locals: Vec::new(),
+        frame_start: 0,
+        current_type: None,
+        narrowed_fields: HashSet::new(),
+    };
     checker.stmt(&hir.get_root())
 }
 
@@ -106,8 +114,7 @@ impl<'a> Collector<'a> {
     }
 }
 
-/// The static nullability of an expression in the three-point lattice, plus the
-/// compiler-internal `Unknown` for dynamic-boundary values.
+/// The static nullability of an expression.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Nullness {
     NonNull,
@@ -116,27 +123,43 @@ enum Nullness {
     Unknown,
 }
 
-/// A tracked binding in the current function frame. Functions are tracked too, so a direct
-/// call can resolve its callee's return shape.
+/// A tracked binding in the current function frame.
 struct Local {
     name: Symbol,
     declared_nullable: bool,
     mutable: bool,
     /// Whether the binding is provably assigned on the current path.
     assigned: bool,
-    /// The declaration node when this name binds a function, else `None`.
+    /// Whether a check has narrowed this binding to non-null on the current path.
+    narrowed: bool,
     func: Option<HirId<HirStmt>>,
 }
 
-/// Phase two: a forward dataflow over each function body. It checks lattice conformance into
-/// non-null slots, definite assignment before use, and immutable single-assignment.
+/// A place that can be narrowed to non-null.
+enum Narrow {
+    Local(usize),
+    Field(Symbol),
+}
+
+/// A snapshot of flow facts.
+struct Flow {
+    assigned: Vec<bool>,
+    narrowed: Vec<bool>,
+    fields: HashSet<Symbol>,
+}
+
 struct Checker<'a> {
     hir: &'a Hir,
+    bindings: &'a Bindings,
     sigs: &'a Signatures,
     locals: Vec<Local>,
     /// The start index in `locals` of the current function frame. Value reads only see
     /// bindings at or above this, so a closure does not read an enclosing local's flow state.
     frame_start: usize,
+    /// The enclosing type while checking its methods, used to resolve `this` field nullability.
+    current_type: Option<HirId<HirStmt>>,
+    /// Immutable `this` fields narrowed to non-null on the current path.
+    narrowed_fields: HashSet<Symbol>,
 }
 
 impl<'a> Checker<'a> {
@@ -151,8 +174,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The index in `locals` of a value/function binding visible for a value read: the nearest
-    /// match within the current frame.
     fn frame_index_of(&self, name: Symbol) -> Option<usize> {
         self.locals[self.frame_start..].iter().rposition(|l| l.name == name)
             .map(|i| self.frame_start + i)
@@ -168,32 +189,41 @@ impl<'a> Checker<'a> {
         match self.hir.get(stmt) {
             HirStmt::Fn(decl) => {
                 // Register the name first so the body may call itself.
-                self.locals.push(Local { name: decl.name, declared_nullable: false, mutable: false, assigned: true, func: Some(*stmt) });
+                self.locals.push(Local { name: decl.name, declared_nullable: false, mutable: false, assigned: true, narrowed: false, func: Some(*stmt) });
                 self.function(decl)?;
             },
-            HirStmt::Type(decl) | HirStmt::Trait(decl) => self.type_decl(decl)?,
+            HirStmt::Type(decl) => self.type_decl(Some(*stmt), decl)?,
+            // A trait has no runtime layout, so its `this` fields are not resolved here.
+            HirStmt::Trait(decl) => self.type_decl(None, decl)?,
             HirStmt::Say(field) => self.say(field.name, field.nullable, field.mutable, &field.value)?,
             HirStmt::Expression(e) | HirStmt::Block(e) => { self.expr(e)?; },
             HirStmt::Return(opt) => if let Some(e) = opt { self.expr(e)?; },
             HirStmt::Throw(e) => { self.expr(e)?; },
             HirStmt::While(cond, body) => {
                 self.expr(cond)?;
-                // The body may run zero times, so its assignments are not definite afterward.
-                let pre = self.snapshot_locals();
+                let body_narrow = self.narrowings(cond, true);
+                // Loop bodies may run zero times, so their assignments are not definite afterward.
+                let pre = self.snapshot();
+                self.apply_narrowings(&body_narrow);
                 self.expr(body)?;
-                self.restore_locals(&pre);
+                self.restore(&pre);
             },
             HirStmt::If(cond, then, otherwise) => {
                 self.expr(cond)?;
-                let pre = self.snapshot_locals();
+                let then_narrow = self.narrowings(cond, true);
+                let else_narrow = self.narrowings(cond, false);
+                let pre = self.snapshot();
+                self.apply_narrowings(&then_narrow);
                 self.expr(then)?;
-                let then_assigned = self.snapshot_locals();
-                self.restore_locals(&pre);
+                let then_assigned = self.assigned_vec();
+                self.restore(&pre);
+                self.apply_narrowings(&else_narrow);
                 if let Some(otherwise) = otherwise {
                     self.stmt(otherwise)?;
                 }
-                let else_assigned = self.snapshot_locals();
-                // A binding is definitely assigned after the `if` only if both paths assign it.
+                let else_assigned = self.assigned_vec();
+                // Widen narrowing back at the join, then keep only assignments made on both paths.
+                self.restore(&pre);
                 for i in 0..self.locals.len() {
                     self.locals[i].assigned = then_assigned[i] && else_assigned[i];
                 }
@@ -205,7 +235,7 @@ impl<'a> Checker<'a> {
                     if let Some(param) = catch.param {
                         // The thrown value is arbitrary, so the catch parameter is nullable.
                         let name = self.ident_sym(&param);
-                        self.locals.push(Local { name, declared_nullable: true, mutable: false, assigned: true, func: None });
+                        self.locals.push(Local { name, declared_nullable: true, mutable: false, assigned: true, narrowed: false, func: None });
                     }
                     self.expr(&catch.body)?;
                     self.locals.truncate(mark);
@@ -224,7 +254,7 @@ impl<'a> Checker<'a> {
         } else {
             false
         };
-        self.locals.push(Local { name, declared_nullable, mutable, assigned, func: None });
+        self.locals.push(Local { name, declared_nullable, mutable, assigned, narrowed: false, func: None });
         Ok(())
     }
 
@@ -235,7 +265,7 @@ impl<'a> Checker<'a> {
         self.frame_start = mark;
         for param in &decl.params {
             let name = self.ident_sym(&param.name);
-            self.locals.push(Local { name, declared_nullable: param.nullable, mutable: param.mutable, assigned: true, func: None });
+            self.locals.push(Local { name, declared_nullable: param.nullable, mutable: param.mutable, assigned: true, narrowed: false, func: None });
         }
         self.expr(&decl.body)?;
         self.locals.truncate(mark);
@@ -243,11 +273,14 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    fn type_decl(&mut self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+    fn type_decl(&mut self, type_id: Option<HirId<HirStmt>>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+        let saved = self.current_type;
+        self.current_type = type_id;
         self.function_stmt(&decl.init)?;
         for method in &decl.methods {
             self.function_stmt(method)?;
         }
+        self.current_type = saved;
         Ok(())
     }
 
@@ -273,9 +306,9 @@ impl<'a> Checker<'a> {
                 for (_, v) in brace { self.expr(v)?; }
                 Nullness::Unknown
             },
-            HirExpr::Index(target, member, _) => { self.expr(target)?; self.expr(member)?; Nullness::Unknown },
-            HirExpr::Binary(_, l, r) => { self.expr(l)?; self.expr(r)?; Nullness::NonNull },
-            HirExpr::Unary(_, x) => { self.expr(x)?; Nullness::NonNull },
+            HirExpr::Index(target, member, _) => self.index(target, member)?,
+            HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
+            HirExpr::Unary(op, x) => self.unary(*op, x)?,
             HirExpr::Is(x, _) => { self.expr(x)?; Nullness::NonNull },
             HirExpr::Block(stmts) => {
                 let mark = self.locals.len();
@@ -311,7 +344,7 @@ impl<'a> Checker<'a> {
         if !local.assigned && !local.declared_nullable {
             return Err(self.error(format!("'{}' is used before it is assigned", self.hir.text(name)), expr));
         }
-        Ok(if local.declared_nullable { Nullness::Nullable } else { Nullness::NonNull })
+        Ok(if local.declared_nullable && !local.narrowed { Nullness::Nullable } else { Nullness::NonNull })
     }
 
     fn assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<Nullness, anyhow::Error> {
@@ -327,6 +360,8 @@ impl<'a> Checker<'a> {
                     }
                     self.check_into_slot(nullness, declared_nullable, name, lhs)?;
                     self.locals[i].assigned = true;
+                    // A reassignment resets narrowing: the slot is non-null only if the new value is.
+                    self.locals[i].narrowed = matches!(nullness, Nullness::NonNull);
                 }
             }
         }
@@ -345,12 +380,13 @@ impl<'a> Checker<'a> {
                 });
             }
         }
-        self.expr(callee)?;
+        let callee_nullness = self.expr(callee)?;
+        self.require_value(callee_nullness, callee)?;
         Ok(Nullness::Unknown)
     }
 
-    /// Checks moving a value of nullability `nullness` into a slot. A nullable or null value into a
-    /// non-null slot is an error. `Unknown` is allowed here and gets a runtime barrier later.
+    /// Checks if moving a value into a slot is allowed per its nullability. A nullable or null value into a
+    /// non-null slot is an error. `Unknown` is always allowed and gets a runtime barrier.
     fn check_into_slot(&self, nullness: Nullness, slot_nullable: bool, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if slot_nullable {
             return Ok(());
@@ -362,13 +398,176 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn snapshot_locals(&self) -> Vec<bool> {
+    /// Member or data access `target.member` / `target[member]`.
+    fn index(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<Nullness, anyhow::Error> {
+        // `this.field` resolves to the field's nullability
+        if let Some(nullness) = self.this_field(target, member) {
+            return Ok(nullness);
+        }
+        let target_nullness = self.expr(target)?;
+        self.require_value(target_nullness, target)?;
+        self.expr(member)?;
+        Ok(Nullness::Unknown)
+    }
+
+    fn binary(&mut self, op: BinOp, l: &HirId<HirExpr>, r: &HirId<HirExpr>) -> Result<Nullness, anyhow::Error> {
+        match op {
+            // Short-circuit operators narrow their left operand into the right operand.
+            BinOp::And => {
+                self.expr(l)?;
+                let narrow = self.narrowings(l, true);
+                let pre = self.snapshot();
+                self.apply_narrowings(&narrow);
+                self.expr(r)?;
+                self.restore(&pre);
+                Ok(Nullness::NonNull)
+            },
+            BinOp::Or => {
+                self.expr(l)?;
+                let narrow = self.narrowings(l, false);
+                let pre = self.snapshot();
+                self.apply_narrowings(&narrow);
+                self.expr(r)?;
+                self.restore(&pre);
+                Ok(Nullness::NonNull)
+            },
+            // Equality is a boolean context; a possibly-null operand is fine.
+            BinOp::Equal | BinOp::NotEqual => {
+                self.expr(l)?;
+                self.expr(r)?;
+                Ok(Nullness::NonNull)
+            },
+            _ => {
+                let ln = self.expr(l)?;
+                self.require_value(ln, l)?;
+                let rn = self.expr(r)?;
+                self.require_value(rn, r)?;
+                Ok(Nullness::NonNull)
+            },
+        }
+    }
+
+    fn unary(&mut self, op: UnOp, x: &HirId<HirExpr>) -> Result<Nullness, anyhow::Error> {
+        let nullness = self.expr(x)?;
+        if matches!(op, UnOp::Negate | UnOp::BitNot) {
+            self.require_value(nullness, x)?;
+        }
+        Ok(Nullness::NonNull)
+    }
+
+    /// The nullability of `target.member` when it means `this.field`. Otherwise None.
+    fn this_field(&self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Option<Nullness> {
+        if !matches!(self.hir.get(target), HirExpr::This) {
+            return None;
+        }
+        let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) else { return None };
+        let type_id = self.current_type?;
+        let sym = self.hir.symbol_of(name)?;
+        if self.narrowed_fields.contains(&sym) {
+            return Some(Nullness::NonNull);
+        }
+        let layout = self.bindings.type_layout(&type_id);
+        Some(if layout.is_nullable(sym) { Nullness::Nullable } else { Nullness::NonNull })
+    }
+
+    /// Rejects an operation that requires a value when the operand may be null.
+    fn require_value(&self, nullness: Nullness, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if !matches!(nullness, Nullness::Nullable | Nullness::Null) {
+            return Ok(());
+        }
+        let msg = match self.hir.get(operand) {
+            HirExpr::Identifier(name) => format!("'{}' may be null; narrow it before use", self.hir.text(*name)),
+            _ => "Value may be null; narrow it before use".to_string(),
+        };
+        Err(self.error(msg, operand))
+    }
+
+    /// The places a condition narrows to non-null. `positive` selects the branch where the
+    /// condition holds versus the branch where it fails.
+    fn narrowings(&self, cond: &HirId<HirExpr>, positive: bool) -> Vec<Narrow> {
+        match self.hir.get(cond) {
+            // A bare truthiness test narrows in the truthy branch.
+            HirExpr::Identifier(name) if positive => self.narrow_ident(*name),
+            HirExpr::Index(target, member, _) if positive => self.narrow_field(target, member),
+            // `x != null` narrows when true; `x == null` narrows when false.
+            HirExpr::Binary(BinOp::NotEqual, l, r) if positive => self.narrow_null_compare(l, r),
+            HirExpr::Binary(BinOp::Equal, l, r) if !positive => self.narrow_null_compare(l, r),
+            // Conjunction narrows both sides when true. By De Morgan, disjunction narrows both when false.
+            HirExpr::Binary(BinOp::And, l, r) if positive => {
+                let mut narrow = self.narrowings(l, true);
+                narrow.extend(self.narrowings(r, true));
+                narrow
+            },
+            HirExpr::Binary(BinOp::Or, l, r) if !positive => {
+                let mut narrow = self.narrowings(l, false);
+                narrow.extend(self.narrowings(r, false));
+                narrow
+            },
+            HirExpr::Unary(UnOp::Not, x) => self.narrowings(x, !positive),
+            _ => Vec::new(),
+        }
+    }
+
+    fn narrow_null_compare(&self, l: &HirId<HirExpr>, r: &HirId<HirExpr>) -> Vec<Narrow> {
+        let place = if self.is_null(l) { r } else if self.is_null(r) { l } else { return Vec::new() };
+        match self.hir.get(place) {
+            HirExpr::Identifier(name) => self.narrow_ident(*name),
+            HirExpr::Index(target, member, _) => self.narrow_field(target, member),
+            _ => Vec::new(),
+        }
+    }
+
+    fn narrow_ident(&self, name: Symbol) -> Vec<Narrow> {
+        match self.frame_index_of(name) {
+            Some(i) if self.locals[i].func.is_none() => vec![Narrow::Local(i)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// An immutable `this` field narrows; a `mut` field could change between check and use.
+    fn narrow_field(&self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Vec<Narrow> {
+        if !matches!(self.hir.get(target), HirExpr::This) {
+            return Vec::new();
+        }
+        let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) else { return Vec::new() };
+        let Some(type_id) = self.current_type else { return Vec::new() };
+        let Some(sym) = self.hir.symbol_of(name) else { return Vec::new() };
+        if self.bindings.type_layout(&type_id).is_mutable(sym) {
+            return Vec::new();
+        }
+        vec![Narrow::Field(sym)]
+    }
+
+    fn is_null(&self, expr: &HirId<HirExpr>) -> bool {
+        matches!(self.hir.get(expr), HirExpr::Literal(HirLiteral::Null))
+    }
+
+    fn apply_narrowings(&mut self, narrowings: &[Narrow]) {
+        for narrow in narrowings {
+            match narrow {
+                Narrow::Local(i) => self.locals[*i].narrowed = true,
+                Narrow::Field(sym) => { self.narrowed_fields.insert(*sym); },
+            }
+        }
+    }
+
+    fn assigned_vec(&self) -> Vec<bool> {
         self.locals.iter().map(|l| l.assigned).collect()
     }
 
-    fn restore_locals(&mut self, snapshot: &[bool]) {
-        for (local, &assigned) in self.locals.iter_mut().zip(snapshot) {
-            local.assigned = assigned;
+    fn snapshot(&self) -> Flow {
+        Flow {
+            assigned: self.locals.iter().map(|l| l.assigned).collect(),
+            narrowed: self.locals.iter().map(|l| l.narrowed).collect(),
+            fields: self.narrowed_fields.clone(),
         }
+    }
+
+    fn restore(&mut self, flow: &Flow) {
+        for (local, (&assigned, &narrowed)) in self.locals.iter_mut().zip(flow.assigned.iter().zip(&flow.narrowed)) {
+            local.assigned = assigned;
+            local.narrowed = narrowed;
+        }
+        self.narrowed_fields = flow.fields.clone();
     }
 }
