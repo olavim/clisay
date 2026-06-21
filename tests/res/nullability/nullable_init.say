@@ -1,0 +1,5 @@
+// A nullable call result cannot initialize a non-null binding.
+fn find(k)? {
+    return null;
+}
+say c = find(0); // error: Cannot assign a nullable value to non-null binding 'c'

@@ -1,0 +1,3 @@
+// An immutable binding cannot be reassigned.
+say x = 1;
+x = 2; // error: Cannot reassign immutable binding 'x'; declare it 'mut'

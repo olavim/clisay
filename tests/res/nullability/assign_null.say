@@ -1,0 +1,2 @@
+// A non-null binding rejects the literal null.
+say f = null; // error: Cannot assign null to non-null binding 'f'
