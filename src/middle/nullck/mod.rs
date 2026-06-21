@@ -42,6 +42,12 @@ pub struct Signatures {
     types_by_name: HashMap<Symbol, HirId<HirStmt>>,
     fns_by_name: HashMap<Symbol, HirId<HirStmt>>,
     methods_by_type: HashMap<(Symbol, Symbol), HirId<HirStmt>>,
+    /// Type name to the fields its `init` assigns directly: defaults, `this.f =`, and bare `f =`.
+    /// This decides field definite assignment.
+    init_fields: HashMap<Symbol, HashSet<Symbol>>,
+    /// Type name to fields assigned in its methods, with the assignment node. A method assignment
+    /// does not initialize a field, but it lets a definition error point at the misplaced assign.
+    method_field_assigns: HashMap<Symbol, HashMap<Symbol, HirId<HirExpr>>>,
 }
 
 pub fn check(hir: &Hir, bindings: &Bindings) -> Result<(), anyhow::Error> {
@@ -54,6 +60,8 @@ pub fn check(hir: &Hir, bindings: &Bindings) -> Result<(), anyhow::Error> {
         frame_start: 0,
         current_type: None,
         narrowed: HashSet::new(),
+        init_assigned: None,
+        this_seen: false,
     };
     checker.stmt(&hir.get_root())
 }
@@ -131,6 +139,12 @@ struct Checker<'a> {
     current_type: Option<Symbol>,
     /// Places narrowed to non-null on the current path.
     narrowed: HashSet<NarrowKey>,
+    /// While checking a type's `init`, the fields assigned so far. The construction seal uses
+    /// this for read-before-assignment and rejects any other use of a bare `this`.
+    init_assigned: Option<HashSet<Symbol>>,
+    /// Whether `this` was used since this flag was last reset, used to catch a closure in `init`
+    /// capturing the partially-constructed `this`.
+    this_seen: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -156,17 +170,15 @@ impl<'a> Checker<'a> {
         self.locals.iter().rev().find(|l| l.name == name).and_then(|l| l.func)
     }
 
-    /// The layout of a tracked concrete type, else `None`.
+    /// The layout of a tracked concrete type.
     fn layout_of(&self, name: Symbol) -> Option<&'a TypeLayout> {
         self.sigs.types_by_name.get(&name).map(|stmt| self.bindings.type_layout(stmt))
     }
 
-    /// The type tag of `this` in the current method.
     fn this_tag(&self) -> TypeTag {
         self.current_type.map_or(TypeTag::Unknown, TypeTag::Concrete)
     }
 
-    /// The typed value of `this`: always non-null, carrying the current type's tag.
     fn this_typed(&self) -> Typed {
         Typed::of(Nullness::NonNull, self.this_tag())
     }
@@ -178,9 +190,8 @@ impl<'a> Checker<'a> {
                 self.locals.push(Local { name: decl.name, declared_nullable: false, mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(*stmt) });
                 self.function(decl)?;
             },
-            HirStmt::Type(decl) => self.type_decl(Some(decl.name), decl)?,
-            // A trait has no runtime layout, so its `this` fields are not resolved here.
-            HirStmt::Trait(decl) => self.type_decl(None, decl)?,
+            HirStmt::Type(decl) => self.type_decl(stmt, Some(decl.name), decl)?,
+            HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
             HirStmt::Say(field) => self.say(field.name, field.nullable, field.mutable, &field.value)?,
             HirStmt::Expression(e) | HirStmt::Block(e) => { self.expr(e)?; },
             HirStmt::Return(opt) => if let Some(e) = opt { self.expr(e)?; },
@@ -231,6 +242,7 @@ impl<'a> Checker<'a> {
 
     fn say(&mut self, name: Symbol, declared_nullable: bool, mutable: bool, value: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
         let (assigned, tag) = if let Some(value) = value {
+            self.reject_this_store(value)?;
             let typed = self.expr(value)?;
             self.check_into_slot(typed.nullness, declared_nullable, name, value)?;
             (true, typed.tag)
@@ -241,8 +253,22 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Checks a function/method/lambda body in a fresh frame holding its parameters.
+    /// During init, binding or assigning `this` would let a half-built object outlive the
+    /// init. Rejecting it here gives a clearer message than the generic value-use check.
+    fn reject_this_store(&self, value: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if self.init_assigned.is_some() && matches!(self.hir.get(value), HirExpr::This) {
+            return Err(self.this_seal_error(value, "cannot be stored"));
+        }
+        Ok(())
+    }
+
+    /// Construction-seal error for a disallowed use of `this` in init.
+    fn this_seal_error(&self, node: &HirId<HirExpr>, action: &str) -> anyhow::Error {
+        self.error(format!("the partially-constructed 'this' {action}; inside init it may only assign or read its own fields"), node)
+    }
+
     fn function(&mut self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
+        let saved_seal = self.init_assigned.take();
         let saved_frame = self.frame_start;
         let mark = self.locals.len();
         self.frame_start = mark;
@@ -253,13 +279,19 @@ impl<'a> Checker<'a> {
         self.expr(&decl.body)?;
         self.locals.truncate(mark);
         self.frame_start = saved_frame;
+        self.init_assigned = saved_seal;
         Ok(())
     }
 
-    fn type_decl(&mut self, type_name: Option<Symbol>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+    fn type_decl(&mut self, node: &HirId<HirStmt>, type_name: Option<Symbol>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         let saved = self.current_type;
         self.current_type = type_name;
-        self.function_stmt(&decl.init)?;
+        if let Some(type_name) = type_name {
+            self.check_field_definitions(type_name, node)?;
+            self.check_init(&decl.init, type_name)?;
+        } else {
+            self.function_stmt(&decl.init)?;
+        }
         for method in &decl.methods {
             self.function_stmt(method)?;
         }
@@ -274,19 +306,84 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Evaluates an expression, emitting diagnostics, and returns its static nullability and type.
+    /// Every non-null private field must be initialized by the type's `init` or a default. The
+    /// brace cannot reach a private field, so otherwise it can never hold a value.
+    fn check_field_definitions(&self, type_name: Symbol, node: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
+        let Some(layout) = self.layout_of(type_name) else { return Ok(()) };
+        let assigned = self.sigs.init_fields.get(&type_name);
+        for (name, member) in &layout.members {
+            let TypeMember::Field(id) = member else { continue };
+            let non_null = !layout.nullable.contains(id);
+            let private = layout.non_public.contains(id);
+            let init_assigned = assigned.is_some_and(|a| a.contains(name));
+            if non_null && private && !init_assigned {
+                // Point at a method assignment if there is one; it looks like initialization but
+                // does not count, which is the more likely mistake.
+                if let Some(assign) = self.sigs.method_field_assigns.get(&type_name).and_then(|m| m.get(name)) {
+                    return Err(self.error(format!("Field '{}' must be initialized directly in init or by a default", self.hir.text(*name)), assign));
+                }
+                return Err(self.error(format!("Non-null field '{}' is never initialized; give it a default or assign it in init", self.hir.text(*name)), node));
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks a type's `init` under the construction seal: the raw `this` may assign its own
+    /// fields, read assigned fields, and call resolved helpers, but may not escape.
+    fn check_init(&mut self, stmt: &HirId<HirStmt>, type_name: Symbol) -> Result<(), anyhow::Error> {
+        let HirStmt::Fn(decl) = self.hir.get(stmt) else { return Ok(()) };
+        let saved_frame = self.frame_start;
+        let mark = self.locals.len();
+        self.frame_start = mark;
+        for param in &decl.params {
+            let name = self.ident_sym(&param.name);
+            self.locals.push(Local { name, declared_nullable: param.nullable, mutable: param.mutable, assigned: true, tag: TypeTag::Unknown, func: None });
+        }
+        // Brace-provided fields are assigned before the init body runs.
+        self.init_assigned = Some(self.brace_provided_fields(type_name));
+        self.expr(&decl.body)?;
+        self.init_assigned = None;
+        self.locals.truncate(mark);
+        self.frame_start = saved_frame;
+        Ok(())
+    }
+
+    /// Returns the public fields of a type that its init does not assign.
+    fn brace_provided_fields(&self, type_name: Symbol) -> HashSet<Symbol> {
+        let mut seed = HashSet::new();
+        let Some(layout) = self.layout_of(type_name) else { return seed };
+        let assigned = self.sigs.init_fields.get(&type_name);
+        for (name, member) in &layout.members {
+            let TypeMember::Field(id) = member else { continue };
+            if !layout.non_public.contains(id) && !assigned.is_some_and(|a| a.contains(name)) {
+                seed.insert(*name);
+            }
+        }
+        seed
+    }
+
     fn expr(&mut self, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         Ok(match self.hir.get(expr) {
             HirExpr::Literal(HirLiteral::Null) => Typed::null(),
-            HirExpr::Literal(lit) => { self.literal_children(lit)?; Typed::nonnull() },
+            HirExpr::Literal(lit) => { self.literal_children(lit, expr)?; Typed::nonnull() },
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
-            HirExpr::This => self.this_typed(),
+            HirExpr::This => {
+                self.this_seen = true;
+                if self.init_assigned.is_some() {
+                    return Err(self.this_seal_error(expr, "cannot be used as a value here"));
+                }
+                self.this_typed()
+            },
             HirExpr::Assign(lhs, rhs) => self.assign(lhs, rhs)?,
             HirExpr::Call(callee, args) => self.call(callee, args)?,
             HirExpr::Construct(callee, args, brace) => {
                 let tag = self.construct_tag(callee);
                 for a in args { self.expr(a)?; }
                 for (_, v) in brace { self.expr(v)?; }
+                if let TypeTag::Concrete(type_name) = &tag {
+                    let braced: HashSet<Symbol> = brace.iter().map(|(name, _)| *name).collect();
+                    self.check_construction(*type_name, &braced, callee)?;
+                }
                 Typed::of(Nullness::NonNull, tag)
             },
             HirExpr::Index(target, member, _) => self.index(target, member)?,
@@ -305,12 +402,26 @@ impl<'a> Checker<'a> {
         })
     }
 
-    fn literal_children(&mut self, lit: &HirLiteral) -> Result<(), anyhow::Error> {
+    fn literal_children(&mut self, lit: &HirLiteral, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match lit {
             HirLiteral::Array(elems) => for e in elems { self.expr(e)?; },
             HirLiteral::Dict(pairs) => for (k, v) in pairs { self.expr(k)?; self.expr(v)?; },
-            HirLiteral::Lambda(decl) => self.function(decl)?,
+            HirLiteral::Lambda(decl) => self.lambda(decl, node)?,
             _ => {},
+        }
+        Ok(())
+    }
+
+    /// Checks a lambda body. A closure defined in `init` may not capture the partially-built `this`.
+    fn lambda(&mut self, decl: &HirFnDecl, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let in_init = self.init_assigned.is_some();
+        let outer_seen = self.this_seen;
+        self.this_seen = false;
+        self.function(decl)?;
+        let captured_this = self.this_seen;
+        self.this_seen = outer_seen;
+        if in_init && captured_this {
+            return Err(self.error("a closure in init cannot capture the partially-constructed 'this'".to_string(), node));
         }
         Ok(())
     }
@@ -332,24 +443,81 @@ impl<'a> Checker<'a> {
     }
 
     fn assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
+        self.reject_this_store(rhs)?;
         let typed = self.expr(rhs)?;
-        if let HirExpr::Identifier(name) = self.hir.get(lhs) {
-            let name = *name;
-            if let Some(i) = self.frame_index_of(name) {
-                if self.locals[i].func.is_none() {
-                    let (mutable, assigned, declared_nullable) =
-                        (self.locals[i].mutable, self.locals[i].assigned, self.locals[i].declared_nullable);
-                    if !mutable && assigned {
-                        return Err(self.error(format!("Cannot reassign immutable binding '{}'; declare it 'mut'", self.hir.text(name)), lhs));
+        match self.hir.get(lhs) {
+            HirExpr::Identifier(name) => {
+                let name = *name;
+                if let Some(i) = self.frame_index_of(name) {
+                    if self.locals[i].func.is_none() {
+                        let (mutable, assigned, declared_nullable) =
+                            (self.locals[i].mutable, self.locals[i].assigned, self.locals[i].declared_nullable);
+                        if !mutable && assigned {
+                            return Err(self.error(format!("Cannot reassign immutable binding '{}'; declare it 'mut'", self.hir.text(name)), lhs));
+                        }
+                        self.check_into_slot(typed.nullness, declared_nullable, name, lhs)?;
+                        self.locals[i].assigned = true;
+                        self.locals[i].tag = typed.tag.clone();
+                        self.reset_narrowing(i, matches!(typed.nullness, Nullness::NonNull));
                     }
-                    self.check_into_slot(typed.nullness, declared_nullable, name, lhs)?;
-                    self.locals[i].assigned = true;
-                    self.locals[i].tag = typed.tag.clone();
-                    self.reset_narrowing(i, matches!(typed.nullness, Nullness::NonNull));
+                } else {
+                    // `field = ...` is implicitly `this.field = ...`
+                    self.field_assign(name, lhs)?;
                 }
-            }
+            },
+            // `this.field = ...`
+            HirExpr::Index(target, member, _) if matches!(self.hir.get(target), HirExpr::This) => {
+                if let Some(field) = self.string_member(member) {
+                    self.field_assign(field, lhs)?;
+                }
+            },
+            _ => {},
         }
         Ok(typed)
+    }
+
+    /// Records and checks an assignment to a field of the enclosing type.
+    fn field_assign(&mut self, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let (is_field, mutable) = match self.current_type.and_then(|t| self.layout_of(t)) {
+            Some(layout) => (matches!(layout.members.get(&field), Some(TypeMember::Field(_))), layout.is_mutable(field)),
+            None => return Ok(()),
+        };
+        if !is_field {
+            return Ok(());
+        }
+        if !mutable {
+            match &self.init_assigned {
+                Some(assigned) if assigned.contains(&field) =>
+                    return Err(self.error(format!("Immutable field '{}' is assigned more than once; declare it 'mut'", self.hir.text(field)), node)),
+                Some(_) => {},
+                None =>
+                    return Err(self.error(format!("Cannot assign immutable field '{}' in a method; declare it 'mut'", self.hir.text(field)), node)),
+            }
+        }
+        self.mark_field_assigned(field);
+        Ok(())
+    }
+
+    fn mark_field_assigned(&mut self, field: Symbol) {
+        if let Some(assigned) = self.init_assigned.as_mut() {
+            assigned.insert(field);
+        }
+    }
+
+    /// A construction must supply every non-null public field the `init` does not assign.
+    fn check_construction(&self, type_name: Symbol, braced: &HashSet<Symbol>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Some(layout) = self.layout_of(type_name) else { return Ok(()) };
+        let assigned = self.sigs.init_fields.get(&type_name);
+        for (name, member) in &layout.members {
+            let TypeMember::Field(id) = member else { continue };
+            let non_null = !layout.nullable.contains(id);
+            let public = !layout.non_public.contains(id);
+            let init_assigned = assigned.is_some_and(|a| a.contains(name));
+            if non_null && public && !init_assigned && !braced.contains(name) {
+                return Err(self.error(format!("Construction of '{}' is missing non-null field '{}'", self.hir.text(type_name), self.hir.text(*name)), node));
+            }
+        }
+        Ok(())
     }
 
     fn call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<Typed, anyhow::Error> {
@@ -357,8 +525,10 @@ impl<'a> Checker<'a> {
         match self.hir.get(callee) {
             HirExpr::Identifier(name) => {
                 let name = *name;
-                // A type name called yields a non-null instance of that type.
+                // A type name called yields a non-null instance of that type. A plain `T(..)`
+                // braces nothing, so every required field must be init-assigned.
                 if self.sigs.types_by_name.contains_key(&name) {
+                    self.check_construction(name, &HashSet::new(), callee)?;
                     return Ok(Typed::of(Nullness::NonNull, TypeTag::Concrete(name)));
                 }
                 match self.func_of(name) {
@@ -433,12 +603,18 @@ impl<'a> Checker<'a> {
             self.expr(member)?;
             return Ok(Typed::unknown());
         };
+        let on_this = matches!(self.hir.get(target), HirExpr::This);
         let key = self.narrowable_field_key(target, field);
         if let TypeTag::Concrete(type_name) = &receiver.tag {
             if let Some(layout) = self.layout_of(*type_name) {
                 if let Some(member_kind) = layout.members.get(&field).copied() {
                     let nullness = match member_kind {
-                        TypeMember::Field(_) => {
+                        TypeMember::Field(id) => {
+                            // Inside init, a non-null field read before its assignment is unsound.
+                            if on_this && !layout.nullable.contains(&id)
+                                && self.init_assigned.as_ref().is_some_and(|a| !a.contains(&field)) {
+                                return Err(self.error(format!("Field '{}' is read before it is assigned in init", self.hir.text(field)), member));
+                            }
                             let narrowed = key.is_some_and(|k| self.narrowed.contains(&k));
                             if layout.is_nullable(field) && !narrowed { Nullness::Nullable } else { Nullness::NonNull }
                         },
@@ -452,9 +628,10 @@ impl<'a> Checker<'a> {
         Ok(Typed::unknown())
     }
 
-    /// Evaluates a receiver, requiring it to be non-null. `this` is always non-null.
+    /// Evaluates a receiver, requiring it to be non-null.
     fn receiver(&mut self, receiver: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         if matches!(self.hir.get(receiver), HirExpr::This) {
+            self.this_seen = true;
             return Ok(self.this_typed());
         }
         let typed = self.expr(receiver)?;

@@ -1,0 +1,8 @@
+// A private non-null field with no default and no init assignment can never be initialized.
+type T { // error: Non-null field 'y' is never initialized; give it a default or assign it in init
+    pub x;
+    y;
+    init() {
+        this.x = 1;
+    }
+}

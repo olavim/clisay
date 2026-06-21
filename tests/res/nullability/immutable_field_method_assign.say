@@ -1,0 +1,10 @@
+// An immutable field cannot be reassigned from a method, even a public one.
+type T {
+    pub value;
+    init() {
+        this.value = 1;
+    }
+    fn reset() {
+        this.value = 2; // error: Cannot assign immutable field 'value' in a method; declare it 'mut'
+    }
+}

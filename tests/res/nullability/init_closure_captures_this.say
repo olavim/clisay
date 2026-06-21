@@ -1,0 +1,8 @@
+// A closure in init may not capture the partially-constructed `this`.
+type T {
+    pub x;
+    grab = () => this; // error: a closure in init cannot capture the partially-constructed 'this'
+    init() {
+        this.x = 1;
+    }
+}
