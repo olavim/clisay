@@ -59,7 +59,8 @@ pub mod internals {
 
     pub fn nullck(src: &str) -> Barriers {
         let (hir, bindings) = bind(src);
-        crate::middle::check::check(&hir, &bindings).expect("nullck error")
+        let sigs = crate::middle::signatures::collect(&hir);
+        crate::middle::check::check(&hir, &bindings, &sigs).expect("nullck error")
     }
 }
 
@@ -70,20 +71,25 @@ use crate::frontend::parse::Parser;
 use crate::middle::codegen::Compiler;
 use crate::middle::lower::lower;
 use crate::middle::names::resolve as resolve_names;
-use crate::middle::check::check as check_nullability;
+use crate::middle::check::check;
 use crate::middle::optimize::optimize;
 use crate::middle::bind::resolve as resolve_bindings;
+use crate::middle::signatures::collect as collect_signatures;
 
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
     let mut gc = Gc::new();
+
     let tokens = tokenize(String::from(file_name), String::from(src))?;
     let ast = Parser::parse(&mut TokenStream::new(&tokens))?;
+
     let names = resolve_names(&ast)?;
     let hir = lower(ast, &names)?;
     let bindings = resolve_bindings(&hir)?;
-    let barriers = check_nullability(&hir, &bindings)?;
+    let sigs = collect_signatures(&hir);
+    let barriers = check(&hir, &bindings, &sigs)?;
     let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers)?;
     let ir = optimize(ir);
+    
     let chunk = assemble(ir)?;
     runtime::execute(chunk, gc)
 }

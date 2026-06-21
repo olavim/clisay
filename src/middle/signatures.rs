@@ -1,13 +1,73 @@
-//! Collects every function and type-member signature, and infers each function's return type tag.
+//! Signature collection. Builds a `Signatures` table consumed by the check pass.
+//! Records every function and type-member signature and infers each function's return tag.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::middle::hir::{Hir, HirExpr, HirId, HirLiteral, HirStmt, HirTypeDecl, Symbol};
+use crate::middle::hir::{Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ReturnShape, Symbol};
 
-use super::{FnSig, Signatures, TypeTag};
+/// A function's per-parameter nullability and return shape.
+pub struct FnSig {
+    pub params: Vec<bool>,
+    pub ret: ReturnShape,
+}
+
+impl FnSig {
+    fn of(decl: &HirFnDecl) -> FnSig {
+        FnSig { params: decl.params.iter().map(|p| p.nullable).collect(), ret: decl.ret }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum TypeTag {
+    Concrete(Symbol),
+    SelfType,
+    Unknown,
+}
+
+impl TypeTag {
+    pub(crate) fn resolve(&self, receiver: &TypeTag) -> TypeTag {
+        match self {
+            TypeTag::SelfType => receiver.clone(),
+            other => other.clone(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Signatures {
+    // Per-function facts, keyed by the function's statement.
+    pub(crate) fns: HashMap<HirId<HirStmt>, FnSig>,
+    pub(crate) ret_tags: HashMap<HirId<HirStmt>, TypeTag>,
+
+    // Name-to-declaration lookups.
+    pub(crate) types_by_name: HashMap<Symbol, HirId<HirStmt>>,
+    pub(crate) fns_by_name: HashMap<Symbol, HirId<HirStmt>>,
+    pub(crate) methods_by_type: HashMap<(Symbol, Symbol), HirId<HirStmt>>,
+
+    // Per-type field facts.
+    /// Type name to the fields its `init` assigns directly.
+    pub(crate) init_fields: HashMap<Symbol, HashSet<Symbol>>,
+    /// Type name to the fields its methods assign, each mapped to the assigning node.
+    pub(crate) method_field_assigns: HashMap<Symbol, HashMap<Symbol, HirId<HirExpr>>>,
+}
+
+impl Signatures {
+    /// Whether `name` names a declared type.
+    pub(crate) fn is_type(&self, name: Symbol) -> bool {
+        self.types_by_name.contains_key(&name)
+    }
+
+    /// The type a callee names, when it is an identifier naming a declared type.
+    pub(crate) fn type_named(&self, hir: &Hir, callee: &HirId<HirExpr>) -> Option<Symbol> {
+        match hir.get(callee) {
+            HirExpr::Identifier(name) if self.is_type(*name) => Some(*name),
+            _ => None,
+        }
+    }
+}
 
 /// Collects the program's signatures and inferred return type tags.
-pub(super) fn collect(hir: &Hir) -> Signatures {
+pub fn collect(hir: &Hir) -> Signatures {
     let mut collector = Collector { hir, sigs: Signatures::default() };
     collector.stmt(&hir.get_root());
     collector.infer_ret_tags();
