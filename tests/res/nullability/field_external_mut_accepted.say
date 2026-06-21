@@ -1,0 +1,8 @@
+// A `mut` field accepts an external write.
+type T {
+    pub mut value;
+    init() { this.value = 1; }
+}
+say t = T();
+t.value = 2;
+print(t.value); // expect: 2
