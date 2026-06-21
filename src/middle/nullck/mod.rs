@@ -10,7 +10,7 @@ use anyhow::anyhow;
 
 use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
-use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
 /// A function's per-parameter nullability and return shape.
 pub struct FnSig {
@@ -316,30 +316,40 @@ impl<'a> Checker<'a> {
         self.error(format!("the partially-constructed 'this' {action}; inside init it may only assign or read its own fields"), node)
     }
 
+    /// Runs `body` in a fresh function frame whose locals are the given params. `frame_start` is
+    /// moved past the enclosing locals so value reads do not cross into them, then restored.
+    fn with_frame<R>(&mut self, params: &[HirParam], body: impl FnOnce(&mut Self) -> Result<R, anyhow::Error>) -> Result<R, anyhow::Error> {
+        let saved_frame = self.frame_start;
+        let mark = self.locals.len();
+        self.frame_start = mark;
+        for param in params {
+            let name = self.ident_sym(&param.name);
+            self.locals.push(Local { name, declared_nullable: param.nullable, mutable: param.mutable, assigned: true, tag: TypeTag::Unknown, func: None });
+        }
+        let result = body(self);
+        self.locals.truncate(mark);
+        self.frame_start = saved_frame;
+        result
+    }
+
     fn function(&mut self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
         let saved_seal = self.init_assigned.take();
-        let saved_frame = self.frame_start;
         // A lambda's shape is inferred, so it is not checked against a declaration.
         let saved_return = std::mem::replace(&mut self.current_return, match decl.ret {
             ReturnShape::Inferred => None,
             ret => Some(ret),
         });
-        let mark = self.locals.len();
-        self.frame_start = mark;
-        for param in &decl.params {
-            let name = self.ident_sym(&param.name);
-            self.locals.push(Local { name, declared_nullable: param.nullable, mutable: param.mutable, assigned: true, tag: TypeTag::Unknown, func: None });
-        }
-        self.expr(&decl.body)?;
-        // A non-null return must be produced on every path.
-        if self.current_return == Some(ReturnShape::NonNull) && !self.definitely_returns(&decl.body) {
-            return Err(self.error("This function can finish without returning a value; a '!' return must produce one on every path".to_string(), &decl.body));
-        }
-        self.locals.truncate(mark);
-        self.frame_start = saved_frame;
+        let result = self.with_frame(&decl.params, |c| {
+            c.expr(&decl.body)?;
+            // A non-null return must be produced on every path.
+            if c.current_return == Some(ReturnShape::NonNull) && !c.definitely_returns(&decl.body) {
+                return Err(c.error("This function can finish without returning a value; a '!' return must produce one on every path".to_string(), &decl.body));
+            }
+            Ok(())
+        });
         self.current_return = saved_return;
         self.init_assigned = saved_seal;
-        Ok(())
+        result
     }
 
     /// Whether every path through a function body ends in a `return` or `throw`.
@@ -474,23 +484,17 @@ impl<'a> Checker<'a> {
     /// fields, read assigned fields, and call helpers, but may not escape.
     fn check_init(&mut self, stmt: &HirId<HirStmt>, type_name: Symbol) -> Result<(), anyhow::Error> {
         let HirStmt::Fn(decl) = self.hir.get(stmt) else { return Ok(()) };
-        let saved_frame = self.frame_start;
         // An init yields the instance, not a declared value, so its returns are not checked.
         let saved_return = self.current_return.take();
-        let mark = self.locals.len();
-        self.frame_start = mark;
-        for param in &decl.params {
-            let name = self.ident_sym(&param.name);
-            self.locals.push(Local { name, declared_nullable: param.nullable, mutable: param.mutable, assigned: true, tag: TypeTag::Unknown, func: None });
-        }
-        // Brace-provided fields are assigned before the init body runs.
-        self.init_assigned = Some(self.brace_provided_fields(type_name));
-        self.expr(&decl.body)?;
-        self.init_assigned = None;
+        let result = self.with_frame(&decl.params, |c| {
+            // Brace-provided fields are assigned before the init body runs.
+            c.init_assigned = Some(c.brace_provided_fields(type_name));
+            c.expr(&decl.body)?;
+            c.init_assigned = None;
+            Ok(())
+        });
         self.current_return = saved_return;
-        self.locals.truncate(mark);
-        self.frame_start = saved_frame;
-        Ok(())
+        result
     }
 
     /// Returns the public fields of a type that its init does not assign.
