@@ -1,0 +1,12 @@
+// Laundering `this` through a method return loses the trait-self tag, so the access falls back
+// to a dynamic boundary rather than the surface check.
+trait Greeter {
+    pub fn passthrough()! {
+        return this;
+    }
+    pub fn greet() {
+        say self = this.passthrough();
+        self.untracked.foo;
+    }
+}
+print("ok"); // expect: ok

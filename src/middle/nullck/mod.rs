@@ -42,11 +42,9 @@ pub struct Signatures {
     types_by_name: HashMap<Symbol, HirId<HirStmt>>,
     fns_by_name: HashMap<Symbol, HirId<HirStmt>>,
     methods_by_type: HashMap<(Symbol, Symbol), HirId<HirStmt>>,
-    /// Type name to the fields its `init` assigns directly: defaults, `this.f =`, and bare `f =`.
-    /// This decides field definite assignment.
+    /// Type name to the fields its `init` assigns directly.
     init_fields: HashMap<Symbol, HashSet<Symbol>>,
-    /// Type name to fields assigned in its methods, with the assignment node. A method assignment
-    /// does not initialize a field, but it lets a definition error point at the misplaced assign.
+    /// Type name to fields assigned in its methods.
     method_field_assigns: HashMap<Symbol, HashMap<Symbol, HirId<HirExpr>>>,
 }
 
@@ -62,6 +60,7 @@ pub fn check(hir: &Hir, bindings: &Bindings) -> Result<(), anyhow::Error> {
         narrowed: HashSet::new(),
         init_assigned: None,
         this_seen: false,
+        current_trait_surface: None,
     };
     checker.stmt(&hir.get_root())
 }
@@ -77,6 +76,7 @@ enum Nullness {
 #[derive(Clone, PartialEq, Eq)]
 enum TypeTag {
     Concrete(Symbol),
+    TraitSelf,
     Unknown,
 }
 
@@ -145,6 +145,8 @@ struct Checker<'a> {
     /// Whether `this` was used since this flag was last reset, used to catch a closure in `init`
     /// capturing the partially-constructed `this`.
     this_seen: bool,
+    /// While checking a trait's methods, the member names reachable through the trait-self `this`.
+    current_trait_surface: Option<HashSet<Symbol>>,
 }
 
 impl<'a> Checker<'a> {
@@ -176,7 +178,11 @@ impl<'a> Checker<'a> {
     }
 
     fn this_tag(&self) -> TypeTag {
-        self.current_type.map_or(TypeTag::Unknown, TypeTag::Concrete)
+        if self.current_trait_surface.is_some() {
+            TypeTag::TraitSelf
+        } else {
+            self.current_type.map_or(TypeTag::Unknown, TypeTag::Concrete)
+        }
     }
 
     fn this_typed(&self) -> Typed {
@@ -284,18 +290,47 @@ impl<'a> Checker<'a> {
     }
 
     fn type_decl(&mut self, node: &HirId<HirStmt>, type_name: Option<Symbol>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
-        let saved = self.current_type;
+        let saved_type = self.current_type;
+        let saved_surface = self.current_trait_surface.take();
         self.current_type = type_name;
         if let Some(type_name) = type_name {
             self.check_field_definitions(type_name, node)?;
+            self.check_override_conformance(decl)?;
             self.check_init(&decl.init, type_name)?;
         } else {
+            // A trait method reaches only the trait's declared surface through `this`.
+            self.current_trait_surface = Some(decl.surface.clone());
             self.function_stmt(&decl.init)?;
         }
         for method in &decl.methods {
             self.function_stmt(method)?;
         }
-        self.current_type = saved;
+        self.current_type = saved_type;
+        self.current_trait_surface = saved_surface;
+        Ok(())
+    }
+
+    /// A member overriding a trait method must conform to its declared return: an override may
+    /// return non-null where the trait is nullable, but not the reverse.
+    fn check_override_conformance(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+        for method in &decl.methods {
+            let HirStmt::Fn(folded) = self.hir.get(method) else { continue };
+            // A trait method the host overrides is folded under a `"Trait.method"` alias.
+            let name = self.hir.text(folded.name);
+            let Some(dot) = name.find('.') else { continue };
+            let (trait_name, base) = (name[..dot].to_string(), name[dot + 1..].to_string());
+            let Some(base_sym) = self.hir.symbol_of(&base) else { continue };
+            // A renamed private slot is also dotted. Only an exposed override is a contract.
+            if !decl.pub_members.contains(&base_sym) {
+                continue;
+            }
+            let host = decl.methods.iter().copied().find(|s| matches!(self.hir.get(s), HirStmt::Fn(h) if h.name == base_sym));
+            let (Some(host), Some(trait_ret)) = (host, self.sigs.fns.get(method).map(|f| f.ret)) else { continue };
+            let Some(host_ret) = self.sigs.fns.get(&host).map(|f| f.ret) else { continue };
+            if !ret_conforms(host_ret, trait_ret) {
+                return Err(self.error(format!("Method '{}' overrides trait '{}' but its return is more nullable than the trait declares", base, trait_name), &host));
+            }
+        }
         Ok(())
     }
 
@@ -538,10 +573,13 @@ impl<'a> Checker<'a> {
             },
             // A method call resolves against the receiver's type when it is known.
             HirExpr::Index(receiver, member, _) => {
-                let Some(method) = self.string_member(member) else { return self.indirect_call(callee) };
+                let Some(name) = self.member_text(member) else { return self.indirect_call(callee) };
                 let receiver_typed = self.receiver(receiver)?;
-                if let TypeTag::Concrete(type_name) = receiver_typed.tag {
-                    if let Some(stmt) = self.sigs.methods_by_type.get(&(type_name, method)).copied() {
+                if matches!(receiver_typed.tag, TypeTag::TraitSelf) {
+                    return self.trait_member(name, member);
+                }
+                if let (TypeTag::Concrete(type_name), Some(method)) = (&receiver_typed.tag, self.hir.symbol_of(name)) {
+                    if let Some(stmt) = self.sigs.methods_by_type.get(&(*type_name, method)).copied() {
                         return Ok(self.call_result(stmt, &receiver_typed.tag));
                     }
                 }
@@ -598,11 +636,16 @@ impl<'a> Checker<'a> {
     /// receiver to its declared nullability; any other access is a dynamic-boundary read.
     fn index(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let receiver = self.receiver(target)?;
-        let Some(field) = self.string_member(member) else {
+        let Some(name) = self.member_text(member) else {
             // A computed `[expr]` access is a dynamic-boundary read.
             self.expr(member)?;
             return Ok(Typed::unknown());
         };
+        if matches!(receiver.tag, TypeTag::TraitSelf) {
+            return self.trait_member(name, member);
+        }
+        // A member name never interned as an identifier names no declared member.
+        let Some(field) = self.hir.symbol_of(name) else { return Ok(Typed::unknown()) };
         let on_this = matches!(self.hir.get(target), HirExpr::This);
         let key = self.narrowable_field_key(target, field);
         if let TypeTag::Concrete(type_name) = &receiver.tag {
@@ -624,6 +667,14 @@ impl<'a> Checker<'a> {
                     return Ok(Typed::of(nullness, TypeTag::Unknown));
                 }
             }
+        }
+        Ok(Typed::unknown())
+    }
+
+    fn trait_member(&self, name: &str, node: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
+        let in_surface = self.current_trait_surface.as_ref().is_some_and(|surface| surface.iter().any(|m| self.hir.text(*m) == name));
+        if !in_surface {
+            return Err(self.error(format!("'{}' is not declared or required by this trait; declare it or add a 'req'", name), node));
         }
         Ok(Typed::unknown())
     }
@@ -697,12 +748,26 @@ impl<'a> Checker<'a> {
         Err(self.error(msg, operand))
     }
 
-    /// The interned field name of a `.name` access, or `None` for a computed `[expr]` access.
-    fn string_member(&self, member: &HirId<HirExpr>) -> Option<Symbol> {
+    fn member_text(&self, member: &HirId<HirExpr>) -> Option<&'a str> {
         match self.hir.get(member) {
-            HirExpr::Literal(HirLiteral::String(name)) => self.hir.symbol_of(name),
+            HirExpr::Literal(HirLiteral::String(name)) => Some(name),
             _ => None,
         }
     }
 
+    fn string_member(&self, member: &HirId<HirExpr>) -> Option<Symbol> {
+        self.member_text(member).and_then(|name| self.hir.symbol_of(name))
+    }
+
+}
+
+/// Whether a member's return shape conforms to a trait method's. The return is covariant: an
+/// override may be non-null where the trait is nullable, but not the reverse. A void trait method
+/// accepts any return, since its result is ignored.
+fn ret_conforms(host_ret: ReturnShape, trait_ret: ReturnShape) -> bool {
+    match trait_ret {
+        ReturnShape::Void | ReturnShape::Inferred => true,
+        ReturnShape::NonNull => host_ret == ReturnShape::NonNull,
+        ReturnShape::Nullable => matches!(host_ret, ReturnShape::NonNull | ReturnShape::Nullable),
+    }
 }
