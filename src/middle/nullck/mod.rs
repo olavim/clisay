@@ -134,6 +134,24 @@ struct Local {
     func: Option<HirId<HirStmt>>,
 }
 
+impl Local {
+    fn param(name: Symbol, declared_nullable: bool, mutable: bool) -> Local {
+        Local { name, declared_nullable, mutable, assigned: true, tag: TypeTag::Unknown, func: None }
+    }
+
+    fn catch(name: Symbol) -> Local {
+        Local { name, declared_nullable: true, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None }
+    }
+
+    fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
+        Local { name, declared_nullable: false, mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt) }
+    }
+
+    fn value(name: Symbol, declared_nullable: bool, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
+        Local { name, declared_nullable, mutable, assigned, tag, func: None }
+    }
+}
+
 /// A narrowable place: a local, a `this` field, or a field of an immutable local receiver.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum NarrowKey {
@@ -225,7 +243,7 @@ impl<'a> Checker<'a> {
         match self.hir.get(stmt) {
             HirStmt::Fn(decl) => {
                 // Register the name first so the body may call itself.
-                self.locals.push(Local { name: decl.name, declared_nullable: false, mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(*stmt) });
+                self.locals.push(Local::func(decl.name, *stmt));
                 self.function(decl)?;
             },
             HirStmt::Type(decl) => self.type_decl(stmt, Some(decl.name), decl)?,
@@ -276,9 +294,8 @@ impl<'a> Checker<'a> {
                 if let Some(catch) = catch {
                     let mark = self.locals.len();
                     if let Some(param) = catch.param {
-                        // The thrown value is arbitrary, so the catch parameter is nullable.
                         let name = self.ident_sym(&param);
-                        self.locals.push(Local { name, declared_nullable: true, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None });
+                        self.locals.push(Local::catch(name));
                     }
                     self.expr(&catch.body)?;
                     self.locals.truncate(mark);
@@ -298,7 +315,7 @@ impl<'a> Checker<'a> {
         } else {
             (false, TypeTag::Unknown)
         };
-        self.locals.push(Local { name, declared_nullable, mutable, assigned, tag, func: None });
+        self.locals.push(Local::value(name, declared_nullable, mutable, assigned, tag));
         Ok(())
     }
 
@@ -324,7 +341,7 @@ impl<'a> Checker<'a> {
         self.frame_start = mark;
         for param in params {
             let name = self.ident_sym(&param.name);
-            self.locals.push(Local { name, declared_nullable: param.nullable, mutable: param.mutable, assigned: true, tag: TypeTag::Unknown, func: None });
+            self.locals.push(Local::param(name, param.nullable, param.mutable));
         }
         let result = body(self);
         self.locals.truncate(mark);
