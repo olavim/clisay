@@ -110,6 +110,16 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Applies flow facts, runs `f` under them, then restores the prior flow state. Returns
+    /// `f`'s result so a branch can snapshot its end state before the restore.
+    pub(super) fn narrow_branch<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> R {
+        let pre = self.snapshot();
+        self.apply_narrowings(facts);
+        let r = f(self);
+        self.restore(&pre);
+        r
+    }
+
     pub(super) fn snapshot(&self) -> FlowSnapshot {
         FlowSnapshot {
             assigned: self.locals.iter().map(|l| l.assigned).collect(),

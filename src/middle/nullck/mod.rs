@@ -296,26 +296,22 @@ impl<'a> Checker<'a> {
                 self.expr(cond)?;
                 let body_narrow = self.narrowings(cond, true);
                 // Loop bodies may run zero times, so their flow facts don't survive the loop.
-                let pre = self.snapshot();
-                self.apply_narrowings(&body_narrow);
-                self.expr(body)?;
-                self.restore(&pre);
+                self.narrow_branch(&body_narrow, |c| c.expr(body))?;
             },
             HirStmt::If(cond, then, otherwise) => {
                 self.expr(cond)?;
                 let then_narrow = self.narrowings(cond, true);
                 let else_narrow = self.narrowings(cond, false);
-                let pre = self.snapshot();
-                self.apply_narrowings(&then_narrow);
-                self.expr(then)?;
-                let then_snap = self.snapshot();
-                self.restore(&pre);
-                self.apply_narrowings(&else_narrow);
-                if let Some(otherwise) = otherwise {
-                    self.stmt(otherwise)?;
-                }
-                let else_snap = self.snapshot();
-                self.restore(&pre);
+                let then_snap = self.narrow_branch(&then_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
+                    c.expr(then)?;
+                    Ok(c.snapshot())
+                })?;
+                let else_snap = self.narrow_branch(&else_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
+                    if let Some(otherwise) = otherwise {
+                        c.stmt(otherwise)?;
+                    }
+                    Ok(c.snapshot())
+                })?;
                 self.join(&then_snap, &else_snap);
             },
             HirStmt::Try(body, catch, finally) => {
@@ -966,19 +962,13 @@ impl<'a> Checker<'a> {
             BinOp::And => {
                 self.expr(l)?;
                 let narrow = self.narrowings(l, true);
-                let pre = self.snapshot();
-                self.apply_narrowings(&narrow);
-                self.expr(r)?;
-                self.restore(&pre);
+                self.narrow_branch(&narrow, |c| c.expr(r))?;
                 Ok(Typed::nonnull())
             },
             BinOp::Or => {
                 self.expr(l)?;
                 let narrow = self.narrowings(l, false);
-                let pre = self.snapshot();
-                self.apply_narrowings(&narrow);
-                self.expr(r)?;
-                self.restore(&pre);
+                self.narrow_branch(&narrow, |c| c.expr(r))?;
                 Ok(Typed::nonnull())
             },
             // Equality is a boolean context; a possibly-null operand is fine.
