@@ -91,7 +91,7 @@ impl<'a> Checker<'a> {
             return Vec::new();
         }
         let mut facts = vec![NarrowFact::NonNull(NarrowKey::Local(i))];
-        if self.sigs.types_by_name.contains_key(&type_name) {
+        if self.sigs.is_type(type_name) {
             facts.push(NarrowFact::Tag(i, TypeTag::Concrete(type_name)));
         }
         facts
