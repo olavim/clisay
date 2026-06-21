@@ -25,20 +25,10 @@ impl FnSig {
     }
 }
 
-/// A function's inferred return type tag.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RetTag {
-    /// Every return yields the same concrete type.
-    Concrete(Symbol),
-    /// Every return yields `this`, so the result takes the receiver's type at the call site.
-    SelfType,
-    Unknown,
-}
-
 #[derive(Default)]
 pub struct Signatures {
     fns: HashMap<HirId<HirStmt>, FnSig>,
-    ret_tags: HashMap<HirId<HirStmt>, RetTag>,
+    ret_tags: HashMap<HirId<HirStmt>, TypeTag>,
     types_by_name: HashMap<Symbol, HirId<HirStmt>>,
     fns_by_name: HashMap<Symbol, HirId<HirStmt>>,
     methods_by_type: HashMap<(Symbol, Symbol), HirId<HirStmt>>,
@@ -98,8 +88,17 @@ enum Nullness {
 #[derive(Clone, PartialEq, Eq)]
 enum TypeTag {
     Concrete(Symbol),
-    TraitSelf,
+    SelfType,
     Unknown,
+}
+
+impl TypeTag {
+    fn resolve(&self, receiver: &TypeTag) -> TypeTag {
+        match self {
+            TypeTag::SelfType => receiver.clone(),
+            other => other.clone(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -203,7 +202,7 @@ impl<'a> Checker<'a> {
 
     fn this_tag(&self) -> TypeTag {
         if self.current_trait_surface.is_some() {
-            TypeTag::TraitSelf
+            TypeTag::SelfType
         } else {
             self.current_type.map_or(TypeTag::Unknown, TypeTag::Concrete)
         }
@@ -754,7 +753,7 @@ impl<'a> Checker<'a> {
             HirExpr::Index(receiver, member, _) => {
                 let Some(name) = self.member_text(member) else { return self.indirect_call(callee) };
                 let receiver_typed = self.receiver(receiver)?;
-                if matches!(receiver_typed.tag, TypeTag::TraitSelf) {
+                if matches!(receiver_typed.tag, TypeTag::SelfType) {
                     return self.trait_member(name, member);
                 }
                 if let (TypeTag::Concrete(type_name), Some(method)) = (&receiver_typed.tag, self.hir.symbol_of(name)) {
@@ -784,11 +783,7 @@ impl<'a> Checker<'a> {
     /// The nullability and type of a call result, given the callee and receiver tag.
     fn call_result(&self, stmt: HirId<HirStmt>, receiver_tag: &TypeTag) -> Typed {
         let nullness = self.sigs.fns.get(&stmt).map_or(Nullness::Unknown, |s| nullness_of(s.ret));
-        let tag = match self.sigs.ret_tags.get(&stmt) {
-            Some(RetTag::Concrete(name)) => TypeTag::Concrete(*name),
-            Some(RetTag::SelfType) => receiver_tag.clone(),
-            _ => TypeTag::Unknown,
-        };
+        let tag = self.sigs.ret_tags.get(&stmt).map_or(TypeTag::Unknown, |t| t.resolve(receiver_tag));
         Typed::of(nullness, tag)
     }
 
@@ -859,7 +854,7 @@ impl<'a> Checker<'a> {
             self.expr(member)?;
             return Ok(Typed::unknown());
         };
-        if matches!(receiver.tag, TypeTag::TraitSelf) {
+        if matches!(receiver.tag, TypeTag::SelfType) {
             return self.trait_member(name, member);
         }
         // A member name never interned as an identifier names no declared member.
