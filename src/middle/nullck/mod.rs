@@ -61,6 +61,7 @@ pub fn check(hir: &Hir, bindings: &Bindings) -> Result<(), anyhow::Error> {
         init_assigned: None,
         this_seen: false,
         current_trait_surface: None,
+        current_return: None,
     };
     checker.stmt(&hir.get_root())
 }
@@ -71,6 +72,7 @@ enum Nullness {
     Nullable,
     Null,
     Unknown,
+    Void,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -145,8 +147,8 @@ struct Checker<'a> {
     /// Whether `this` was used since this flag was last reset, used to catch a closure in `init`
     /// capturing the partially-constructed `this`.
     this_seen: bool,
-    /// While checking a trait's methods, the member names reachable through the trait-self `this`.
     current_trait_surface: Option<HashSet<Symbol>>,
+    current_return: Option<ReturnShape>,
 }
 
 impl<'a> Checker<'a> {
@@ -200,7 +202,18 @@ impl<'a> Checker<'a> {
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
             HirStmt::Say(field) => self.say(field.name, field.nullable, field.mutable, &field.value)?,
             HirStmt::Expression(e) | HirStmt::Block(e) => { self.expr(e)?; },
-            HirStmt::Return(opt) => if let Some(e) = opt { self.expr(e)?; },
+            HirStmt::Return(opt) => match (opt, self.current_return) {
+                (Some(e), Some(shape)) => {
+                    let typed = self.expr(e)?;
+                    self.check_return(typed.nullness, shape, e)?;
+                },
+                // A `!` function falls back to null on a bare return, which it may not.
+                (None, Some(ReturnShape::NonNull)) => {
+                    return Err(self.error("A '!' function must return a value, but this 'return' yields null".to_string(), stmt));
+                },
+                (Some(e), None) => { self.expr(e)?; },
+                (None, _) => {},
+            },
             HirStmt::Throw(e) => { self.expr(e)?; },
             HirStmt::While(cond, body) => {
                 self.expr(cond)?;
@@ -276,6 +289,11 @@ impl<'a> Checker<'a> {
     fn function(&mut self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
         let saved_seal = self.init_assigned.take();
         let saved_frame = self.frame_start;
+        // A lambda's shape is inferred, so it is not checked against a declaration.
+        let saved_return = std::mem::replace(&mut self.current_return, match decl.ret {
+            ReturnShape::Inferred => None,
+            ret => Some(ret),
+        });
         let mark = self.locals.len();
         self.frame_start = mark;
         for param in &decl.params {
@@ -283,10 +301,49 @@ impl<'a> Checker<'a> {
             self.locals.push(Local { name, declared_nullable: param.nullable, mutable: param.mutable, assigned: true, tag: TypeTag::Unknown, func: None });
         }
         self.expr(&decl.body)?;
+        // A non-null return must be produced on every path.
+        if self.current_return == Some(ReturnShape::NonNull) && !self.definitely_returns(&decl.body) {
+            return Err(self.error("This function can finish without returning a value; a '!' return must produce one on every path".to_string(), &decl.body));
+        }
         self.locals.truncate(mark);
         self.frame_start = saved_frame;
+        self.current_return = saved_return;
         self.init_assigned = saved_seal;
         Ok(())
+    }
+
+    /// Whether every path through a function body ends in a `return` or `throw`.
+    fn definitely_returns(&self, body: &HirId<HirExpr>) -> bool {
+        match self.hir.get(body) {
+            HirExpr::Block(stmts) => stmts.iter().any(|s| self.stmt_returns(s)),
+            _ => false,
+        }
+    }
+
+    fn stmt_returns(&self, stmt: &HirId<HirStmt>) -> bool {
+        match self.hir.get(stmt) {
+            HirStmt::Return(_) | HirStmt::Throw(_) => true,
+            HirStmt::Block(body) => self.definitely_returns(body),
+            HirStmt::If(_, then, Some(otherwise)) => self.definitely_returns(then) && self.stmt_returns(otherwise),
+            _ => false,
+        }
+    }
+
+    /// Checks a `return <value>` against the declared return shape.
+    fn check_return(&self, nullness: Nullness, shape: ReturnShape, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match shape {
+            ReturnShape::Void => Err(self.error("A void function cannot return a value".to_string(), node)),
+            ReturnShape::NonNull => match nullness {
+                Nullness::Void => Err(self.error("Cannot return a void result from a '!' function".to_string(), node)),
+                Nullness::Null | Nullness::Nullable => Err(self.error("A '!' function must return a non-null value".to_string(), node)),
+                Nullness::NonNull | Nullness::Unknown => Ok(()),
+            },
+            ReturnShape::Nullable => match nullness {
+                Nullness::Void => Err(self.error("Cannot return a void result".to_string(), node)),
+                _ => Ok(()),
+            },
+            ReturnShape::Inferred => Ok(()),
+        }
     }
 
     fn type_decl(&mut self, node: &HirId<HirStmt>, type_name: Option<Symbol>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
@@ -295,12 +352,12 @@ impl<'a> Checker<'a> {
         self.current_type = type_name;
         if let Some(type_name) = type_name {
             self.check_field_definitions(type_name, node)?;
-            self.check_override_conformance(decl)?;
+            self.check_method_overrides(decl)?;
             self.check_init(&decl.init, type_name)?;
         } else {
-            // A trait method reaches only the trait's declared surface through `this`.
+            // A trait method reaches only the trait's declared surface through `this`. A trait's
+            // init is an empty placeholder, so it is not checked.
             self.current_trait_surface = Some(decl.surface.clone());
-            self.function_stmt(&decl.init)?;
         }
         for method in &decl.methods {
             self.function_stmt(method)?;
@@ -310,9 +367,9 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// A member overriding a trait method must conform to its declared return: an override may
-    /// return non-null where the trait is nullable, but not the reverse.
-    fn check_override_conformance(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+    /// A member overriding a trait method may return non-null where the traitmethod is nullable,
+    /// but not the reverse.
+    fn check_method_overrides(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         for method in &decl.methods {
             let HirStmt::Fn(folded) = self.hir.get(method) else { continue };
             // A trait method the host overrides is folded under a `"Trait.method"` alias.
@@ -341,8 +398,7 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Every non-null private field must be initialized by the type's `init` or a default. The
-    /// brace cannot reach a private field, so otherwise it can never hold a value.
+    /// Every non-null private field must be initialized by the type's `init` or a default.
     fn check_field_definitions(&self, type_name: Symbol, node: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
         let Some(layout) = self.layout_of(type_name) else { return Ok(()) };
         let assigned = self.sigs.init_fields.get(&type_name);
@@ -352,8 +408,6 @@ impl<'a> Checker<'a> {
             let private = layout.non_public.contains(id);
             let init_assigned = assigned.is_some_and(|a| a.contains(name));
             if non_null && private && !init_assigned {
-                // Point at a method assignment if there is one; it looks like initialization but
-                // does not count, which is the more likely mistake.
                 if let Some(assign) = self.sigs.method_field_assigns.get(&type_name).and_then(|m| m.get(name)) {
                     return Err(self.error(format!("Field '{}' must be initialized directly in init or by a default", self.hir.text(*name)), assign));
                 }
@@ -363,11 +417,13 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Checks a type's `init` under the construction seal: the raw `this` may assign its own
-    /// fields, read assigned fields, and call resolved helpers, but may not escape.
+    /// Checks a type's `init` under the construction seal: the bare `this` may assign its own
+    /// fields, read assigned fields, and call helpers, but may not escape.
     fn check_init(&mut self, stmt: &HirId<HirStmt>, type_name: Symbol) -> Result<(), anyhow::Error> {
         let HirStmt::Fn(decl) = self.hir.get(stmt) else { return Ok(()) };
         let saved_frame = self.frame_start;
+        // An init yields the instance, not a declared value, so its returns are not checked.
+        let saved_return = self.current_return.take();
         let mark = self.locals.len();
         self.frame_start = mark;
         for param in &decl.params {
@@ -378,6 +434,7 @@ impl<'a> Checker<'a> {
         self.init_assigned = Some(self.brace_provided_fields(type_name));
         self.expr(&decl.body)?;
         self.init_assigned = None;
+        self.current_return = saved_return;
         self.locals.truncate(mark);
         self.frame_start = saved_frame;
         Ok(())
@@ -431,9 +488,19 @@ impl<'a> Checker<'a> {
                 self.locals.truncate(mark);
                 Typed::unknown()
             },
-            HirExpr::Coalesce(l, r) => { self.expr(l)?; self.expr(r)?; Typed::unknown() },
-            HirExpr::SafeAccess(target, member, _) => { self.expr(target)?; self.expr(member)?; Typed::unknown() },
-            HirExpr::Assert(x) => { self.expr(x)?; Typed::nonnull() },
+            // `a ?? b` is itself the null check, so it consumes a possibly-null left with no
+            // barrier. The result is `a` when non-null, else `b`.
+            HirExpr::Coalesce(l, r) => {
+                let left = self.expr(l)?;
+                let right = self.expr(r)?;
+                let nullness = if left.nullness == Nullness::NonNull { Nullness::NonNull } else { right.nullness };
+                let tag = if left.tag == right.tag { left.tag } else { TypeTag::Unknown };
+                Typed::of(nullness, tag)
+            },
+            // `a?.b` / `a?[i]` short-circuits to null, so the result is nullable.
+            HirExpr::SafeAccess(target, member, _) => { self.expr(target)?; self.expr(member)?; Typed::of(Nullness::Nullable, TypeTag::Unknown) },
+            // `a!` asserts non-null, keeping the operand's type tag.
+            HirExpr::Assert(x) => { let typed = self.expr(x)?; Typed::of(Nullness::NonNull, typed.tag) },
         })
     }
 
@@ -560,8 +627,6 @@ impl<'a> Checker<'a> {
         match self.hir.get(callee) {
             HirExpr::Identifier(name) => {
                 let name = *name;
-                // A type name called yields a non-null instance of that type. A plain `T(..)`
-                // braces nothing, so every required field must be init-assigned.
                 if self.sigs.types_by_name.contains_key(&name) {
                     self.check_construction(name, &HashSet::new(), callee)?;
                     return Ok(Typed::of(Nullness::NonNull, TypeTag::Concrete(name)));
@@ -596,12 +661,12 @@ impl<'a> Checker<'a> {
         Ok(Typed::unknown())
     }
 
-    /// The nullability and type of a call result, given the resolved callee and receiver tag.
-    /// A self-typed return takes the receiver's tag.
+    /// The nullability and type of a call result, given the callee and receiver tag.
     fn call_result(&self, stmt: HirId<HirStmt>, receiver_tag: &TypeTag) -> Typed {
         let nullness = match self.sigs.fns.get(&stmt).map(|s| s.ret) {
             Some(ReturnShape::NonNull) => Nullness::NonNull,
             Some(ReturnShape::Nullable) => Nullness::Nullable,
+            Some(ReturnShape::Void) => Nullness::Void,
             _ => Nullness::Unknown,
         };
         let tag = match self.sigs.ret_tags.get(&stmt) {
@@ -622,13 +687,16 @@ impl<'a> Checker<'a> {
     /// Checks if moving a value into a slot is allowed per its nullability. A nullable or null value into a
     /// non-null slot is an error. `Unknown` is always allowed and gets a runtime barrier.
     fn check_into_slot(&self, nullness: Nullness, slot_nullable: bool, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if nullness == Nullness::Void {
+            return Err(self.error(format!("Cannot assign a void result to '{}'; the call returns no value", self.hir.text(name)), node));
+        }
         if slot_nullable {
             return Ok(());
         }
         match nullness {
             Nullness::Null => Err(self.error(format!("Cannot assign null to non-null binding '{}'", self.hir.text(name)), node)),
             Nullness::Nullable => Err(self.error(format!("Cannot assign a nullable value to non-null binding '{}'", self.hir.text(name)), node)),
-            Nullness::NonNull | Nullness::Unknown => Ok(()),
+            Nullness::NonNull | Nullness::Unknown | Nullness::Void => Ok(()),
         }
     }
 
@@ -736,8 +804,11 @@ impl<'a> Checker<'a> {
         Ok(Typed::nonnull())
     }
 
-    /// Rejects an operation that requires a value when the operand may be null.
+    /// Rejects an operation that requires a value when the operand may be null or is void.
     fn require_value(&self, nullness: Nullness, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if nullness == Nullness::Void {
+            return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), operand));
+        }
         if !matches!(nullness, Nullness::Nullable | Nullness::Null) {
             return Ok(());
         }
@@ -761,9 +832,9 @@ impl<'a> Checker<'a> {
 
 }
 
-/// Whether a member's return shape conforms to a trait method's. The return is covariant: an
-/// override may be non-null where the trait is nullable, but not the reverse. A void trait method
-/// accepts any return, since its result is ignored.
+/// Whether a member's return shape conforms to a trait method's. An override may be non-null
+/// where the trait is nullable, but not the reverse. A void trait method accepts any return,
+/// since its result is ignored.
 fn ret_conforms(host_ret: ReturnShape, trait_ret: ReturnShape) -> bool {
     match trait_ret {
         ReturnShape::Void | ReturnShape::Inferred => true,
