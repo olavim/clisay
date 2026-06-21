@@ -1,3 +1,3 @@
-// A function and a type sharing a name collide (value/value, neither a trait).
+// A function and a type sharing a name collide: both are items, which stay unique.
 fn foo() { return 1; }
 type foo { init() {} } // error: 'foo' already declared in this scope

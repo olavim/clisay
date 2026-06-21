@@ -1,0 +1,6 @@
+// A `say` in the body may shadow a function parameter.
+fn add_ten(p)! {
+  say p = p + 10;
+  return p;
+}
+print(add_ten(5)); // expect: 15

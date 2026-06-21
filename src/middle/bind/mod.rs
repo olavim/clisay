@@ -410,11 +410,13 @@ impl<'a> Resolver<'a> {
             HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
             HirStmt::Trait(decl) => self.trait_declaration(stmt_id, decl)?,
             HirStmt::Say(field) => {
-                let slot = self.declare_local(field.name)?;
-                self.bindings.slots.insert(*stmt_id, slot);
+                // Resolve the initializer before declaring the binding, so a name inside it
+                // refers to the prior (shadowed) binding, not the one being introduced.
                 if let Some(expr) = &field.value {
                     self.expression(expr)?;
                 }
+                let slot = self.declare_local(field.name)?;
+                self.bindings.slots.insert(*stmt_id, slot);
             },
             HirStmt::Expression(expr) => self.expression(expr)?,
             HirStmt::While(cond, body) => {
