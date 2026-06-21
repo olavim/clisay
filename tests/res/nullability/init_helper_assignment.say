@@ -1,0 +1,10 @@
+// Delegating field assignment to a helper does not establish the field; it stays uninitialized.
+type T {
+    value;
+    init() {
+        this.setup();
+    }
+    fn setup() {
+        this.value = 1; // error: Field 'value' must be initialized directly in init or by a default
+    }
+}

@@ -1,6 +1,8 @@
 //! Collects every function and type-member signature, and infers each function's return type tag.
 
-use crate::middle::hir::{Hir, HirExpr, HirId, HirLiteral, HirStmt, Symbol};
+use std::collections::{HashMap, HashSet};
+
+use crate::middle::hir::{Hir, HirExpr, HirId, HirLiteral, HirStmt, HirTypeDecl, Symbol};
 
 use super::{FnSig, RetTag, Signatures};
 
@@ -27,6 +29,10 @@ impl<'a> Collector<'a> {
             },
             HirStmt::Type(decl) => {
                 self.sigs.types_by_name.insert(decl.name, *stmt);
+                let init_fields = self.init_fields(decl);
+                self.sigs.init_fields.insert(decl.name, init_fields);
+                let method_field_assigns = self.method_field_assigns(decl);
+                self.sigs.method_field_assigns.insert(decl.name, method_field_assigns);
                 self.collect_sig(&decl.init);
                 for method in &decl.methods {
                     if let HirStmt::Fn(m) = self.hir.get(method) {
@@ -182,6 +188,85 @@ impl<'a> Collector<'a> {
                 if let Some(finally) = finally { self.collect_returns(finally, out); }
             },
             // A nested function's returns belong to that function, not this one.
+            _ => {},
+        }
+    }
+
+    /// The fields a type's `init` assigns directly: defaults, `this.f =`, and bare `f =`.
+    /// Assignments inside a called helper do not count, since the helper is opaque to init.
+    fn init_fields(&self, decl: &HirTypeDecl) -> HashSet<Symbol> {
+        let mut assigns = Vec::new();
+        if let HirStmt::Fn(init) = self.hir.get(&decl.init) {
+            self.scan_field_assigns(&init.body, &decl.fields, &mut assigns);
+        }
+        assigns.into_iter().map(|(field, _)| field).collect()
+    }
+
+    /// The field assignments found in the type's methods, keyed by field (first one wins). These
+    /// do not initialize the field, but they let a definition error point at the misplaced assign.
+    fn method_field_assigns(&self, decl: &HirTypeDecl) -> HashMap<Symbol, HirId<HirExpr>> {
+        let mut assigns = Vec::new();
+        for method in &decl.methods {
+            if let HirStmt::Fn(m) = self.hir.get(method) {
+                self.scan_field_assigns(&m.body, &decl.fields, &mut assigns);
+            }
+        }
+        let mut map = HashMap::new();
+        for (field, node) in assigns {
+            map.entry(field).or_insert(node);
+        }
+        map
+    }
+
+    /// Collects each direct field assignment as `(field, lhs node)`: `this.f =` and bare `f =`.
+    fn scan_field_assigns(&self, expr: &HirId<HirExpr>, fields: &HashSet<Symbol>, out: &mut Vec<(Symbol, HirId<HirExpr>)>) {
+        match self.hir.get(expr) {
+            HirExpr::Assign(target, value) => {
+                match self.hir.get(target) {
+                    HirExpr::Index(obj, member, true) if matches!(self.hir.get(obj), HirExpr::This) => {
+                        if let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) {
+                            if let Some(sym) = self.hir.symbol_of(name) { out.push((sym, *target)); }
+                        }
+                    },
+                    HirExpr::Identifier(name) if fields.contains(name) => { out.push((*name, *target)); },
+                    _ => {},
+                }
+                self.scan_field_assigns(value, fields, out);
+            },
+            HirExpr::Block(stmts) => for s in stmts { self.scan_field_assigns_stmt(s, fields, out); },
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) => self.scan_field_assigns(x, fields, out),
+            HirExpr::Binary(_, l, r) | HirExpr::Coalesce(l, r) | HirExpr::SafeAccess(l, r, _)
+            | HirExpr::Index(l, r, _) => { self.scan_field_assigns(l, fields, out); self.scan_field_assigns(r, fields, out); },
+            HirExpr::Call(callee, args) => {
+                self.scan_field_assigns(callee, fields, out);
+                for a in args { self.scan_field_assigns(a, fields, out); }
+            },
+            HirExpr::Construct(callee, args, brace) => {
+                self.scan_field_assigns(callee, fields, out);
+                for a in args { self.scan_field_assigns(a, fields, out); }
+                for (_, v) in brace { self.scan_field_assigns(v, fields, out); }
+            },
+            // Literals, identifiers, and `this` carry no field assignment. A lambda body is opaque to it.
+            _ => {},
+        }
+    }
+
+    fn scan_field_assigns_stmt(&self, stmt: &HirId<HirStmt>, fields: &HashSet<Symbol>, out: &mut Vec<(Symbol, HirId<HirExpr>)>) {
+        match self.hir.get(stmt) {
+            HirStmt::Expression(e) | HirStmt::Throw(e) | HirStmt::Block(e) => self.scan_field_assigns(e, fields, out),
+            HirStmt::Return(opt) => if let Some(e) = opt { self.scan_field_assigns(e, fields, out); },
+            HirStmt::While(cond, body) => { self.scan_field_assigns(cond, fields, out); self.scan_field_assigns(body, fields, out); },
+            HirStmt::If(cond, then, otherwise) => {
+                self.scan_field_assigns(cond, fields, out);
+                self.scan_field_assigns(then, fields, out);
+                if let Some(otherwise) = otherwise { self.scan_field_assigns_stmt(otherwise, fields, out); }
+            },
+            HirStmt::Try(body, catch, finally) => {
+                self.scan_field_assigns(body, fields, out);
+                if let Some(catch) = catch { self.scan_field_assigns(&catch.body, fields, out); }
+                if let Some(finally) = finally { self.scan_field_assigns(finally, fields, out); }
+            },
+            // Nested declarations do not assign fields directly.
             _ => {},
         }
     }

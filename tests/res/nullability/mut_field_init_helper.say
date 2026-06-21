@@ -1,0 +1,12 @@
+// A mutable and nullable field may be assigned from a method called during init.
+type T {
+    mut value?;
+    init() {
+        this.setup();
+    }
+    fn setup() {
+        this.value = 1;
+    }
+}
+say t = T();
+print("ok"); // expect: ok

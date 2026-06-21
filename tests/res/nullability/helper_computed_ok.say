@@ -1,0 +1,13 @@
+// An init may call a helper to compute a value and assign it directly to a field.
+type A {
+    knob = 10;
+    pub value;
+    init(n) {
+        this.value = this.compute(n);
+    }
+    fn compute(n)! {
+        return this.knob + n;
+    }
+}
+say a = A(5);
+print(a.value); // expect: 15
