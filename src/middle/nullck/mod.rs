@@ -114,6 +114,15 @@ impl Typed {
     fn of(nullness: Nullness, tag: TypeTag) -> Typed { Typed { nullness, tag } }
 }
 
+/// A type's field with the facts the definition and construction checks need.
+struct FieldInfo {
+    name: Symbol,
+    non_null: bool,
+    public: bool,
+    /// Whether the type's `init` assigns this field directly.
+    init_assigned: bool,
+}
+
 /// A tracked binding in the current function frame.
 struct Local {
     name: Symbol,
@@ -429,20 +438,31 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// Iterates a type's fields with the facts the definition and construction checks need.
+    fn fields(&self, type_name: Symbol) -> impl Iterator<Item = FieldInfo> + 'a {
+        let layout = self.layout_of(type_name);
+        let assigned = self.sigs.init_fields.get(&type_name);
+        layout.into_iter().flat_map(move |layout| {
+            layout.members.iter().filter_map(move |(name, member)| {
+                let TypeMember::Field(id) = member else { return None };
+                Some(FieldInfo {
+                    name: *name,
+                    non_null: !layout.nullable.contains(id),
+                    public: !layout.non_public.contains(id),
+                    init_assigned: assigned.is_some_and(|a| a.contains(name)),
+                })
+            })
+        })
+    }
+
     /// Every non-null private field must be initialized by the type's `init` or a default.
     fn check_field_definitions(&self, type_name: Symbol, node: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
-        let Some(layout) = self.layout_of(type_name) else { return Ok(()) };
-        let assigned = self.sigs.init_fields.get(&type_name);
-        for (name, member) in &layout.members {
-            let TypeMember::Field(id) = member else { continue };
-            let non_null = !layout.nullable.contains(id);
-            let private = layout.non_public.contains(id);
-            let init_assigned = assigned.is_some_and(|a| a.contains(name));
-            if non_null && private && !init_assigned {
-                if let Some(assign) = self.sigs.method_field_assigns.get(&type_name).and_then(|m| m.get(name)) {
-                    return Err(self.error(format!("Field '{}' must be initialized directly in init or by a default", self.hir.text(*name)), assign));
+        for field in self.fields(type_name) {
+            if field.non_null && !field.public && !field.init_assigned {
+                if let Some(assign) = self.sigs.method_field_assigns.get(&type_name).and_then(|m| m.get(&field.name)) {
+                    return Err(self.error(format!("Field '{}' must be initialized directly in init or by a default", self.hir.text(field.name)), assign));
                 }
-                return Err(self.error(format!("Non-null field '{}' is never initialized; give it a default or assign it in init", self.hir.text(*name)), node));
+                return Err(self.error(format!("Non-null field '{}' is never initialized; give it a default or assign it in init", self.hir.text(field.name)), node));
             }
         }
         Ok(())
@@ -473,16 +493,10 @@ impl<'a> Checker<'a> {
 
     /// Returns the public fields of a type that its init does not assign.
     fn brace_provided_fields(&self, type_name: Symbol) -> HashSet<Symbol> {
-        let mut seed = HashSet::new();
-        let Some(layout) = self.layout_of(type_name) else { return seed };
-        let assigned = self.sigs.init_fields.get(&type_name);
-        for (name, member) in &layout.members {
-            let TypeMember::Field(id) = member else { continue };
-            if !layout.non_public.contains(id) && !assigned.is_some_and(|a| a.contains(name)) {
-                seed.insert(*name);
-            }
-        }
-        seed
+        self.fields(type_name)
+            .filter(|f| f.public && !f.init_assigned)
+            .map(|f| f.name)
+            .collect()
     }
 
     fn expr(&mut self, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
@@ -713,15 +727,9 @@ impl<'a> Checker<'a> {
 
     /// A construction must supply every non-null public field the `init` does not assign.
     fn check_construction(&self, type_name: Symbol, braced: &HashSet<Symbol>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let Some(layout) = self.layout_of(type_name) else { return Ok(()) };
-        let assigned = self.sigs.init_fields.get(&type_name);
-        for (name, member) in &layout.members {
-            let TypeMember::Field(id) = member else { continue };
-            let non_null = !layout.nullable.contains(id);
-            let public = !layout.non_public.contains(id);
-            let init_assigned = assigned.is_some_and(|a| a.contains(name));
-            if non_null && public && !init_assigned && !braced.contains(name) {
-                return Err(self.error(format!("Construction of '{}' is missing non-null field '{}'", self.hir.text(type_name), self.hir.text(*name)), node));
+        for field in self.fields(type_name) {
+            if field.non_null && field.public && !field.init_assigned && !braced.contains(&field.name) {
+                return Err(self.error(format!("Construction of '{}' is missing non-null field '{}'", self.hir.text(type_name), self.hir.text(field.name)), node));
             }
         }
         Ok(())
