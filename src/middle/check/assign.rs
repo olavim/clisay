@@ -13,17 +13,22 @@ impl<'a> Checker<'a> {
             HirExpr::Identifier(name) => {
                 let name = *name;
                 if let Some(i) = self.frame_index_of(name) {
-                    if self.locals[i].func.is_none() {
-                        let (mutable, assigned, declared_nullable) =
-                            (self.locals[i].mutable, self.locals[i].assigned, self.locals[i].declared_nullable);
-                        if !mutable && assigned {
-                            return Err(self.error(format!("Cannot reassign immutable binding '{}'; declare it 'mut'", self.hir.text(name)), lhs));
-                        }
-                        self.check_into_slot(typed.nullness, declared_nullable, name, lhs)?;
-                        self.locals[i].assigned = true;
-                        self.locals[i].tag = typed.tag.clone();
-                        self.reset_narrowing(i, matches!(typed.nullness, Nullness::NonNull));
+                    // A function binding names a declaration, not a reassignable slot.
+                    if self.locals[i].func.is_some() {
+                        return Err(self.error(format!("Cannot reassign '{}'; it names a function", self.hir.text(name)), lhs));
                     }
+                    let (mutable, assigned, declared_nullable) =
+                        (self.locals[i].mutable, self.locals[i].assigned, self.locals[i].declared_nullable);
+                    if !mutable && assigned {
+                        return Err(self.error(format!("Cannot reassign immutable binding '{}'; declare it 'mut'", self.hir.text(name)), lhs));
+                    }
+                    self.check_into_slot(typed.nullness, declared_nullable, name, lhs)?;
+                    self.locals[i].assigned = true;
+                    self.locals[i].tag = typed.tag.clone();
+                    self.reset_narrowing(i, matches!(typed.nullness, Nullness::NonNull));
+                } else if self.sigs.types_by_name.contains_key(&name) {
+                    // A type binding names a declaration, not a reassignable slot.
+                    return Err(self.error(format!("Cannot reassign '{}'; it names a type", self.hir.text(name)), lhs));
                 } else {
                     // `field = ...` is implicitly `this.field = ...`
                     self.assign_field_this(name, typed.nullness, lhs, rhs)?;

@@ -1,7 +1,3 @@
-fn hello() {
-    return "hello";
-}
-fn world() {
-    return "world";
-}
-hello = world; // error: Invalid assignment: 'hello' is immutable
+fn hello() {}
+fn world() {}
+hello = world; // error: Cannot reassign 'hello'; it names a function

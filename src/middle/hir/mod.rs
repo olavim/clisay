@@ -98,6 +98,7 @@ pub struct HirFnDecl {
 
 pub struct HirCatchClause {
     pub param: Option<HirId<HirExpr>>,
+    pub mutable: bool,
     pub body: HirId<HirExpr>,
 }
 
