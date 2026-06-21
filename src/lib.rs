@@ -32,6 +32,7 @@ pub mod internals {
         Hir, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl,
     };
     pub use crate::middle::bind::{Bindings, TypeLayout};
+    pub use crate::middle::nullck::Barriers;
 
     use crate::frontend::lex::{tokenize, TokenStream};
     use crate::frontend::parse::Parser;
@@ -54,6 +55,11 @@ pub mod internals {
         let hir = lower(src);
         let bindings = crate::middle::bind::resolve(&hir).expect("bind error");
         (hir, bindings)
+    }
+
+    pub fn nullck(src: &str) -> Barriers {
+        let (hir, bindings) = bind(src);
+        crate::middle::nullck::check(&hir, &bindings).expect("nullck error")
     }
 }
 
@@ -86,7 +92,8 @@ fn run_pipeline(file_name: &str, src: &str, nullck: bool) -> Result<Vec<String>,
     let hir = lower(ast, &names)?;
     let bindings = resolve_bindings(&hir)?;
     if nullck {
-        check_nullability(&hir, &bindings)?;
+        // The barrier crossings are consumed by codegen in a later step.
+        let _barriers = check_nullability(&hir, &bindings)?;
     }
     let ir = Compiler::compile(&hir, &mut gc, &bindings)?;
     let ir = optimize(ir);

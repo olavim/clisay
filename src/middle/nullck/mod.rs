@@ -48,7 +48,25 @@ pub struct Signatures {
     method_field_assigns: HashMap<Symbol, HashMap<Symbol, HirId<HirExpr>>>,
 }
 
-pub fn check(hir: &Hir, bindings: &Bindings) -> Result<(), anyhow::Error> {
+/// The expression nodes where an `unknown` value crosses into a non-null slot and needs a
+/// runtime barrier.
+#[derive(Default)]
+pub struct Barriers {
+    crossings: HashSet<HirId<HirExpr>>,
+}
+
+impl Barriers {
+    /// Whether a barrier must guard the value produced at this node.
+    pub fn has(&self, node: &HirId<HirExpr>) -> bool {
+        self.crossings.contains(node)
+    }
+
+    pub fn len(&self) -> usize {
+        self.crossings.len()
+    }
+}
+
+pub fn check(hir: &Hir, bindings: &Bindings) -> Result<Barriers, anyhow::Error> {
     let sigs = collect::collect(hir);
     let mut checker = Checker {
         hir,
@@ -62,8 +80,10 @@ pub fn check(hir: &Hir, bindings: &Bindings) -> Result<(), anyhow::Error> {
         this_seen: false,
         current_trait_surface: None,
         current_return: None,
+        barriers: HashSet::new(),
     };
-    checker.stmt(&hir.get_root())
+    checker.stmt(&hir.get_root())?;
+    Ok(Barriers { crossings: checker.barriers })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -149,6 +169,8 @@ struct Checker<'a> {
     this_seen: bool,
     current_trait_surface: Option<HashSet<Symbol>>,
     current_return: Option<ReturnShape>,
+    /// Nodes where an `unknown` value enters a non-null slot and needs a runtime barrier.
+    barriers: HashSet<HirId<HirExpr>>,
 }
 
 impl<'a> Checker<'a> {
@@ -329,14 +351,17 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Checks a `return <value>` against the declared return shape.
-    fn check_return(&self, nullness: Nullness, shape: ReturnShape, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    /// Checks a `return <value>` against the declared return shape: a `!` rejects a possibly-null
+    /// or void value, a `?` accepts any value, and a void function may not return a value at all.
+    fn check_return(&mut self, nullness: Nullness, shape: ReturnShape, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match shape {
             ReturnShape::Void => Err(self.error("A void function cannot return a value".to_string(), node)),
             ReturnShape::NonNull => match nullness {
                 Nullness::Void => Err(self.error("Cannot return a void result from a '!' function".to_string(), node)),
                 Nullness::Null | Nullness::Nullable => Err(self.error("A '!' function must return a non-null value".to_string(), node)),
-                Nullness::NonNull | Nullness::Unknown => Ok(()),
+                Nullness::NonNull => Ok(()),
+                // An `unknown` returned as non-null is guarded by a runtime barrier.
+                Nullness::Unknown => { self.barriers.insert(*node); Ok(()) },
             },
             ReturnShape::Nullable => match nullness {
                 Nullness::Void => Err(self.error("Cannot return a void result".to_string(), node)),
@@ -355,8 +380,7 @@ impl<'a> Checker<'a> {
             self.check_method_overrides(decl)?;
             self.check_init(&decl.init, type_name)?;
         } else {
-            // A trait method reaches only the trait's declared surface through `this`. A trait's
-            // init is an empty placeholder, so it is not checked.
+            // A trait method reaches only the trait's declared surface through `this`.
             self.current_trait_surface = Some(decl.surface.clone());
         }
         for method in &decl.methods {
@@ -499,8 +523,15 @@ impl<'a> Checker<'a> {
             },
             // `a?.b` / `a?[i]` short-circuits to null, so the result is nullable.
             HirExpr::SafeAccess(target, member, _) => { self.expr(target)?; self.expr(member)?; Typed::of(Nullness::Nullable, TypeTag::Unknown) },
-            // `a!` asserts non-null, keeping the operand's type tag.
-            HirExpr::Assert(x) => { let typed = self.expr(x)?; Typed::of(Nullness::NonNull, typed.tag) },
+            // `a!` asserts non-null, keeping the operand's type tag. A barrier guards it unless
+            // the operand is already proven non-null.
+            HirExpr::Assert(x) => {
+                let typed = self.expr(x)?;
+                if typed.nullness != Nullness::NonNull {
+                    self.barriers.insert(*expr);
+                }
+                Typed::of(Nullness::NonNull, typed.tag)
+            },
         })
     }
 
@@ -530,7 +561,6 @@ impl<'a> Checker<'a> {
 
     fn identifier(&mut self, name: Symbol, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let Some(i) = self.frame_index_of(name) else {
-            // Captures, globals, types, and fields are not tracked as locals here.
             return Ok(Typed::unknown());
         };
         if self.locals[i].func.is_some() {
@@ -686,7 +716,7 @@ impl<'a> Checker<'a> {
 
     /// Checks if moving a value into a slot is allowed per its nullability. A nullable or null value into a
     /// non-null slot is an error. `Unknown` is always allowed and gets a runtime barrier.
-    fn check_into_slot(&self, nullness: Nullness, slot_nullable: bool, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn check_into_slot(&mut self, nullness: Nullness, slot_nullable: bool, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if nullness == Nullness::Void {
             return Err(self.error(format!("Cannot assign a void result to '{}'; the call returns no value", self.hir.text(name)), node));
         }
@@ -696,7 +726,9 @@ impl<'a> Checker<'a> {
         match nullness {
             Nullness::Null => Err(self.error(format!("Cannot assign null to non-null binding '{}'", self.hir.text(name)), node)),
             Nullness::Nullable => Err(self.error(format!("Cannot assign a nullable value to non-null binding '{}'", self.hir.text(name)), node)),
-            Nullness::NonNull | Nullness::Unknown | Nullness::Void => Ok(()),
+            // An `unknown` value entering a non-null slot is guarded by a runtime barrier.
+            Nullness::Unknown => { self.barriers.insert(*node); Ok(()) },
+            Nullness::NonNull | Nullness::Void => Ok(()),
         }
     }
 
