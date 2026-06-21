@@ -1,0 +1,10 @@
+// A `say` in a method body may shadow a method parameter.
+type Counter {
+  init() {}
+  pub fn bump(n)! {
+    say n = n + 1;
+    return n;
+  }
+}
+say c = Counter();
+print(c.bump(5)); // expect: 6

@@ -11,8 +11,11 @@ pub enum Binding {
 }
 
 struct ResolvedTraits {
+    /// The flattened `with`-set (symbol, declaration).
     with: Vec<(Symbol, AstId<Stmt>)>,
+    /// The resolved `req` traits (symbol, declaration).
     req: Vec<(Symbol, AstId<Stmt>)>,
+    /// The resolved `gives` delegations: `(field, trait, trait declaration)`.
     gives: Vec<(Symbol, Symbol, AstId<Stmt>)>,
 }
 
@@ -54,8 +57,19 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
     Ok(resolver.out)
 }
 
+/// What kind of binding a declared name introduces. A `say` is sequential and may shadow an
+/// earlier value binding in the same scope. Params are value bindings but don't themselves shadow.
+/// Items (`fn`/`type`/`trait`) cannot shadow or be shadowed.
+#[derive(Clone, Copy, PartialEq)]
+enum DeclKind {
+    Say,
+    Param,
+    Item,
+}
+
+/// One lexical scope.
 struct Scope {
-    declared: HashSet<Symbol>,
+    declared: HashMap<Symbol, DeclKind>,
     traits: HashMap<Symbol, AstId<Stmt>>,
     types: HashSet<Symbol>,
 }
@@ -73,7 +87,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn push_scope(&mut self) {
-        self.scopes.push(Scope { declared: HashSet::new(), traits: HashMap::new(), types: HashSet::new() });
+        self.scopes.push(Scope { declared: HashMap::new(), traits: HashMap::new(), types: HashSet::new() });
     }
 
     fn is_type_or_trait(&self, name: Symbol) -> bool {
@@ -88,10 +102,17 @@ impl<'a> Resolver<'a> {
         self.scopes.iter().rev().find_map(|scope| scope.traits.get(&name).copied())
     }
 
-    fn declare<T>(&mut self, name: Symbol, at: &AstId<T>) -> Result<(), anyhow::Error> {
-        if !self.scopes.last_mut().unwrap().declared.insert(name) {
-            return Err(self.error(format!("'{}' already declared in this scope", self.ast.text(name)), at));
+    /// Records a declaration in the current scope. A `say` may shadow an earlier value binding
+    /// (another `say` or a param); any other collision is rejected.
+    fn declare<T>(&mut self, name: Symbol, kind: DeclKind, at: &AstId<T>) -> Result<(), anyhow::Error> {
+        let scope = self.scopes.last_mut().unwrap();
+        if let Some(&existing) = scope.declared.get(&name) {
+            let can_shadow = kind == DeclKind::Say && existing != DeclKind::Item;
+            if !can_shadow {
+                return Err(self.error(format!("'{}' already declared in this scope", self.ast.text(name)), at));
+            }
         }
+        scope.declared.insert(name, kind);
         Ok(())
     }
 
@@ -107,11 +128,12 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn decl_name(&self, stmt: &AstId<Stmt>) -> Option<Symbol> {
+    /// The declared name and kind of a block-level statement.
+    fn decl_name(&self, stmt: &AstId<Stmt>) -> Option<(Symbol, DeclKind)> {
         match self.ast.get(stmt) {
-            Stmt::Type(decl) => Some(decl.name),
-            Stmt::Fn(decl) => Some(decl.name),
-            Stmt::Say(field) => Some(field.name),
+            Stmt::Type(decl) => Some((decl.name, DeclKind::Item)),
+            Stmt::Fn(decl) => Some((decl.name, DeclKind::Item)),
+            Stmt::Say(field) => Some((field.name, DeclKind::Say)),
             _ => None,
         }
     }
@@ -119,8 +141,8 @@ impl<'a> Resolver<'a> {
     fn block(&mut self, stmts: &[AstId<Stmt>]) -> Result<(), anyhow::Error> {
         self.hoist_types(stmts);
         for stmt in stmts {
-            if let Some(name) = self.decl_name(stmt) {
-                self.declare(name, stmt)?;
+            if let Some((name, kind)) = self.decl_name(stmt) {
+                self.declare(name, kind, stmt)?;
             }
         }
         for s in stmts {
@@ -153,22 +175,24 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
+    /// A function/lambda/method. Params live in their own scope.
     fn visit_fn(&mut self, decl: &FnDecl) -> Result<(), anyhow::Error> {
         self.push_scope();
         for param in &decl.params {
             let Expr::Identifier(name) = self.ast.get(&param.name) else { unreachable!("a parameter is an identifier") };
-            self.declare(*name, &param.name)?;
+            self.declare(*name, DeclKind::Param, &param.name)?;
         }
         self.visit_expr(&decl.body)?;
         self.pop_scope();
         Ok(())
     }
 
+    /// A catch clause. Its parameter and body share one scope.
     fn visit_catch(&mut self, catch: &CatchClause) -> Result<(), anyhow::Error> {
         self.push_scope();
         if let Some(param) = &catch.param {
             let Expr::Identifier(name) = self.ast.get(param) else { unreachable!("a catch parameter is an identifier") };
-            self.declare(*name, param)?;
+            self.declare(*name, DeclKind::Param, param)?;
         }
         let Expr::Block(stmts) = self.ast.get(&catch.body) else { unreachable!("a catch body is a block") };
         self.block(stmts)?;
@@ -176,6 +200,7 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
+    /// Resolves a `type` or `trait`.
     fn visit_type(&mut self, stmt: &AstId<Stmt>, decl: &TypeDecl) -> Result<(), anyhow::Error> {
         let with = self.flatten_traits(&decl.with_traits, stmt)?;
         let req = self.resolve_reqs(decl, stmt)?;
