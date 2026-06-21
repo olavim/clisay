@@ -110,6 +110,10 @@ impl TypeLayout {
     pub fn is_mutable(&self, name: Symbol) -> bool {
         self.resolve_id(name).is_some_and(|id| self.mutable.contains(&id))
     }
+
+    pub fn is_public(&self, name: Symbol) -> bool {
+        self.resolve_id(name).is_some_and(|id| !self.non_public.contains(&id))
+    }
 }
 
 /// The output of resolution: per-node binding decisions consumed by codegen.

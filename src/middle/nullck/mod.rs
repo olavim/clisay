@@ -444,11 +444,13 @@ impl<'a> Checker<'a> {
         let assigned = self.sigs.init_fields.get(&type_name);
         layout.into_iter().flat_map(move |layout| {
             layout.members.iter().filter_map(move |(name, member)| {
-                let TypeMember::Field(id) = member else { return None };
+                if !matches!(member, TypeMember::Field(_)) {
+                    return None;
+                }
                 Some(FieldInfo {
                     name: *name,
-                    non_null: !layout.nullable.contains(id),
-                    public: !layout.non_public.contains(id),
+                    non_null: !layout.is_nullable(*name),
+                    public: layout.is_public(*name),
                     init_assigned: assigned.is_some_and(|a| a.contains(name)),
                 })
             })
@@ -677,7 +679,7 @@ impl<'a> Checker<'a> {
     fn assign_field_external(&mut self, type_name: Symbol, field: Symbol, value: Nullness, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let field_info = match self.layout_of(type_name) {
             Some(layout) => match layout.members.get(&field) {
-                Some(TypeMember::Field(id)) => Some((!layout.non_public.contains(id), layout.is_nullable(field), layout.is_mutable(field))),
+                Some(TypeMember::Field(_)) => Some((layout.is_public(field), layout.is_nullable(field), layout.is_mutable(field))),
                 _ => None,
             },
             None => None,
@@ -873,9 +875,9 @@ impl<'a> Checker<'a> {
             if let Some(layout) = self.layout_of(*type_name) {
                 if let Some(member_kind) = layout.members.get(&field).copied() {
                     let nullness = match member_kind {
-                        TypeMember::Field(id) => {
+                        TypeMember::Field(_) => {
                             // Inside init, a non-null field read before its assignment is unsound.
-                            if on_this && !layout.nullable.contains(&id)
+                            if on_this && !layout.is_nullable(field)
                                 && self.init_assigned.as_ref().is_some_and(|a| !a.contains(&field)) {
                                 return Err(self.error(format!("Field '{}' is read before it is assigned in init", self.hir.text(field)), member));
                             }
