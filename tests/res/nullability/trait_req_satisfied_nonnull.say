@@ -1,0 +1,14 @@
+// A nullable `req fn` is satisfied by a non-null member, since non-null is more specific.
+trait Cache {
+    req fn find()?;
+    pub fn lookup()? {
+        return this.find();
+    }
+}
+type Store with Cache {
+    pub fn find()! {
+        return 1;
+    }
+}
+say s = Store();
+print("ok"); // expect: ok

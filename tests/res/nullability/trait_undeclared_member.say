@@ -1,0 +1,6 @@
+// A trait method may only reach its own and required members through `this`.
+trait Greeter {
+    pub fn greet() {
+        this.untracked.foo; // error: Trait 'Greeter' accesses undeclared member 'this.untracked'; use `with`, `req`, or `req fn` to provide it
+    }
+}

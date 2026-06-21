@@ -1,0 +1,11 @@
+// A composer may not override a trait's non-null method with a nullable one.
+trait Powered {
+    pub fn start()! {
+        return 1;
+    }
+}
+type Car with Powered {
+    pub fn start()? { // error: Method 'start' overrides trait 'Powered' but its return is more nullable than the trait declares
+        return null;
+    }
+}

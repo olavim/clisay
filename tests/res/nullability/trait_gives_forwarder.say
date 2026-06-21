@@ -1,0 +1,18 @@
+// A `gives` forwarder is trusted at its trait's declared nullability on a known receiver, so a
+// nullable forwarded result into a non-null slot is caught statically with no runtime barrier.
+trait Powered {
+    pub fn start()? {
+        return null;
+    }
+}
+type Engine with Powered {
+    init() {}
+}
+type Car {
+    engine gives Powered;
+    init() {
+        this.engine = Engine();
+    }
+}
+say c = Car();
+say x = c.start(); // error: Cannot assign a nullable value to non-null binding 'x'
