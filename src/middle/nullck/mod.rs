@@ -201,10 +201,16 @@ enum NarrowFact {
     Tag(usize, TypeTag),
 }
 
+/// The flow state of one local.
+#[derive(Clone)]
+struct LocalFlow {
+    assigned: bool,
+    tag: TypeTag,
+}
+
 /// A snapshot of flow facts that branches widen back at a join.
 struct FlowSnapshot {
-    assigned: Vec<bool>,
-    tags: Vec<TypeTag>,
+    locals: Vec<LocalFlow>,
     narrowed: HashSet<NarrowKey>,
 }
 
@@ -638,7 +644,7 @@ impl<'a> Checker<'a> {
         if !self.locals[i].assigned && !self.locals[i].declared_nullable {
             return Err(self.error(format!("'{}' is used before it is assigned", self.hir.text(name)), expr));
         }
-        let narrowed = self.narrowed.contains(&NarrowKey::Local(i));
+        let narrowed = self.is_narrowed(&NarrowKey::Local(i));
         let nullness = if self.locals[i].declared_nullable && !narrowed { Nullness::Nullable } else { Nullness::NonNull };
         Ok(Typed::of(nullness, self.locals[i].tag.clone()))
     }
@@ -792,28 +798,31 @@ impl<'a> Checker<'a> {
                 }
                 self.indirect_call(callee)
             },
-            // A method call resolves against the receiver's type when it is known.
-            HirExpr::Index(receiver, member, _) => {
-                let Some(name) = self.member_text(member) else { return self.indirect_call(callee) };
-                let receiver_typed = self.receiver(receiver)?;
-                if matches!(receiver_typed.tag, TypeTag::SelfType) {
-                    return self.trait_member(name, member);
-                }
-                if let (TypeTag::Concrete(type_name), Some(method)) = (&receiver_typed.tag, self.hir.symbol_of(name)) {
-                    if let Some(stmt) = self.sigs.methods_by_type.get(&(*type_name, method)).copied() {
-                        self.check_call_args(stmt, &arg_types, args)?;
-                        return Ok(self.call_result(stmt, &receiver_typed.tag));
-                    }
-                }
-                // A native-type method resolves by name when no user method matches the receiver.
-                if let Some(sig) = native::native_method(name) {
-                    self.check_args(sig.params, &arg_types, args)?;
-                    return Ok(Typed::of(nullness_of(sig.ret), TypeTag::Unknown));
-                }
-                Ok(Typed::unknown())
-            },
+            HirExpr::Index(receiver, member, _) => self.method_call(callee, receiver, member, &arg_types, args),
             _ => self.indirect_call(callee),
         }
+    }
+
+    /// A method call `receiver.name(args)`. Resolves against the receiver's type when it is
+    /// known, then falls back to a native-type method, and finally to a dynamic boundary.
+    fn method_call(&mut self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>, member: &HirId<HirExpr>, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<Typed, anyhow::Error> {
+        let Some(name) = self.member_text(member) else { return self.indirect_call(callee) };
+        let receiver_typed = self.receiver(receiver)?;
+        if matches!(receiver_typed.tag, TypeTag::SelfType) {
+            return self.trait_member(name, member);
+        }
+        if let (TypeTag::Concrete(type_name), Some(method)) = (&receiver_typed.tag, self.hir.symbol_of(name)) {
+            if let Some(stmt) = self.sigs.methods_by_type.get(&(*type_name, method)).copied() {
+                self.check_call_args(stmt, arg_types, args)?;
+                return Ok(self.call_result(stmt, &receiver_typed.tag));
+            }
+        }
+        // A native-type method resolves by name when no user method matches the receiver.
+        if let Some(sig) = native::native_method(name) {
+            self.check_args(sig.params, arg_types, args)?;
+            return Ok(Typed::of(nullness_of(sig.ret), TypeTag::Unknown));
+        }
+        Ok(Typed::unknown())
     }
 
     /// A call through a value: the callee must be non-null and its result is a dynamic boundary.
@@ -924,7 +933,7 @@ impl<'a> Checker<'a> {
                             if on_this && !layout.is_nullable(field) && self.seal.reads_before_assign(field) {
                                 return Err(self.error(format!("Field '{}' is read before it is assigned in init", self.hir.text(field)), member));
                             }
-                            let narrowed = key.is_some_and(|k| self.narrowed.contains(&k));
+                            let narrowed = key.is_some_and(|k| self.is_narrowed(&k));
                             if layout.is_nullable(field) && !narrowed { Nullness::Nullable } else { Nullness::NonNull }
                         },
                         // A method reference is a non-null value.
@@ -958,16 +967,11 @@ impl<'a> Checker<'a> {
 
     fn binary(&mut self, op: BinOp, l: &HirId<HirExpr>, r: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         match op {
-            // Short-circuit operators narrow their left operand into the right operand.
-            BinOp::And => {
+            // Short-circuit operators narrow their left operand into the right operand. `and`
+            // narrows where the left holds (true), `or` where it fails (false).
+            BinOp::And | BinOp::Or => {
                 self.expr(l)?;
-                let narrow = self.narrowings(l, true);
-                self.narrow_branch(&narrow, |c| c.expr(r))?;
-                Ok(Typed::nonnull())
-            },
-            BinOp::Or => {
-                self.expr(l)?;
-                let narrow = self.narrowings(l, false);
+                let narrow = self.narrowings(l, matches!(op, BinOp::And));
                 self.narrow_branch(&narrow, |c| c.expr(r))?;
                 Ok(Typed::nonnull())
             },
