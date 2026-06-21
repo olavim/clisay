@@ -1,6 +1,6 @@
 trait Powered {
-    pub fn start() { return "vroom"; }
-    pub fn stop() { return "stop"; }
+    pub fn start()! { return "vroom"; }
+    pub fn stop()! { return "stop"; }
 }
 type Engine with Powered { init() {} }
 

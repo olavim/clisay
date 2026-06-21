@@ -4,7 +4,7 @@ say field = 0;
 
 type T {
     field = 1;
-    pub fn get() {
+    pub fn get()! {
         return this.field;
     }
 }

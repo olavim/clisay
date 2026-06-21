@@ -1,7 +1,7 @@
-trait Tagged { pub fn tag() { return "TOP"; } }
+trait Tagged { pub fn tag()! { return "TOP"; } }
 
-fn makeInner() {
-    trait Tagged { pub fn tag() { return "INNER"; } }
+fn makeInner()! {
+    trait Tagged { pub fn tag()! { return "INNER"; } }
     type Widget with Tagged { init() {} }
     return Widget();
 }

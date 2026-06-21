@@ -1,4 +1,4 @@
-say i = 5;
+say mut i = 5;
 while (i < 0) {
     print("unreachable");
     i += 1;

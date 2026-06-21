@@ -1,5 +1,5 @@
-fn f(m) { return "L=" + m; }
-fn g(m) { return m + "=R"; }
+fn f(m)! { return "L=" + m; }
+fn g(m)! { return m + "=R"; } 
 print(f("X")); // expect: L=X
 print(g("X")); // expect: X=R
 

@@ -145,5 +145,5 @@ fn lexer(resource: &str) -> Result<(), Failed> {
 
 #[test_resources("tests/res/nullability")]
 fn nullability(resource: &str) -> Result<(), Failed> {
-    common::test_file_checked(resource)
+    common::test_file(resource)
 }

@@ -4,14 +4,14 @@
 // stack here; iterative (worklist) marking handles it. Walking the list and
 // counting proves every node survived the collection.
 type Node {
-    pub next;
+    pub next?;
     init(n) {
         this.next = n;
     }
 }
 
-say head = null;
-say i = 0;
+say mut head? = null;
+say mut i = 0;
 while i < 50000 {
     head = Node(head);
     i = i + 1;
@@ -19,8 +19,8 @@ while i < 50000 {
 
 gcCollect();
 
-say count = 0;
-say cur = head;
+say mut count = 0;
+say mut cur? = head;
 while cur != null {
     count = count + 1;
     cur = cur.next;

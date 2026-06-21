@@ -1,4 +1,4 @@
-fn outer(x) {
+fn outer(x)! {
     fn inner() {
         print(x);
     }

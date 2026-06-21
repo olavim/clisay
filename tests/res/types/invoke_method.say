@@ -1,8 +1,8 @@
 type Math {
-    pub fn add(a, b) {
+    pub fn add(a, b)! {
         return a + b;
     }
-    pub fn double(x) {
+    pub fn double(x)! {
         return this.add(x, x);
     }
 }
@@ -11,8 +11,8 @@ say m = Math();
 print(m.add(2, 3)); // expect: 5
 print(m.double(4)); // expect: 8
 
-fn makeInc() {
-    fn inc(n) {
+fn makeInc()! {
+    fn inc(n)! {
         return n + 1;
     }
     return inc;

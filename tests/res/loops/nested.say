@@ -1,7 +1,7 @@
-say i = 0;
-say count = 0;
+say mut i = 0;
+say mut count = 0;
 while (i < 3) {
-    say j = 0;
+    say mut j = 0;
     while (j < 4) {
         count += 1;
         j += 1;

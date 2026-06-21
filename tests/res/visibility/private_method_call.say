@@ -1,6 +1,6 @@
 type Service {
-    fn helper() { return 7; }
-    pub fn run() { return this.helper(); }
+    fn helper()! { return 7; }
+    pub fn run()! { return this.helper(); }
     init() {}
 }
 say s = Service();

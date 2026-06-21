@@ -1,5 +1,5 @@
 type A {
-    pub a;
+    pub a?;
     pub b = 1;
     pub c = true;
     pub d = "hello";

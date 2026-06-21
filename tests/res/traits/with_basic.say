@@ -1,7 +1,7 @@
-trait Clock { pub fn tick() { return 1; } }
+trait Clock { pub fn tick()! { return 1; } }
 trait Greeter {
     req greeting;
-    pub fn greet() { return this.greeting; }
+    pub fn greet()! { return this.greeting; }
 }
 
 type Player with Clock, Greeter {

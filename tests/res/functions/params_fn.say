@@ -2,7 +2,7 @@ fn callAndPrint(f, n) {
     print(f(n));
 }
 
-fn fib(n) {
+fn fib(n)! {
     if (n <= 1) {
         return n;
     }

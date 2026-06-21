@@ -1,6 +1,6 @@
 // String-concatenation heavy: exercises the op_add string path (build + intern).
-say i = 0;
-say s = "";
+say mut i = 0;
+say mut s = "";
 while i < 200000 {
     s = "foo" + "bar";
     i = i + 1;

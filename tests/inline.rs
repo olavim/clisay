@@ -20,14 +20,14 @@ fn ops() {
     assert_inline("print(3 & 1);", Ok(["1"]));
     assert_inline("print(3 > 1);", Ok(["true"]));
     assert_inline("print(3 < 1);", Ok(["false"]));
-    assert_inline("say a = 2; a = 4; print(a);", Ok(["4"]));
-    assert_inline("say a = 2; a += 4; print(a);", Ok(["6"]));
-    assert_inline("say a = 2; a *= 4; print(a);", Ok(["8"]));
-    assert_inline("say a = 2; a /= 4; print(a);", Ok(["0.5"]));
-    assert_inline("say a = 2; a <<= 1; print(a);", Ok(["4"]));
-    assert_inline("say a = 2; a >>= 1; print(a);", Ok(["1"]));
-    assert_inline("say a = 3; a &= 1; print(a);", Ok(["1"]));
-    assert_inline("say a = 2; a |= 1; print(a);", Ok(["3"]));
-    assert_inline("say a = 1; a ^= 2; print(a);", Ok(["3"]));
-    assert_inline("say a = 3; a += a += 1; print(a);", Ok(["7"]));
+    assert_inline("say mut a = 2; a = 4; print(a);", Ok(["4"]));
+    assert_inline("say mut a = 2; a += 4; print(a);", Ok(["6"]));
+    assert_inline("say mut a = 2; a *= 4; print(a);", Ok(["8"]));
+    assert_inline("say mut a = 2; a /= 4; print(a);", Ok(["0.5"]));
+    assert_inline("say mut a = 2; a <<= 1; print(a);", Ok(["4"]));
+    assert_inline("say mut a = 2; a >>= 1; print(a);", Ok(["1"]));
+    assert_inline("say mut a = 3; a &= 1; print(a);", Ok(["1"]));
+    assert_inline("say mut a = 2; a |= 1; print(a);", Ok(["3"]));
+    assert_inline("say mut a = 1; a ^= 2; print(a);", Ok(["3"]));
+    assert_inline("say mut a = 3; a += a += 1; print(a);", Ok(["7"]));
 }

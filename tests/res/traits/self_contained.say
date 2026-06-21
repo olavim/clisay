@@ -1,12 +1,12 @@
-fn helper(n) { return n + 100; }
+fn helper(n)! { return n + 100; }
 
-trait Clock { pub fn tick() { return 1; } }
+trait Clock { pub fn tick()! { return 1; } }
 
 trait Mover req Clock {
     req count;
     req speed;
-    req fn onMove(d);
-    pub fn step(dir) {
+    req fn onMove(d)!;
+    pub fn step(dir)! {
         say local = dir;
         return this.tick()
              + this.speed
@@ -17,7 +17,7 @@ trait Mover req Clock {
 type Player with Mover, Clock {
     pub count = 0;
     pub speed = 2;
-    inner fn onMove(d) { return d; }
+    inner fn onMove(d)! { return d; }
     init() {}
 }
 say p = Player();
