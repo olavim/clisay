@@ -1,0 +1,7 @@
+// A `?` function may fall off the end, yielding null.
+fn maybe()? {
+    if (true) {
+        return 1;
+    }
+}
+print("ok"); // expect: ok
