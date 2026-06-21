@@ -2,67 +2,21 @@
 
 mod assign;
 mod call;
-mod collect;
 mod construct;
 mod narrow;
 mod native;
 mod returns;
 mod traits;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use anyhow::anyhow;
 
 use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
+use crate::middle::signatures::{Signatures, TypeTag};
 use self::construct::Seal;
 use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
-
-/// A function's per-parameter nullability and return shape.
-pub struct FnSig {
-    #[allow(dead_code)]
-    pub params: Vec<bool>,
-    pub ret: ReturnShape,
-}
-
-impl FnSig {
-    fn of(decl: &HirFnDecl) -> FnSig {
-        FnSig { params: decl.params.iter().map(|p| p.nullable).collect(), ret: decl.ret }
-    }
-}
-
-#[derive(Default)]
-pub struct Signatures {
-    // Per-function facts, keyed by the function's statement.
-    fns: HashMap<HirId<HirStmt>, FnSig>,
-    ret_tags: HashMap<HirId<HirStmt>, TypeTag>,
-
-    // Name-to-declaration lookups.
-    types_by_name: HashMap<Symbol, HirId<HirStmt>>,
-    fns_by_name: HashMap<Symbol, HirId<HirStmt>>,
-    methods_by_type: HashMap<(Symbol, Symbol), HirId<HirStmt>>,
-
-    // Per-type field facts.
-    /// Type name to the fields its `init` assigns directly.
-    init_fields: HashMap<Symbol, HashSet<Symbol>>,
-    /// Type name to the fields its methods assign, each mapped to the assigning node.
-    method_field_assigns: HashMap<Symbol, HashMap<Symbol, HirId<HirExpr>>>,
-}
-
-impl Signatures {
-    /// Whether `name` names a declared type.
-    fn is_type(&self, name: Symbol) -> bool {
-        self.types_by_name.contains_key(&name)
-    }
-
-    /// The type a callee names, when it is an identifier naming a declared type.
-    fn type_named(&self, hir: &Hir, callee: &HirId<HirExpr>) -> Option<Symbol> {
-        match hir.get(callee) {
-            HirExpr::Identifier(name) if self.is_type(*name) => Some(*name),
-            _ => None,
-        }
-    }
-}
 
 /// The expression nodes where an `unknown` value crosses into a non-null slot and needs a
 /// runtime barrier.
@@ -86,9 +40,8 @@ impl Barriers {
     }
 }
 
-pub fn check(hir: &Hir, bindings: &Bindings) -> Result<Barriers, anyhow::Error> {
-    let sigs = collect::collect(hir);
-    let mut checker = Checker::new(hir, bindings, &sigs);
+pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barriers, anyhow::Error> {
+    let mut checker = Checker::new(hir, bindings, sigs);
     checker.stmt(&hir.get_root())?;
     Ok(Barriers { crossings: checker.barriers })
 }
@@ -117,22 +70,6 @@ enum Violation {
     Void,
     Null,
     Nullable,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-enum TypeTag {
-    Concrete(Symbol),
-    SelfType,
-    Unknown,
-}
-
-impl TypeTag {
-    fn resolve(&self, receiver: &TypeTag) -> TypeTag {
-        match self {
-            TypeTag::SelfType => receiver.clone(),
-            other => other.clone(),
-        }
-    }
 }
 
 #[derive(Clone)]
