@@ -1,0 +1,11 @@
+// A factory's inferred return type propagates its tag to the call site.
+type Cache {
+    pub fn find()? {
+        return null;
+    }
+}
+fn makeCache()! {
+    return Cache();
+}
+say c = makeCache();
+say hit = c.find(); // error: Cannot assign a nullable value to non-null binding 'hit'

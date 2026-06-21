@@ -1,0 +1,10 @@
+// A nullable field on a known-type receiver is nullable, so member access on it is rejected.
+type Node {
+    pub next?;
+    pub value;
+    init(v) {
+        value = v;
+    }
+}
+say n = Node(5);
+n.next.x; // error: Value may be null; narrow it before use

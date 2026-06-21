@@ -1,0 +1,20 @@
+// Branches assigning different types join to unknown, so the member access is no longer tracked.
+type Cache {
+    pub fn find()? {
+        return null;
+    }
+}
+type Other {
+    pub fn find()? {
+        return null;
+    }
+}
+fn pick(flag?) {
+    say mut x = Cache();
+    if (flag != null) {
+        x = Other();
+    }
+    say hit = x.find();
+    print("done");
+}
+pick(null); // expect: done
