@@ -6,6 +6,6 @@ if "" { print("then-empty"); } else { print("else-empty"); }     // expect: then
 if true { print("then-true"); } else { print("else-true"); }     // expect: then-true
 
 // A null condition never enters the loop body.
-say ran = false;
+say mut ran = false;
 while null { ran = true; }
 print(ran);                                                       // expect: false

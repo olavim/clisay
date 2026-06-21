@@ -1,6 +1,6 @@
 // Construction evaluates left to right: the paren arg before the brace values.
-fn a() { print("a"); return 1; }
-fn b() { print("b"); return 2; }
+fn a()! { print("a"); return 1; }
+fn b()! { print("b"); return 2; }
 type T { pub m; pub n; init(k) { this.m = k; } }
 say t = T(a()) { n: b() };
 // expect: a

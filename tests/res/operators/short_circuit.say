@@ -1,5 +1,5 @@
 // && / || short-circuit and return an operand (truthy = not null and not false).
-fn boom() {
+fn boom()! {
     print("BOOM");
     return 99;
 }

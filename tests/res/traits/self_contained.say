@@ -1,14 +1,14 @@
 // A trait may reach `this.x` for its own methods, a `with`/`req`-provided trait's exposed members,
 // its `req fn` holes and `req` members. It may also freely use free functions / locals.
-fn helper(n) { return n + 100; } // free function in scope
+fn helper(n)! { return n + 100; } // free function in scope
 
-trait Clock { pub fn tick() { return 1; } }
+trait Clock { pub fn tick()! { return 1; } }
 
 trait Mover req Clock {
     req count; // required state (held by the composing type)
     req speed;
-    req fn onMove(d);
-    pub fn step(dir) {
+    req fn onMove(d)!;
+    pub fn step(dir)! {
         say local = dir;           // local: ok
         return this.tick()         // from `req Clock`
              + this.speed          // `req` member
@@ -19,7 +19,7 @@ trait Mover req Clock {
 type Player with Mover, Clock {
     pub count = 0;
     pub speed = 2;
-    inner fn onMove(d) { return d; }
+    inner fn onMove(d)! { return d; }
     init() {}
 }
 say p = Player();

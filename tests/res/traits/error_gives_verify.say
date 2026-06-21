@@ -1,5 +1,5 @@
 // A delegate that does not provide the trait fails construction (verified at the end of `init`).
-trait Powered { pub fn start() { return "vroom"; } }
+trait Powered { pub fn start()! { return "vroom"; } }
 
 type Car {
     engine gives Powered;

@@ -1,11 +1,11 @@
-fn isOne(n) {
+fn isOne(n)! {
     if (n == 1) {
         return true;
     }
     return false;
 }
 
-fn isOneOrTwo(n) {
+fn isOneOrTwo(n)! {
     if (n == 1) {
         return true;
     } else if (n == 2) {
@@ -21,7 +21,7 @@ print(isOneOrTwo(1)); // expect: true
 print(isOneOrTwo(2)); // expect: true
 print(isOneOrTwo(3)); // expect: false
 
-say i = 0;
+say mut i = 0;
 while (i < 3) {
     // expect: 1
     // expect: 2

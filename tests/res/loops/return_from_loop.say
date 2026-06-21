@@ -1,6 +1,6 @@
 // `return` out of a while loop inside a function.
-fn firstOver(limit) {
-    say n = 0;
+fn firstOver(limit)! {
+    say mut n = 0;
     while (n < 1000) {
         if (n > limit) {
             return n;

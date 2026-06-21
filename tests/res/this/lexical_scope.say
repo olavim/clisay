@@ -7,7 +7,7 @@ type A {
         this.x = v;
     }
 
-    pub fn withParam(x) {
+    pub fn withParam(x)! {
         return this.x + "/" + x;
     }
 }

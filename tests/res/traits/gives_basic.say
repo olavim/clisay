@@ -1,7 +1,7 @@
 // `field gives Trait`: the held delegate provides the trait by forwarding, and the type `is` it.
 trait Powered {
-    pub fn start() { return "vroom"; }
-    pub fn stop() { return "stop"; }
+    pub fn start()! { return "vroom"; }
+    pub fn stop()! { return "stop"; }
 }
 type Engine with Powered { init() {} }
 

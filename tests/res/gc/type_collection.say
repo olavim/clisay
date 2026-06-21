@@ -12,10 +12,10 @@ say bytesStart = gcHeapSize();
             this.a = "a";
             this.b = "b";
         }
-        pub fn first() {
+        pub fn first()! {
             return this.a;
         }
-        pub fn second() {
+        pub fn second()! {
             return this.b;
         }
     }

@@ -1,5 +1,5 @@
 type Counter {
-    n;
+    mut n;
     init() {
         this.n = 0;
     }
@@ -9,7 +9,7 @@ type Counter {
 }
 
 say c = Counter();
-say i = 0;
+say mut i = 0;
 while i < 500000 {
     c.inc();
     i = i + 1;

@@ -1,12 +1,12 @@
-trait Greet { pub fn hi() { return "hi"; } }
-trait Loud with Greet { pub fn yell() { return "YO"; } }
-trait Other { pub fn ping() { return 0; } }
+trait Greet { pub fn hi()! { return "hi"; } }
+trait Loud with Greet { pub fn yell()! { return "YO"; } }
+trait Other { pub fn ping()! { return 0; } }
 
 type Service with Loud { init() {} }
 
 // A type that structurally has Greet's `hi` but does not `with`-provide it.
 type Lookalike {
-    pub fn hi() { return "hi"; }
+    pub fn hi()! { return "hi"; }
     init() {}
 }
 

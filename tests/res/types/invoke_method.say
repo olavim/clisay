@@ -1,10 +1,10 @@
 // Method calls on a non-`this` receiver compile to the fused INVOKE opcode.
 type Math {
-    pub fn add(a, b) {
+    pub fn add(a, b)! {
         return a + b;
     }
     // Calls a sibling method through `this` (its own, non-INVOKE path).
-    pub fn double(x) {
+    pub fn double(x)! {
         return this.add(x, x);
     }
 }
@@ -15,8 +15,8 @@ print(m.double(4));   // expect: 8
 
 // A field holding a closure, called as `obj.field(args)`: INVOKE resolves the
 // member to a field value and calls it (no fast method path).
-fn makeInc() {
-    fn inc(n) {
+fn makeInc()! {
+    fn inc(n)! {
         return n + 1;
     }
     return inc;

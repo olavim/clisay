@@ -1,7 +1,7 @@
 // `return` inside try/catch must run the enclosing `finally` before returning.
 
 // return from the try body
-fn fromTry() {
+fn fromTry()! {
     try {
         return "try";
     } finally {
@@ -12,7 +12,7 @@ fn fromTry() {
 print(fromTry()); // expect: try
 
 // return from the catch body
-fn fromCatch() {
+fn fromCatch()! {
     try {
         throw "boom";
     } catch (e) {
@@ -25,7 +25,7 @@ fn fromCatch() {
 print(fromCatch()); // expect: catch
 
 // a `return` inside the finally overrides the try body's return
-fn returnInFinally() {
+fn returnInFinally()! {
     try {
         return "try";
     } finally {
@@ -35,7 +35,7 @@ fn returnInFinally() {
 print(returnInFinally()); // expect: finally
 
 // sibling returns in the same try body each run the finally
-fn siblingReturns(c) {
+fn siblingReturns(c)! {
     try {
         if (c) { return "a"; }
         return "b";

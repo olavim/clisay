@@ -1,9 +1,9 @@
 // Traits are lexically scoped like type/fn/say: a trait declared in a function is
 // visible only there, and shadows a same-named trait in an outer scope.
-trait Tagged { pub fn tag() { return "TOP"; } }
+trait Tagged { pub fn tag()! { return "TOP"; } }
 
-fn makeInner() {
-    trait Tagged { pub fn tag() { return "INNER"; } } // shadows the top-level Tagged
+fn makeInner()! {
+    trait Tagged { pub fn tag()! { return "INNER"; } } // shadows the top-level Tagged
     type Widget with Tagged { init() {} }
     return Widget();
 }

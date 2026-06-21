@@ -12,7 +12,7 @@
 // crash or `n` would stop counting correctly.
 
 type Counter {
-    pub n;
+    pub mut n;
     init() {
         this.n = 0;
     }
@@ -22,7 +22,7 @@ type Counter {
 }
 
 say c = Counter();
-say i = 0;
+say mut i = 0;
 while i < 100000 {
     c.inc();
     i = i + 1;

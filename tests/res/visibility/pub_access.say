@@ -1,10 +1,10 @@
 // `pub` members are externally accessible (read, write, call). A private member
 // is reachable from the type's own methods via `this`.
 type Point {
-    pub x;
+    pub mut x;
     pub y;
     secret = 99; // private by default
-    pub fn sum() { return this.x + this.y + this.secret; } // reads private via this
+    pub fn sum()! { return this.x + this.y + this.secret; } // reads private via this
     init(x, y) { this.x = x; this.y = y; }
 }
 

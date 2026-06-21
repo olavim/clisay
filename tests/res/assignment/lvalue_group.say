@@ -1,3 +1,3 @@
-say a = 0;
+say mut a = 0;
 (a) = 1;
 print(a); // expect: 1

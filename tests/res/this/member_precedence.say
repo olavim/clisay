@@ -6,8 +6,8 @@
 //    touching the member never clobbers the outer variable.
 say field = 0;
 type T {
-    field = 1;
-    pub fn read() { return field; }
+    mut field = 1;
+    pub fn read()! { return field; }
     pub fn bump() { field = field + 5; }
 }
 say t = T();
@@ -19,7 +19,7 @@ print(field);    // expect: 0
 // 2. A same-function parameter shadows a same-named member (the param wins).
 type P {
     pub n = 10;
-    pub fn withParam(n) { return n; }
+    pub fn withParam(n)! { return n; }
 }
 say p = P();
 print(p.withParam(99)); // expect: 99
@@ -28,7 +28,7 @@ print(p.n);             // expect: 10
 // 3. A non-member outer local is still captured (closures not regressed).
 say outer = 42;
 type C {
-    pub fn grab() { return outer; }
+    pub fn grab()! { return outer; }
 }
 say c = C();
 print(c.grab()); // expect: 42

@@ -1,13 +1,13 @@
 // Delegate-and-customize: the host overrides one forwarded method; the rest still forward.
 trait Powered {
-    pub fn start() { return "vroom"; }
-    pub fn stop() { return "stop"; }
+    pub fn start()! { return "vroom"; }
+    pub fn stop()! { return "stop"; }
 }
 type Engine with Powered { init() {} }
 
 type Car {
     engine gives Powered;
-    pub fn start() { return "custom"; }
+    pub fn start()! { return "custom"; }
     init() { this.engine = Engine(); }
 }
 

@@ -1,5 +1,5 @@
 // Condition false at entry: body must never run.
-say i = 5;
+say mut i = 5;
 while (i < 0) {
     print("unreachable");
     i += 1;

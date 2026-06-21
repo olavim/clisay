@@ -1,6 +1,6 @@
 type A {
-    pub a = "a";
-    pub fn get() {
+    pub mut a = "a";
+    pub fn get()! {
         return this.a;
     }
 }

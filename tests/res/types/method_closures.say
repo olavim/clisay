@@ -1,7 +1,7 @@
 type A {
-    pub fn getCounter() {
-        say n = 0;
-        fn inc() {
+    pub fn getCounter()! {
+        say mut n = 0;
+        fn inc()! {
             n += 1;
             return n;
         }

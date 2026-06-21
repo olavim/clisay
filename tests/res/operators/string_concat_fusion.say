@@ -1,7 +1,7 @@
 // Regression: `const + local` string concatenation must keep the const operand first. The
 // `const + local` fusion previously reused the `local + const` opcode, reversing the result.
-fn f(m) { return "L=" + m; }   // const + local
-fn g(m) { return m + "=R"; }   // local + const
+fn f(m)! { return "L=" + m; }   // const + local
+fn g(m)! { return m + "=R"; }   // local + const
 print(f("X")); // expect: L=X
 print(g("X")); // expect: X=R
 

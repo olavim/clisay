@@ -7,7 +7,7 @@ print(!(1 == 2));  // expect: true
 print(!(1 == 1));  // expect: false
 
 // The operand is evaluated exactly once, even when it has side effects.
-fn once() {
+fn once()! {
     print("called");
     return false;
 }

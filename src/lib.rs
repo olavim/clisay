@@ -75,28 +75,13 @@ use crate::middle::optimize::optimize;
 use crate::middle::bind::resolve as resolve_bindings;
 
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
-    run_pipeline(file_name, src, false)
-}
-
-/// Runs a program with the `nullck` nullability pass enabled. The pass is gated off in
-/// `run` until the corpus is migrated to the non-null-by-default rules.
-pub fn run_checked(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
-    run_pipeline(file_name, src, true)
-}
-
-fn run_pipeline(file_name: &str, src: &str, nullck: bool) -> Result<Vec<String>, anyhow::Error> {
     let mut gc = Gc::new();
     let tokens = tokenize(String::from(file_name), String::from(src))?;
     let ast = Parser::parse(&mut TokenStream::new(&tokens))?;
     let names = resolve_names(&ast)?;
     let hir = lower(ast, &names)?;
     let bindings = resolve_bindings(&hir)?;
-    // With nullck off the corpus emits no barriers; codegen sees an empty set.
-    let barriers = if nullck {
-        check_nullability(&hir, &bindings)?
-    } else {
-        Default::default()
-    };
+    let barriers = check_nullability(&hir, &bindings)?;
     let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers)?;
     let ir = optimize(ir);
     let chunk = assemble(ir)?;
