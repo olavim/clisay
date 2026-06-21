@@ -110,8 +110,8 @@ impl Local {
         Local { name, declared_nullable, mutable, assigned: true, tag: TypeTag::Unknown, func: None }
     }
 
-    fn catch(name: Symbol) -> Local {
-        Local { name, declared_nullable: true, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None }
+    fn catch(name: Symbol, mutable: bool) -> Local {
+        Local { name, declared_nullable: true, mutable, assigned: true, tag: TypeTag::Unknown, func: None }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
@@ -280,7 +280,7 @@ impl<'a> Checker<'a> {
                     let mark = self.locals.len();
                     if let Some(param) = catch.param {
                         let name = self.ident_sym(&param);
-                        self.locals.push(Local::catch(name));
+                        self.locals.push(Local::catch(name, catch.mutable));
                     }
                     self.expr(&catch.body)?;
                     self.locals.truncate(mark);

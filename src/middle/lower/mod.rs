@@ -256,7 +256,7 @@ impl<'a> Lowerer<'a> {
             Some(param) => Some(self.expr(param)?),
             None => None,
         };
-        Ok(HirCatchClause { param, body: self.expr(&catch.body)? })
+        Ok(HirCatchClause { param, mutable: catch.mutable, body: self.expr(&catch.body)? })
     }
 }
 

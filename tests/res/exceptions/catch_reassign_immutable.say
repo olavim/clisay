@@ -1,0 +1,6 @@
+// A catch parameter is immutable by default, like a function parameter.
+try {
+    throw "boom";
+} catch (e) {
+    e = 1; // error: Cannot reassign immutable binding 'e'; declare it 'mut'
+}

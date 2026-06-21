@@ -103,6 +103,7 @@ pub struct HirFnDecl {
 /// A `catch (param) { … }` clause of a try statement.
 pub struct HirCatchClause {
     pub param: Option<HirId<HirExpr>>,
+    pub mutable: bool,
     pub body: HirId<HirExpr>,
 }
 

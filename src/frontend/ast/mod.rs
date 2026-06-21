@@ -128,6 +128,8 @@ pub struct FnDecl {
 /// A `catch (param) { … }` clause of a try statement.
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
+    /// Declared reassignable with a `mut` modifier (`catch (mut e)`). Immutable otherwise.
+    pub mutable: bool,
     pub body: AstId<Expr>
 }
 

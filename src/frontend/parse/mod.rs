@@ -438,20 +438,20 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let catch = if let Some(catch_tok) = self.tokens.next_if(TokenType::Catch) {
             let catch_pos = catch_tok.pos.clone();
-            let param = match self.tokens.peek(0).kind {
-                TokenType::Identifier => Some(self.parse_identifier_expr()?),
+            let (param, mutable) = match self.tokens.peek(0).kind {
+                TokenType::Identifier => (Some(self.parse_identifier_expr()?), false),
                 TokenType::LeftParen => {
                     self.tokens.expect(TokenType::LeftParen)?;
                     let params = self.parse_params(TokenType::RightParen)?;
                     if params.len() != 1 {
                         parse_error!(self, &catch_pos, "Expected one parameter in catch block")
                     }
-                    Some(params[0].name)
+                    (Some(params[0].name), params[0].mutable)
                 },
-                _ => None
+                _ => (None, false)
             };
             let body = self.parse_block_or_stmt()?;
-            Some(CatchClause { param, body })
+            Some(CatchClause { param, mutable, body })
         } else {
             None
         };

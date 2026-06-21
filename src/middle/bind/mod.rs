@@ -170,7 +170,6 @@ struct Local {
     /// addressed positionally (slot 0), never resolved by name.
     name: Option<Symbol>,
     depth: u8,
-    is_mutable: bool,
     is_captured: bool,
 }
 
@@ -249,13 +248,13 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn declare_local(&mut self, name: Symbol, is_mutable: bool) -> Result<u8, anyhow::Error> {
+    fn declare_local(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
         }
 
         // Duplicate-name collisions across the whole namespace are caught earlier, in `middle::names`.
-        self.locals.push(Local { name: Some(name), depth: self.scope_depth, is_mutable, is_captured: false });
+        self.locals.push(Local { name: Some(name), depth: self.scope_depth, is_captured: false });
 
         let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
         Ok((self.locals.len() - 1) as u8 - local_offset)
@@ -390,7 +389,7 @@ impl<'a> Resolver<'a> {
                     self.enter_scope();
                     if let Some(param) = &catch.param {
                         let HirExpr::Identifier(name) = self.hir.get(param) else { unreachable!() };
-                        self.declare_local(*name, false)?;
+                        self.declare_local(*name)?;
                     }
                     // catch body is a HirExpr::Block compiled inline (no extra scope).
                     let HirExpr::Block(stmts) = self.hir.get(&catch.body) else { unreachable!() };
@@ -411,7 +410,7 @@ impl<'a> Resolver<'a> {
             HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
             HirStmt::Trait(decl) => self.trait_declaration(stmt_id, decl)?,
             HirStmt::Say(field) => {
-                let slot = self.declare_local(field.name, true)?;
+                let slot = self.declare_local(field.name)?;
                 self.bindings.slots.insert(*stmt_id, slot);
                 if let Some(expr) = &field.value {
                     self.expression(expr)?;
@@ -456,7 +455,7 @@ impl<'a> Resolver<'a> {
                 HirStmt::Type(decl) => decl.name,
                 _ => continue,
             };
-            self.declare_local(name, false)?;
+            self.declare_local(name)?;
         }
         Ok(())
     }
@@ -552,11 +551,6 @@ impl<'a> Resolver<'a> {
         match self.hir.get(lhs) {
             HirExpr::Identifier(name) => {
                 let name = *name;
-                if let Some(local) = self.locals.iter().rev().find(|local| local.name == Some(name)) {
-                    if !local.is_mutable {
-                        compiler_error!(self, lhs, "Invalid assignment: '{}' is immutable", self.hir.text(name));
-                    }
-                }
                 let place = self.resolve_place(name, lhs)?;
                 if let Place::Global(_) = place {
                     compiler_error!(self, lhs, "Cannot assign to undefined variable '{}'", self.hir.text(name));
@@ -689,7 +683,7 @@ impl<'a> Resolver<'a> {
 
         self.scope_depth += 1;
         let local_offset = self.locals.len() as u8;
-        self.locals.push(Local { name: self_name, depth: self.scope_depth, is_mutable: false, is_captured: false });
+        self.locals.push(Local { name: self_name, depth: self.scope_depth, is_captured: false });
         self.fn_frames.push(FnFrame {
             upvalues: Vec::new(),
             local_offset,
@@ -701,7 +695,7 @@ impl<'a> Resolver<'a> {
             let HirExpr::Identifier(param_name) = self.hir.get(&param.name) else {
                 unreachable!("parser guarantees parameters are identifiers");
             };
-            self.declare_local(*param_name, true)?;
+            self.declare_local(*param_name)?;
         }
 
         self.expression(&decl.body)?;
