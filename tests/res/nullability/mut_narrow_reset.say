@@ -1,0 +1,9 @@
+// Reassigning a `mut` binding resets the narrowing established by the guard.
+fn find()? {
+    return null;
+}
+say mut h?;
+if (h != null) {
+    h = find();
+    h.x; // error: 'h' may be null; narrow it before use
+}
