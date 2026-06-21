@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::middle::hir::{Hir, HirExpr, HirId, HirLiteral, HirStmt, HirTypeDecl, Symbol};
 
-use super::{FnSig, RetTag, Signatures};
+use super::{FnSig, Signatures, TypeTag};
 
 /// Collects the program's signatures and inferred return type tags.
 pub(super) fn collect(hir: &Hir) -> Signatures {
@@ -107,7 +107,7 @@ impl<'a> Collector<'a> {
     fn infer_ret_tags(&mut self) {
         let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
         for stmt in &stmts {
-            self.sigs.ret_tags.insert(*stmt, RetTag::Unknown);
+            self.sigs.ret_tags.insert(*stmt, TypeTag::Unknown);
         }
         loop {
             let mut changed = false;
@@ -126,35 +126,35 @@ impl<'a> Collector<'a> {
     }
 
     /// The joined return type tag of a body: a single tag if every return agrees, else unknown.
-    fn infer_body_tag(&self, body: &HirId<HirExpr>) -> RetTag {
+    fn infer_body_tag(&self, body: &HirId<HirExpr>) -> TypeTag {
         let mut returns = Vec::new();
         self.collect_returns(body, &mut returns);
-        let mut joined: Option<RetTag> = None;
+        let mut joined: Option<TypeTag> = None;
         for ret in returns {
             let tag = self.classify_return(&ret);
             joined = Some(match joined {
                 None => tag,
                 Some(prev) if prev == tag => prev,
-                Some(_) => RetTag::Unknown,
+                Some(_) => TypeTag::Unknown,
             });
         }
-        joined.unwrap_or(RetTag::Unknown)
+        joined.unwrap_or(TypeTag::Unknown)
     }
 
-    fn classify_return(&self, expr: &HirId<HirExpr>) -> RetTag {
+    fn classify_return(&self, expr: &HirId<HirExpr>) -> TypeTag {
         match self.hir.get(expr) {
-            HirExpr::This => RetTag::SelfType,
+            HirExpr::This => TypeTag::SelfType,
             HirExpr::Construct(callee, _, _) => {
-                self.type_name(callee).map_or(RetTag::Unknown, RetTag::Concrete)
+                self.type_name(callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
             },
             HirExpr::Call(callee, _) => match self.hir.get(callee) {
-                HirExpr::Identifier(name) if self.sigs.types_by_name.contains_key(name) => RetTag::Concrete(*name),
+                HirExpr::Identifier(name) if self.sigs.types_by_name.contains_key(name) => TypeTag::Concrete(*name),
                 HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
-                    .and_then(|stmt| self.sigs.ret_tags.get(stmt).copied())
-                    .unwrap_or(RetTag::Unknown),
-                _ => RetTag::Unknown,
+                    .and_then(|stmt| self.sigs.ret_tags.get(stmt).cloned())
+                    .unwrap_or(TypeTag::Unknown),
+                _ => TypeTag::Unknown,
             },
-            _ => RetTag::Unknown,
+            _ => TypeTag::Unknown,
         }
     }
 
