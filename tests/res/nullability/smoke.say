@@ -1,4 +1,4 @@
-// An annotated program run with nullck enabled. Phase one collects its signatures.
+// An annotated program run with the check pass enabled. Phase one collects its signatures.
 // Nothing is enforced yet, so it runs to completion.
 type Box {
     pub mut value;

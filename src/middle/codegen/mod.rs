@@ -6,7 +6,7 @@ use crate::core::objects::ObjType;
 use crate::core::objects::ObjString;
 use crate::middle::ir::{Inst, Ir, Label};
 use crate::middle::bind::{Bindings, Cleanup, FnKind};
-use crate::middle::nullck::Barriers;
+use crate::middle::check::Barriers;
 use crate::middle::hir::Hir;
 use crate::middle::hir::HirExpr;
 use crate::middle::hir::HirFnDecl;
@@ -37,7 +37,7 @@ pub struct Compiler<'a> {
     hir: &'a Hir,
     gc: &'a mut Gc,
     bindings: &'a Bindings,
-    /// Nodes whose value needs a runtime null-barrier, from `nullck`. Empty when nullck is off.
+    /// Nodes whose value needs a runtime null-barrier, from the check pass. Empty when checking is off.
     barriers: &'a Barriers,
     /// The kind of each enclosing function, for initializer return handling.
     fn_kinds: Vec<FnKind>,
