@@ -1,0 +1,2 @@
+// A null argument to a non-null native parameter is rejected.
+gcStress(null); // error: Cannot pass null as argument 1; the parameter is non-null

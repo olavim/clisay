@@ -503,7 +503,12 @@ impl<'a> Checker<'a> {
             HirExpr::Construct(callee, args, brace) => {
                 let tag = self.construct_tag(callee);
                 for a in args { self.expr(a)?; }
-                for (_, v) in brace { self.expr(v)?; }
+                for (name, v) in brace {
+                    let typed = self.expr(v)?;
+                    if let TypeTag::Concrete(type_name) = &tag {
+                        self.check_brace_field(*type_name, *name, typed.nullness, v)?;
+                    }
+                }
                 if let TypeTag::Concrete(type_name) = &tag {
                     let braced: HashSet<Symbol> = brace.iter().map(|(name, _)| *name).collect();
                     self.check_construction(*type_name, &braced, callee)?;
@@ -602,24 +607,40 @@ impl<'a> Checker<'a> {
                     }
                 } else {
                     // `field = ...` is implicitly `this.field = ...`
-                    self.field_assign(name, lhs)?;
+                    self.assign_field_this(name, typed.nullness, lhs, rhs)?;
                 }
             },
-            // `this.field = ...`
-            HirExpr::Index(target, member, _) if matches!(self.hir.get(target), HirExpr::This) => {
-                if let Some(field) = self.string_member(member) {
-                    self.field_assign(field, lhs)?;
-                }
-            },
+            HirExpr::Index(target, member, is_dot) => self.assign_index(target, member, *is_dot, typed.nullness, lhs, rhs)?,
             _ => {},
         }
         Ok(typed)
     }
 
-    /// Records and checks an assignment to a field of the enclosing type.
-    fn field_assign(&mut self, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let (is_field, mutable) = match self.current_type.and_then(|t| self.layout_of(t)) {
-            Some(layout) => (matches!(layout.members.get(&field), Some(TypeMember::Field(_))), layout.is_mutable(field)),
+    /// Checks an assignment `target.member = value`.
+    fn assign_index(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_dot: bool, value: Nullness, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        // `this.field = ...` and `this["field"] = ...` both assign a field of the enclosing type.
+        if matches!(self.hir.get(target), HirExpr::This) {
+            if let Some(field) = self.string_member(member) {
+                self.assign_field_this(field, value, lhs, rhs)?;
+            }
+            return Ok(());
+        }
+        // A bracket index `obj[expr] = ...` is the dynamic data path. It bypasses the field rules.
+        if !is_dot {
+            return Ok(());
+        }
+        let receiver = self.receiver(target)?;
+        let Some(field) = self.string_member(member) else { return Ok(()) };
+        if let TypeTag::Concrete(type_name) = &receiver.tag {
+            self.assign_field_external(*type_name, field, value, lhs, rhs)?;
+        }
+        Ok(())
+    }
+
+    /// Checks an assignment `this.field = value`.
+    fn assign_field_this(&mut self, field: Symbol, value: Nullness, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let (is_field, nullable, mutable) = match self.current_type.and_then(|t| self.layout_of(t)) {
+            Some(layout) => (matches!(layout.members.get(&field), Some(TypeMember::Field(_))), layout.is_nullable(field), layout.is_mutable(field)),
             None => return Ok(()),
         };
         if !is_field {
@@ -628,14 +649,61 @@ impl<'a> Checker<'a> {
         if !mutable {
             match &self.init_assigned {
                 Some(assigned) if assigned.contains(&field) =>
-                    return Err(self.error(format!("Immutable field '{}' is assigned more than once; declare it 'mut'", self.hir.text(field)), node)),
+                    return Err(self.error(format!("Immutable field '{}' is assigned more than once; declare it 'mut'", self.hir.text(field)), lhs)),
                 Some(_) => {},
                 None =>
-                    return Err(self.error(format!("Cannot assign immutable field '{}' in a method; declare it 'mut'", self.hir.text(field)), node)),
+                    return Err(self.error(format!("Cannot assign immutable field '{}' in a method; declare it 'mut'", self.hir.text(field)), lhs)),
             }
         }
+        self.check_into_field(value, nullable, field, rhs)?;
         self.mark_field_assigned(field);
         Ok(())
+    }
+
+    /// Checks an external write `obj.field = value` on a known type.
+    fn assign_field_external(&mut self, type_name: Symbol, field: Symbol, value: Nullness, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let field_info = match self.layout_of(type_name) {
+            Some(layout) => match layout.members.get(&field) {
+                Some(TypeMember::Field(id)) => Some((!layout.non_public.contains(id), layout.is_nullable(field), layout.is_mutable(field))),
+                _ => None,
+            },
+            None => None,
+        };
+        // A non-field or non-public member is invisible to external code.
+        let Some((public, nullable, mutable)) = field_info else { return Ok(()) };
+        if !public {
+            return Ok(());
+        }
+        if !mutable {
+            return Err(self.error(format!("Cannot assign immutable field '{}' from outside its type; declare it 'mut'", self.hir.text(field)), lhs));
+        }
+        self.check_into_field(value, nullable, field, rhs)
+    }
+
+    /// Checks a value moving into a field per the field's nullability.
+    fn check_into_field(&mut self, nullness: Nullness, field_nullable: bool, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if nullness == Nullness::Void {
+            return Err(self.error(format!("Cannot assign a void result to field '{}'; the call returns no value", self.hir.text(field)), node));
+        }
+        if field_nullable {
+            return Ok(());
+        }
+        match nullness {
+            Nullness::Null => Err(self.error(format!("Cannot assign null to non-null field '{}'", self.hir.text(field)), node)),
+            Nullness::Nullable => Err(self.error(format!("Cannot assign a nullable value to non-null field '{}'", self.hir.text(field)), node)),
+            // An `unknown` value entering a non-null field is guarded by a runtime barrier.
+            Nullness::Unknown => { self.barriers.insert(*node); Ok(()) },
+            Nullness::NonNull | Nullness::Void => Ok(()),
+        }
+    }
+
+    /// Checks a brace-construction value against its field's declared nullability.
+    fn check_brace_field(&mut self, type_name: Symbol, field: Symbol, value: Nullness, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let nullable = match self.layout_of(type_name) {
+            Some(layout) => layout.is_nullable(field),
+            None => return Ok(()),
+        };
+        self.check_into_field(value, nullable, field, node)
     }
 
     fn mark_field_assigned(&mut self, field: Symbol) {
@@ -661,7 +729,7 @@ impl<'a> Checker<'a> {
     }
 
     fn call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<Typed, anyhow::Error> {
-        for a in args { self.expr(a)?; }
+        let arg_types: Vec<Typed> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
         match self.hir.get(callee) {
             HirExpr::Identifier(name) => {
                 let name = *name;
@@ -669,10 +737,18 @@ impl<'a> Checker<'a> {
                     self.check_construction(name, &HashSet::new(), callee)?;
                     return Ok(Typed::of(Nullness::NonNull, TypeTag::Concrete(name)));
                 }
-                match self.func_of(name) {
-                    Some(stmt) => Ok(self.call_result(stmt, &TypeTag::Unknown)),
-                    None => self.indirect_call(callee),
+                if let Some(stmt) = self.func_of(name) {
+                    self.check_call_args(stmt, &arg_types, args)?;
+                    return Ok(self.call_result(stmt, &TypeTag::Unknown));
                 }
+                // A built-in global resolves by name when no local or function shadows it.
+                if self.frame_index_of(name).is_none() {
+                    if let Some(sig) = native::builtin(self.hir.text(name)) {
+                        self.check_args(sig.params, &arg_types, args)?;
+                        return Ok(Typed::of(nullness_of(sig.ret), TypeTag::Unknown));
+                    }
+                }
+                self.indirect_call(callee)
             },
             // A method call resolves against the receiver's type when it is known.
             HirExpr::Index(receiver, member, _) => {
@@ -683,8 +759,14 @@ impl<'a> Checker<'a> {
                 }
                 if let (TypeTag::Concrete(type_name), Some(method)) = (&receiver_typed.tag, self.hir.symbol_of(name)) {
                     if let Some(stmt) = self.sigs.methods_by_type.get(&(*type_name, method)).copied() {
+                        self.check_call_args(stmt, &arg_types, args)?;
                         return Ok(self.call_result(stmt, &receiver_typed.tag));
                     }
+                }
+                // A native-type method resolves by name when no user method matches the receiver.
+                if let Some(sig) = native::native_method(name) {
+                    self.check_args(sig.params, &arg_types, args)?;
+                    return Ok(Typed::of(nullness_of(sig.ret), TypeTag::Unknown));
                 }
                 Ok(Typed::unknown())
             },
@@ -701,12 +783,7 @@ impl<'a> Checker<'a> {
 
     /// The nullability and type of a call result, given the callee and receiver tag.
     fn call_result(&self, stmt: HirId<HirStmt>, receiver_tag: &TypeTag) -> Typed {
-        let nullness = match self.sigs.fns.get(&stmt).map(|s| s.ret) {
-            Some(ReturnShape::NonNull) => Nullness::NonNull,
-            Some(ReturnShape::Nullable) => Nullness::Nullable,
-            Some(ReturnShape::Void) => Nullness::Void,
-            _ => Nullness::Unknown,
-        };
+        let nullness = self.sigs.fns.get(&stmt).map_or(Nullness::Unknown, |s| nullness_of(s.ret));
         let tag = match self.sigs.ret_tags.get(&stmt) {
             Some(RetTag::Concrete(name)) => TypeTag::Concrete(*name),
             Some(RetTag::SelfType) => receiver_tag.clone(),
@@ -719,6 +796,39 @@ impl<'a> Checker<'a> {
         match self.hir.get(callee) {
             HirExpr::Identifier(name) if self.sigs.types_by_name.contains_key(name) => TypeTag::Concrete(*name),
             _ => TypeTag::Unknown,
+        }
+    }
+
+    /// Checks a user call's arguments against the resolved function's declared parameters.
+    fn check_call_args(&mut self, stmt: HirId<HirStmt>, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+        // Read the params through the shared signatures borrow so the later check can take &mut self.
+        let sigs = self.sigs;
+        let Some(sig) = sigs.fns.get(&stmt) else { return Ok(()) };
+        self.check_args(&sig.params, arg_types, args)
+    }
+
+    /// Checks each argument against a callee's per-parameter nullability.
+    fn check_args(&mut self, params: &[bool], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+        for (i, &param_nullable) in params.iter().enumerate() {
+            if param_nullable {
+                continue;
+            }
+            let Some(typed) = arg_types.get(i) else { break };
+            self.check_arg(typed.nullness, i, &args[i])?;
+        }
+        Ok(())
+    }
+
+    /// Checks a single argument value against a non-null parameter slot.
+    fn check_arg(&mut self, nullness: Nullness, position: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let n = position + 1;
+        match nullness {
+            Nullness::Void => Err(self.error(format!("Argument {n} is a void result; the call returns no value"), node)),
+            Nullness::Null => Err(self.error(format!("Cannot pass null as argument {n}; the parameter is non-null"), node)),
+            Nullness::Nullable => Err(self.error(format!("Argument {n} may be null but the parameter is non-null; narrow it before the call"), node)),
+            // An `unknown` argument entering a non-null parameter is guarded by a runtime barrier.
+            Nullness::Unknown => { self.barriers.insert(*node); Ok(()) },
+            Nullness::NonNull => Ok(()),
         }
     }
 
@@ -870,6 +980,16 @@ impl<'a> Checker<'a> {
         self.member_text(member).and_then(|name| self.hir.symbol_of(name))
     }
 
+}
+
+/// The nullness a return shape yields at a call site.
+fn nullness_of(ret: ReturnShape) -> Nullness {
+    match ret {
+        ReturnShape::NonNull => Nullness::NonNull,
+        ReturnShape::Nullable => Nullness::Nullable,
+        ReturnShape::Void => Nullness::Void,
+        ReturnShape::Inferred => Nullness::Unknown,
+    }
 }
 
 /// Whether a member's return shape conforms to a trait method's. An override may be non-null

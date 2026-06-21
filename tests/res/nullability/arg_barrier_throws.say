@@ -1,0 +1,4 @@
+// An unknown argument into a non-null parameter throws when it is null at runtime.
+fn f(x) { print(x); }
+say d = { a: null };
+f(d["a"]); // error: unexpected null
