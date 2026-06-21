@@ -145,23 +145,16 @@ impl<'a> Collector<'a> {
         match self.hir.get(expr) {
             HirExpr::This => TypeTag::SelfType,
             HirExpr::Construct(callee, _, _) => {
-                self.type_name(callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
+                self.sigs.type_named(self.hir, callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
             },
             HirExpr::Call(callee, _) => match self.hir.get(callee) {
-                HirExpr::Identifier(name) if self.sigs.types_by_name.contains_key(name) => TypeTag::Concrete(*name),
+                HirExpr::Identifier(name) if self.sigs.is_type(*name) => TypeTag::Concrete(*name),
                 HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
                     .and_then(|stmt| self.sigs.ret_tags.get(stmt).cloned())
                     .unwrap_or(TypeTag::Unknown),
                 _ => TypeTag::Unknown,
             },
             _ => TypeTag::Unknown,
-        }
-    }
-
-    fn type_name(&self, callee: &HirId<HirExpr>) -> Option<Symbol> {
-        match self.hir.get(callee) {
-            HirExpr::Identifier(name) if self.sigs.types_by_name.contains_key(name) => Some(*name),
-            _ => None,
         }
     }
 

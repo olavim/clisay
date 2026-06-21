@@ -40,6 +40,21 @@ pub struct Signatures {
     method_field_assigns: HashMap<Symbol, HashMap<Symbol, HirId<HirExpr>>>,
 }
 
+impl Signatures {
+    /// Whether `name` names a declared type.
+    fn is_type(&self, name: Symbol) -> bool {
+        self.types_by_name.contains_key(&name)
+    }
+
+    /// The type a callee names, when it is an identifier naming a declared type.
+    fn type_named(&self, hir: &Hir, callee: &HirId<HirExpr>) -> Option<Symbol> {
+        match hir.get(callee) {
+            HirExpr::Identifier(name) if self.is_type(*name) => Some(*name),
+            _ => None,
+        }
+    }
+}
+
 /// The expression nodes where an `unknown` value crosses into a non-null slot and needs a
 /// runtime barrier.
 #[derive(Default)]
@@ -400,8 +415,7 @@ impl<'a> Checker<'a> {
                 Nullness::Void => Err(self.error("Cannot return a void result from a '!' function".to_string(), node)),
                 Nullness::Null | Nullness::Nullable => Err(self.error("A '!' function must return a non-null value".to_string(), node)),
                 Nullness::NonNull => Ok(()),
-                // An `unknown` returned as non-null is guarded by a runtime barrier.
-                Nullness::Unknown => { self.barriers.insert(*node); Ok(()) },
+                Nullness::Unknown => { self.add_barrier(node); Ok(()) },
             },
             ReturnShape::Nullable => match nullness {
                 Nullness::Void => Err(self.error("Cannot return a void result".to_string(), node)),
@@ -437,10 +451,8 @@ impl<'a> Checker<'a> {
         for method in &decl.methods {
             let HirStmt::Fn(folded) = self.hir.get(method) else { continue };
             // A trait method the host overrides is folded under a `"Trait.method"` alias.
-            let name = self.hir.text(folded.name);
-            let Some(dot) = name.find('.') else { continue };
-            let (trait_name, base) = (name[..dot].to_string(), name[dot + 1..].to_string());
-            let Some(base_sym) = self.hir.symbol_of(&base) else { continue };
+            let Some((trait_name, base)) = split_trait_alias(self.hir.text(folded.name)) else { continue };
+            let Some(base_sym) = self.hir.symbol_of(base) else { continue };
             // A renamed private slot is also dotted. Only an exposed override is a contract.
             if !decl.pub_members.contains(&base_sym) {
                 continue;
@@ -574,7 +586,7 @@ impl<'a> Checker<'a> {
             HirExpr::Assert(x) => {
                 let typed = self.expr(x)?;
                 if typed.nullness != Nullness::NonNull {
-                    self.barriers.insert(*expr);
+                    self.add_barrier(expr);
                 }
                 Typed::of(Nullness::NonNull, typed.tag)
             },
@@ -722,8 +734,7 @@ impl<'a> Checker<'a> {
         match nullness {
             Nullness::Null => Err(self.error(format!("Cannot assign null to non-null field '{}'", self.hir.text(field)), node)),
             Nullness::Nullable => Err(self.error(format!("Cannot assign a nullable value to non-null field '{}'", self.hir.text(field)), node)),
-            // An `unknown` value entering a non-null field is guarded by a runtime barrier.
-            Nullness::Unknown => { self.barriers.insert(*node); Ok(()) },
+            Nullness::Unknown => { self.add_barrier(node); Ok(()) },
             Nullness::NonNull | Nullness::Void => Ok(()),
         }
     }
@@ -752,7 +763,7 @@ impl<'a> Checker<'a> {
         match self.hir.get(callee) {
             HirExpr::Identifier(name) => {
                 let name = *name;
-                if self.sigs.types_by_name.contains_key(&name) {
+                if self.sigs.is_type(name) {
                     self.check_construction(name, &HashSet::new(), callee)?;
                     return Ok(Typed::of(Nullness::NonNull, TypeTag::Concrete(name)));
                 }
@@ -808,10 +819,7 @@ impl<'a> Checker<'a> {
     }
 
     fn construct_tag(&self, callee: &HirId<HirExpr>) -> TypeTag {
-        match self.hir.get(callee) {
-            HirExpr::Identifier(name) if self.sigs.types_by_name.contains_key(name) => TypeTag::Concrete(*name),
-            _ => TypeTag::Unknown,
-        }
+        self.sigs.type_named(self.hir, callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
     }
 
     /// Checks a user call's arguments against the resolved function's declared parameters.
@@ -841,10 +849,15 @@ impl<'a> Checker<'a> {
             Nullness::Void => Err(self.error(format!("Argument {n} is a void result; the call returns no value"), node)),
             Nullness::Null => Err(self.error(format!("Cannot pass null as argument {n}; the parameter is non-null"), node)),
             Nullness::Nullable => Err(self.error(format!("Argument {n} may be null but the parameter is non-null; narrow it before the call"), node)),
-            // An `unknown` argument entering a non-null parameter is guarded by a runtime barrier.
-            Nullness::Unknown => { self.barriers.insert(*node); Ok(()) },
+            Nullness::Unknown => { self.add_barrier(node); Ok(()) },
             Nullness::NonNull => Ok(()),
         }
+    }
+
+    /// Marks a node whose `unknown` value crosses into a non-null slot, so codegen guards it
+    /// with a runtime null-check.
+    fn add_barrier(&mut self, node: &HirId<HirExpr>) {
+        self.barriers.insert(*node);
     }
 
     /// Checks if moving a value into a slot is allowed per its nullability. A nullable or null value into a
@@ -859,8 +872,7 @@ impl<'a> Checker<'a> {
         match nullness {
             Nullness::Null => Err(self.error(format!("Cannot assign null to non-null binding '{}'", self.hir.text(name)), node)),
             Nullness::Nullable => Err(self.error(format!("Cannot assign a nullable value to non-null binding '{}'", self.hir.text(name)), node)),
-            // An `unknown` value entering a non-null slot is guarded by a runtime barrier.
-            Nullness::Unknown => { self.barriers.insert(*node); Ok(()) },
+            Nullness::Unknown => { self.add_barrier(node); Ok(()) },
             Nullness::NonNull | Nullness::Void => Ok(()),
         }
     }
@@ -1004,6 +1016,12 @@ fn nullness_of(ret: ReturnShape) -> Nullness {
         ReturnShape::Void => Nullness::Void,
         ReturnShape::Inferred => Nullness::Unknown,
     }
+}
+
+/// Splits a folded `"Trait.method"` alias into its trait and base method names. Lowering folds
+/// an overridden trait method under this dotted name.
+fn split_trait_alias(name: &str) -> Option<(&str, &str)> {
+    name.split_once('.')
 }
 
 /// Whether a member's return shape conforms to a trait method's. An override may be non-null
