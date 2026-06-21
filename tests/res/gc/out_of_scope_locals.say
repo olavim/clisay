@@ -11,7 +11,7 @@ gcCollect();
 print(gcHeapSize() - bytesStart); // expect: 0
 
 {
-    fn f(x) {
+    fn f(x)! {
         fn inner() {
             print(x);
         }

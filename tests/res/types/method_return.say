@@ -1,0 +1,4 @@
+type A {
+    pub fn foo()! { return 42; }
+}
+print(A().foo()); // expect: 42

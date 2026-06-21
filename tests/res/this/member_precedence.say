@@ -1,0 +1,34 @@
+// Inside a type body, a bare name that matches a member resolves to that member,
+// winning over a same-named enclosing-scope variable. A same-function parameter still
+// shadows the member, and a non-colliding outer local is still captured.
+
+// 1. A member wins over a same-named outer variable for both reads and writes, and
+//    touching the member never clobbers the outer variable.
+say field = 0;
+type T {
+    mut field = 1;
+    pub fn read()! { return field; }
+    pub fn bump() { field = field + 5; }
+}
+say t = T();
+print(t.read()); // expect: 1
+t.bump();
+print(t.read()); // expect: 6
+print(field);    // expect: 0
+
+// 2. A same-function parameter shadows a same-named member (the param wins).
+type P {
+    pub n = 10;
+    pub fn withParam(n)! { return n; }
+}
+say p = P();
+print(p.withParam(99)); // expect: 99
+print(p.n);             // expect: 10
+
+// 3. A non-member outer local is still captured (closures not regressed).
+say outer = 42;
+type C {
+    pub fn grab()! { return outer; }
+}
+say c = C();
+print(c.grab()); // expect: 42

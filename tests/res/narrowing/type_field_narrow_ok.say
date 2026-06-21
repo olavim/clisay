@@ -1,0 +1,13 @@
+// A nullable field on an immutable receiver narrows after a guard.
+type Node {
+    pub next?;
+    pub value;
+    init(v) {
+        value = v;
+    }
+}
+say n = Node(5);
+if (n.next != null) {
+    say z = n.next;
+}
+print("ok"); // expect: ok

@@ -1,0 +1,8 @@
+fn f(m)! { return "L=" + m; }
+fn g(m)! { return m + "=R"; } 
+print(f("X")); // expect: L=X
+print(g("X")); // expect: X=R
+
+say prefix = "[";
+say name = "core";
+print(prefix + name); // expect: [core

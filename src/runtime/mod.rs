@@ -566,6 +566,10 @@ impl Vm {
                 opcode::POP_TRY => self.op_pop_try(),
                 opcode::JUMP_IF_FALSE_OR_POP => delegate!(self.op_jump_if_false_or_pop()),
                 opcode::JUMP_IF_TRUE_OR_POP => delegate!(self.op_jump_if_true_or_pop()),
+                // `??`/`?.` short-circuit and the null-barrier are cold, so they stay delegated.
+                opcode::JUMP_IF_NOT_NULL_OR_POP => delegate!(self.op_jump_if_not_null_or_pop()),
+                opcode::JUMP_IF_NULL => delegate!(self.op_jump_if_null()),
+                opcode::ASSERT_NON_NULL => delegate!(self.op_assert_non_null()?),
                 opcode::CLOSE_UPVALUE => delegate!(self.op_close_upvalue()),
                 opcode::ARRAY => delegate!(self.op_array()),
                 opcode::DICT => delegate!(self.op_dict()),

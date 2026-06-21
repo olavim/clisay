@@ -11,7 +11,7 @@ use nohash_hasher::IntSet;
 use crate::compiler_error;
 use crate::core::objects::{TypeMember, UpvalueLocation};
 use crate::middle::hir::{
-    Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol,
+    Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnShape, Symbol,
 };
 
 #[derive(Clone, Copy)]
@@ -46,6 +46,10 @@ pub struct TypeLayout {
     pub members: FnvHashMap<Symbol, TypeMember>,
     pub fields: Vec<u8>,
     pub non_public: IntSet<u8>,
+    /// Member ids whose declared type is nullable: `?` fields and nullable-returning methods.
+    pub nullable: IntSet<u8>,
+    /// Member ids that are reassignable: `mut` fields.
+    pub mutable: IntSet<u8>,
     pub member_count: u8,
 
     /// Member id of the initializer function.
@@ -64,6 +68,8 @@ impl TypeLayout {
             members: FnvHashMap::default(),
             fields: Vec::new(),
             non_public: IntSet::default(),
+            nullable: IntSet::default(),
+            mutable: IntSet::default(),
             init_id: 0,
             member_count: 0,
             init_arity: 0,
@@ -79,6 +85,18 @@ impl TypeLayout {
         self.resolve(name).map(|m| match m {
             TypeMember::Field(id) | TypeMember::Method(id) => id,
         })
+    }
+
+    pub fn is_nullable(&self, name: Symbol) -> bool {
+        self.resolve_id(name).is_some_and(|id| self.nullable.contains(&id))
+    }
+
+    pub fn is_mutable(&self, name: Symbol) -> bool {
+        self.resolve_id(name).is_some_and(|id| self.mutable.contains(&id))
+    }
+
+    pub fn is_public(&self, name: Symbol) -> bool {
+        self.resolve_id(name).is_some_and(|id| !self.non_public.contains(&id))
     }
 }
 
@@ -308,12 +326,16 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_place(&mut self, name: Symbol, node: &HirId<HirExpr>) -> Result<Place, anyhow::Error> {
+        // Order: a same-function local/param shadows everything, then an implicit-`this` member of
+        // the enclosing type, then a captured enclosing-scope local, then a global. The member is
+        // consulted before the upvalue so a bare name matching a field/method means that member, not
+        // a same-named outer variable (`x` and `this.x` name the same member).
         let place = if let Some(slot) = self.resolve_local(name) {
             Place::Local(slot)
-        } else if let Some(idx) = self.resolve_upvalue(name)? {
-            Place::Upvalue(idx)
         } else if let Some(id) = self.this_field_id(name) {
             Place::Field(id)
+        } else if let Some(idx) = self.resolve_upvalue(name)? {
+            Place::Upvalue(idx)
         } else {
             self.deny_private(name, node)?;
             Place::Global(name)
@@ -434,6 +456,12 @@ impl<'a> Resolver<'a> {
                 self.construct(expr, &callee, &args, &brace)?;
             },
             HirExpr::This => self.require_type(expr)?,
+            HirExpr::Coalesce(left, right) => {
+                self.expression(left)?;
+                self.expression(right)?;
+            },
+            HirExpr::SafeAccess(target, member, _) => self.index(target, member)?,
+            HirExpr::Assert(operand) => self.expression(operand)?,
         };
         Ok(())
     }
@@ -621,7 +649,7 @@ impl<'a> Resolver<'a> {
         });
 
         for param in &decl.params {
-            let HirExpr::Identifier(param_name) = self.hir.get(param) else {
+            let HirExpr::Identifier(param_name) = self.hir.get(&param.name) else {
                 unreachable!("parser guarantees parameters are identifiers");
             };
             self.declare_local(*param_name, true)?;
@@ -647,6 +675,12 @@ impl<'a> Resolver<'a> {
             if !decl.pub_members.contains(field) {
                 layout.non_public.insert(next_member_id);
             }
+            if decl.nullable_fields.contains(field) {
+                layout.nullable.insert(next_member_id);
+            }
+            if decl.mut_fields.contains(field) {
+                layout.mutable.insert(next_member_id);
+            }
             next_member_id += 1;
         }
         for stmt_id in &decl.methods {
@@ -654,6 +688,10 @@ impl<'a> Resolver<'a> {
             layout.members.insert(method.name, TypeMember::Method(next_member_id));
             if !decl.pub_members.contains(&method.name) {
                 layout.non_public.insert(next_member_id);
+            }
+            // A method member's nullability is its return nullability.
+            if method.ret == ReturnShape::Nullable {
+                layout.nullable.insert(next_member_id);
             }
             next_member_id += 1;
         }
@@ -698,7 +736,8 @@ impl<'a> Resolver<'a> {
                 for a in args { self.collect_assigned_fields(a, out); }
                 for (_, v) in brace { self.collect_assigned_fields(v, out); }
             },
-            // Literals (including lambda bodies), identifiers, this/super: no direct `this.f =`.
+            HirExpr::Coalesce(l, r) | HirExpr::SafeAccess(l, r, _) => { self.collect_assigned_fields(l, out); self.collect_assigned_fields(r, out); },
+            HirExpr::Assert(x) => self.collect_assigned_fields(x, out),
             _ => {},
         }
     }

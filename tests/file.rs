@@ -33,8 +33,8 @@ fn temp(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
-#[test_resources("tests/res/trycatch")]
-fn trycatch(file: &str) -> Result<(), Failed> {
+#[test_resources("tests/res/exceptions")]
+fn exceptions(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
@@ -43,13 +43,38 @@ fn lambdas(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
-#[test_resources("tests/res/blocks")]
-fn blocks(file: &str) -> Result<(), Failed> {
+#[test_resources("tests/res/parser")]
+fn parser(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
-#[test_resources("tests/res/parser")]
-fn parser(file: &str) -> Result<(), Failed> {
+#[test_resources("tests/res/codegen")]
+fn codegen(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
+#[test_resources("tests/res/resolution")]
+fn resolution(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
+#[test_resources("tests/res/scoping")]
+fn scoping(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
+#[test_resources("tests/res/control_flow")]
+fn control_flow(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
+#[test_resources("tests/res/narrowing")]
+fn narrowing(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
+#[test_resources("tests/res/barriers")]
+fn barriers(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
@@ -98,11 +123,6 @@ fn arrays(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
-#[test_resources("tests/res/statements")]
-fn statements(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
 #[test_resources("tests/res/assignment")]
 fn assignments(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
@@ -128,17 +148,12 @@ fn recursion(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
-#[test_resources("tests/res/loops")]
-fn loops(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/compile_errors")]
-fn compile_errors(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
 #[test_resources("tests/res/lexer")]
 fn lexer(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/nullability")]
+fn nullability(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }

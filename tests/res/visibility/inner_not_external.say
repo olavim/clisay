@@ -1,6 +1,6 @@
 type Widget {
     inner state;
-    pub fn read() { return this.state; }
+    pub fn read()! { return this.state; }
     init(s) { this.state = s; }
 }
 say w = Widget("ready");

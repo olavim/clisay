@@ -1,10 +1,10 @@
-trait Clock { pub fn tick() { return 1; } }
+trait Clock { pub fn tick()! { return 1; } }
 trait Mover req Clock {
-    req fn onMove(d);
-    pub fn step() { return this.tick() + this.onMove(2); }
+    req fn onMove(d)!;
+    pub fn step()! { return this.tick() + this.onMove(2); }
 }
 type Player with Mover, Clock {
-    inner fn onMove(d) { return d * 10; }
+    inner fn onMove(d)! { return d * 10; }
     init() {}
 }
 say p = Player();

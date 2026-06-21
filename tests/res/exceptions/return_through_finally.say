@@ -1,0 +1,45 @@
+fn fromTry()! {
+    try {
+        return "try";
+    } finally {
+        print("finally1");
+    }
+}
+// expect: finally1
+print(fromTry()); // expect: try
+
+fn fromCatch()! {
+    try {
+        throw "boom";
+    } catch (e) {
+        return "catch";
+    } finally {
+        print("finally2");
+    }
+}
+// expect: finally2
+print(fromCatch()); // expect: catch
+
+fn returnInFinally()! {
+    try {
+        return "try";
+    } finally {
+        return "finally";
+    }
+}
+print(returnInFinally()); // expect: finally
+
+fn siblingReturns(c)! {
+    try {
+        if (c) { return "a"; }
+        return "b";
+    } finally {
+        print("cleanup");
+    }
+}
+print(siblingReturns(true));
+// expect: cleanup
+// expect: a
+print(siblingReturns(false));
+// expect: cleanup
+// expect: b

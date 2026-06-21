@@ -21,6 +21,12 @@ pub enum Inst {
     JumpIfFalse(Label),
     JumpIfFalseOrPop(Label),
     JumpIfTrueOrPop(Label),
+    /// `??` short-circuit: peek the top; if non-null jump to the target leaving it, else pop it
+    /// and fall through to the fallback.
+    JumpIfNotNullOrPop(Label),
+    /// `?.`/`?[` short-circuit: peek the top; if null jump to the target leaving null, else fall
+    /// through to the member access leaving the receiver.
+    JumpIfNull(Label),
     JumpIfGe(Label),
     JumpIfGt(Label),
     JumpIfLe(Label),
@@ -35,6 +41,9 @@ pub enum Inst {
     Throw,
     PushTry(Label),
     PopTry,
+    /// The null-barrier: throw if the top of the stack is null, else leave it. Guards an
+    /// `unknown` value crossing into a non-null slot, and backs the `!` operator.
+    AssertNonNull,
 
     // Stack / constants
     Pop,

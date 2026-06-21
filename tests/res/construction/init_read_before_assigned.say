@@ -1,0 +1,9 @@
+// Reading a non-null field before init assigns it is rejected.
+type T {
+    a;
+    b;
+    init() {
+        this.a = this.b; // error: Field 'b' is read before it is assigned in init
+        this.b = 5;
+    }
+}

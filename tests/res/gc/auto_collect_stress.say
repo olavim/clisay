@@ -3,7 +3,7 @@
 // at the end of the block. Over 100000 iterations that is ~9 MiB of cumulative
 // allocation, which repeatedly crosses the gc threshold.
 
-say i = 0;
+say mut i = 0;
 while i < 100000 {
     say garbage = [i, i, i, i, i, i, i, i];
     i = i + 1;

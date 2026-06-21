@@ -1,0 +1,6 @@
+say mut i = 5;
+while (i < 0) {
+    print("unreachable");
+    i += 1;
+}
+print(i); // expect: 5

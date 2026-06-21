@@ -1,0 +1,2 @@
+fn expr()! { return "hello"; }
+print(expr()); // expect: hello

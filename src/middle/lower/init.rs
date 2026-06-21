@@ -1,8 +1,8 @@
 //! Initializer assembly.
 
-use crate::ast::{AstId, Expr, Stmt, Symbol, TypeDecl};
+use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, UnOp};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp};
 
 use super::Lowerer;
 
@@ -12,7 +12,7 @@ impl<'a> Lowerer<'a> {
             Some(init_id) => {
                 let init_pos = self.ast.pos(init_id).clone();
                 let fn_decl = self.ast_fn(init_id);
-                let params = self.exprs(&fn_decl.params)?;
+                let params = self.params(&fn_decl.params)?;
                 let stmts = self.ast_block(&fn_decl.body);
                 (params, stmts, init_pos)
             },
@@ -22,7 +22,8 @@ impl<'a> Lowerer<'a> {
         let mut body = Vec::new();
 
         for (field, value) in field_inits {
-            let target = self.hir.add(HirExpr::Identifier(*field), type_pos.clone());
+            let field_name = self.hir.text(*field).to_string();
+            let target = self.this_method(&field_name, type_pos);
             let value = self.expr(value)?;
             let assign = self.hir.add(HirExpr::Assign(target, value), type_pos.clone());
             body.push(self.hir.add(HirStmt::Expression(assign), type_pos.clone()));
@@ -64,9 +65,9 @@ impl<'a> Lowerer<'a> {
         self.hir.add(HirExpr::Index(this_expr, name_lit, true), pos.clone())
     }
 
-    fn make_init_fn(&mut self, name: Symbol, params: Vec<HirId<HirExpr>>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
+    fn make_init_fn(&mut self, name: Symbol, params: Vec<HirParam>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
         let body = self.hir.add(HirExpr::Block(body), pos.clone());
-        let fn_decl = HirFnDecl { name, params, body };
+        let fn_decl = HirFnDecl { name, params, body, ret: ReturnShape::NonNull };
         self.hir.add(HirStmt::Fn(fn_decl), pos.clone())
     }
 }

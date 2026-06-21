@@ -1,0 +1,4 @@
+// A statically-void call result is not a value and cannot fill a slot.
+fn log(m) {
+}
+say x = log("hi"); // error: Cannot assign a void result to 'x'; the call returns no value

@@ -1,4 +1,4 @@
-fn boom() {
+fn boom()! {
     print("BOOM");
     return 99;
 }

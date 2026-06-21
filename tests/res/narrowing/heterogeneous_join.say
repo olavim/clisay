@@ -1,0 +1,22 @@
+// Branches assigning different types join to unknown, so the member access is no longer tracked
+// as a specific type's nullable return. It compiles (no nullable-into-non-null error) and the
+// crossing is guarded by a barrier, which passes here since the call returns a value.
+type Cache {
+    pub fn find()? {
+        return 1;
+    }
+}
+type Other {
+    pub fn find()? {
+        return 2;
+    }
+}
+fn pick(flag?) {
+    say mut x = Cache();
+    if (flag != null) {
+        x = Other();
+    }
+    say hit = x.find();
+    print(hit);
+}
+pick(null); // expect: 1

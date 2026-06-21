@@ -7,12 +7,11 @@ say bytesStart = gcHeapSize();
 
 {
     type Node {
-        pub self;
-        init() {
-            this.self = this;
-        }
+        pub mut self?;
+        init() {}
     }
     say n = Node();
+    n.self = n;
 }
 
 gcCollect();

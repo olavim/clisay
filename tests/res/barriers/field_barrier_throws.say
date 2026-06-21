@@ -1,0 +1,8 @@
+// An unknown value into a non-null field throws when it is null at runtime.
+type T {
+    pub mut value;
+    init() { this.value = 1; }
+}
+say t = T();
+say d = { k: null };
+t.value = d["k"]; // error: unexpected null

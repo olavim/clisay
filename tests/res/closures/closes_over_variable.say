@@ -1,8 +1,8 @@
-fn getClosure() {
-    say x = "foo";
+fn getClosure()! {
+    say mut x = "foo";
 
-    fn closure(arg) {
-        fn get() {
+    fn closure(arg)? {
+        fn get()! {
             return x;
         }
         fn set(val) {

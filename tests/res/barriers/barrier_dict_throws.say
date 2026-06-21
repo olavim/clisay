@@ -1,0 +1,3 @@
+// A dict read is a dynamic-boundary read; a null value into a non-null local throws.
+say d = { a: null };
+say k = d["a"]; // error: unexpected null
