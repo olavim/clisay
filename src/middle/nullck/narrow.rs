@@ -2,7 +2,7 @@
 
 use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, Symbol, UnOp};
 
-use super::{Checker, FlowSnapshot, NarrowFact, NarrowKey, TypeTag};
+use super::{Checker, FlowSnapshot, LocalFlow, NarrowFact, NarrowKey, TypeTag};
 
 impl<'a> Checker<'a> {
     /// A reassignment drops the binding's narrowing facts. The slot is non-null again only if
@@ -12,6 +12,10 @@ impl<'a> Checker<'a> {
         if now_non_null {
             self.narrowed.insert(NarrowKey::Local(i));
         }
+    }
+
+    pub(super) fn is_narrowed(&self, key: &NarrowKey) -> bool {
+        self.narrowed.contains(key)
     }
 
     /// The narrow key for `target.field` when the place can be narrowed: a `this` field, or a
@@ -122,27 +126,26 @@ impl<'a> Checker<'a> {
 
     pub(super) fn snapshot(&self) -> FlowSnapshot {
         FlowSnapshot {
-            assigned: self.locals.iter().map(|l| l.assigned).collect(),
-            tags: self.locals.iter().map(|l| l.tag.clone()).collect(),
+            locals: self.locals.iter().map(|l| LocalFlow { assigned: l.assigned, tag: l.tag.clone() }).collect(),
             narrowed: self.narrowed.clone(),
         }
     }
 
     pub(super) fn restore(&mut self, flow: &FlowSnapshot) {
-        for (local, (assigned, tag)) in self.locals.iter_mut().zip(flow.assigned.iter().zip(&flow.tags)) {
-            local.assigned = *assigned;
-            local.tag = tag.clone();
+        for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
+            local.assigned = snap.assigned;
+            local.tag = snap.tag.clone();
         }
         self.narrowed = flow.narrowed.clone();
     }
 
     /// Merges two branch snapshots.
     pub(super) fn join(&mut self, then_snap: &FlowSnapshot, else_snap: &FlowSnapshot) {
-        for i in 0..self.locals.len() {
-            self.locals[i].assigned = then_snap.assigned[i] && else_snap.assigned[i];
-            self.locals[i].tag = if then_snap.tags[i] == else_snap.tags[i]
-                { then_snap.tags[i].clone() } else
-                { TypeTag::Unknown };
+        debug_assert!(then_snap.locals.len() == self.locals.len() && else_snap.locals.len() == self.locals.len());
+        for (i, local) in self.locals.iter_mut().enumerate() {
+            let (then_local, else_local) = (&then_snap.locals[i], &else_snap.locals[i]);
+            local.assigned = then_local.assigned && else_local.assigned;
+            local.tag = if then_local.tag == else_local.tag { then_local.tag.clone() } else { TypeTag::Unknown };
         }
     }
 }
