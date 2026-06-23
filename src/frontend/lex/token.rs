@@ -112,11 +112,18 @@ impl Token {
         return TokenType::from_punctuation(lexeme).map(|kind| Token::new(kind, lexeme));
     }
 
-    /// The contextual keyword this token spells, if it is an identifier spelling one
-    /// (`with`/`req`/`gives`/`pub`/`inner`/`mut`). `None` for any other token.
+    /// The contextual keyword this token spells, if any.
     pub fn contextual(&self) -> Option<ContextualKeyword> {
         match self.kind {
             TokenType::Identifier => ContextualKeyword::from_lexeme(&self.lexeme),
+            _ => None,
+        }
+    }
+
+    pub fn name_word(&self) -> Option<&str> {
+        match self.kind {
+            TokenType::Identifier => Some(&self.lexeme),
+            _ if self.lexeme.starts_with(|c: char| c.is_ascii_alphabetic()) => Some(&self.lexeme),
             _ => None,
         }
     }
@@ -138,6 +145,7 @@ tokens! {
     Trait => "trait",
     This => "this",
     Is => "is",
+    Has => "has",
 
     Return => "return",
     Break => "break",

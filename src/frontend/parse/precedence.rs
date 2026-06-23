@@ -53,6 +53,7 @@ impl Operator {
                 (None, TokenType::LeftBracket) => Some(Operator::Index),
                 (None, TokenType::Comma) => Some(Operator::Comma),
                 (None, TokenType::Is) => Some(Operator::Is),
+                (None, TokenType::Has) => Some(Operator::Has),
 
                 (Some(Operator::LessThan), TokenType::LessThan) => Some(Operator::LeftShift),
                 (Some(Operator::GreaterThan), TokenType::GreaterThan) => Some(Operator::RightShift),
@@ -135,7 +136,7 @@ impl Operator {
             Operator::BitAnd => 9,
             Operator::LessThan | Operator::LessThanEqual |
             Operator::GreaterThan | Operator::GreaterThanEqual |
-            Operator::Is => 10,
+            Operator::Is | Operator::Has => 10,
             Operator::LeftShift | Operator::RightShift => 11,
             Operator::Add | Operator::Subtract => 12,
             Operator::Multiply | Operator::Divide => 13,

@@ -1,0 +1,13 @@
+// Reserved words are valid dict data keys. Data is read with `[]`, so a keyword key like
+// `while` is read as `d["while"]`. The `.` surface reaches methods, named with plain words.
+say d = { while: 1, if: 2, fn: 3, type: 4, has: 5 };
+
+print(d["while"]); // expect: 1
+print(d["if"]);    // expect: 2
+print(d["fn"]);    // expect: 3
+print(d["type"]);  // expect: 4
+print(d["has"]);   // expect: 5
+
+// Keyword keys are data, read with `[]`. The method surface uses plain names.
+print(d.containsKey("if"));   // expect: true
+print(d.containsKey("nope")); // expect: false

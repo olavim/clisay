@@ -7,7 +7,7 @@ d["size"] = 99;             // store DATA at key "size"
 // data via []
 print(d["has"]); // expect: data-at-has
 // method via . -> key "has" is present
-print(d.has("has")); // expect: true
+print(d.containsKey("has")); // expect: true
 // data via []
 print(d["size"]); // expect: 99
 // method via . -> 2 entries
@@ -16,4 +16,4 @@ print(d.size()); // expect: 2
 // a stored function is called via [] (data); a method is called via .
 d["fn"] = () => "stored-fn";
 print(d["fn"]()); // expect: stored-fn
-print(d.has("fn")); // expect: true
+print(d.containsKey("fn")); // expect: true

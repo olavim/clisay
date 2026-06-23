@@ -1,16 +1,16 @@
 say d = { a: 1, b: 2 };
-print(d.size());        // expect: 2
-print(d.has("a"));      // expect: true
-print(d.has("z"));      // expect: false
+print(d.size());              // expect: 2
+print(d.containsKey("a"));    // expect: true
+print(d.containsKey("z"));    // expect: false
 
 d["c"] = 3;
-print(d.size());        // expect: 3
+print(d.size());              // expect: 3
 
-print(d.remove("a"));   // expect: 1
-print(d.has("a"));      // expect: false
-print(d.size());        // expect: 2
-print(d.remove("zzz")); // expect: null
+print(d.remove("a"));         // expect: 1
+print(d.containsKey("a"));    // expect: false
+print(d.size());              // expect: 2
+print(d.remove("zzz"));       // expect: null
 
 // a method is a first-class bound value when referenced without a call
 say sz = d.size;
-print(sz());            // expect: 2
+print(sz());                  // expect: 2
