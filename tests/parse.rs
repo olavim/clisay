@@ -100,6 +100,19 @@ fn assert_operator() {
 }
 
 #[test]
+fn has_operator() {
+    let ast = parse("say x = a has \"b\";");
+    assert!(matches!(ast.get(&say_value(&ast)), Expr::Binary(Operator::Has, _, _)));
+}
+
+#[test]
+fn keyword_as_dict_key() {
+    // A reserved word in dict-key position is a plain string key, not syntax.
+    let dict = parse("say x = { if: 1 };");
+    assert!(matches!(dict.get(&say_value(&dict)), Expr::Literal(Literal::Dict(_))));
+}
+
+#[test]
 fn not_equal_still_parses() {
     // The non-null assertion must not steal `!=`.
     let ast = parse("say x = a != b;");

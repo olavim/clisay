@@ -117,6 +117,14 @@ impl Token {
             _ => None,
         }
     }
+
+    pub fn name_word(&self) -> Option<&str> {
+        match self.kind {
+            TokenType::Identifier => Some(&self.lexeme),
+            _ if self.lexeme.starts_with(|c: char| c.is_ascii_alphabetic()) => Some(&self.lexeme),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Token {
@@ -135,6 +143,7 @@ tokens! {
     Trait => "trait",
     This => "this",
     Is => "is",
+    Has => "has",
 
     Return => "return",
     Break => "break",
