@@ -324,6 +324,13 @@ impl<'a> Checker<'a> {
             HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
             HirExpr::Unary(op, x) => self.unary(*op, x)?,
             HirExpr::Is(x, _) => { self.expr(x)?; Typed::nonnull() },
+            HirExpr::Has(left, _) => {
+                let typed = self.expr(left)?;
+                if typed.nullness.is_void() {
+                    return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), left));
+                }
+                Typed::nonnull()
+            },
             HirExpr::Block(stmts) => {
                 let mark = self.locals.len();
                 for s in stmts { self.stmt(s)?; }

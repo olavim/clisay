@@ -38,6 +38,11 @@ fn exceptions(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
+#[test_resources("tests/res/has")]
+fn has(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
 #[test_resources("tests/res/lambdas")]
 fn lambdas(file: &str) -> Result<(), Failed> {
     common::test_file(file)

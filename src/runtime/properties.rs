@@ -203,7 +203,7 @@ impl Vm {
         }
     }
 
-    pub(super) fn op_set_property_by_id_pop(&mut self) -> Result<(), anyhow::Error> {
+    pub(super) fn op_set_field_pop(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
         let target = self.stack.pop();
         if !matches!(target.kind(), ValueKind::Object(ObjectKind::Instance)) {
@@ -246,6 +246,23 @@ impl Vm {
         }
     }
 
+    pub(super) fn op_get_index_or_null(&mut self) {
+        let const_idx = self.read_next() as usize;
+        let key = self.chunk.constants[const_idx];
+        let receiver = self.stack.pop();
+        let value = match receiver.kind() {
+            ValueKind::Object(ObjectKind::Dict) => {
+                unsafe { &*receiver.as_object().as_dict_ptr() }.entries.get(&key).copied().unwrap_or(Value::NULL)
+            },
+            ValueKind::Object(ObjectKind::Instance) => {
+                let instance = receiver.as_object().as_instance_ptr();
+                self.get_instance_property(instance, key.as_object().as_string_ptr()).unwrap_or(Value::NULL)
+            },
+            _ => Value::NULL,
+        };
+        self.stack.push(value);
+    }
+
     pub(super) fn op_get_property(&mut self) -> Result<(), anyhow::Error> {
         let prop = self.stack.pop();
         let target = self.stack.pop();
@@ -279,7 +296,24 @@ impl Vm {
         }
     }
 
-    /// Resolves `dict.name` to a bound method of a dict.
+    pub(super) fn op_has_member(&mut self) {
+        let const_idx = self.read_next() as usize;
+        let key = self.chunk.constants[const_idx];
+        let receiver = self.stack.pop();
+        let present = match receiver.kind() {
+            ValueKind::Object(ObjectKind::Dict) => {
+                unsafe { &*receiver.as_object().as_dict_ptr() }.entries.contains_key(&key)
+            },
+            ValueKind::Object(ObjectKind::Instance) => {
+                let ty = unsafe { &*(*receiver.as_object().as_instance_ptr()).ty };
+                ty.resolve(key.as_object().as_string_ptr()).is_some()
+            },
+            _ => false,
+        };
+        self.stack.push(Value::from(present));
+    }
+
+    /// Resolves `dict.name` to a bound method of the `dict` method surface.
     fn get_dict_method(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let dict_type = unsafe { &*self.native_types.dict };
         if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
@@ -307,7 +341,7 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn op_get_property_by_id(&mut self) -> Result<(), anyhow::Error> {
+    pub(super) fn op_get_field(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
         let value = self.stack.pop();
         if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
@@ -321,7 +355,7 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn op_set_property_by_id(&mut self) -> Result<(), anyhow::Error> {
+    pub(super) fn op_set_field(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
         let value = self.stack.pop();
         if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {

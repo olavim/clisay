@@ -112,6 +112,9 @@ pub struct Bindings {
     upvalues: FnvHashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
     /// Type declarations => their member layout.
     types: FnvHashMap<HirId<HirStmt>, TypeLayout>,
+    /// Type/trait name => its public member names, for the `x has T` surface form. A type
+    /// contributes its public members; a trait its declared surface.
+    surfaces: FnvHashMap<Symbol, Vec<Symbol>>,
     /// Scope nodes (by HIR node index) => locals to clean up on exit.
     cleanups: FnvHashMap<usize, Vec<Cleanup>>,
     /// Brace-construction expressions => the resolved member ids of their brace fields, in order.
@@ -137,6 +140,11 @@ impl Bindings {
 
     pub fn type_layout(&self, id: &HirId<HirStmt>) -> &TypeLayout {
         &self.types[id]
+    }
+
+    /// The public member names of the type/trait named `name`, or `None` if it names neither.
+    pub fn surface(&self, name: Symbol) -> Option<&[Symbol]> {
+        self.surfaces.get(&name).map(Vec::as_slice)
     }
 
     pub fn cleanup<T>(&self, scope: &HirId<T>) -> &[Cleanup] {
@@ -229,7 +237,6 @@ impl<'a> Resolver<'a> {
             bail!("Too many variables in scope");
         }
 
-        // Duplicate-name collisions across the whole namespace are caught earlier, in `middle::names`.
         self.locals.push(Local { name: Some(name), depth: self.scope_depth, is_captured: false });
 
         let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
@@ -451,6 +458,8 @@ impl<'a> Resolver<'a> {
                 self.bindings.places.insert(*expr, place);
             },
             HirExpr::Is(target, _) => self.expression(target)?,
+            // `x has spec`: bind the left value; the spec is a static shape with no bindings.
+            HirExpr::Has(left, _) => self.expression(left)?,
             HirExpr::Construct(callee, args, brace) => {
                 let callee = *callee;
                 let args = args.clone();
@@ -721,7 +730,7 @@ impl<'a> Resolver<'a> {
                 self.collect_assigned_fields(value, out);
             },
             HirExpr::Block(stmts) => for s in stmts { self.collect_assigned_fields_stmt(s, out); },
-            HirExpr::Unary(_, x) | HirExpr::Is(x, _) => self.collect_assigned_fields(x, out),
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Has(x, _) => self.collect_assigned_fields(x, out),
             HirExpr::Binary(_, l, r) => { self.collect_assigned_fields(l, out); self.collect_assigned_fields(r, out); },
             HirExpr::Call(c, args) => {
                 self.collect_assigned_fields(c, out);
@@ -795,7 +804,16 @@ impl<'a> Resolver<'a> {
 
         self.types.insert(decl.name, layout.clone());
         self.bindings.types.insert(*stmt, layout);
+        self.record_surface(decl.name, &decl.pub_members);
         Ok(())
+    }
+
+    /// Records a type/trait's public member names for the `x has T` surface form, in a stable
+    /// order so codegen emits the membership checks deterministically.
+    fn record_surface(&mut self, name: Symbol, members: &HashSet<Symbol>) {
+        let mut members: Vec<Symbol> = members.iter().copied().collect();
+        members.sort_by_key(|s| s.index());
+        self.bindings.surfaces.insert(name, members);
     }
 
     /// Validates a trait on its own.
@@ -827,6 +845,7 @@ impl<'a> Resolver<'a> {
 
         self.type_frames.pop();
         self.exit_scope(stmt);
+        self.record_surface(decl.name, &decl.surface);
         Ok(())
     }
 

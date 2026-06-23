@@ -1,0 +1,17 @@
+type T { pub mut x?; }
+type P { a; pub b; init() { this.a = 1; this.b = 2; } }
+
+// a nullable field defaults to null but still counts as defined
+say t = T();
+print(t has "x");      // expect: true
+
+// only public members count; a private member is not observable
+say p = P();
+print(p has "a");      // expect: false
+print(p has "b");      // expect: true
+
+// any non-dict, non-instance value has nothing
+print(5 has "x");      // expect: false
+print("hi" has "x");   // expect: false
+print(null has "x");   // expect: false
+print([1, 2] has "x"); // expect: false
