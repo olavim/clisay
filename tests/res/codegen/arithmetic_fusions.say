@@ -2,9 +2,9 @@ say a = 0;
 say b = a + 1;
 // expect asm:
 // 0: PUSH_CONSTANT 0
-// 2: SET_LOCAL L0
+// 2: STORE_LOCAL L0
 // 4: ADD_LOCAL_CONST L0 1
-// 7: SET_LOCAL L1
+// 7: STORE_LOCAL L1
 // 9: POP
 // 10: POP
 // 11: PUSH_NULL
@@ -16,9 +16,9 @@ say a = 0;
 say b = 1 + a;
 // expect asm:
 // 0: PUSH_CONSTANT 0
-// 2: SET_LOCAL L0
+// 2: STORE_LOCAL L0
 // 4: ADD_CONST_LOCAL 1 L0
-// 7: SET_LOCAL L1
+// 7: STORE_LOCAL L1
 // 9: POP
 // 10: POP
 // 11: PUSH_NULL
@@ -30,9 +30,9 @@ say a = 0;
 say b = a - 1;
 // expect asm:
 // 0: PUSH_CONSTANT 0
-// 2: SET_LOCAL L0
+// 2: STORE_LOCAL L0
 // 4: SUB_LOCAL_CONST L0 1
-// 7: SET_LOCAL L1
+// 7: STORE_LOCAL L1
 // 9: POP
 // 10: POP
 // 11: PUSH_NULL
@@ -44,9 +44,9 @@ say a = 0;
 say b = 1 - a;
 // expect asm:
 // 0: PUSH_CONSTANT 0
-// 2: SET_LOCAL L0
+// 2: STORE_LOCAL L0
 // 4: SUB_CONST_LOCAL 1 L0
-// 7: SET_LOCAL L1
+// 7: STORE_LOCAL L1
 // 9: POP
 // 10: POP
 // 11: PUSH_NULL

@@ -55,7 +55,7 @@ impl<'a> Compiler<'a> {
         self.emit(Inst::PushType(idx), stmt);
 
         // Store the type into the reserved slot and discard the placeholder.
-        self.emit(Inst::SetLocal(slot), stmt);
+        self.emit(Inst::StoreLocal(slot), stmt);
         self.emit(Inst::Pop, stmt);
 
         Ok(())

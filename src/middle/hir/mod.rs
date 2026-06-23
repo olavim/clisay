@@ -73,6 +73,28 @@ pub enum HirExpr {
     SafeAccess(HirId<HirExpr>, HirId<HirExpr>, bool),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(HirId<HirExpr>),
+    /// `expr has spec`: a structural containment test yielding a boolean.
+    Has(HirId<HirExpr>, HasSpec),
+}
+
+/// The compile-time right-hand side of `x has spec`.
+pub enum HasSpec {
+    /// `"k"`: the value has member/key `k`.
+    Key(Symbol),
+    /// `T`: the value has every public member name the type/trait `T` declares.
+    Surface(Symbol),
+    /// `[s1, ...]`: every element spec holds (the AND-combinator).
+    All(Vec<HasSpec>),
+    /// `{k: m, ...}`: each key is present and its member value matches `m`.
+    Fields(Vec<(Symbol, HasMatch)>),
+}
+
+/// The value side of a `has` spec entry.
+pub enum HasMatch {
+    /// A scalar literal compared with `==`.
+    Eq(HirLiteral),
+    /// A nested spec applied to the member value.
+    Spec(HasSpec),
 }
 
 pub struct HirFieldInit {

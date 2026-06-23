@@ -1,0 +1,26 @@
+type Point { pub x; pub y; init(a, b) { this.x = a; this.y = b; } }
+trait Drawable { pub fn draw() { } }
+trait PointLike { req x; req y; }
+trait NotPointLike { req x; req z; }
+type Sprite with Drawable { init() { } }
+
+// `is` implies `has`; the reverse does not hold
+say p = Point(1, 2);
+print(p is Point);      // expect: true
+print(p has Point);     // expect: true
+print(p has PointLike); // expect: true
+print(p has NotPointLike); // expect: false
+
+// a dict of the same shape satisfies `has`, but never `is`
+say q = { x: 1, y: 2 };
+print(q is Point);      // expect: false
+print(q has Point);     // expect: true
+
+// structural surface against a trait
+say s = Sprite();
+print(s has Drawable);  // expect: true
+print(p has Drawable);  // expect: false
+
+// a dict with the trait's member names satisfies the surface
+say d = { draw: 1 };
+print(d has Drawable);  // expect: true

@@ -8,37 +8,24 @@ use crate::core::objects::ObjFn;
 use crate::core::value::Value;
 use crate::frontend::lex::SourcePosition;
 
-/// A symbolic jump target, resolved to a byte offset at assembly time. Created
-/// with [`Ir::new_label`] and pinned to a point in the stream with [`Ir::bind`].
+/// A symbolic jump target, resolved to a byte offset at assembly time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Label(usize);
 
-/// A single IR instruction. Operands are typed and jumps reference a [`Label`]
-/// rather than a byte offset.
+/// A single IR instruction.
 #[derive(Clone, Copy)]
 pub enum Inst {
     // Control flow
     Call(u8),
-    /// Brace construction `C(args) { f: v, ... }`: `Construct(fields_idx, arg_count)`.
-    /// The brace field ids live in `Ir::construct_fields` at `fields_idx`; at runtime the
-    /// instance is allocated, those fields are set from the stack, and `init` runs with the args.
+    /// Brace construction `C(args) { f: v, ... }`.
     Construct(u16, u8),
-    /// Fused method call `recv.name(args)`: `Invoke(name_const, arg_count)` resolves
-    /// the method on the receiver's type and pushes the frame directly, avoiding
-    /// the bound-method allocation that `GetIndex` + `Call` would incur.
+    /// Fused method call `recv.name(args)`.
     Invoke(u8, u8),
     Jump(Label),
     JumpIfFalse(Label),
-    /// Short-circuit jumps for `&&`/`||`: peek the top value; if it is falsy
-    /// (resp. truthy) jump to the target leaving it on the stack, otherwise pop
-    /// it and fall through. The surviving value is the expression's result.
     JumpIfFalseOrPop(Label),
     JumpIfTrueOrPop(Label),
-    /// `??` short-circuit: peek the top; if non-null jump to the target leaving it, else pop it
-    /// and fall through to the fallback.
     JumpIfNotNullOrPop(Label),
-    /// `?.`/`?[` short-circuit: peek the top; if null jump to the target leaving null, else fall
-    /// through to the member access leaving the receiver.
     JumpIfNull(Label),
     JumpIfGe(Label),
     JumpIfGt(Label),
@@ -60,6 +47,8 @@ pub enum Inst {
 
     // Stack / constants
     Pop,
+    /// Pushes a copy of the top of the stack.
+    Dup,
     PushConstant(u8),
     PushNull,
     PushTrue,
@@ -68,34 +57,35 @@ pub enum Inst {
     PushType(u8),
 
     // Variables and properties
-    GetGlobal(u8),
-    GetLocal(u8),
-    SetLocal(u8),
-    SetLocalPop(u8),
-    SetLocalAddLocalLocal(u8, u8, u8), // dst = a + b
-    GetUpvalue(u8),
-    SetUpvalue(u8),
-    SetUpvaluePop(u8),
+    LoadGlobal(u8),
+    LoadLocal(u8),
+    StoreLocal(u8),
+    StoreLocalPop(u8),
+    StoreLocalAddLocalLocal(u8, u8, u8), // dst = a + b
+    LoadUpvalue(u8),
+    StoreUpvalue(u8),
+    StoreUpvaluePop(u8),
     CloseUpvalue(u8),
     GetIndex,
     SetIndex,
-    /// Dynamic member access by name (`.name`): same stack protocol as Get/SetIndex,
-    /// but routes the dynamic-boundary `dict` to its method surface instead of data.
+    GetIndexOrNull(u8),
+    /// Dynamic member access by name (`.name`).
     GetProperty,
     SetProperty,
-    GetPropertyId(u8),
-    SetPropertyId(u8),
-    SetPropertyIdPop(u8),
+    /// Instance member access by resolved layout id (`this.x`), skipping the name lookup.
+    GetField(u8),
+    SetField(u8),
+    SetFieldPop(u8),
     Array(u8),
     Dict(u8),
 
     // Arithmetic
     Add,
-    AddLocalConst(u8, u8),   // local + const
-    AddConstLocal(u8, u8),   // const + local
+    AddLocalConst(u8, u8), // local + const
+    AddConstLocal(u8, u8), // const + local
     Subtract,
-    SubLocalConst(u8, u8),   // local - const
-    SubConstLocal(u8, u8),   // const - local
+    SubLocalConst(u8, u8), // local - const
+    SubConstLocal(u8, u8), // const - local
     Multiply,
     Divide,
     Negate,
@@ -114,28 +104,19 @@ pub enum Inst {
     LessThanEqual,
     GreaterThan,
     GreaterThanEqual,
-    /// `x is T`: pop the receiver, push whether its type provides the trait/type named by the
-    /// constant-pool string operand.
     Is(u8),
+    HasMember(u8),
 }
 
-/// A whole program's worth of IR: the instruction stream (with a source position
-/// per instruction) plus the constant pool. Labels are resolved against `code`
-/// positions; `assemble` maps those to byte offsets.
 pub struct Ir {
     code: Vec<Inst>,
     positions: Vec<SourcePosition>,
     constants: Vec<Value>,
     /// Maps an already-pooled constant to its index.
     constant_indices: FnvHashMap<Value, u8>,
-    /// `labels[id]` is the instruction index a label is bound to, or `None`
-    /// until [`bind`](Ir::bind) is called.
     labels: Vec<Option<usize>>,
-    /// Function entry points: each `ObjFn`'s `ip_start` is patched to its body
-    /// label's byte offset at assembly time (offsets aren't known until then).
-    entries: Vec<(*mut ObjFn, Label)>,
-    /// Brace-construction field-id lists, referenced by index from `Inst::Construct`.
-    /// Kept out of the instruction so `Inst` stays `Copy`.
+    fn_entries: Vec<(*mut ObjFn, Label)>,
+    /// Brace-construction field-id lists.
     construct_fields: Vec<Vec<u8>>,
 }
 
@@ -147,12 +128,11 @@ impl Ir {
             constants: Vec::new(),
             constant_indices: FnvHashMap::default(),
             labels: Vec::new(),
-            entries: Vec::new(),
+            fn_entries: Vec::new(),
             construct_fields: Vec::new(),
         }
     }
 
-    /// Records a brace-construction field-id list, returning its index for `Inst::Construct`.
     pub fn add_construct_fields(&mut self, fields: Vec<u8>) -> Result<u16, anyhow::Error> {
         if self.construct_fields.len() >= u16::MAX as usize {
             bail!("Too many brace constructions");
@@ -161,12 +141,10 @@ impl Ir {
         Ok((self.construct_fields.len() - 1) as u16)
     }
 
-    /// The brace field-id list at `idx` (from `Inst::Construct`).
     pub fn construct_fields(&self, idx: u16) -> &[u8] {
         &self.construct_fields[idx as usize]
     }
 
-    /// Appends an instruction, attributing it to `pos`.
     pub fn emit(&mut self, inst: Inst, pos: &SourcePosition) {
         self.code.push(inst);
         self.positions.push(pos.clone());
@@ -183,18 +161,16 @@ impl Ir {
         self.labels[label.0] = Some(self.code.len());
     }
 
-    /// Records that `func`'s entry point is the (bound) body `label`, so its
-    /// `ip_start` can be set to the resolved byte offset during assembly.
-    pub fn record_entry(&mut self, func: *mut ObjFn, label: Label) {
-        self.entries.push((func, label));
+    /// Records that `func`'s entry point is at `label`.
+    pub fn record_fn_entry(&mut self, func: *mut ObjFn, label: Label) {
+        self.fn_entries.push((func, label));
     }
 
-    pub fn entries(&self) -> &[(*mut ObjFn, Label)] {
-        &self.entries
+    pub fn fn_entries(&self) -> &[(*mut ObjFn, Label)] {
+        &self.fn_entries
     }
 
-    /// Interns a constant, returning its pool index. Equal values reuse one slot,
-    /// so the 255-entry pool isn't exhausted by repeated literals.
+    /// Interns a constant, returning its pool index. Equal values reuse one slot.
     pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
         if let Some(&idx) = self.constant_indices.get(&value) {
             return Ok(idx);
@@ -252,6 +228,6 @@ impl Ir {
             .map(|target| target.map(|idx| old_to_new[idx]))
             .collect();
 
-        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, entries: self.entries, construct_fields: self.construct_fields }
+        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, fn_entries: self.fn_entries, construct_fields: self.construct_fields }
     }
 }

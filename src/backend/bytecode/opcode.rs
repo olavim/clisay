@@ -95,6 +95,7 @@ opcodes! {
 
     // Explicit stack manipulation
     Pop => POP,
+    Dup => DUP,
     PushConstant => PUSH_CONSTANT(Const),
     PushNull => PUSH_NULL,
     PushTrue => PUSH_TRUE,
@@ -102,22 +103,25 @@ opcodes! {
     PushClosure => PUSH_CLOSURE(Const),
     PushType => PUSH_TYPE(Const),
 
-    // Gets/sets
-    GetGlobal => GET_GLOBAL(Const),
-    GetLocal => GET_LOCAL(Local),
-    SetLocal => SET_LOCAL(Local),
-    SetLocalPop => SET_LOCAL_POP(Local),
-    SetLocalAddLocalLocal => SET_LOCAL_ADD_LOCAL_LOCAL(Local, Local, Local),
-    GetUpvalue => GET_UPVALUE(Byte),
-    SetUpvalue => SET_UPVALUE(Byte),
-    SetUpvaluePop => SET_UPVALUE_POP(Byte),
+    // Variable bindings (local/upvalue/global)
+    LoadGlobal => LOAD_GLOBAL(Const),
+    LoadLocal => LOAD_LOCAL(Local),
+    StoreLocal => STORE_LOCAL(Local),
+    StoreLocalPop => STORE_LOCAL_POP(Local),
+    StoreLocalAddLocalLocal => STORE_LOCAL_ADD_LOCAL_LOCAL(Local, Local, Local),
+    LoadUpvalue => LOAD_UPVALUE(Byte),
+    StoreUpvalue => STORE_UPVALUE(Byte),
+    StoreUpvaluePop => STORE_UPVALUE_POP(Byte),
+
+    // Object access: by key (`[]`), by name (`.`), or by resolved member id
     GetIndex => GET_INDEX,
     SetIndex => SET_INDEX,
+    GetIndexOrNull => GET_INDEX_OR_NULL(Const),
     GetProperty => GET_PROPERTY,
     SetProperty => SET_PROPERTY,
-    GetPropertyId => GET_PROPERTY_ID(Byte),
-    SetPropertyId => SET_PROPERTY_ID(Byte),
-    SetPropertyIdPop => SET_PROPERTY_ID_POP(Byte),
+    GetField => GET_FIELD(Byte),
+    SetField => SET_FIELD(Byte),
+    SetFieldPop => SET_FIELD_POP(Byte),
 
     // Arithmetic
     Add => ADD,
@@ -145,4 +149,5 @@ opcodes! {
     GreaterThan => GREATER_THAN,
     GreaterThanEqual => GREATER_THAN_EQUAL,
     Is => IS(Const),
+    HasMember => HAS_MEMBER(Const),
 }

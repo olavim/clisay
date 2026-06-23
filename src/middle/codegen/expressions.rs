@@ -1,6 +1,6 @@
 use crate::compiler_error;
 use crate::core::value::Value;
-use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
+use crate::middle::hir::{BinOp, HasMatch, HasSpec, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
 use crate::middle::ir::Inst;
 use crate::middle::bind::{FnKind, Member, Place};
 
@@ -36,7 +36,8 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::Is(idx), expr);
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
-            HirExpr::This => self.emit(Inst::GetLocal(0), expr),
+            HirExpr::Has(left, spec) => self.compile_has(left, spec, expr)?,
+            HirExpr::This => self.emit(Inst::LoadLocal(0), expr),
             HirExpr::Coalesce(left, right) => self.coalesce(left, right)?,
             HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(target, member, *is_dot)?,
             // `!` leaves its operand's value; the barrier below guards it when the check pass flagged it.
@@ -113,16 +114,16 @@ impl<'a> Compiler<'a> {
     /// Emits a read of `place`, pushing its value.
     fn emit_load(&mut self, place: Place, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match place {
-            Place::Local(slot) => self.emit(Inst::GetLocal(slot), node),
-            Place::Upvalue(idx) => self.emit(Inst::GetUpvalue(idx), node),
+            Place::Local(slot) => self.emit(Inst::LoadLocal(slot), node),
+            Place::Upvalue(idx) => self.emit(Inst::LoadUpvalue(idx), node),
             Place::Field(id) => {
-                self.emit(Inst::GetLocal(0), node);
-                self.emit(Inst::GetPropertyId(id), node);
+                self.emit(Inst::LoadLocal(0), node);
+                self.emit(Inst::GetField(id), node);
             },
             Place::Global(symbol) => {
                 let name = self.gc.intern(self.hir.text(symbol));
                 let idx = self.ir.add_constant(Value::from(name))?;
-                self.emit(Inst::GetGlobal(idx), node);
+                self.emit(Inst::LoadGlobal(idx), node);
             },
         }
         Ok(())
@@ -133,14 +134,14 @@ impl<'a> Compiler<'a> {
     fn emit_store(&mut self, place: Place, discarded: bool, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match place {
             Place::Local(slot) => {
-                self.emit(if discarded { Inst::SetLocalPop(slot) } else { Inst::SetLocal(slot) }, node);
+                self.emit(if discarded { Inst::StoreLocalPop(slot) } else { Inst::StoreLocal(slot) }, node);
             },
             Place::Upvalue(idx) => {
-                self.emit(if discarded { Inst::SetUpvaluePop(idx) } else { Inst::SetUpvalue(idx) }, node);
+                self.emit(if discarded { Inst::StoreUpvaluePop(idx) } else { Inst::StoreUpvalue(idx) }, node);
             },
             Place::Field(id) => {
-                self.emit(Inst::GetLocal(0), node); // push `this` (the target)
-                self.emit(if discarded { Inst::SetPropertyIdPop(id) } else { Inst::SetPropertyId(id) }, node);
+                self.emit(Inst::LoadLocal(0), node); // push `this` (the target)
+                self.emit(if discarded { Inst::SetFieldPop(id) } else { Inst::SetField(id) }, node);
             },
             Place::Global(_) => unreachable!("assignment to a global is rejected during resolution"),
         }
@@ -197,6 +198,106 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Compiles `left has spec`. The left value is evaluated once and kept on the stack; the spec
+    /// is a short-circuiting AND whose tests branch to a single `fail` site.
+    fn compile_has(&mut self, left: &HirId<HirExpr>, spec: &HasSpec, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        self.expression(left)?;
+        self.compile_spec(spec, node)
+    }
+
+    /// Compiles a `has` spec against the receiver on top of the stack.
+    fn compile_spec(&mut self, spec: &HasSpec, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match spec {
+            HasSpec::Key(name) => self.emit_has_member(*name, node),
+            HasSpec::Surface(ty) => {
+                let members = match self.bindings.surface(*ty) {
+                    Some(members) => members.to_vec(),
+                    None => compiler_error!(self, node, "'{}' is not a type or trait", self.hir.text(*ty)),
+                };
+                self.compile_and(members.len(), node, &|c, i, n| c.emit_has_member(members[i], n))
+            },
+            HasSpec::All(specs) => self.compile_and(specs.len(), node, &|c, i, n| c.compile_spec(&specs[i], n)),
+            HasSpec::Fields(entries) => self.compile_and(entries.len(), node, &|c, i, n| {
+                let (key, m) = &entries[i];
+                c.compile_field(*key, m, n)
+            }),
+        }
+    }
+
+    /// Compiles a short-circuiting AND of `count` tests.
+    fn compile_and(&mut self, count: usize, node: &HirId<HirExpr>, compile_test: &dyn Fn(&mut Self, usize, &HirId<HirExpr>) -> Result<(), anyhow::Error>) -> Result<(), anyhow::Error> {
+        // An empty spec (`v has []`) holds for any value. Drop the receiver and yield true.
+        if count == 0 {
+            self.emit(Inst::Pop, node);
+            self.emit(Inst::PushTrue, node);
+            return Ok(());
+        }
+        if count == 1 {
+            return compile_test(self, 0, node);
+        }
+        let fail = self.ir.new_label();
+        let end = self.ir.new_label();
+        // Each test but the last runs on a duplicate so the receiver survives for the next.
+        for i in 0..count - 1 {
+            self.emit(Inst::Dup, node);
+            compile_test(self, i, node)?;
+            self.emit(Inst::JumpIfFalse(fail), node);
+        }
+        compile_test(self, count - 1, node)?;
+        self.emit(Inst::Jump(end), node);
+        self.ir.bind(fail);
+        self.emit(Inst::Pop, node); // a test failed: drop the surviving receiver, yield false
+        self.emit(Inst::PushFalse, node);
+        self.ir.bind(end);
+        Ok(())
+    }
+
+    /// Compiles one `has` dict entry. A non-null `==` match needs no membership check, since an
+    /// absent member loads as null and never equals a non-null literal. A null match must also
+    /// check presence, because an absent member loads as null too.
+    fn compile_field(&mut self, key: Symbol, m: &HasMatch, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match m {
+            HasMatch::Eq(HirLiteral::Null) => self.compile_and(2, node, &|c, i, n| match i {
+                0 => c.emit_has_member(key, n),
+                _ => {
+                    c.emit_has_member_load(key, n)?;
+                    c.emit(Inst::PushNull, n);
+                    c.emit(Inst::Equal, n);
+                    Ok(())
+                },
+            }),
+            HasMatch::Eq(lit) => {
+                self.emit_has_member_load(key, node)?;
+                self.literal(node, lit)?;
+                self.emit(Inst::Equal, node);
+                Ok(())
+            },
+            HasMatch::Spec(spec) => {
+                self.emit_has_member_load(key, node)?;
+                self.compile_spec(spec, node)
+            },
+        }
+    }
+
+    fn emit_has_member(&mut self, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let idx = self.member_constant(name)?;
+        self.emit(Inst::HasMember(idx), node);
+        Ok(())
+    }
+
+    /// Loads the value of member `key`. A missing member loads as null instead of erroring.
+    fn emit_has_member_load(&mut self, key: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let idx = self.member_constant(key)?;
+        self.emit(Inst::GetIndexOrNull(idx), node);
+        Ok(())
+    }
+
+    /// Interns a member name into the constant pool, returning its index.
+    fn member_constant(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
+        let name_ref = self.gc.intern(self.hir.text(name));
+        self.ir.add_constant(Value::from(name_ref))
+    }
+
     fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, is_dot: bool, op: IndexOp) -> Result<(), anyhow::Error> {
         if matches!(self.hir.get(target), HirExpr::This) {
             let Member::ById(member_id) = self.bindings.member(target);
@@ -229,12 +330,12 @@ impl<'a> Compiler<'a> {
         match op {
             IndexOp::Load => {
                 self.expression(target_expr)?;
-                self.emit(Inst::GetPropertyId(member_id), target_expr);
+                self.emit(Inst::GetField(member_id), target_expr);
             },
             IndexOp::Store { rhs, discarded } => {
                 self.expression(&rhs)?;
                 self.expression(target_expr)?;
-                self.emit(if discarded { Inst::SetPropertyIdPop(member_id) } else { Inst::SetPropertyId(member_id) }, target_expr);
+                self.emit(if discarded { Inst::SetFieldPop(member_id) } else { Inst::SetField(member_id) }, target_expr);
             }
         }
         Ok(())
