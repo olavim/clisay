@@ -79,14 +79,14 @@ pub enum HirExpr {
 
 /// The compile-time right-hand side of `x has spec`.
 pub enum HasSpec {
-    /// `"k"`: the value has member/key `k`.
-    Key(Symbol),
+    /// `k`: the value has member/key `k`, where `k` is any scalar literal.
+    Key(HirLiteral),
     /// `T`: the value has every public member name the type/trait `T` declares.
     Surface(Symbol),
     /// `[s1, ...]`: every element spec holds (the AND-combinator).
     All(Vec<HasSpec>),
-    /// `{k: m, ...}`: each key is present and its member value matches `m`.
-    Fields(Vec<(Symbol, HasMatch)>),
+    /// `{k: m, ...}`: each scalar-literal key `k` is present and its member value matches `m`.
+    Fields(Vec<(HirLiteral, HasMatch)>),
 }
 
 /// The value side of a `has` spec entry.

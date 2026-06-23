@@ -1,0 +1,2 @@
+say x = 1;
+x has (1 + 1); // error: The right side of `has` must be a key, a type, or a literal shape, not a value

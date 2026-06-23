@@ -180,10 +180,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `a && b` / `a || b` with short-circuit, operand-returning
-    /// semantics: `&&` yields `a` when `a` is falsy else `b`; `||` yields `a`
-    /// when `a` is truthy else `b`. The right operand is evaluated only when the
-    /// short circuit doesn't take.
+    /// Compiles `a && b` / `a || b` with short-circuit.
     fn logical_expression(&mut self, op: BinOp, left: &HirId<HirExpr>, right: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(left)?;
@@ -202,30 +199,38 @@ impl<'a> Compiler<'a> {
     /// is a short-circuiting AND whose tests branch to a single `fail` site.
     fn compile_has(&mut self, left: &HirId<HirExpr>, spec: &HasSpec, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.expression(left)?;
-        self.compile_spec(spec, node)
+        self.compile_has_spec(spec, node)
     }
 
     /// Compiles a `has` spec against the receiver on top of the stack.
-    fn compile_spec(&mut self, spec: &HasSpec, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn compile_has_spec(&mut self, spec: &HasSpec, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match spec {
-            HasSpec::Key(name) => self.emit_has_member(*name, node),
+            HasSpec::Key(key) => {
+                let idx = self.has_spec_key_constant(key)?;
+                self.emit(Inst::HasMember(idx), node);
+                Ok(())
+            },
             HasSpec::Surface(ty) => {
                 let members = match self.bindings.surface(*ty) {
                     Some(members) => members.to_vec(),
                     None => compiler_error!(self, node, "'{}' is not a type or trait", self.hir.text(*ty)),
                 };
-                self.compile_and(members.len(), node, &|c, i, n| c.emit_has_member(members[i], n))
+                self.compile_has_spec_and(members.len(), node, &|c, i, n| {
+                    let idx = c.has_member_constant(members[i])?;
+                    c.emit(Inst::HasMember(idx), n);
+                    Ok(())
+                })
             },
-            HasSpec::All(specs) => self.compile_and(specs.len(), node, &|c, i, n| c.compile_spec(&specs[i], n)),
-            HasSpec::Fields(entries) => self.compile_and(entries.len(), node, &|c, i, n| {
+            HasSpec::All(specs) => self.compile_has_spec_and(specs.len(), node, &|c, i, n| c.compile_has_spec(&specs[i], n)),
+            HasSpec::Fields(entries) => self.compile_has_spec_and(entries.len(), node, &|c, i, n| {
                 let (key, m) = &entries[i];
-                c.compile_field(*key, m, n)
+                c.compile_has_spec_field(key, m, n)
             }),
         }
     }
 
-    /// Compiles a short-circuiting AND of `count` tests.
-    fn compile_and(&mut self, count: usize, node: &HirId<HirExpr>, compile_test: &dyn Fn(&mut Self, usize, &HirId<HirExpr>) -> Result<(), anyhow::Error>) -> Result<(), anyhow::Error> {
+    /// Compiles a short-circuiting AND of `count` has-specs.
+    fn compile_has_spec_and(&mut self, count: usize, node: &HirId<HirExpr>, compile_test: &dyn Fn(&mut Self, usize, &HirId<HirExpr>) -> Result<(), anyhow::Error>) -> Result<(), anyhow::Error> {
         // An empty spec (`v has []`) holds for any value. Drop the receiver and yield true.
         if count == 0 {
             self.emit(Inst::Pop, node);
@@ -255,47 +260,47 @@ impl<'a> Compiler<'a> {
     /// Compiles one `has` dict entry. A non-null `==` match needs no membership check, since an
     /// absent member loads as null and never equals a non-null literal. A null match must also
     /// check presence, because an absent member loads as null too.
-    fn compile_field(&mut self, key: Symbol, m: &HasMatch, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn compile_has_spec_field(&mut self, key: &HirLiteral, m: &HasMatch, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let key_idx = self.has_spec_key_constant(key)?;
         match m {
-            HasMatch::Eq(HirLiteral::Null) => self.compile_and(2, node, &|c, i, n| match i {
-                0 => c.emit_has_member(key, n),
+            HasMatch::Eq(HirLiteral::Null) => self.compile_has_spec_and(2, node, &|c, i, n| match i {
+                0 => { c.emit(Inst::HasMember(key_idx), n); Ok(()) },
                 _ => {
-                    c.emit_has_member_load(key, n)?;
+                    c.emit(Inst::GetIndexOrNull(key_idx), n);
                     c.emit(Inst::PushNull, n);
                     c.emit(Inst::Equal, n);
                     Ok(())
                 },
             }),
             HasMatch::Eq(lit) => {
-                self.emit_has_member_load(key, node)?;
+                self.emit(Inst::GetIndexOrNull(key_idx), node);
                 self.literal(node, lit)?;
                 self.emit(Inst::Equal, node);
                 Ok(())
             },
             HasMatch::Spec(spec) => {
-                self.emit_has_member_load(key, node)?;
-                self.compile_spec(spec, node)
+                self.emit(Inst::GetIndexOrNull(key_idx), node);
+                self.compile_has_spec(spec, node)
             },
         }
     }
 
-    fn emit_has_member(&mut self, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let idx = self.member_constant(name)?;
-        self.emit(Inst::HasMember(idx), node);
-        Ok(())
-    }
-
-    /// Loads the value of member `key`. A missing member loads as null instead of erroring.
-    fn emit_has_member_load(&mut self, key: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let idx = self.member_constant(key)?;
-        self.emit(Inst::GetIndexOrNull(idx), node);
-        Ok(())
-    }
-
-    /// Interns a member name into the constant pool, returning its index.
-    fn member_constant(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
+    /// Interns a member name (a string key) into the constant pool, returning its index.
+    fn has_member_constant(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
         let name_ref = self.gc.intern(self.hir.text(name));
         self.ir.add_constant(Value::from(name_ref))
+    }
+
+    /// Pools a scalar-literal `has` key as its runtime value, returning the constant index.
+    fn has_spec_key_constant(&mut self, key: &HirLiteral) -> Result<u8, anyhow::Error> {
+        let value = match key {
+            HirLiteral::String(s) => Value::from(self.gc.intern(s)),
+            HirLiteral::Number(n) => Value::from(*n),
+            HirLiteral::Boolean(b) => Value::from(*b),
+            HirLiteral::Null => Value::NULL,
+            _ => unreachable!("a `has` key is a scalar literal"),
+        };
+        self.ir.add_constant(value)
     }
 
     fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, is_dot: bool, op: IndexOp) -> Result<(), anyhow::Error> {
@@ -344,8 +349,7 @@ impl<'a> Compiler<'a> {
     fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &Vec<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
         // Fuse `recv.name(args)` into a single INVOKE when the receiver is an
         // arbitrary expression (not `this`/`super`, which have their own member
-        // resolution) and the member is a literal name. This dispatches the method
-        // without the bound-method allocation of `GetIndex` + `Call`.
+        // resolution) and the member is a literal name.
         if let Some((target, name)) = self.as_method_invoke(callee) {
             self.expression(&target)?;
             for arg in args {
@@ -371,8 +375,7 @@ impl<'a> Compiler<'a> {
     /// a literal, returns the receiver expression and the member name.
     fn as_method_invoke(&self, callee: &HirId<HirExpr>) -> Option<(HirId<HirExpr>, String)> {
         let HirExpr::Index(target, member, is_dot) = self.hir.get(callee) else { return None };
-        // Only `recv.name(args)` (a `.`-call) is a method invoke. `recv["k"](args)` is a
-        // call of the *data* at key "k", which must not route to the method surface.
+        // Only `recv.name(args)` is a method invoke.
         if !is_dot {
             return None;
         }

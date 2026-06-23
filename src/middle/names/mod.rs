@@ -26,6 +26,7 @@ struct ResolvedTraits {
 pub struct NameBindings {
     type_traits: HashMap<AstId<Stmt>, ResolvedTraits>,
     name_refs: HashMap<AstId<Expr>, Binding>,
+    types: HashSet<Symbol>,
 }
 
 impl NameBindings {
@@ -51,6 +52,10 @@ impl NameBindings {
             None => None,
         }
     }
+
+    pub fn is_type_or_trait(&self, name: Symbol) -> bool {
+        self.types.contains(&name)
+    }
 }
 
 pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
@@ -58,7 +63,7 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
         ast,
         scopes: Vec::new(),
         trait_flatten_cache: HashMap::new(),
-        out: NameBindings { type_traits: HashMap::new(), name_refs: HashMap::new() },
+        out: NameBindings { type_traits: HashMap::new(), name_refs: HashMap::new(), types: HashSet::new() },
     };
     resolver.visit_stmt(&ast.get_root())?;
     Ok(resolver.out)
@@ -132,15 +137,16 @@ impl<'a> Resolver<'a> {
     }
 
     /// Hoists a block's `type`/`trait` declarations into the current scope so a later-declared one
-    /// is visible block-wide: every name into `types` (for `is T`), and each trait additionally into
-    /// the lookup table (`with`/`req`/qualified calls).
+    /// is visible block-wide.
     fn hoist_types(&mut self, stmts: &[AstId<Stmt>]) {
         for stmt in stmts {
             if let Stmt::Type(decl) = self.ast.get(stmt) {
+                let (name, is_trait) = (decl.name, decl.is_trait);
+                self.out.types.insert(name);
                 let scope = self.scopes.last_mut().unwrap();
-                scope.types.insert(decl.name);
-                if decl.is_trait {
-                    scope.traits.insert(decl.name, *stmt);
+                scope.types.insert(name);
+                if is_trait {
+                    scope.traits.insert(name, *stmt);
                 }
             }
         }

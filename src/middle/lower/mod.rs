@@ -209,8 +209,17 @@ impl<'a> Lowerer<'a> {
 
     fn lower_spec(&mut self, id: &AstId<Expr>) -> Result<HasSpec, anyhow::Error> {
         match self.ast.get(id) {
-            Expr::Literal(Literal::String(s)) => Ok(HasSpec::Key(self.hir.intern(s))),
-            Expr::Identifier(name) => Ok(HasSpec::Surface(*name)),
+            // Any scalar literal is a key: `has "x"`, `has 1`, `has true`, `has null`.
+            Expr::Literal(lit @ (Literal::String(_) | Literal::Number(_) | Literal::Boolean(_) | Literal::Null)) => {
+                Ok(HasSpec::Key(self.literal(lit)?))
+            },
+            // An identifier in spec position names a type/trait, never a runtime value.
+            Expr::Identifier(name) => {
+                if !self.names.is_type_or_trait(*name) {
+                    return Err(self.error(format!("'{}' is not a type or trait", self.hir.text(*name)), id));
+                }
+                Ok(HasSpec::Surface(*name))
+            },
             Expr::Literal(Literal::Array(elements)) => {
                 let specs = elements.iter().map(|e| self.lower_spec(e)).collect::<Result<_, _>>()?;
                 Ok(HasSpec::All(specs))
@@ -223,7 +232,7 @@ impl<'a> Lowerer<'a> {
                 }
                 Ok(HasSpec::Fields(fields))
             },
-            _ => Err(self.error("The right side of `has` must be a key, type, or literal shape", id)),
+            _ => Err(self.error("The right side of `has` must be a key, a type, or a literal shape, not a value", id)),
         }
     }
 
@@ -236,16 +245,18 @@ impl<'a> Lowerer<'a> {
             Expr::Literal(Literal::Array(_) | Literal::Dict(_)) | Expr::Identifier(_) => {
                 Ok(HasMatch::Spec(self.lower_spec(id)?))
             },
-            _ => Err(self.error("A `has` spec value must be a literal or a nested spec", id)),
+            _ => Err(self.error("A `has` value must be a literal, a type name, or a nested shape", id)),
         }
     }
 
-    /// The member name a `has` spec key denotes. Keys are member names, so only a
-    /// string-literal key is valid.
-    fn spec_key(&mut self, id: &AstId<Expr>) -> Result<Symbol, anyhow::Error> {
+    /// The key a `has` dict-spec entry denotes. A key is any scalar literal, mirroring dict
+    /// literals; a computed key is a runtime value and is rejected.
+    fn spec_key(&mut self, id: &AstId<Expr>) -> Result<HirLiteral, anyhow::Error> {
         match self.ast.get(id) {
-            Expr::Literal(Literal::String(s)) => Ok(self.hir.intern(s)),
-            _ => Err(self.error("A `has` spec key must be a member name", id)),
+            Expr::Literal(lit @ (Literal::String(_) | Literal::Number(_) | Literal::Boolean(_) | Literal::Null)) => {
+                Ok(self.literal(lit)?)
+            },
+            _ => Err(self.error("A `has` key must be a literal value", id)),
         }
     }
 
