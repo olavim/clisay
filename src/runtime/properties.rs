@@ -254,7 +254,7 @@ impl Vm {
             ValueKind::Object(ObjectKind::Dict) => {
                 unsafe { &*receiver.as_object().as_dict_ptr() }.entries.get(&key).copied().unwrap_or(Value::NULL)
             },
-            ValueKind::Object(ObjectKind::Instance) => {
+            ValueKind::Object(ObjectKind::Instance) if matches!(key.kind(), ValueKind::Object(ObjectKind::String)) => {
                 let instance = receiver.as_object().as_instance_ptr();
                 self.get_instance_property(instance, key.as_object().as_string_ptr()).unwrap_or(Value::NULL)
             },
@@ -304,7 +304,7 @@ impl Vm {
             ValueKind::Object(ObjectKind::Dict) => {
                 unsafe { &*receiver.as_object().as_dict_ptr() }.entries.contains_key(&key)
             },
-            ValueKind::Object(ObjectKind::Instance) => {
+            ValueKind::Object(ObjectKind::Instance) if matches!(key.kind(), ValueKind::Object(ObjectKind::String)) => {
                 let ty = unsafe { &*(*receiver.as_object().as_instance_ptr()).ty };
                 ty.resolve(key.as_object().as_string_ptr()).is_some()
             },
