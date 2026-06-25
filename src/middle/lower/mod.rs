@@ -11,7 +11,7 @@ use anyhow::anyhow;
 
 use crate::ast::{Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, Operator, Param, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp,
+    BinOp, HasMatch, HasSpec, Hir, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp,
 };
 use crate::middle::names::NameBindings;
 
@@ -194,6 +194,7 @@ impl<'a> Lowerer<'a> {
                 HirExpr::Assign(self.expr(left)?, right)
             },
             Operator::MemberAccess => HirExpr::Index(self.expr(left)?, self.expr(right)?, true),
+            Operator::Has => HirExpr::Has(self.expr(left)?, self.lower_spec(right)?),
             Operator::Comma => return Err(self.error("Unexpected ','", right)),
             // Null-coalescing stays a dedicated HIR node. Codegen short-circuits it later.
             Operator::Coalesce => HirExpr::Coalesce(self.expr(left)?, self.expr(right)?),
@@ -204,6 +205,59 @@ impl<'a> Lowerer<'a> {
 
     fn exprs(&mut self, exprs: &[AstId<Expr>]) -> Result<Vec<HirId<HirExpr>>, anyhow::Error> {
         exprs.iter().map(|e| self.expr(e)).collect()
+    }
+
+    fn lower_spec(&mut self, id: &AstId<Expr>) -> Result<HasSpec, anyhow::Error> {
+        match self.ast.get(id) {
+            // Any scalar literal is a key: `has "x"`, `has 1`, `has true`, `has null`.
+            Expr::Literal(lit @ (Literal::String(_) | Literal::Number(_) | Literal::Boolean(_) | Literal::Null)) => {
+                Ok(HasSpec::Key(self.literal(lit)?))
+            },
+            // An identifier in spec position names a type/trait, never a runtime value.
+            Expr::Identifier(name) => {
+                if !self.names.is_type_or_trait(*name) {
+                    return Err(self.error(format!("'{}' is not a type or trait", self.hir.text(*name)), id));
+                }
+                Ok(HasSpec::Surface(*name))
+            },
+            Expr::Literal(Literal::Array(elements)) => {
+                let specs = elements.iter().map(|e| self.lower_spec(e)).collect::<Result<_, _>>()?;
+                Ok(HasSpec::All(specs))
+            },
+            Expr::Literal(Literal::Dict(pairs)) => {
+                let mut fields = Vec::with_capacity(pairs.len());
+                for (key, value) in pairs {
+                    let name = self.spec_key(key)?;
+                    fields.push((name, self.lower_match(value)?));
+                }
+                Ok(HasSpec::Fields(fields))
+            },
+            _ => Err(self.error("The right side of `has` must be a key, a type, or a literal shape, not a value", id)),
+        }
+    }
+
+    /// Lowers the value side of a `has` spec entry.
+    fn lower_match(&mut self, id: &AstId<Expr>) -> Result<HasMatch, anyhow::Error> {
+        match self.ast.get(id) {
+            Expr::Literal(lit @ (Literal::Null | Literal::Boolean(_) | Literal::Number(_) | Literal::String(_))) => {
+                Ok(HasMatch::Eq(self.literal(lit)?))
+            },
+            Expr::Literal(Literal::Array(_) | Literal::Dict(_)) | Expr::Identifier(_) => {
+                Ok(HasMatch::Spec(self.lower_spec(id)?))
+            },
+            _ => Err(self.error("A `has` value must be a literal, a type name, or a nested shape", id)),
+        }
+    }
+
+    /// The key a `has` dict-spec entry denotes. A key is any scalar literal, mirroring dict
+    /// literals; a computed key is a runtime value and is rejected.
+    fn spec_key(&mut self, id: &AstId<Expr>) -> Result<HirLiteral, anyhow::Error> {
+        match self.ast.get(id) {
+            Expr::Literal(lit @ (Literal::String(_) | Literal::Number(_) | Literal::Boolean(_) | Literal::Null)) => {
+                Ok(self.literal(lit)?)
+            },
+            _ => Err(self.error("A `has` key must be a literal value", id)),
+        }
     }
 
     fn literal(&mut self, literal: &Literal) -> Result<HirLiteral, anyhow::Error> {
@@ -256,7 +310,7 @@ impl<'a> Lowerer<'a> {
             Some(param) => Some(self.expr(param)?),
             None => None,
         };
-        Ok(HirCatchClause { param, body: self.expr(&catch.body)? })
+        Ok(HirCatchClause { param, mutable: catch.mutable, body: self.expr(&catch.body)? })
     }
 }
 

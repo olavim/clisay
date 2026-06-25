@@ -30,7 +30,7 @@ impl<'a> Compiler<'a> {
                         compiler_error!(self, stmt_id, "Cannot return a value from a type initializer");
                     }
 
-                    self.emit(Inst::GetLocal(0), stmt_id);
+                    self.emit(Inst::LoadLocal(0), stmt_id);
                 } else if let Some(expr) = expr {
                     self.expression(expr)?;
                 } else {
@@ -95,7 +95,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::PushClosure(const_idx), stmt_id);
 
                 // Store the closure into the reserved slot and discard the placeholder.
-                self.emit(Inst::SetLocal(slot), stmt_id);
+                self.emit(Inst::StoreLocal(slot), stmt_id);
                 self.emit(Inst::Pop, stmt_id);
             },
             HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
@@ -106,9 +106,9 @@ impl<'a> Compiler<'a> {
 
                 let inst = if let Some(expr) = value {
                     self.expression(expr)?;
-                    Inst::SetLocal(slot)
+                    Inst::StoreLocal(slot)
                 } else {
-                    Inst::GetLocal(slot)
+                    Inst::LoadLocal(slot)
                 };
                 self.emit(inst, stmt_id);
             },

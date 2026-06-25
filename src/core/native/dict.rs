@@ -5,8 +5,7 @@ use crate::core::value::Value;
 
 use super::NativeType;
 
-/// The `dict` method surface, reached via `.` (data is reached via `[]`). The
-/// method set is deliberately small; none allocate, so they need no extra rooting.
+/// `dict` methods, reached via `.` (data is reached via `[]`).
 pub struct NativeDict;
 
 impl NativeDict {
@@ -16,7 +15,7 @@ impl NativeDict {
         Ok(())
     }
 
-    fn has(host: &mut dyn Host, target: Value, key: Value) -> Result<(), anyhow::Error> {
+    fn contains_key(host: &mut dyn Host, target: Value, key: Value) -> Result<(), anyhow::Error> {
         let dict = unsafe { &*target.as_object().as_dict_ptr() };
         host.push(if dict.entries.contains_key(&key) { Value::TRUE } else { Value::FALSE });
         Ok(())
@@ -37,11 +36,11 @@ impl NativeType for NativeDict {
 
     fn methods(&self, gc: &mut Gc) -> Vec<(*mut ObjString, ObjNativeFn)> {
         let size = gc.intern("size");
-        let has = gc.intern("has");
+        let contains_key = gc.intern("containsKey");
         let remove = gc.intern("remove");
         vec![
             (size, ObjNativeFn::new(size, 0, (|host, target, _args| Self::size(host, target)) as NativeFn)),
-            (has, ObjNativeFn::new(has, 1, (|host, target, args| Self::has(host, target, args[0])) as NativeFn)),
+            (contains_key, ObjNativeFn::new(contains_key, 1, (|host, target, args| Self::contains_key(host, target, args[0])) as NativeFn)),
             (remove, ObjNativeFn::new(remove, 1, (|host, target, args| Self::remove(host, target, args[0])) as NativeFn)),
         ]
     }

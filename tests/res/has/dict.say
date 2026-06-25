@@ -1,0 +1,26 @@
+say d = { x: 1, y: 2, nested: { a: 10 } };
+
+// key presence and absence
+print(d has "x");             // expect: true
+print(d has "z");             // expect: false
+
+// dict value match
+print(d has { x: 1 });        // expect: true
+print(d has { x: 2 });        // expect: false
+print(d has { x: 1, y: 2 });  // expect: true
+print(d has { x: 1, y: 1 });  // expect: false
+
+// a null value matches a present null member, not a non-null one
+say e = { a: null };
+print(e has { a: null });     // expect: true
+print(d has { x: null });     // expect: false
+
+// the array form is an AND of specs
+print(d has ["x", "y"]);      // expect: true
+print(d has ["x", "z"]);      // expect: false
+print(d has [{ x: 1 }, "y"]); // expect: true
+print(d has [{ x: 2 }, "y"]); // expect: false
+
+// nested specs recurse into member values
+print(d has { nested: { a: 10 } }); // expect: true
+print(d has { nested: { a: 99 } }); // expect: false

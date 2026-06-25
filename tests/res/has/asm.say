@@ -1,0 +1,51 @@
+0 has { a: 1 };
+// expect asm:
+// 0: PUSH_CONSTANT 0
+// 2: GET_INDEX_OR_NULL "a"
+// 4: PUSH_CONSTANT 1
+// 6: EQUAL
+// 7: POP
+// 8: PUSH_NULL
+// 9: RETURN
+
+// @split
+
+0 has { a: 1, b: 2 };
+// expect asm:
+// 0: PUSH_CONSTANT 0
+// 2: DUP
+// 3: GET_INDEX_OR_NULL "a"
+// 5: PUSH_CONSTANT 1
+// 7: JUMP_IF_NEQ <18>
+// 10: GET_INDEX_OR_NULL "b"
+// 12: PUSH_CONSTANT 2
+// 14: EQUAL
+// 15: JUMP <20>
+// 18: POP
+// 19: PUSH_FALSE
+// 20: POP
+// 21: PUSH_NULL
+// 22: RETURN
+
+// @split
+
+0 has { a: 1, b: 2, c: 3 };
+// expect asm:
+// 0: PUSH_CONSTANT 0
+// 2: DUP
+// 3: GET_INDEX_OR_NULL "a"
+// 5: PUSH_CONSTANT 1
+// 7: JUMP_IF_NEQ <26>
+// 10: DUP
+// 11: GET_INDEX_OR_NULL "b"
+// 13: PUSH_CONSTANT 2
+// 15: JUMP_IF_NEQ <26>
+// 18: GET_INDEX_OR_NULL "c"
+// 20: PUSH_CONSTANT 3
+// 22: EQUAL
+// 23: JUMP <28>
+// 26: POP
+// 27: PUSH_FALSE
+// 28: POP
+// 29: PUSH_NULL
+// 30: RETURN

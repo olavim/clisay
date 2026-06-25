@@ -1,5 +1,4 @@
-// A nested block may redeclare a name from an enclosing scope (shadowing is legal;
-// only same-scope duplicates collide).
+// A nested block may redeclare a name from an enclosing scope.
 say x = 1;
 {
   say x = 2;

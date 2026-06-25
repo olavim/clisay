@@ -129,6 +129,9 @@ pub struct Bindings {
     upvalues: FnvHashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
     /// Type declarations => their member layout.
     types: FnvHashMap<HirId<HirStmt>, TypeLayout>,
+    /// Type/trait name => its public member names, for the `x has T` surface form. A type
+    /// contributes its public members; a trait its declared surface.
+    surfaces: FnvHashMap<Symbol, Vec<Symbol>>,
     /// Scope nodes (by HIR node index) => locals to clean up on exit.
     cleanups: FnvHashMap<usize, Vec<Cleanup>>,
     /// Brace-construction expressions => the resolved member ids of their brace fields, in order.
@@ -156,6 +159,11 @@ impl Bindings {
         &self.types[id]
     }
 
+    /// The public member names of the type/trait named `name`, or `None` if it names neither.
+    pub fn surface(&self, name: Symbol) -> Option<&[Symbol]> {
+        self.surfaces.get(&name).map(Vec::as_slice)
+    }
+
     pub fn cleanup<T>(&self, scope: &HirId<T>) -> &[Cleanup] {
         self.cleanups.get(&scope.index()).map_or(&[], Vec::as_slice)
     }
@@ -170,7 +178,6 @@ struct Local {
     /// addressed positionally (slot 0), never resolved by name.
     name: Option<Symbol>,
     depth: u8,
-    is_mutable: bool,
     is_captured: bool,
 }
 
@@ -249,13 +256,13 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn declare_local(&mut self, name: Symbol, is_mutable: bool) -> Result<u8, anyhow::Error> {
+    fn declare_local(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
         }
 
         // Duplicate-name collisions across the whole namespace are caught earlier, in `middle::names`.
-        self.locals.push(Local { name: Some(name), depth: self.scope_depth, is_mutable, is_captured: false });
+        self.locals.push(Local { name: Some(name), depth: self.scope_depth, is_captured: false });
 
         let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
         Ok((self.locals.len() - 1) as u8 - local_offset)
@@ -390,7 +397,7 @@ impl<'a> Resolver<'a> {
                     self.enter_scope();
                     if let Some(param) = &catch.param {
                         let HirExpr::Identifier(name) = self.hir.get(param) else { unreachable!() };
-                        self.declare_local(*name, false)?;
+                        self.declare_local(*name)?;
                     }
                     // catch body is a HirExpr::Block compiled inline (no extra scope).
                     let HirExpr::Block(stmts) = self.hir.get(&catch.body) else { unreachable!() };
@@ -411,11 +418,13 @@ impl<'a> Resolver<'a> {
             HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
             HirStmt::Trait(decl) => self.trait_declaration(stmt_id, decl)?,
             HirStmt::Say(field) => {
-                let slot = self.declare_local(field.name, true)?;
-                self.bindings.slots.insert(*stmt_id, slot);
+                // Resolve the initializer before declaring the binding, so a name inside it
+                // refers to the prior (shadowed) binding, not the one being introduced.
                 if let Some(expr) = &field.value {
                     self.expression(expr)?;
                 }
+                let slot = self.declare_local(field.name)?;
+                self.bindings.slots.insert(*stmt_id, slot);
             },
             HirStmt::Expression(expr) => self.expression(expr)?,
             HirStmt::While(cond, body) => {
@@ -456,7 +465,7 @@ impl<'a> Resolver<'a> {
                 HirStmt::Type(decl) => decl.name,
                 _ => continue,
             };
-            self.declare_local(name, false)?;
+            self.declare_local(name)?;
         }
         Ok(())
     }
@@ -486,6 +495,8 @@ impl<'a> Resolver<'a> {
             },
             // `x is T`: bind the receiver; `T` is a static name resolved at codegen.
             HirExpr::Is(target, _) => self.expression(target)?,
+            // `x has spec`: bind the left value; the spec is a static shape with no bindings.
+            HirExpr::Has(left, _) => self.expression(left)?,
             HirExpr::Construct(callee, args, brace) => {
                 let callee = *callee;
                 let args = args.clone();
@@ -552,11 +563,6 @@ impl<'a> Resolver<'a> {
         match self.hir.get(lhs) {
             HirExpr::Identifier(name) => {
                 let name = *name;
-                if let Some(local) = self.locals.iter().rev().find(|local| local.name == Some(name)) {
-                    if !local.is_mutable {
-                        compiler_error!(self, lhs, "Invalid assignment: '{}' is immutable", self.hir.text(name));
-                    }
-                }
                 let place = self.resolve_place(name, lhs)?;
                 if let Place::Global(_) = place {
                     compiler_error!(self, lhs, "Cannot assign to undefined variable '{}'", self.hir.text(name));
@@ -689,7 +695,7 @@ impl<'a> Resolver<'a> {
 
         self.scope_depth += 1;
         let local_offset = self.locals.len() as u8;
-        self.locals.push(Local { name: self_name, depth: self.scope_depth, is_mutable: false, is_captured: false });
+        self.locals.push(Local { name: self_name, depth: self.scope_depth, is_captured: false });
         self.fn_frames.push(FnFrame {
             upvalues: Vec::new(),
             local_offset,
@@ -701,7 +707,7 @@ impl<'a> Resolver<'a> {
             let HirExpr::Identifier(param_name) = self.hir.get(&param.name) else {
                 unreachable!("parser guarantees parameters are identifiers");
             };
-            self.declare_local(*param_name, true)?;
+            self.declare_local(*param_name)?;
         }
 
         self.expression(&decl.body)?;
@@ -778,7 +784,7 @@ impl<'a> Resolver<'a> {
                 self.collect_assigned_fields(value, out);
             },
             HirExpr::Block(stmts) => for s in stmts { self.collect_assigned_fields_stmt(s, out); },
-            HirExpr::Unary(_, x) | HirExpr::Is(x, _) => self.collect_assigned_fields(x, out),
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Has(x, _) => self.collect_assigned_fields(x, out),
             HirExpr::Binary(_, l, r) => { self.collect_assigned_fields(l, out); self.collect_assigned_fields(r, out); },
             HirExpr::Call(c, args) => {
                 self.collect_assigned_fields(c, out);
@@ -855,7 +861,16 @@ impl<'a> Resolver<'a> {
 
         self.types.insert(decl.name, layout.clone());
         self.bindings.types.insert(*stmt, layout);
+        self.record_surface(decl.name, &decl.pub_members);
         Ok(())
+    }
+
+    /// Records a type/trait's public member names for the `x has T` surface form, in a stable
+    /// order so codegen emits the membership checks deterministically.
+    fn record_surface(&mut self, name: Symbol, members: &HashSet<Symbol>) {
+        let mut members: Vec<Symbol> = members.iter().copied().collect();
+        members.sort_by_key(|s| s.index());
+        self.bindings.surfaces.insert(name, members);
     }
 
     /// Validates a standalone `trait`: resolves its method bodies against a layout built from its
@@ -891,6 +906,7 @@ impl<'a> Resolver<'a> {
 
         self.type_frames.pop();
         self.exit_scope(stmt);
+        self.record_surface(decl.name, &decl.surface);
         Ok(())
     }
 

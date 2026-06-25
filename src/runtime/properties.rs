@@ -221,7 +221,7 @@ impl Vm {
         }
     }
 
-    pub(super) fn op_set_property_by_id_pop(&mut self) -> Result<(), anyhow::Error> {
+    pub(super) fn op_set_field_pop(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
         let target = self.stack.pop();
         if !matches!(target.kind(), ValueKind::Object(ObjectKind::Instance)) {
@@ -264,9 +264,24 @@ impl Vm {
         }
     }
 
-    /// Dotted access `target.name`: the value's declared interface. Same stack
-    /// protocol as `op_get_index`, but a `dict` resolves to its **method** surface
-    /// (`.`) rather than its keyed data (`[]`), so `d.has` and `d["has"]` never collide.
+    pub(super) fn op_get_index_or_null(&mut self) {
+        let const_idx = self.read_next() as usize;
+        let key = self.chunk.constants[const_idx];
+        let receiver = self.stack.pop();
+        let value = match receiver.kind() {
+            ValueKind::Object(ObjectKind::Dict) => {
+                unsafe { &*receiver.as_object().as_dict_ptr() }.entries.get(&key).copied().unwrap_or(Value::NULL)
+            },
+            ValueKind::Object(ObjectKind::Instance) if matches!(key.kind(), ValueKind::Object(ObjectKind::String)) => {
+                let instance = receiver.as_object().as_instance_ptr();
+                self.get_instance_property(instance, key.as_object().as_string_ptr()).unwrap_or(Value::NULL)
+            },
+            _ => Value::NULL,
+        };
+        self.stack.push(value);
+    }
+
+    /// Dotted access `target.name`.
     pub(super) fn op_get_property(&mut self) -> Result<(), anyhow::Error> {
         let prop = self.stack.pop();
         let target = self.stack.pop();
@@ -282,8 +297,7 @@ impl Vm {
         }
     }
 
-    /// Dotted store `target.name = v`. Instances assign the named field; a `dict`
-    /// method is not assignable (use `[]` for data).
+    /// Dotted store `target.name = v`.
     pub(super) fn op_set_property(&mut self) -> Result<(), anyhow::Error> {
         let prop = self.stack.pop();
         let target = self.stack.pop();
@@ -300,6 +314,23 @@ impl Vm {
             )),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
         }
+    }
+
+    pub(super) fn op_has_member(&mut self) {
+        let const_idx = self.read_next() as usize;
+        let key = self.chunk.constants[const_idx];
+        let receiver = self.stack.pop();
+        let present = match receiver.kind() {
+            ValueKind::Object(ObjectKind::Dict) => {
+                unsafe { &*receiver.as_object().as_dict_ptr() }.entries.contains_key(&key)
+            },
+            ValueKind::Object(ObjectKind::Instance) if matches!(key.kind(), ValueKind::Object(ObjectKind::String)) => {
+                let ty = unsafe { &*(*receiver.as_object().as_instance_ptr()).ty };
+                ty.resolve(key.as_object().as_string_ptr()).is_some()
+            },
+            _ => false,
+        };
+        self.stack.push(Value::from(present));
     }
 
     /// Resolves `dict.name` to a bound method of the `dict` method surface.
@@ -333,7 +364,7 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn op_get_property_by_id(&mut self) -> Result<(), anyhow::Error> {
+    pub(super) fn op_get_field(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
         let value = self.stack.pop();
         if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
@@ -347,7 +378,7 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn op_set_property_by_id(&mut self) -> Result<(), anyhow::Error> {
+    pub(super) fn op_set_field(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
         let value = self.stack.pop();
         if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {

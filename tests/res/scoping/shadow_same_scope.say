@@ -1,0 +1,4 @@
+// A `say` may shadow an earlier `say` in the same scope: a new binding, not a mutation.
+say v = 0;
+say v = 1;
+print(v); // expect: 1

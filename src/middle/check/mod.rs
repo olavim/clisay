@@ -110,8 +110,8 @@ impl Local {
         Local { name, declared_nullable, mutable, assigned: true, tag: TypeTag::Unknown, func: None }
     }
 
-    fn catch(name: Symbol) -> Local {
-        Local { name, declared_nullable: true, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None }
+    fn catch(name: Symbol, mutable: bool) -> Local {
+        Local { name, declared_nullable: true, mutable, assigned: true, tag: TypeTag::Unknown, func: None }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
@@ -280,7 +280,7 @@ impl<'a> Checker<'a> {
                     let mark = self.locals.len();
                     if let Some(param) = catch.param {
                         let name = self.ident_sym(&param);
-                        self.locals.push(Local::catch(name));
+                        self.locals.push(Local::catch(name, catch.mutable));
                     }
                     self.expr(&catch.body)?;
                     self.locals.truncate(mark);
@@ -324,6 +324,13 @@ impl<'a> Checker<'a> {
             HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
             HirExpr::Unary(op, x) => self.unary(*op, x)?,
             HirExpr::Is(x, _) => { self.expr(x)?; Typed::nonnull() },
+            HirExpr::Has(left, _) => {
+                let typed = self.expr(left)?;
+                if typed.nullness.is_void() {
+                    return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), left));
+                }
+                Typed::nonnull()
+            },
             HirExpr::Block(stmts) => {
                 let mark = self.locals.len();
                 for s in stmts { self.stmt(s)?; }

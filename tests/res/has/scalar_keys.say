@@ -1,0 +1,18 @@
+// A `has` key is any scalar literal, matching dict literals. Non-string keys match dicts only.
+say n = { 1: 10, 2: 20, true: 99 };
+
+// number and bool keys, as a bare membership test
+print(n has 1);          // expect: true
+print(n has 3);          // expect: false
+print(n has true);       // expect: true
+
+// number keys in a value match and an array AND
+print(n has { 1: 10 });  // expect: true
+print(n has { 1: 99 });  // expect: false
+print(n has [1, 2]);     // expect: true
+
+// an instance has only string-named members, so a non-string key is always absent
+type T { pub mut x?; }
+say t = T();
+print(t has 1);          // expect: false
+print(t has { 1: 2 });   // expect: false

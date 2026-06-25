@@ -438,20 +438,20 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let catch = if let Some(catch_tok) = self.tokens.next_if(TokenType::Catch) {
             let catch_pos = catch_tok.pos.clone();
-            let param = match self.tokens.peek(0).kind {
-                TokenType::Identifier => Some(self.parse_identifier_expr()?),
+            let (param, mutable) = match self.tokens.peek(0).kind {
+                TokenType::Identifier => (Some(self.parse_identifier_expr()?), false),
                 TokenType::LeftParen => {
                     self.tokens.expect(TokenType::LeftParen)?;
                     let params = self.parse_params(TokenType::RightParen)?;
                     if params.len() != 1 {
                         parse_error!(self, &catch_pos, "Expected one parameter in catch block")
                     }
-                    Some(params[0].name)
+                    (Some(params[0].name), params[0].mutable)
                 },
-                _ => None
+                _ => (None, false)
             };
             let body = self.parse_block_or_stmt()?;
-            Some(CatchClause { param, body })
+            Some(CatchClause { param, mutable, body })
         } else {
             None
         };
@@ -596,6 +596,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(left)
     }
 
+    /// Parses a primary expression: a literal, an array or dict literal, or an identifier.
+    fn parse_primary(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        match Operator::parse_prefix(self.tokens, 0) {
+            Some(op) => self.parse_expr_prefix(op),
+            _ => self.parse_expr_atom(),
+        }
+    }
+
     fn parse_expr_infix(&mut self, op: Operator, expr: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
         let pos = self.ast.pos(&expr).clone();
 
@@ -609,6 +617,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 // The right operand is a static type/trait name, not an expression.
                 let name = self.parse_identifier()?;
                 Expr::Is(expr, self.ast.intern(&name))
+            },
+            Operator::Has => {
+                // The right operand is a static spec read as a primary. Later passes validate it.
+                let right = self.parse_primary()?;
+                Expr::Binary(op, expr, right)
             },
             Operator::Arrow => {
                 let right = self.parse_block_or_expr(op.infix_precedence().unwrap())?;
@@ -733,6 +746,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                                 self.tokens.expect(TokenType::Colon)?;
                                 let value = self.parse_expr_precedence(value_precedence)?;
                                 (key, value, Some(String::from("null")))
+                            },
+                            // A reserved word is a plain string key. It needs an explicit value;
+                            // a keyword cannot stand in as the shorthand `{ x }` value.
+                            _ if tok.name_word().is_some() => {
+                                self.tokens.next();
+                                let name = tok.lexeme.clone();
+                                let key = self.ast.add_expr(Expr::Literal(Literal::String(name.clone())), key_pos.clone());
+                                self.tokens.expect(TokenType::Colon)?;
+                                let value = self.parse_expr_precedence(value_precedence)?;
+                                (key, value, Some(format!("s:{name}")))
                             },
                             _ => parse_error!(self, &key_pos, "Unexpected token {}: expected a dict key", tok)
                         };

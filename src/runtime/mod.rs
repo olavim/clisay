@@ -371,31 +371,31 @@ impl Vm {
             let op = read_byte!();
             match op {
                 // ---- inlined hot ops (operate on the register-resident `ip`) ----
-                opcode::GET_LOCAL => {
+                opcode::LOAD_LOCAL => {
                     let idx = read_byte!() as usize;
                     let value = unsafe { *(*self.frames.top()).stack_start.add(idx) };
                     self.stack.push(value);
                 },
-                opcode::SET_LOCAL => {
+                opcode::STORE_LOCAL => {
                     let idx = read_byte!() as usize;
                     unsafe { *(*self.frames.top()).stack_start.add(idx) = self.stack.peek(0) };
                 },
-                opcode::SET_LOCAL_POP => {
+                opcode::STORE_LOCAL_POP => {
                     let idx = read_byte!() as usize;
                     let value = self.stack.pop();
                     unsafe { *(*self.frames.top()).stack_start.add(idx) = value };
                 },
-                opcode::GET_UPVALUE => {
+                opcode::LOAD_UPVALUE => {
                     let idx = read_byte!() as usize;
                     let upvalue = self.get_upvalue(idx);
                     self.stack.push(unsafe { *(*upvalue).location });
                 },
-                opcode::SET_UPVALUE => {
+                opcode::STORE_UPVALUE => {
                     let idx = read_byte!() as usize;
                     let upvalue = self.get_upvalue(idx);
                     unsafe { *(*upvalue).location = self.stack.peek(0) };
                 },
-                opcode::SET_UPVALUE_POP => {
+                opcode::STORE_UPVALUE_POP => {
                     let idx = read_byte!() as usize;
                     let upvalue = self.get_upvalue(idx);
                     let value = self.stack.pop();
@@ -440,7 +440,7 @@ impl Vm {
                     let a = self.stack.pop();
                     if !a.value_eq(b) { ip = unsafe { code_base.add(offset) }; }
                 },
-                opcode::SET_LOCAL_ADD_LOCAL_LOCAL => {
+                opcode::STORE_LOCAL_ADD_LOCAL_LOCAL => {
                     let dst = read_byte!() as usize;
                     let a_idx = read_byte!() as usize;
                     let b_idx = read_byte!() as usize;
@@ -583,15 +583,16 @@ impl Vm {
                 opcode::DICT => delegate!(self.op_dict()),
                 opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
                 opcode::PUSH_TYPE => delegate!(self.op_push_type()),
-                opcode::GET_GLOBAL => delegate!(self.op_get_global()?),
+                opcode::LOAD_GLOBAL => delegate!(self.op_load_global()?),
                 opcode::INVOKE => delegate!(self.op_invoke()?),
                 opcode::GET_INDEX => delegate!(self.op_get_index()?),
                 opcode::SET_INDEX => delegate!(self.op_set_index()?),
+                opcode::GET_INDEX_OR_NULL => delegate!(self.op_get_index_or_null()),
                 opcode::GET_PROPERTY => delegate!(self.op_get_property()?),
                 opcode::SET_PROPERTY => delegate!(self.op_set_property()?),
-                opcode::GET_PROPERTY_ID => delegate!(self.op_get_property_by_id()?),
-                opcode::SET_PROPERTY_ID => delegate!(self.op_set_property_by_id()?),
-                opcode::SET_PROPERTY_ID_POP => delegate!(self.op_set_property_by_id_pop()?),
+                opcode::GET_FIELD => delegate!(self.op_get_field()?),
+                opcode::SET_FIELD => delegate!(self.op_set_field()?),
+                opcode::SET_FIELD_POP => delegate!(self.op_set_field_pop()?),
                 opcode::NEGATE => delegate!(self.op_negate()?),
                 opcode::NOT => self.op_not(),
                 opcode::LEFT_SHIFT => delegate!(self.op_left_shift()?),
@@ -607,6 +608,8 @@ impl Vm {
                 opcode::GREATER_THAN => delegate!(self.op_greater_than()?),
                 opcode::GREATER_THAN_EQUAL => delegate!(self.op_greater_than_equal()?),
                 opcode::IS => delegate!(self.op_is()),
+                opcode::HAS_MEMBER => delegate!(self.op_has_member()),
+                opcode::DUP => self.op_dup(),
                 _ => unsafe { std::hint::unreachable_unchecked() }
             }
         }

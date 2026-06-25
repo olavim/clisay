@@ -3,9 +3,9 @@ say n = 5;
 say w = n!;
 // expect asm:
 // 0: PUSH_CONSTANT 5
-// 2: SET_LOCAL L0
-// 4: GET_LOCAL L0
-// 6: SET_LOCAL L1
+// 2: STORE_LOCAL L0
+// 4: LOAD_LOCAL L0
+// 6: STORE_LOCAL L1
 // 8: POP
 // 9: POP
 // 10: PUSH_NULL
