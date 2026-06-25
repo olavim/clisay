@@ -1,6 +1,6 @@
 
 pub struct Stack<T, const N: usize> {
-    values: [T; N],
+    values: Vec<T>,
     top: *mut T,
     bottom: *mut T,
     /// One past the last slot (`bottom + N`), precomputed so `is_full` is a bare
@@ -11,7 +11,7 @@ pub struct Stack<T, const N: usize> {
 impl<'a, T: Copy, const N: usize> Stack<T, N> {
     pub fn new() -> Self {
         Self {
-            values: [unsafe { std::mem::zeroed() }; N],
+            values: vec![unsafe { std::mem::zeroed() }; N],
             top: std::ptr::null_mut(),
             bottom: std::ptr::null_mut(),
             end: std::ptr::null_mut()
