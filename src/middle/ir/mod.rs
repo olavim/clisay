@@ -15,17 +15,15 @@ pub struct Label(usize);
 pub enum Inst {
     // Control flow
     Call(u8),
+    /// Brace construction `C(args) { f: v, ... }`.
     Construct(u16, u8),
+    /// Fused method call `recv.name(args)`.
     Invoke(u8, u8),
     Jump(Label),
     JumpIfFalse(Label),
     JumpIfFalseOrPop(Label),
     JumpIfTrueOrPop(Label),
-    /// `??` short-circuit: peek the top; if non-null jump to the target leaving it, else pop it
-    /// and fall through to the fallback.
     JumpIfNotNullOrPop(Label),
-    /// `?.`/`?[` short-circuit: peek the top; if null jump to the target leaving null, else fall
-    /// through to the member access leaving the receiver.
     JumpIfNull(Label),
     JumpIfGe(Label),
     JumpIfGt(Label),
@@ -47,6 +45,8 @@ pub enum Inst {
 
     // Stack / constants
     Pop,
+    /// Pushes a copy of the top of the stack.
+    Dup,
     PushConstant(u8),
     PushNull,
     PushTrue,
@@ -55,22 +55,24 @@ pub enum Inst {
     PushType(u8),
 
     // Variables and properties
-    GetGlobal(u8),
-    GetLocal(u8),
-    SetLocal(u8),
-    SetLocalPop(u8),
-    SetLocalAddLocalLocal(u8, u8, u8), // dst = a + b
-    GetUpvalue(u8),
-    SetUpvalue(u8),
-    SetUpvaluePop(u8),
+    LoadGlobal(u8),
+    LoadLocal(u8),
+    StoreLocal(u8),
+    StoreLocalPop(u8),
+    StoreLocalAddLocalLocal(u8, u8, u8), // dst = a + b
+    LoadUpvalue(u8),
+    StoreUpvalue(u8),
+    StoreUpvaluePop(u8),
     CloseUpvalue(u8),
     GetIndex,
     SetIndex,
+    GetIndexOrNull(u8),
     GetProperty,
     SetProperty,
-    GetPropertyId(u8),
-    SetPropertyId(u8),
-    SetPropertyIdPop(u8),
+    /// Instance member access by resolved layout id (`this.x`), skipping the name lookup.
+    GetField(u8),
+    SetField(u8),
+    SetFieldPop(u8),
     Array(u8),
     Dict(u8),
 
@@ -100,6 +102,7 @@ pub enum Inst {
     GreaterThan,
     GreaterThanEqual,
     Is(u8),
+    HasMember(u8),
 }
 
 pub struct Ir {
@@ -108,10 +111,8 @@ pub struct Ir {
     constants: Vec<Value>,
     constant_indices: FnvHashMap<Value, u8>,
     labels: Vec<Option<usize>>,
-    /// Function entry points.
-    entries: Vec<(*mut ObjFn, Label)>,
-    /// Brace-construction field-id lists, referenced by index from `Inst::Construct`.
-    /// Kept out of the instruction so `Inst` stays `Copy`.
+    fn_entries: Vec<(*mut ObjFn, Label)>,
+    /// Brace-construction field-id lists.
     construct_fields: Vec<Vec<u8>>,
 }
 
@@ -123,7 +124,7 @@ impl Ir {
             constants: Vec::new(),
             constant_indices: FnvHashMap::default(),
             labels: Vec::new(),
-            entries: Vec::new(),
+            fn_entries: Vec::new(),
             construct_fields: Vec::new(),
         }
     }
@@ -155,12 +156,13 @@ impl Ir {
         self.labels[label.0] = Some(self.code.len());
     }
 
-    pub fn record_entry(&mut self, func: *mut ObjFn, label: Label) {
-        self.entries.push((func, label));
+    /// Records that `func`'s entry point is at `label`.
+    pub fn record_fn_entry(&mut self, func: *mut ObjFn, label: Label) {
+        self.fn_entries.push((func, label));
     }
 
-    pub fn entries(&self) -> &[(*mut ObjFn, Label)] {
-        &self.entries
+    pub fn fn_entries(&self) -> &[(*mut ObjFn, Label)] {
+        &self.fn_entries
     }
 
     /// Interns a constant, returning its pool index.
@@ -220,6 +222,6 @@ impl Ir {
             .map(|target| target.map(|idx| old_to_new[idx]))
             .collect();
 
-        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, entries: self.entries, construct_fields: self.construct_fields }
+        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, fn_entries: self.fn_entries, construct_fields: self.construct_fields }
     }
 }

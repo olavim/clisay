@@ -1,0 +1,6 @@
+// A closure binds to the shadowed binding that existed when it was created, not a later one.
+say v = 0;
+say f = () => v;
+say v = 1;
+print(f()); // expect: 0
+print(v);   // expect: 1

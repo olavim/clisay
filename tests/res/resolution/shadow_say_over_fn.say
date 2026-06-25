@@ -1,0 +1,3 @@
+// A `say` may shadow value bindings but not an item: a function name stays unique.
+fn foo() { return 1; }
+say foo = 2; // error: 'foo' already declared in this scope

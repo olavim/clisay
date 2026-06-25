@@ -1,0 +1,8 @@
+// A `say` may shadow a catch parameter, which shares the handler's scope.
+try {
+  throw "boom";
+} catch (e) {
+  print(e); // expect: boom
+  say e = "handled";
+  print(e); // expect: handled
+}

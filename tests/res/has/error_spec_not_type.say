@@ -1,0 +1,3 @@
+say shape = { x: 1 };
+say v = 1;
+v has shape; // error: 'shape' is not a type or trait

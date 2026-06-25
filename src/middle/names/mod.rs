@@ -19,6 +19,7 @@ struct ResolvedTraits {
 pub struct NameBindings {
     type_traits: HashMap<AstId<Stmt>, ResolvedTraits>,
     name_refs: HashMap<AstId<Expr>, Binding>,
+    types: HashSet<Symbol>,
 }
 
 impl NameBindings {
@@ -41,6 +42,10 @@ impl NameBindings {
             None => None,
         }
     }
+
+    pub fn is_type_or_trait(&self, name: Symbol) -> bool {
+        self.types.contains(&name)
+    }
 }
 
 pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
@@ -48,14 +53,22 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
         ast,
         scopes: Vec::new(),
         trait_flatten_cache: HashMap::new(),
-        out: NameBindings { type_traits: HashMap::new(), name_refs: HashMap::new() },
+        out: NameBindings { type_traits: HashMap::new(), name_refs: HashMap::new(), types: HashSet::new() },
     };
     resolver.visit_stmt(&ast.get_root())?;
     Ok(resolver.out)
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum DeclKind {
+    Say,
+    Param,
+    Item,
+}
+
+/// One lexical scope.
 struct Scope {
-    declared: HashSet<Symbol>,
+    declared: HashMap<Symbol, DeclKind>,
     traits: HashMap<Symbol, AstId<Stmt>>,
     types: HashSet<Symbol>,
 }
@@ -73,7 +86,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn push_scope(&mut self) {
-        self.scopes.push(Scope { declared: HashSet::new(), traits: HashMap::new(), types: HashSet::new() });
+        self.scopes.push(Scope { declared: HashMap::new(), traits: HashMap::new(), types: HashSet::new() });
     }
 
     fn is_type_or_trait(&self, name: Symbol) -> bool {
@@ -88,30 +101,37 @@ impl<'a> Resolver<'a> {
         self.scopes.iter().rev().find_map(|scope| scope.traits.get(&name).copied())
     }
 
-    fn declare<T>(&mut self, name: Symbol, at: &AstId<T>) -> Result<(), anyhow::Error> {
-        if !self.scopes.last_mut().unwrap().declared.insert(name) {
-            return Err(self.error(format!("'{}' already declared in this scope", self.ast.text(name)), at));
+    fn declare<T>(&mut self, name: Symbol, kind: DeclKind, at: &AstId<T>) -> Result<(), anyhow::Error> {
+        let scope = self.scopes.last_mut().unwrap();
+        if let Some(&existing) = scope.declared.get(&name) {
+            let can_shadow = kind == DeclKind::Say && existing != DeclKind::Item;
+            if !can_shadow {
+                return Err(self.error(format!("'{}' already declared in this scope", self.ast.text(name)), at));
+            }
         }
+        scope.declared.insert(name, kind);
         Ok(())
     }
 
     fn hoist_types(&mut self, stmts: &[AstId<Stmt>]) {
         for stmt in stmts {
             if let Stmt::Type(decl) = self.ast.get(stmt) {
+                let (name, is_trait) = (decl.name, decl.is_trait);
+                self.out.types.insert(name);
                 let scope = self.scopes.last_mut().unwrap();
-                scope.types.insert(decl.name);
-                if decl.is_trait {
-                    scope.traits.insert(decl.name, *stmt);
+                scope.types.insert(name);
+                if is_trait {
+                    scope.traits.insert(name, *stmt);
                 }
             }
         }
     }
 
-    fn decl_name(&self, stmt: &AstId<Stmt>) -> Option<Symbol> {
+    fn decl_name(&self, stmt: &AstId<Stmt>) -> Option<(Symbol, DeclKind)> {
         match self.ast.get(stmt) {
-            Stmt::Type(decl) => Some(decl.name),
-            Stmt::Fn(decl) => Some(decl.name),
-            Stmt::Say(field) => Some(field.name),
+            Stmt::Type(decl) => Some((decl.name, DeclKind::Item)),
+            Stmt::Fn(decl) => Some((decl.name, DeclKind::Item)),
+            Stmt::Say(field) => Some((field.name, DeclKind::Say)),
             _ => None,
         }
     }
@@ -119,8 +139,8 @@ impl<'a> Resolver<'a> {
     fn block(&mut self, stmts: &[AstId<Stmt>]) -> Result<(), anyhow::Error> {
         self.hoist_types(stmts);
         for stmt in stmts {
-            if let Some(name) = self.decl_name(stmt) {
-                self.declare(name, stmt)?;
+            if let Some((name, kind)) = self.decl_name(stmt) {
+                self.declare(name, kind, stmt)?;
             }
         }
         for s in stmts {
@@ -157,7 +177,7 @@ impl<'a> Resolver<'a> {
         self.push_scope();
         for param in &decl.params {
             let Expr::Identifier(name) = self.ast.get(&param.name) else { unreachable!("a parameter is an identifier") };
-            self.declare(*name, &param.name)?;
+            self.declare(*name, DeclKind::Param, &param.name)?;
         }
         self.visit_expr(&decl.body)?;
         self.pop_scope();
@@ -168,7 +188,7 @@ impl<'a> Resolver<'a> {
         self.push_scope();
         if let Some(param) = &catch.param {
             let Expr::Identifier(name) = self.ast.get(param) else { unreachable!("a catch parameter is an identifier") };
-            self.declare(*name, param)?;
+            self.declare(*name, DeclKind::Param, param)?;
         }
         let Expr::Block(stmts) = self.ast.get(&catch.body) else { unreachable!("a catch body is a block") };
         self.block(stmts)?;

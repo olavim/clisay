@@ -1,0 +1,7 @@
+// A `mut` catch parameter can be reassigned inside the handler.
+try {
+    throw "boom";
+} catch (mut e) {
+    e = "handled";
+    print(e); // expect: handled
+}

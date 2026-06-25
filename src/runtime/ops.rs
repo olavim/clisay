@@ -164,7 +164,7 @@ impl Vm {
         self.stack.push(value);
     }
 
-    pub(super) fn op_get_global(&mut self) -> Result<(), anyhow::Error> {
+    pub(super) fn op_load_global(&mut self) -> Result<(), anyhow::Error> {
         let const_idx = self.read_next() as usize;
         let constant = &self.chunk.constants[const_idx];
         let string = constant.as_object().as_string_ptr();
@@ -173,6 +173,11 @@ impl Vm {
         };
         self.stack.push(value);
         Ok(())
+    }
+
+    /// Pushes a copy of the top of the stack.
+    pub(super) fn op_dup(&mut self) {
+        self.stack.push(self.stack.peek(0));
     }
 
     pub(super) fn op_is(&mut self) {

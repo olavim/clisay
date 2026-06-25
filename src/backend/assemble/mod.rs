@@ -20,7 +20,7 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     }
 
     // Finalise function entry points now that byte offsets are known.
-    for &(func, body_label) in ir.entries() {
+    for &(func, body_label) in ir.fn_entries() {
         unsafe { (*func).ip_start = offsets[ir.label_target(body_label)]; }
     }
 
@@ -66,7 +66,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Throw
         | PopTry
         | AssertNonNull
-        | Pop
+        | Pop | Dup
         | PushNull | PushTrue | PushFalse
         | GetIndex | SetIndex
         | GetProperty | SetProperty
@@ -78,10 +78,10 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Array(b)
         | Dict(b)
         | PushConstant(b) | PushClosure(b) | PushType(b)
-        | GetGlobal(b) | GetLocal(b) | SetLocal(b) | SetLocalPop(b)
-        | CloseUpvalue(b) | GetUpvalue(b) | SetUpvalue(b) | SetUpvaluePop(b)
-        | GetPropertyId(b) | SetPropertyId(b) | SetPropertyIdPop(b)
-        | Is(b) => chunk.write(b, pos),
+        | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
+        | CloseUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
+        | GetField(b) | SetField(b) | SetFieldPop(b)
+        | Is(b) | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
 
         Jump(l)
         | JumpIfFalse(l)
@@ -125,7 +125,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(local, pos);
         }
 
-        SetLocalAddLocalLocal(dst, a, b) => {
+        StoreLocalAddLocalLocal(dst, a, b) => {
             chunk.write(dst, pos);
             chunk.write(a, pos);
             chunk.write(b, pos);

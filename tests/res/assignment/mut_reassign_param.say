@@ -1,0 +1,8 @@
+fn f(mut param) {
+    param = 1;
+    print(param);
+}
+
+say p = 0;
+f(p); // expect: 1
+print(p); // expect: 0

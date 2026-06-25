@@ -16,18 +16,18 @@ fn fuse(code: &[Inst], i: usize) -> Option<(Inst, usize)> {
     let a3 = code.get(i + 3).copied();
 
     // `dst = a + b`
-    if let (GetLocal(a), Some(GetLocal(b)), Some(Add), Some(SetLocalPop(dst))) = (a0, a1, a2, a3) {
-        return Some((SetLocalAddLocalLocal(dst, a, b), 4));
+    if let (LoadLocal(a), Some(LoadLocal(b)), Some(Add), Some(StoreLocalPop(dst))) = (a0, a1, a2, a3) {
+        return Some((StoreLocalAddLocalLocal(dst, a, b), 4));
     }
 
     // branch if `local <cmp> const`
-    if let (GetLocal(l), Some(PushConstant(c)), Some(cmp), Some(JumpIfFalse(t))) = (a0, a1, a2, a3) {
+    if let (LoadLocal(l), Some(PushConstant(c)), Some(cmp), Some(JumpIfFalse(t))) = (a0, a1, a2, a3) {
         if let Some(make) = local_const_branch(cmp) {
             return Some((make(t, l, c), 4));
         }
     }
     // branch if `const <cmp> local`
-    if let (PushConstant(c), Some(GetLocal(l)), Some(cmp), Some(JumpIfFalse(t))) = (a0, a1, a2, a3) {
+    if let (PushConstant(c), Some(LoadLocal(l)), Some(cmp), Some(JumpIfFalse(t))) = (a0, a1, a2, a3) {
         if let Some(make) = local_const_branch(flip(cmp)) {
             return Some((make(t, l, c), 4));
         }
@@ -41,18 +41,18 @@ fn fuse(code: &[Inst], i: usize) -> Option<(Inst, usize)> {
     }
 
     // `local +/- const`
-    if let (GetLocal(l), Some(PushConstant(c)), Some(Add)) = (a0, a1, a2) {
+    if let (LoadLocal(l), Some(PushConstant(c)), Some(Add)) = (a0, a1, a2) {
         return Some((AddLocalConst(l, c), 3));
     }
-    if let (GetLocal(l), Some(PushConstant(c)), Some(Subtract)) = (a0, a1, a2) {
+    if let (LoadLocal(l), Some(PushConstant(c)), Some(Subtract)) = (a0, a1, a2) {
         return Some((SubLocalConst(l, c), 3));
     }
 
     // `const +/- local`
-    if let (PushConstant(c), Some(GetLocal(l)), Some(Add)) = (a0, a1, a2) {
+    if let (PushConstant(c), Some(LoadLocal(l)), Some(Add)) = (a0, a1, a2) {
         return Some((AddConstLocal(c, l), 3));
     }
-    if let (PushConstant(c), Some(GetLocal(l)), Some(Subtract)) = (a0, a1, a2) {
+    if let (PushConstant(c), Some(LoadLocal(l)), Some(Subtract)) = (a0, a1, a2) {
         return Some((SubConstLocal(c, l), 3));
     }
 

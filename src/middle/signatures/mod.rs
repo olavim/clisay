@@ -136,7 +136,7 @@ impl<'a> Collector<'a> {
     fn expr(&mut self, expr: &HirId<HirExpr>) {
         match self.hir.get(expr) {
             HirExpr::Block(stmts) => for s in stmts { self.stmt(s); },
-            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) => self.expr(x),
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) | HirExpr::Has(x, _) => self.expr(x),
             HirExpr::Binary(_, l, r) | HirExpr::Assign(l, r) | HirExpr::Coalesce(l, r)
             | HirExpr::SafeAccess(l, r, _) | HirExpr::Index(l, r, _) => { self.expr(l); self.expr(r); },
             HirExpr::Call(callee, args) => {

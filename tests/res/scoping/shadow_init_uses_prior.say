@@ -1,0 +1,7 @@
+// A shadowing initializer sees the prior binding, not the one being introduced.
+say x = 1;
+{
+  say x = x + 10;
+  print(x); // expect: 11
+}
+print(x); // expect: 1

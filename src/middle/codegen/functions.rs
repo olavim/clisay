@@ -28,7 +28,7 @@ impl<'a> Compiler<'a> {
         let arity = decl.params.len() as u8;
         let upvalues = self.bindings.upvalues(&decl.body).to_vec();
         let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues));
-        self.ir.record_entry(func, body);
+        self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))
     }
@@ -37,7 +37,7 @@ impl<'a> Compiler<'a> {
         if matches!(self.hir.get(body_id), HirExpr::Block(_)) {
             if !matches!(self.ir.code().last(), Some(Inst::Return)) {
                 if let FnKind::Initializer = kind {
-                    self.emit(Inst::GetLocal(0), body_id);
+                    self.emit(Inst::LoadLocal(0), body_id);
                 } else {
                     self.emit(Inst::PushNull, body_id);
                 }
