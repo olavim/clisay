@@ -242,10 +242,19 @@ impl<'a> Lowerer<'a> {
             Expr::Literal(lit @ (Literal::Null | Literal::Boolean(_) | Literal::Number(_) | Literal::String(_))) => {
                 Ok(HasMatch::Eq(self.literal(lit)?))
             },
-            Expr::Literal(Literal::Array(_) | Literal::Dict(_)) | Expr::Identifier(_) => {
+            Expr::Literal(Literal::Array(_) | Literal::Dict(_)) => {
                 Ok(HasMatch::Spec(self.lower_spec(id)?))
             },
-            _ => Err(self.error("A `has` value must be a literal, a type name, or a nested shape", id)),
+            // A bare name in a value position would bind, which `has` does not do.
+            // Suggest `has <name>`, the structural test the bare name used to mean.
+            Expr::Identifier(name) => Err(self.error(
+                format!(
+                    "A `has` value must be a literal, `is T`, `has T`, or a nested shape; did you mean `has {}`?",
+                    self.hir.text(*name)
+                ),
+                id,
+            )),
+            _ => Err(self.error("A `has` value must be a literal, `is T`, `has T`, or a nested shape", id)),
         }
     }
 
