@@ -156,6 +156,7 @@ tokens! {
     Else => "else",
     While => "while",
     For => "for",
+    Match => "match",
     Throw => "throw",
     Try => "try",
     Catch => "catch",
@@ -187,5 +188,8 @@ tokens! {
     Pipe => "|",
     Hat => "^",
     Tilde => "~",
-    Dot => "."
+    Dot => ".",
+    DotDot => "..",
+    At => "@",
+    LeftArrow => "<-"
 }

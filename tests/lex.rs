@@ -21,6 +21,24 @@ fn lexes_exclamation() {
 }
 
 #[test]
+fn lexes_match_bind_arrow_greedily() {
+    // `<-` is one token, so `a<-b` is a match-bind, never `a < -b`.
+    assert_eq!(kinds("a<-b"), vec![TokenType::Identifier, TokenType::LeftArrow, TokenType::Identifier]);
+    // A spaced less-than against a negated operand stays two tokens.
+    assert_eq!(kinds("a < -b"), vec![TokenType::Identifier, TokenType::LessThan, TokenType::Minus, TokenType::Identifier]);
+}
+
+#[test]
+fn lexes_rest_and_as_and_match() {
+    assert_eq!(kinds(".."), vec![TokenType::DotDot]);
+    assert_eq!(kinds("..rest"), vec![TokenType::DotDot, TokenType::Identifier]);
+    // A lone `.` stays member access, distinct from the `..` rest token.
+    assert_eq!(kinds("a.b"), vec![TokenType::Identifier, TokenType::Dot, TokenType::Identifier]);
+    assert_eq!(kinds("@"), vec![TokenType::At]);
+    assert_eq!(kinds("match"), vec![TokenType::Match]);
+}
+
+#[test]
 fn mut_is_a_contextual_keyword() {
     // `mut` is a modifier in declaration position, like `pub`/`inner`, so it lexes as
     // an identifier and is recognized contextually.

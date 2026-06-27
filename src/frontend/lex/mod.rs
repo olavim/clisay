@@ -66,6 +66,12 @@ fn next_token(input: &str, input_index: usize, pos: &SourcePosition) -> Result<T
         return Ok(Token::new(TokenType::StringLiteral, &input[input_index..end]));
     }
 
+    if let Some(substr) = input.get(input_index..input_index + 2) {
+        if let Some(token) = Token::from_punctuation(substr) {
+            return Ok(token);
+        }
+    }
+
     let end = input_index + 1;
     let substr = &input[input_index..end];
 
