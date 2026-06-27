@@ -26,7 +26,7 @@ pub use output::Output;
 /// and not a stable public API.
 #[doc(hidden)]
 pub mod internals {
-    pub use crate::ast::{Ast, AstId, Expr, FieldInit, FnDecl, Literal, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
+    pub use crate::ast::{Ast, AstId, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
     pub use crate::frontend::lex::{ContextualKeyword, Token, TokenType};
     pub use crate::middle::hir::{
         Hir, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl,
@@ -43,6 +43,10 @@ pub mod internals {
 
     pub fn parse(src: &str) -> Ast {
         Parser::parse(&mut TokenStream::new(&lex(src))).expect("parse error")
+    }
+
+    pub fn parse_matcher(src: &str) -> Result<(Ast, AstId<Matcher>), String> {
+        Parser::parse_matcher_root(&mut TokenStream::new(&lex(src))).map_err(|e| e.to_string())
     }
 
     pub fn lower(src: &str) -> Hir {

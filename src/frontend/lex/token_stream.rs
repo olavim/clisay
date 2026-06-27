@@ -22,8 +22,12 @@ impl<'a> TokenStream<'a> {
         return self.tokens.get(self.pos + look_ahead).unwrap();
     }
 
-    pub fn match_next(&self, token_type: TokenType) -> bool {
+    pub fn matches(&self, token_type: TokenType) -> bool {
         return self.peek(0).kind == token_type;
+    }
+
+    pub fn matches_single(&self, token_type: TokenType) -> bool {
+        return self.peek(0).kind == token_type && self.peek(1).kind != token_type;
     }
 
     pub fn next(&mut self) -> &'a Token {
@@ -37,7 +41,15 @@ impl<'a> TokenStream<'a> {
     }
 
     pub fn next_if(&mut self, token_type: TokenType) -> Option<&'a Token> {
-        if self.peek(0).kind == token_type {
+        if self.matches(token_type) {
+            return Some(self.next());
+        }
+
+        return None;
+    }
+
+    pub fn next_if_single(&mut self, token_type: TokenType) -> Option<&'a Token> {
+        if self.matches_single(token_type) {
             return Some(self.next());
         }
 

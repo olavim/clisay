@@ -55,22 +55,15 @@ impl fmt::Display for Literal {
 pub enum Expr {
     /// A block body (function/method/lambda/program)
     Block(Vec<AstId<Stmt>>),
-
     /// A unary expression: Unary(operator, operand)
     Unary(Operator, AstId<Expr>),
-
     /// A binary expression: Binary(operator, left, right)
     Binary(Operator, AstId<Expr>, AstId<Expr>),
-
     /// A function call: Call(callee, arguments)
     Call(AstId<Expr>, Vec<AstId<Expr>>),
-
     /// An access expression: `Index(target, index, is_dot)`. `is_dot` marks `.name`
-    /// (member access via `.`) versus `[expr]` (data access via `[]`). The two
-    /// resolve identically for instances/arrays; they diverge only at dynamic-boundary
-    /// values (`dict`), where `.` is the method surface and `[]` is keyed data.
+    /// (member access via `.`) versus `[expr]` (data access via `[]`).
     Index(AstId<Expr>, AstId<Expr>, bool),
-
     Literal(Literal),
     Identifier(Symbol),
     /// `expr is T`: a nominal capability test against a static type/trait *name*
@@ -85,6 +78,50 @@ pub enum Expr {
     SafeAccess(AstId<Expr>, AstId<Expr>, bool),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
+}
+
+/// A scalar literal in a matcher: an equality value (`v == s`) or a shape key.
+#[derive(Clone, PartialEq, Debug)]
+pub enum MatchScalar {
+    Null,
+    Boolean(bool),
+    Number(f64),
+    String(String),
+}
+
+/// A field of a shape matcher `{ key: value }`. The `{ x }` shorthand parses to key `x`
+/// with a binder value.
+pub struct MatchField {
+    pub key: MatchScalar,
+    pub value: AstId<Matcher>,
+}
+
+/// An element of an array matcher. `Rest` is `..` or `..name`, at most one per array.
+pub enum MatchElem {
+    Elem(AstId<Matcher>),
+    Rest(Option<Symbol>),
+}
+
+/// A matcher: a grammar of shapes, literals, type tests, and binders run against a value.
+pub enum Matcher {
+    /// `_`: matches anything, binds nothing.
+    Wildcard,
+    /// A scalar literal compared with `==`.
+    Literal(MatchScalar),
+    /// A bare identifier that binds the whole value.
+    Binder(Symbol),
+    /// `is T shape?` (nominal) or `has T shape?` (structural).
+    Type { nominal: bool, name: Symbol, shape: Option<AstId<Matcher>> },
+    /// A structural shape `{ k: m, ... }`.
+    Shape(Vec<MatchField>),
+    /// An array shape `[ ... ]` with at most one rest element.
+    Array(Vec<MatchElem>),
+    /// `name @ m`: binds the whole value and also matches `m`.
+    As(Symbol, AstId<Matcher>),
+    /// `a | b | ...`: alternatives tried left to right.
+    Or(Vec<AstId<Matcher>>),
+    /// `a & b & ...`: all must match.
+    And(Vec<AstId<Matcher>>),
 }
 
 pub struct FieldInit {
@@ -190,7 +227,8 @@ pub enum Stmt {
 
 pub enum NodeKind {
     Expr(Expr),
-    Stmt(Stmt)
+    Stmt(Stmt),
+    Matcher(Matcher)
 }
 
 pub trait AstNode: Sized {
@@ -209,6 +247,13 @@ impl AstNode for Stmt {
     fn wrap(self) -> NodeKind { NodeKind::Stmt(self) }
     fn unwrap(node: &NodeKind) -> &Stmt {
         match node { NodeKind::Stmt(stmt) => stmt, _ => unreachable!() }
+    }
+}
+
+impl AstNode for Matcher {
+    fn wrap(self) -> NodeKind { NodeKind::Matcher(self) }
+    fn unwrap(node: &NodeKind) -> &Matcher {
+        match node { NodeKind::Matcher(matcher) => matcher, _ => unreachable!() }
     }
 }
 
@@ -321,6 +366,10 @@ impl Ast {
     }
 
     pub(crate) fn add_expr(&mut self, kind: Expr, pos: SourcePosition) -> AstId<Expr> {
+        self.add(kind, pos)
+    }
+
+    pub(crate) fn add_matcher(&mut self, kind: Matcher, pos: SourcePosition) -> AstId<Matcher> {
         self.add(kind, pos)
     }
 }

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, Ast, AstId, Expr, FnDecl, Literal, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, Ast, AstId, Expr, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 fn top_stmts(ast: &Ast) -> Vec<AstId<Stmt>> {
@@ -117,4 +117,108 @@ fn not_equal_still_parses() {
     // The non-null assertion must not steal `!=`.
     let ast = parse("say x = a != b;");
     assert!(matches!(ast.get(&say_value(&ast)), Expr::Binary(Operator::LogicalNotEqual, _, _)));
+}
+
+fn matcher(src: &str) -> (Ast, AstId<Matcher>) {
+    parse_matcher(src).expect("matcher parse error")
+}
+
+#[test]
+fn matcher_atoms() {
+    let (ast, m) = matcher("_");
+    assert!(matches!(ast.get(&m), Matcher::Wildcard));
+    let (ast, m) = matcher("42");
+    assert!(matches!(ast.get(&m), Matcher::Literal(MatchScalar::Number(_))));
+    let (ast, m) = matcher("null");
+    assert!(matches!(ast.get(&m), Matcher::Literal(MatchScalar::Null)));
+    let (ast, m) = matcher("x");
+    assert!(matches!(ast.get(&m), Matcher::Binder(_)));
+}
+
+#[test]
+fn matcher_type_tests() {
+    let (ast, m) = matcher("is Point");
+    let Matcher::Type { nominal, shape, .. } = ast.get(&m) else { panic!("not a type matcher") };
+    assert!(*nominal && shape.is_none());
+
+    let (ast, m) = matcher("is Point { x }");
+    let Matcher::Type { nominal, shape, .. } = ast.get(&m) else { panic!("not a type matcher") };
+    assert!(*nominal && shape.is_some());
+
+    let (ast, m) = matcher("has Drawable");
+    let Matcher::Type { nominal, .. } = ast.get(&m) else { panic!("not a type matcher") };
+    assert!(!*nominal);
+
+    // `has { … }` is a redundant spelling of a bare structural shape.
+    let (ast, m) = matcher("has { x: 1 }");
+    assert!(matches!(ast.get(&m), Matcher::Shape(_)));
+}
+
+#[test]
+fn matcher_shape_shorthand_binds() {
+    let (ast, m) = matcher("{ kind: \"line\", from, to }");
+    let Matcher::Shape(fields) = ast.get(&m) else { panic!("not a shape") };
+    assert_eq!(fields.len(), 3);
+    assert_eq!(fields[0].key, MatchScalar::String("kind".into()));
+    // `from` shorthand desugars to a binder value.
+    assert!(matches!(ast.get(&fields[1].value), Matcher::Binder(_)));
+}
+
+#[test]
+fn matcher_empty_shape_and_array() {
+    let (ast, m) = matcher("{}");
+    let Matcher::Shape(fields) = ast.get(&m) else { panic!("not a shape") };
+    assert!(fields.is_empty());
+
+    let (ast, m) = matcher("[]");
+    let Matcher::Array(elems) = ast.get(&m) else { panic!("not an array") };
+    assert!(elems.is_empty());
+}
+
+#[test]
+fn matcher_allows_null_key() {
+    let (ast, m) = matcher("{ null: _ }");
+    let Matcher::Shape(fields) = ast.get(&m) else { panic!("not a shape") };
+    assert_eq!(fields[0].key, MatchScalar::Null);
+}
+
+#[test]
+fn matcher_array_rest() {
+    let (ast, m) = matcher("[start, .., end]");
+    let Matcher::Array(elems) = ast.get(&m) else { panic!("not an array") };
+    assert_eq!(elems.len(), 3);
+    assert!(matches!(elems[1], MatchElem::Rest(None)));
+
+    let (ast, m) = matcher("[..rest]");
+    let Matcher::Array(elems) = ast.get(&m) else { panic!("not an array") };
+    assert!(matches!(elems[0], MatchElem::Rest(Some(_))));
+}
+
+#[test]
+fn matcher_precedence() {
+    // `@` looser than `|`: the binder spans the whole or-group.
+    let (ast, m) = matcher("num @ 1 | 2 | 3");
+    let Matcher::As(_, inner) = ast.get(&m) else { panic!("not an as-matcher") };
+    assert!(matches!(ast.get(inner), Matcher::Or(_)));
+
+    // `&` tighter than `|`: `a & b | c` is `(a & b) | c`.
+    let (ast, m) = matcher("has A & has B | has C");
+    let Matcher::Or(alts) = ast.get(&m) else { panic!("not an or-matcher") };
+    assert_eq!(alts.len(), 2);
+    assert!(matches!(ast.get(&alts[0]), Matcher::And(_)));
+}
+
+#[test]
+fn matcher_grouping_overrides_precedence() {
+    let (ast, m) = matcher("(num @ 1) | 2");
+    let Matcher::Or(alts) = ast.get(&m) else { panic!("not an or-matcher") };
+    assert_eq!(alts.len(), 2);
+    assert!(matches!(ast.get(&alts[0]), Matcher::As(_, _)));
+}
+
+#[test]
+fn matcher_rejected_forms() {
+    assert!(parse_matcher("is { x }").is_err());
+    assert!(parse_matcher("{ a: 1, a: 2 }").is_err());
+    assert!(parse_matcher("[.., ..]").is_err());
 }

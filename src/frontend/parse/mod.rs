@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, Operator, Param, ReturnShape, Stmt, Symbol};
+use crate::ast::{Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, Operator, Param, ReturnShape, Stmt, Symbol};
 use crate::frontend::lex::{ContextualKeyword, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -193,7 +193,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Some(_) => Vec::new(),
             None => {
                 let mut params = Vec::new();
-                while !self.tokens.match_next(end_token) {
+                while !self.tokens.matches(end_token) {
                     if params.len() > 0 {
                         self.tokens.expect(TokenType::Comma)?;
                     }
@@ -287,7 +287,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
 
-        while !self.tokens.match_next(TokenType::RightBrace) {
+        while !self.tokens.matches(TokenType::RightBrace) {
             let member_pos = self.tokens.peek(0).pos.clone();
             let visibility = self.parse_visibility();
 
@@ -295,7 +295,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Req) {
                 if visibility != Visibility::Private { parse_error!(self, &member_pos, "A `req` declaration cannot have a visibility modifier"); }
                 self.tokens.next(); // consume `req`
-                if self.tokens.match_next(TokenType::Fn) {
+                if self.tokens.matches(TokenType::Fn) {
                     req_fns.push(self.parse_req_fn()?);
                 } else {
                     let name = self.parse_identifier()?;
@@ -411,7 +411,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_return(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Return)?.pos.clone();
-        let expr = match self.tokens.match_next(TokenType::Semicolon) {
+        let expr = match self.tokens.matches(TokenType::Semicolon) {
             true => None,
             false => Some(self.parse_expr()?)
         };
@@ -478,7 +478,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn parse_block_or_stmt(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        if self.tokens.match_next(TokenType::LeftBrace) {
+        if self.tokens.matches(TokenType::LeftBrace) {
             self.parse_block()
         } else {
             let pos = self.tokens.peek(0).pos.clone();
@@ -488,7 +488,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn parse_block_or_expr(&mut self, prec: u8) -> Result<AstId<Expr>, anyhow::Error> {
-        if self.tokens.match_next(TokenType::LeftBrace) {
+        if self.tokens.matches(TokenType::LeftBrace) {
             self.parse_block()
         } else {
             self.parse_expr_precedence(prec)
@@ -498,7 +498,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses statements up to (but not consuming) the closing `}`.
     fn parse_stmts(&mut self) -> Result<Vec<AstId<Stmt>>, anyhow::Error> {
         let mut stmts: Vec<AstId<Stmt>> = Vec::new();
-        while !self.tokens.match_next(TokenType::RightBrace) {
+        while !self.tokens.matches(TokenType::RightBrace) {
             stmts.push(self.parse_stmt()?);
         }
         Ok(stmts)
@@ -552,7 +552,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         // Parse each value tighter than `,` so the comma separates fields, not the value expression.
         let value_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
         let mut fields: Vec<(Symbol, AstId<Expr>)> = Vec::new();
-        while !self.tokens.match_next(TokenType::RightBrace) {
+        while !self.tokens.matches(TokenType::RightBrace) {
             let key_pos = self.tokens.peek(0).pos.clone();
             let name = self.parse_identifier()?;
             let field = self.ast.intern(&name);
@@ -580,7 +580,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             // A `{` after a type name or call is a brace construction, unless we are parsing a
             // condition where the `{` opens the body block.
             if !self.prevent_construct
-                && self.tokens.match_next(TokenType::LeftBrace)
+                && self.tokens.matches(TokenType::LeftBrace)
                 && self.is_constructible(left)
             {
                 left = self.parse_construction(left)?;
@@ -768,7 +768,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                         pairs.push((key_expr, value_expr));
 
                         if self.tokens.next_if(TokenType::Comma).is_some() {
-                            if self.tokens.match_next(TokenType::RightBrace) { break; } // trailing comma
+                            if self.tokens.matches(TokenType::RightBrace) { break; } // trailing comma
                         } else {
                             break;
                         }
@@ -833,6 +833,228 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         Ok(self.ast.add_expr(kind, pos))
+    }
+
+    /// Parses one matcher into a fresh `Ast` and returns its handle. Used by tests.
+    pub fn parse_matcher_root(tokens: &'vm mut TokenStream<'vm>) -> Result<(Ast, AstId<Matcher>), anyhow::Error> {
+        let mut ast = Ast::new();
+        let matcher = {
+            let mut parser = Parser { tokens, ast: &mut ast, current_type: None, prevent_construct: false };
+            let matcher = parser.parse_matcher()?;
+            parser.tokens.expect(TokenType::EOF)?;
+            matcher
+        };
+        Ok((ast, matcher))
+    }
+
+    /// matcher := IDENT "@" matcher | or_matcher
+    fn parse_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
+        // An as-binding is a bare name immediately followed by `@`. The right side is a full matcher.
+        if self.tokens.peek(0).kind == TokenType::Identifier && self.tokens.peek(1).kind == TokenType::At {
+            let token = self.tokens.next().clone();
+            let pos = token.pos.clone();
+            let name = self.ast.intern(&token.lexeme);
+            self.tokens.next();
+            let inner = self.parse_matcher()?;
+            return Ok(self.ast.add_matcher(Matcher::As(name, inner), pos));
+        }
+        self.parse_or_matcher()
+    }
+
+    /// or_matcher := and_matcher ("|" and_matcher)*
+    fn parse_or_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
+        let pos = self.tokens.peek(0).pos.clone();
+        let first = self.parse_and_matcher()?;
+        if !self.tokens.matches_single(TokenType::Pipe) {
+            return Ok(first);
+        }
+        let mut alternatives = vec![first];
+        while self.tokens.next_if_single(TokenType::Pipe).is_some() {
+            alternatives.push(self.parse_and_matcher()?);
+        }
+        Ok(self.ast.add_matcher(Matcher::Or(alternatives), pos))
+    }
+
+    /// and_matcher := primary ("&" primary)*
+    fn parse_and_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
+        let pos = self.tokens.peek(0).pos.clone();
+        let first = self.parse_primary_matcher()?;
+        if !self.tokens.matches_single(TokenType::Amp) {
+            return Ok(first);
+        }
+        let mut parts = vec![first];
+        while self.tokens.next_if_single(TokenType::Amp).is_some() {
+            parts.push(self.parse_primary_matcher()?);
+        }
+        Ok(self.ast.add_matcher(Matcher::And(parts), pos))
+    }
+
+    fn parse_primary_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
+        let token = self.tokens.peek(0).clone();
+        let pos = token.pos.clone();
+        match token.kind {
+            TokenType::Identifier if token.lexeme == "_" => {
+                self.tokens.next();
+                Ok(self.ast.add_matcher(Matcher::Wildcard, pos))
+            },
+            TokenType::Identifier => {
+                self.tokens.next();
+                let name = self.ast.intern(&token.lexeme);
+                Ok(self.ast.add_matcher(Matcher::Binder(name), pos))
+            },
+            TokenType::Is => self.parse_is_matcher(),
+            TokenType::Has => self.parse_has_matcher(),
+            TokenType::LeftBrace => self.parse_shape_matcher(),
+            TokenType::LeftBracket => self.parse_array_matcher(),
+            TokenType::LeftParen => {
+                self.tokens.next();
+                let inner = self.parse_matcher()?;
+                self.tokens.expect(TokenType::RightParen)?;
+                Ok(inner)
+            },
+            TokenType::NumericLiteral | TokenType::StringLiteral
+            | TokenType::True | TokenType::False | TokenType::Null => {
+                let scalar = self.parse_match_scalar()?;
+                Ok(self.ast.add_matcher(Matcher::Literal(scalar), pos))
+            },
+            _ => parse_error!(self, &pos, "Expected a matcher but found '{token}'"),
+        }
+    }
+
+    /// `is` type_ref shape?.
+    fn parse_is_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
+        let pos = self.tokens.next().pos.clone();
+        if self.tokens.peek(0).kind != TokenType::Identifier {
+            parse_error!(self, &pos, "`is` is nominal and needs a type name; use `{{ ... }}` for a structural shape");
+        }
+        self.parse_typed_matcher(true, pos)
+    }
+
+    /// `has` type_ref shape? or `has` shape.
+    fn parse_has_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
+        let pos = self.tokens.next().pos.clone();
+        if self.tokens.peek(0).kind == TokenType::LeftBrace {
+            return self.parse_shape_matcher();
+        }
+        if self.tokens.peek(0).kind != TokenType::Identifier {
+            parse_error!(self, &pos, "`has` needs a type name or a shape");
+        }
+        self.parse_typed_matcher(false, pos)
+    }
+
+    /// A type test `T shape?` after its `is`/`has` keyword.
+    fn parse_typed_matcher(&mut self, nominal: bool, pos: SourcePosition) -> Result<AstId<Matcher>, anyhow::Error> {
+        let name = self.parse_identifier()?;
+        let name = self.ast.intern(&name);
+        let shape = if self.tokens.peek(0).kind == TokenType::LeftBrace {
+            Some(self.parse_shape_matcher()?)
+        } else {
+            None
+        };
+        Ok(self.ast.add_matcher(Matcher::Type { nominal, name, shape }, pos))
+    }
+
+    /// shape := "{" ( field ("," field)* ","? )? "}"
+    fn parse_shape_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
+        let mut fields: Vec<MatchField> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        while !self.tokens.matches(TokenType::RightBrace) {
+            let field = self.parse_shape_field()?;
+            let dedup = match &field.key {
+                MatchScalar::String(s) => format!("s:{s}"),
+                MatchScalar::Number(n) => format!("n:{n}"),
+                MatchScalar::Boolean(b) => format!("b:{b}"),
+                MatchScalar::Null => String::from("null"),
+            };
+            if !seen.insert(dedup) {
+                parse_error!(self, &pos, "Duplicate key in a shape matcher");
+            }
+            fields.push(field);
+            if self.tokens.next_if(TokenType::Comma).is_none() {
+                break;
+            }
+        }
+        
+        self.tokens.expect(TokenType::RightBrace)?;
+        Ok(self.ast.add_matcher(Matcher::Shape(fields), pos))
+    }
+
+    /// field := IDENT ":" matcher | scalar ":" matcher | IDENT (shorthand `{ x }` binds x)
+    fn parse_shape_field(&mut self) -> Result<MatchField, anyhow::Error> {
+        let token = self.tokens.peek(0).clone();
+        let pos = token.pos.clone();
+        match token.kind {
+            TokenType::Identifier => {
+                self.tokens.next();
+                let key = MatchScalar::String(token.lexeme.clone());
+
+                if self.tokens.next_if(TokenType::Colon).is_some() {
+                    let value = self.parse_matcher()?;
+                    return Ok(MatchField { key, value });
+                }
+
+                // `{ x }` binds x.
+                let sym = self.ast.intern(&token.lexeme);
+                let value = self.ast.add_matcher(Matcher::Binder(sym), pos);
+                Ok(MatchField { key, value })
+            },
+            TokenType::StringLiteral | TokenType::NumericLiteral
+            | TokenType::True | TokenType::False | TokenType::Null => {
+                let key = self.parse_match_scalar()?;
+                self.tokens.expect(TokenType::Colon)?;
+                let value = self.parse_matcher()?;
+                Ok(MatchField { key, value })
+            },
+            _ => parse_error!(self, &pos, "Expected a shape field"),
+        }
+    }
+
+    /// array := "[" ( elem ("," elem)* ","? )? "]"
+    /// elem := matcher | ".." IDENT?
+    fn parse_array_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::LeftBracket)?.pos.clone();
+        let mut elements: Vec<MatchElem> = Vec::new();
+        let mut seen_rest = false;
+
+        while !self.tokens.matches(TokenType::RightBracket) {
+            if self.tokens.peek(0).kind == TokenType::DotDot {
+                let rest_pos = self.tokens.next().pos.clone();
+                if seen_rest {
+                    parse_error!(self, &rest_pos, "An array matcher allows at most one rest `..`");
+                }
+                seen_rest = true;
+                let name = match self.tokens.next_if(TokenType::Identifier) {
+                    Some(token) => Some(self.ast.intern(&token.lexeme)),
+                    None => None
+                };
+                elements.push(MatchElem::Rest(name));
+            } else {
+                let matcher = self.parse_matcher()?;
+                elements.push(MatchElem::Elem(matcher));
+            }
+            if self.tokens.next_if(TokenType::Comma).is_none() {
+                break;
+            }
+        }
+
+        self.tokens.expect(TokenType::RightBracket)?;
+        Ok(self.ast.add_matcher(Matcher::Array(elements), pos))
+    }
+
+    /// A scalar literal: a matcher equality value or a shape key.
+    fn parse_match_scalar(&mut self) -> Result<MatchScalar, anyhow::Error> {
+        let token = self.tokens.next().clone();
+        let pos = token.pos.clone();
+        Ok(match token.kind {
+            TokenType::NumericLiteral => MatchScalar::Number(token.lexeme.parse().unwrap()),
+            TokenType::StringLiteral => MatchScalar::String(String::from(&token.lexeme[1..token.lexeme.len() - 1])),
+            TokenType::True => MatchScalar::Boolean(true),
+            TokenType::False => MatchScalar::Boolean(false),
+            TokenType::Null => MatchScalar::Null,
+            _ => parse_error!(self, &pos, "Expected a literal"),
+        })
     }
 
     fn parse_call_arguments(&mut self) -> Result<Vec<AstId<Expr>>, anyhow::Error> {
