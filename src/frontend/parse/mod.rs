@@ -6,7 +6,7 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, Operator, Param, ReturnShape, Stmt, Symbol};
+use crate::ast::{Arm, Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, Operator, Param, ReturnShape, Stmt, Symbol};
 use crate::frontend::lex::{ContextualKeyword, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -22,9 +22,11 @@ pub struct Parser<'parser, 'vm> {
     ast: &'parser mut Ast,
     current_type: Option<String>,
     /// True while parsing a condition (`if`/`while`), where a trailing `{` is the body
-    /// block, not a brace construction. Reset inside parens/brackets/braces so a
-    /// construction can still appear in a sub-expression there.
+    /// block, not a brace construction.
     prevent_construct: bool,
+    /// True while parsing a match-arm guard, where a `=>` delimits the body rather than
+    /// opening a lambda. Reset inside a sub-expression by `parse_expr`.
+    stop_at_arrow: bool,
 }
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
@@ -36,6 +38,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             ast: &mut ast,
             current_type: None,
             prevent_construct: false,
+            stop_at_arrow: false,
         };
 
         let pos = parser.tokens.peek(0).pos.clone();
@@ -102,6 +105,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Throw => self.parse_throw(),
             TokenType::Try => self.parse_trycatch(),
             TokenType::If => self.parse_if_stmt(),
+            TokenType::Match => self.parse_match(),
             TokenType::LeftBrace => self.parse_block_stmt(),
             _ => self.parse_expr_stmt()
         }
@@ -409,6 +413,65 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_stmt(Stmt::While(condition, body), pos))
     }
 
+    /// match_stmt := "match" expr "{" arm ("," arm)* ","? "}"
+    fn parse_match(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::Match)?.pos.clone();
+        let scrutinee = self.parse_expr_prevent_construct()?;
+        self.tokens.expect(TokenType::LeftBrace)?;
+
+        let mut arms: Vec<Arm> = Vec::new();
+        while !self.tokens.matches(TokenType::RightBrace) {
+            arms.push(self.parse_match_arm()?);
+            if self.tokens.next_if(TokenType::Comma).is_none() {
+                break;
+            }
+        }
+
+        if arms.is_empty() {
+            parse_error!(self, &pos, "A `match` needs at least one arm");
+        }
+
+        self.tokens.expect(TokenType::RightBrace)?;
+        Ok(self.ast.add_stmt(Stmt::Match(scrutinee, arms), pos))
+    }
+
+    /// arm := matcher ("if" guard)? "=>" body
+    fn parse_match_arm(&mut self) -> Result<Arm, anyhow::Error> {
+        let matcher = self.parse_matcher()?;
+        let guard = match self.tokens.next_if(TokenType::If) {
+            Some(_) => Some(self.parse_guard()?),
+            None => None,
+        };
+        self.tokens.expect(TokenType::Equal)?;
+        self.tokens.expect(TokenType::GreaterThan)?;
+        let body = self.parse_arm_body()?;
+        Ok(Arm { matcher, guard, body })
+    }
+
+    /// An arm body: a `{ ... }` block, or a single expression run for effect.
+    fn parse_arm_body(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        if self.tokens.matches(TokenType::LeftBrace) {
+            return self.parse_block();
+        }
+        let pos = self.tokens.peek(0).pos.clone();
+        let prev = std::mem::replace(&mut self.prevent_construct, false);
+        let prev_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
+        let body_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
+        let result = self.parse_expr_precedence(body_precedence);
+        self.prevent_construct = prev;
+        self.stop_at_arrow = prev_arrow;
+        let stmt = self.ast.add_stmt(Stmt::Expression(result?), pos.clone());
+        Ok(self.ast.add_expr(Expr::Block(vec![stmt]), pos))
+    }
+
+    /// Parses a guard expression, stopping before the arm's `=>`.
+    fn parse_guard(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        let prev = std::mem::replace(&mut self.stop_at_arrow, true);
+        let result = self.parse_expr_precedence(0);
+        self.stop_at_arrow = prev;
+        result
+    }
+
     fn parse_return(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Return)?.pos.clone();
         let expr = match self.tokens.matches(TokenType::Semicolon) {
@@ -521,8 +584,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         let prev = std::mem::replace(&mut self.prevent_construct, false);
+        let prev_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
         let result = self.parse_expr_precedence(0);
         self.prevent_construct = prev;
+        self.stop_at_arrow = prev_arrow;
         result
     }
 
@@ -577,6 +642,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         loop {
+            // In a guard, a `=>` delimits the body. Stop before it so it is not read as a lambda.
+            if self.stop_at_arrow
+                && self.tokens.matches(TokenType::Equal)
+                && self.tokens.peek(1).kind == TokenType::GreaterThan
+            {
+                break;
+            }
             // A `{` after a type name or call is a brace construction, unless we are parsing a
             // condition where the `{` opens the body block.
             if !self.prevent_construct
@@ -839,7 +911,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub fn parse_matcher_root(tokens: &'vm mut TokenStream<'vm>) -> Result<(Ast, AstId<Matcher>), anyhow::Error> {
         let mut ast = Ast::new();
         let matcher = {
-            let mut parser = Parser { tokens, ast: &mut ast, current_type: None, prevent_construct: false };
+            let mut parser = Parser { tokens, ast: &mut ast, current_type: None, prevent_construct: false, stop_at_arrow: false };
             let matcher = parser.parse_matcher()?;
             parser.tokens.expect(TokenType::EOF)?;
             matcher

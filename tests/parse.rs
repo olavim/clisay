@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, parse_matcher, Ast, AstId, Expr, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 fn top_stmts(ast: &Ast) -> Vec<AstId<Stmt>> {
@@ -221,4 +221,36 @@ fn matcher_rejected_forms() {
     assert!(parse_matcher("is { x }").is_err());
     assert!(parse_matcher("{ a: 1, a: 2 }").is_err());
     assert!(parse_matcher("[.., ..]").is_err());
+}
+
+#[test]
+fn match_statement_arms() {
+    let ast = parse("match x { is Point { a } => f(), _ => g() }");
+    let stmts = top_stmts(&ast);
+    let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match") };
+    assert_eq!(arms.len(), 2);
+    assert!(arms[0].guard.is_none());
+}
+
+#[test]
+fn match_guard_uses_low_precedence_operator() {
+    // `=>` delimits the guard, so a bare `??` guard is not swallowed as a lambda.
+    let ast = parse("match x { _ if a ?? b => g() }");
+    let stmts = top_stmts(&ast);
+    let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match") };
+    let guard = arms[0].guard.expect("missing guard");
+    assert!(matches!(ast.get(&guard), Expr::Binary(Operator::Coalesce, _, _)));
+}
+
+#[test]
+fn match_trailing_comma() {
+    let ast = parse("match x { _ => g(), }");
+    let stmts = top_stmts(&ast);
+    let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match") };
+    assert_eq!(arms.len(), 1);
+}
+
+#[test]
+fn match_empty_is_rejected() {
+    assert!(try_parse("match x { }").is_err());
 }

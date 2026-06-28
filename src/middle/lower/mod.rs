@@ -101,6 +101,7 @@ impl<'a> Lowerer<'a> {
                 HirStmt::If(cond, then, otherwise)
             },
             Stmt::Block(body) => HirStmt::Block(self.expr(body)?),
+            Stmt::Match(..) => return Err(self.error("`match` is not yet supported", stmt_id)),
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),
             Stmt::Type(decl) => {

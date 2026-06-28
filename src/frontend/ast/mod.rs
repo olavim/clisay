@@ -102,7 +102,6 @@ pub enum MatchElem {
     Rest(Option<Symbol>),
 }
 
-/// A matcher: a grammar of shapes, literals, type tests, and binders run against a value.
 pub enum Matcher {
     /// `_`: matches anything, binds nothing.
     Wildcard,
@@ -127,9 +126,9 @@ pub enum Matcher {
 pub struct FieldInit {
     pub name: Symbol,
     pub value: Option<AstId<Expr>>,
-    /// Declared nullable with a `?` marker (`say x?`). Non-null otherwise.
+    /// Declared nullable with a `?` marker (`say x?`).
     pub nullable: bool,
-    /// Declared reassignable with a `mut` modifier (`say mut x`). Immutable otherwise.
+    /// Declared reassignable with a `mut` modifier (`say mut x`).
     pub mutable: bool,
 }
 
@@ -162,67 +161,63 @@ pub struct FnDecl {
     pub ret: ReturnShape,
 }
 
-/// A `catch (param) { … }` clause of a try statement.
+/// A `catch (param) { ... }` clause of a try statement.
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
-    /// Declared reassignable with a `mut` modifier (`catch (mut e)`). Immutable otherwise.
+    /// Declared reassignable with a `mut` modifier (`catch (mut e)`).
     pub mutable: bool,
     pub body: AstId<Expr>
 }
 
 pub struct TypeDecl {
     pub name: Symbol,
-    /// `true` for a `trait` declaration (a non-instantiable, mixable bundle), `false`
-    /// for a `type`. Traits are expanded into composers during lowering (`with`).
+    /// `true` for a `trait` declaration, `false` for a `type`.
     pub is_trait: bool,
     /// Traits mixed in via `with T1, T2, ...`.
     pub with_traits: Vec<Symbol>,
     /// Traits depended on via `req T1, T2, ...`.
     pub req_traits: Vec<Symbol>,
-    /// Method holes declared via `req fn f(params);`: `(name, arity, return shape)`.
+    /// Method holes declared via `req fn f(params)`.
     pub req_fns: Vec<(Symbol, usize, ReturnShape)>,
-    /// Member holes declared via `req name;`: a field/member the host must provide, allowing
-    /// usage of `this.name` in the trait's bodies.
+    /// Member holes declared via `req name`.
     pub req_members: Vec<Symbol>,
-    /// Delegation fields declared via `field gives Trait;`: `(field, trait)`. The field provides
-    /// `Trait` by forwarding, so for example `is Trait` is true.
+    /// Delegation fields declared via `field gives Trait`.
     pub gives: Vec<(Symbol, Symbol)>,
-    /// The initializer's runtime name (`"{type}.init"`), used whether the init is
-    /// declared or synthesised during lowering.
     pub init_name: Symbol,
-    /// The declared initializer (`Stmt::Fn`). When the type has none lowering
-    /// synthesises a virtual init in that case.
     pub init: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
-    /// Fields declared nullable with a `?` marker (`next?;`).
     pub nullable_fields: HashSet<Symbol>,
-    /// Fields declared reassignable with a `mut` modifier (`mut count;`).
     pub mut_fields: HashSet<Symbol>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,
-    /// Members (fields/methods) declared `pub` are externally accessible. Members not
-    /// listed are private or `inner`, reachable only through `this`.
     pub pub_members: HashSet<Symbol>,
-    /// Members declared `inner`: object-internal (host and sibling traits but not external code).
     pub inner_members: HashSet<Symbol>,
+}
+
+/// One arm of a `match`.
+pub struct Arm {
+    pub matcher: AstId<Matcher>,
+    pub guard: Option<AstId<Expr>>,
+    pub body: AstId<Expr>,
 }
 
 pub enum Stmt {
     Expression(AstId<Expr>),
     Return(Option<AstId<Expr>>),
     Throw(AstId<Expr>),
-    /// A try statement: Try(body block, optional catch clause, optional finally block).
+    /// A try statement: Try(body, optional catch, optional finally).
     Try(AstId<Expr>, Option<CatchClause>, Option<AstId<Expr>>),
     While(AstId<Expr>, AstId<Expr>),
-    /// An if statement: If(condition, then block, else body). The bodies are
-    /// `Expr::Block`s; the else branch is a `Stmt::If` (else-if) or `Stmt::Block`.
+    /// An if statement: If(condition, then block, else body).
     If(AstId<Expr>, AstId<Expr>, Option<AstId<Stmt>>),
-    /// A bare `{ … }` statement block (wraps an `Expr::Block`).
+    /// A bare `{ ... }` statement block (wraps an `Expr::Block`).
     Block(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
-    Type(Box<TypeDecl>)
+    Type(Box<TypeDecl>),
+    /// A match statement: Match(scrutinee, arms).
+    Match(AstId<Expr>, Vec<Arm>)
 }
 
 pub enum NodeKind {

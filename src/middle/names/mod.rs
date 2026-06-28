@@ -197,6 +197,7 @@ impl<'a> Resolver<'a> {
             Stmt::Say(field) => if let Some(value) = &field.value { self.visit_expr(value)?; },
             Stmt::Fn(decl) => self.visit_fn(decl)?,
             Stmt::Type(decl) => self.visit_type(stmt, decl)?,
+            Stmt::Match(..) => return Err(self.error("`match` is not yet supported", stmt)),
         }
         Ok(())
     }
