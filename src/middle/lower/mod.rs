@@ -186,14 +186,15 @@ impl<'a> Lowerer<'a> {
 
     fn binary(&mut self, expr_id: &AstId<Expr>, op: &Operator, left: &AstId<Expr>, right: &AstId<Expr>) -> Result<HirId<HirExpr>, anyhow::Error> {
         let pos = self.ast.pos(expr_id).clone();
+        // A compound assignment desugars to `target = target <op> value`.
+        if let Some(binop) = compound_assign_binop(op) {
+            let value = HirExpr::Binary(binop, self.expr(left)?, self.expr(right)?);
+            let value = self.hir.add(value, self.ast.pos(right).clone());
+            let kind = HirExpr::Assign(self.expr(left)?, value);
+            return Ok(self.hir.add(kind, pos));
+        }
         let kind = match op {
-            Operator::Assign(None) => HirExpr::Assign(self.expr(left)?, self.expr(right)?),
-            Operator::Assign(Some(assign_op)) => {
-                let assign_op = assign_op.as_ref().clone();
-                let normalized_binop = HirExpr::Binary(lower_binop(&assign_op), self.expr(left)?, self.expr(right)?);
-                let right = self.hir.add(normalized_binop, self.ast.pos(right).clone());
-                HirExpr::Assign(self.expr(left)?, right)
-            },
+            Operator::Assign => HirExpr::Assign(self.expr(left)?, self.expr(right)?),
             Operator::MemberAccess => HirExpr::Index(self.expr(left)?, self.expr(right)?, true),
             Operator::Has => HirExpr::Has(self.expr(left)?, self.lower_spec(right)?),
             Operator::Comma => return Err(self.error("Unexpected ','", right)),
@@ -322,6 +323,24 @@ impl<'a> Lowerer<'a> {
         };
         Ok(HirCatchClause { param, mutable: catch.mutable, body: self.expr(&catch.body)? })
     }
+}
+
+/// The binary operator a compound assignment applies, or `None` for any other operator.
+fn compound_assign_binop(op: &Operator) -> Option<BinOp> {
+    Some(match op {
+        Operator::AddAssign => BinOp::Add,
+        Operator::SubtractAssign => BinOp::Subtract,
+        Operator::MultiplyAssign => BinOp::Multiply,
+        Operator::DivideAssign => BinOp::Divide,
+        Operator::BitAndAssign => BinOp::BitAnd,
+        Operator::BitOrAssign => BinOp::BitOr,
+        Operator::BitXorAssign => BinOp::BitXor,
+        Operator::LeftShiftAssign => BinOp::LeftShift,
+        Operator::RightShiftAssign => BinOp::RightShift,
+        Operator::LogicalAndAssign => BinOp::And,
+        Operator::LogicalOrAssign => BinOp::Or,
+        _ => return None,
+    })
 }
 
 fn lower_binop(op: &Operator) -> BinOp {
