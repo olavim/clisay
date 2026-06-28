@@ -50,14 +50,9 @@ impl fmt::Display for Literal {
 
 pub enum Expr {
     Block(Vec<AstId<Stmt>>),
-    /// A unary expression: Unary(operator, operand)
     Unary(Operator, AstId<Expr>),
-    /// A binary expression: Binary(operator, left, right)
     Binary(Operator, AstId<Expr>, AstId<Expr>),
-    /// A function call: Call(callee, arguments)
     Call(AstId<Expr>, Vec<AstId<Expr>>),
-    /// An access expression: `Index(target, index, is_dot)`. `is_dot` marks `.name`
-    /// (member access via `.`) versus `[expr]` (data access via `[]`).
     Index(AstId<Expr>, AstId<Expr>, bool),
     Literal(Literal),
     Identifier(Symbol),
@@ -95,7 +90,6 @@ pub enum MatchElem {
     Rest(Option<Symbol>),
 }
 
-/// A matcher: a grammar of shapes, literals, type tests, and binders run against a value.
 pub enum Matcher {
     /// `_`: matches anything, binds nothing.
     Wildcard,
@@ -120,9 +114,9 @@ pub enum Matcher {
 pub struct FieldInit {
     pub name: Symbol,
     pub value: Option<AstId<Expr>>,
-    /// Declared nullable with a `?` marker (`say x?`). Non-null otherwise.
+    /// Declared nullable with a `?` marker (`say x?`).
     pub nullable: bool,
-    /// Declared reassignable with a `mut` modifier (`say mut x`). Immutable otherwise.
+    /// Declared reassignable with a `mut` modifier (`say mut x`).
     pub mutable: bool,
 }
 
@@ -158,7 +152,7 @@ pub struct FnDecl {
 /// A `catch (param) { ... }` clause of a try statement.
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
-    /// Declared reassignable with a `mut` modifier (`catch (mut e)`). Immutable otherwise.
+    /// Declared reassignable with a `mut` modifier (`catch (mut e)`).
     pub mutable: bool,
     pub body: AstId<Expr>
 }
@@ -174,13 +168,9 @@ pub struct TypeDecl {
     pub req_members: Vec<Symbol>,
     pub gives: Vec<(Symbol, Symbol)>,
     pub init_name: Symbol,
-    /// The declared initializer (`Stmt::Fn`). When the type has none lowering
-    /// synthesises a virtual init in that case.
     pub init: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
-    /// Fields declared nullable with a `?` marker (`next?;`).
     pub nullable_fields: HashSet<Symbol>,
-    /// Fields declared reassignable with a `mut` modifier (`mut count;`).
     pub mut_fields: HashSet<Symbol>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
@@ -189,11 +179,18 @@ pub struct TypeDecl {
     pub inner_members: HashSet<Symbol>,
 }
 
+/// One arm of a `match`.
+pub struct Arm {
+    pub matcher: AstId<Matcher>,
+    pub guard: Option<AstId<Expr>>,
+    pub body: AstId<Expr>,
+}
+
 pub enum Stmt {
     Expression(AstId<Expr>),
     Return(Option<AstId<Expr>>),
     Throw(AstId<Expr>),
-    /// A try statement: Try(body block, optional catch clause, optional finally block).
+    /// A try statement: Try(body, optional catch, optional finally).
     Try(AstId<Expr>, Option<CatchClause>, Option<AstId<Expr>>),
     While(AstId<Expr>, AstId<Expr>),
     /// An if statement: If(condition, then block, else body).
@@ -202,7 +199,9 @@ pub enum Stmt {
     Block(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
-    Type(Box<TypeDecl>)
+    Type(Box<TypeDecl>),
+    /// A match statement: Match(scrutinee, arms).
+    Match(AstId<Expr>, Vec<Arm>)
 }
 
 pub enum NodeKind {
