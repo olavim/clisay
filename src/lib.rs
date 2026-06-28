@@ -45,13 +45,16 @@ pub mod internals {
         Parser::parse(&mut TokenStream::new(&lex(src))).expect("parse error")
     }
 
-    /// Parses a whole program, returning the parse error as a string for rejection tests.
     pub fn try_parse(src: &str) -> Result<Ast, String> {
         Parser::parse(&mut TokenStream::new(&lex(src))).map_err(|e| e.to_string())
     }
 
     pub fn parse_matcher(src: &str) -> Result<(Ast, AstId<Matcher>), String> {
         Parser::parse_matcher_root(&mut TokenStream::new(&lex(src))).map_err(|e| e.to_string())
+    }
+
+    pub fn try_resolve(src: &str) -> Result<(), String> {
+        crate::middle::names::resolve(&parse(src)).map(|_| ()).map_err(|e| e.to_string())
     }
 
     pub fn lower(src: &str) -> Hir {

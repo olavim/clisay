@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, Stmt, Symbol, TypeDecl};
+use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchElem, Matcher, Stmt, Symbol, TypeDecl};
 
 /// What an identifier reference binds to.
 pub enum Binding {
@@ -197,7 +197,14 @@ impl<'a> Resolver<'a> {
             Stmt::Say(field) => if let Some(value) = &field.value { self.visit_expr(value)?; },
             Stmt::Fn(decl) => self.visit_fn(decl)?,
             Stmt::Type(decl) => self.visit_type(stmt, decl)?,
-            Stmt::Match(..) => return Err(self.error("`match` is not yet supported", stmt)),
+            Stmt::Match(scrutinee, arms) => {
+                self.visit_expr(scrutinee)?;
+                for arm in arms {
+                    self.matcher_binders(&arm.matcher)?;
+                    if let Some(guard) = &arm.guard { self.visit_expr(guard)?; }
+                    self.visit_expr(&arm.body)?;
+                }
+            },
         }
         Ok(())
     }
@@ -274,7 +281,10 @@ impl<'a> Resolver<'a> {
             Expr::This => {},
             Expr::SafeAccess(target, member, _) => { self.visit_expr(target)?; self.visit_expr(member)?; },
             Expr::Assert(operand) => self.visit_expr(operand)?,
-            Expr::MatchBind(..) => return Err(self.error("`<-` match-bind is not yet supported", e)),
+            Expr::MatchBind(matcher, scrutinee) => {
+                self.visit_expr(scrutinee)?;
+                self.matcher_binders(matcher)?;
+            },
         }
         Ok(())
     }
@@ -285,6 +295,80 @@ impl<'a> Resolver<'a> {
             Literal::Dict(pairs) => for (key, value) in pairs { self.visit_expr(key)?; self.visit_expr(value)?; },
             Literal::Lambda(decl) => self.visit_fn(decl)?,
             _ => {},
+        }
+        Ok(())
+    }
+
+    /// The set of names a matcher binds, validating its `is`/`has` type names and enforcing the
+    /// binder rules. Conjunctive parts (shape fields, array elements, `&`, `@`) must bind distinct
+    /// names. Every alternative of an `|` must bind the same set.
+    fn matcher_binders(&self, id: &AstId<Matcher>) -> Result<HashSet<Symbol>, anyhow::Error> {
+        match self.ast.get(id) {
+            Matcher::Wildcard | Matcher::Literal(_) => Ok(HashSet::new()),
+            Matcher::Binder(name) => Ok(HashSet::from([*name])),
+            Matcher::Type { name, shape, .. } => {
+                if !self.is_type_or_trait(*name) {
+                    return Err(self.error(format!("'{}' is not a type or trait", self.ast.text(*name)), id));
+                }
+                match shape {
+                    Some(shape) => self.matcher_binders(shape),
+                    None => Ok(HashSet::new()),
+                }
+            },
+            Matcher::Shape(fields) => {
+                let mut binders = HashSet::new();
+                for field in fields {
+                    let sub = self.matcher_binders(&field.value)?;
+                    self.merge_distinct(&mut binders, sub, id)?;
+                }
+                Ok(binders)
+            },
+            Matcher::Array(elements) => {
+                let mut binders = HashSet::new();
+                for element in elements {
+                    let sub = match element {
+                        MatchElem::Elem(matcher) => self.matcher_binders(matcher)?,
+                        MatchElem::Rest(Some(name)) => HashSet::from([*name]),
+                        MatchElem::Rest(None) => HashSet::new(),
+                    };
+                    self.merge_distinct(&mut binders, sub, id)?;
+                }
+                Ok(binders)
+            },
+            Matcher::As(name, inner) => {
+                let mut binders = HashSet::from([*name]);
+                let sub = self.matcher_binders(inner)?;
+                self.merge_distinct(&mut binders, sub, id)?;
+                Ok(binders)
+            },
+            Matcher::And(parts) => {
+                let mut binders = HashSet::new();
+                for part in parts {
+                    let sub = self.matcher_binders(part)?;
+                    self.merge_distinct(&mut binders, sub, id)?;
+                }
+                Ok(binders)
+            },
+            // Alternatives are parallel, so each is checked on its own and all must agree on the bound set.
+            Matcher::Or(alternatives) => {
+                let mut alts = alternatives.iter();
+                let first = self.matcher_binders(alts.next().unwrap())?;
+                for alt in alts {
+                    if self.matcher_binders(alt)? != first {
+                        return Err(self.error("or-matcher alternatives must bind the same names", id));
+                    }
+                }
+                Ok(first)
+            },
+        }
+    }
+
+    /// Folds one conjunctive part's binders into the running set, rejecting a name bound twice.
+    fn merge_distinct(&self, into: &mut HashSet<Symbol>, from: HashSet<Symbol>, at: &AstId<Matcher>) -> Result<(), anyhow::Error> {
+        for name in from {
+            if !into.insert(name) {
+                return Err(self.error(format!("binder '{}' is bound more than once in this matcher", self.ast.text(name)), at));
+            }
         }
         Ok(())
     }
