@@ -1,7 +1,5 @@
 //! Recursive-descent parser. Turns tokens into an AST.
 
-mod precedence;
-
 use std::collections::HashSet;
 
 use anyhow::anyhow;
@@ -432,8 +430,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Some(_) => Some(self.parse_guard()?),
             None => None,
         };
-        self.tokens.expect(TokenType::Equal)?;
-        self.tokens.expect(TokenType::GreaterThan)?;
+        self.tokens.expect(TokenType::FatArrow)?;
         let body = self.parse_arm_body()?;
         Ok(Arm { matcher, guard, body })
     }
@@ -632,11 +629,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         loop {
-            // In a guard, a `=>` delimits the body. Stop before it so it is not read as a lambda.
-            if self.stop_at_arrow
-                && self.tokens.matches(TokenType::Equal)
-                && self.tokens.peek(1).kind == TokenType::GreaterThan
-            {
+            // In a match arm guard, a `=>` delimits the body. Stop before it so it is not read as a lambda.
+            if self.stop_at_arrow && self.tokens.matches(TokenType::FatArrow) {
                 break;
             }
             // A `{` after a type name or call is a brace construction, unless we are parsing a
