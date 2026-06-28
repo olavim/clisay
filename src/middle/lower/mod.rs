@@ -180,6 +180,7 @@ impl<'a> Lowerer<'a> {
             // Codegen desugars them later.
             Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
             Expr::Assert(operand) => HirExpr::Assert(self.expr(operand)?),
+            Expr::MatchBind(..) => return Err(self.error("`<-` match-bind is not yet supported", expr_id)),
         };
         Ok(self.hir.add(kind, pos))
     }

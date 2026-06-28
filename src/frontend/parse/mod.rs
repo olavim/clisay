@@ -15,16 +15,60 @@ macro_rules! parse_error {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Visibility { Pub, Inner, Private }
 
+/// The modes that decide how the current expression position is parsed.
+#[derive(Clone, Copy, Default)]
+struct ExprCtx {
+    prevent_construct: bool,
+    stop_at_arrow: bool,
+    /// A `<-` match-bind may begin here.
+    allow_matchbind: bool,
+}
+
+impl ExprCtx {
+    /// An `if`/`while` head: a trailing `{` is the body, and a `<-` match-bind may begin.
+    fn condition() -> ExprCtx {
+        ExprCtx { prevent_construct: true, allow_matchbind: true, ..Default::default() }
+    }
+
+    /// A `match` scrutinee: a trailing `{` opens the match body, not a construction.
+    fn scrutinee() -> ExprCtx {
+        ExprCtx { prevent_construct: true, ..Default::default() }
+    }
+
+    /// A `match` arm guard: a `=>` ends it, and a `<-` match-bind may begin.
+    fn guard() -> ExprCtx {
+        ExprCtx { stop_at_arrow: true, allow_matchbind: true, ..Default::default() }
+    }
+
+    /// A construction body derived from `outer`: nested braces construct, other modes carry over.
+    fn construct(outer: ExprCtx) -> ExprCtx {
+        ExprCtx { prevent_construct: false, ..outer }
+    }
+
+    /// An `&&`/`||` operand derived from `outer`: a `<-` match-bind may begin, other modes carry over.
+    fn cond_operand(outer: ExprCtx) -> ExprCtx {
+        ExprCtx { allow_matchbind: true, ..outer }
+    }
+
+    /// Whether a `{` after a constructible expression starts a brace construction.
+    fn can_construct(&self) -> bool { !self.prevent_construct }
+    /// Whether a `=>` ends the current expression instead of starting a lambda.
+    fn stops_at_arrow(&self) -> bool { self.stop_at_arrow }
+
+    /// Takes the match-bind permission, clearing it. A match-bind is recognized only at a leading
+    /// position, so the permission is consumed once per climb.
+    fn take_matchbind(&mut self) -> bool {
+        std::mem::replace(&mut self.allow_matchbind, false)
+    }
+}
+
 pub struct Parser<'parser, 'vm> {
     tokens: &'vm mut TokenStream<'vm>,
     ast: &'parser mut Ast,
+    /// The type whose body is being parsed, used to name its `init`.
     current_type: Option<String>,
-    /// True while parsing a condition (`if`/`while`), where a trailing `{` is the body
-    /// block, not a brace construction.
-    prevent_construct: bool,
-    /// True while parsing a match-arm guard, where a `=>` delimits the body rather than
-    /// opening a lambda. Reset inside a sub-expression by `parse_expr`.
-    stop_at_arrow: bool,
+    /// The modes governing how the current expression position is parsed.
+    ctx: ExprCtx,
 }
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
@@ -35,8 +79,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             tokens,
             ast: &mut ast,
             current_type: None,
-            prevent_construct: false,
-            stop_at_arrow: false,
+            ctx: ExprCtx::default(),
         };
 
         let pos = parser.tokens.peek(0).pos.clone();
@@ -111,7 +154,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_if_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::If)?.pos.clone();
-        let condition = self.parse_expr_prevent_construct()?;
+        let condition = self.parse_condition()?;
         let then = self.parse_block_or_stmt()?;
         let otherwise = match self.tokens.next_if(TokenType::Else) {
             Some(_) => match self.tokens.peek(0).kind {
@@ -406,7 +449,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::While)?.pos.clone();
-        let condition = self.parse_expr_prevent_construct()?;
+        let condition = self.parse_condition()?;
         let body = self.parse_block_or_stmt()?;
         Ok(self.ast.add_stmt(Stmt::While(condition, body), pos))
     }
@@ -414,7 +457,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// match_stmt := "match" expr "{" arm ("," arm)* ","? "}"
     fn parse_match(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Match)?.pos.clone();
-        let scrutinee = self.parse_expr_prevent_construct()?;
+        let scrutinee = self.with_ctx(ExprCtx::scrutinee(), |p| p.parse_expr_precedence(0))?;
         self.tokens.expect(TokenType::LeftBrace)?;
 
         let mut arms: Vec<Arm> = Vec::new();
@@ -451,22 +494,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             return self.parse_block();
         }
         let pos = self.tokens.peek(0).pos.clone();
-        let prev = std::mem::replace(&mut self.prevent_construct, false);
-        let prev_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
         let body_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
-        let result = self.parse_expr_precedence(body_precedence);
-        self.prevent_construct = prev;
-        self.stop_at_arrow = prev_arrow;
+        let result = self.with_ctx(ExprCtx::default(), |p| p.parse_expr_precedence(body_precedence));
         let stmt = self.ast.add_stmt(Stmt::Expression(result?), pos.clone());
         Ok(self.ast.add_expr(Expr::Block(vec![stmt]), pos))
     }
 
-    /// Parses a guard expression, stopping before the arm's `=>`.
+    /// Parses a guard expression, stopping before the arm's `=>`. A guard is a condition
+    /// context, so a `<-` match-bind may appear in it.
     fn parse_guard(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        let prev = std::mem::replace(&mut self.stop_at_arrow, true);
-        let result = self.parse_expr_precedence(0);
-        self.stop_at_arrow = prev;
-        result
+        self.with_ctx(ExprCtx::guard(), |p| p.parse_expr_precedence(0))
     }
 
     fn parse_return(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -579,21 +616,23 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
     }
 
-    fn parse_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        let prev = std::mem::replace(&mut self.prevent_construct, false);
-        let prev_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let result = self.parse_expr_precedence(0);
-        self.prevent_construct = prev;
-        self.stop_at_arrow = prev_arrow;
+    /// Runs `f` with the expression context replaced, restoring the previous context after.
+    /// A fresh nested parse starts from whatever modes `ctx` names and nothing else.
+    fn with_ctx<R>(&mut self, ctx: ExprCtx, f: impl FnOnce(&mut Self) -> R) -> R {
+        let prev = std::mem::replace(&mut self.ctx, ctx);
+        let result = f(self);
+        self.ctx = prev;
         result
     }
 
-    /// Parses an expression with a trailing `{`. Prevent construction to disambiguate.
-    fn parse_expr_prevent_construct(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        let prev = std::mem::replace(&mut self.prevent_construct, true);
-        let result = self.parse_expr_precedence(0);
-        self.prevent_construct = prev;
-        result
+    fn parse_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        self.with_ctx(ExprCtx::default(), |p| p.parse_expr_precedence(0))
+    }
+
+    /// Parses an `if`/`while` head: a condition where a trailing `{` is the body block and a
+    /// `<-` match-bind may begin.
+    fn parse_condition(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        self.with_ctx(ExprCtx::condition(), |p| p.parse_expr_precedence(0))
     }
 
     /// Whether `expr` can be brace-constructed: a bare type name `C` or a call `C(args)`.
@@ -609,43 +648,50 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_construction(&mut self, callee: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
         let pos = self.ast.pos(&callee).clone();
         self.tokens.expect(TokenType::LeftBrace)?;
-        let prev = std::mem::replace(&mut self.prevent_construct, false);
 
-        // Parse each value tighter than `,` so the comma separates fields, not the value expression.
+        // Allow nested braces to construct inside this body, but keep the other modes as they are.
         let value_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
-        let mut fields: Vec<(Symbol, AstId<Expr>)> = Vec::new();
-        while !self.tokens.matches(TokenType::RightBrace) {
-            let key_pos = self.tokens.peek(0).pos.clone();
-            let name = self.parse_identifier()?;
-            let field = self.ast.intern(&name);
-            let value = if self.tokens.next_if(TokenType::Colon).is_some() {
-                self.parse_expr_precedence(value_precedence)?
-            } else {
-                self.ast.add_expr(Expr::Identifier(field), key_pos) // shorthand `{ x }` == `{ x: x }`
-            };
-            fields.push((field, value));
-            if self.tokens.next_if(TokenType::Comma).is_none() { break; }
-        }
+        let fields = self.with_ctx(ExprCtx::construct(self.ctx), |p| -> Result<_, anyhow::Error> {
+            // Parse each value tighter than `,` so the comma separates fields, not the value expression.
+            let mut fields: Vec<(Symbol, AstId<Expr>)> = Vec::new();
+            while !p.tokens.matches(TokenType::RightBrace) {
+                let key_pos = p.tokens.peek(0).pos.clone();
+                let name = p.parse_identifier()?;
+                let field = p.ast.intern(&name);
+                let value = if p.tokens.next_if(TokenType::Colon).is_some() {
+                    p.parse_expr_precedence(value_precedence)?
+                } else {
+                    p.ast.add_expr(Expr::Identifier(field), key_pos) // shorthand `{ x }` == `{ x: x }`
+                };
+                fields.push((field, value));
+                if p.tokens.next_if(TokenType::Comma).is_none() { break; }
+            }
+            Ok(fields)
+        })?;
 
-        self.prevent_construct = prev;
         self.tokens.expect(TokenType::RightBrace)?;
         Ok(self.ast.add_expr(Expr::Construct(callee, fields), pos))
     }
 
     fn parse_expr_precedence(&mut self, min_precedence: u8) -> Result<AstId<Expr>, anyhow::Error> {
-        let mut left = match Operator::parse_prefix(self.tokens, 0) {
-            Some(op) => self.parse_expr_prefix(op)?,
-            _ => self.parse_expr_atom()?
-        };
+        // Operands parsed below this leading position must not inherit the permission; an
+        // `&&`/`||` re-grants it.
+        let allow_matchbind = self.ctx.take_matchbind();
+        let mut left = self.parse_leading(allow_matchbind)?;
 
         loop {
             // In a match arm guard, a `=>` delimits the body. Stop before it so it is not read as a lambda.
-            if self.stop_at_arrow && self.tokens.matches(TokenType::FatArrow) {
+            if self.ctx.stops_at_arrow() && self.tokens.matches(TokenType::FatArrow) {
                 break;
+            }
+            // A recognized match-bind consumes its own `<-`, so a `<-` reached here is misplaced.
+            if self.tokens.matches(TokenType::LeftArrow) {
+                let pos = self.tokens.peek(0).pos.clone();
+                parse_error!(self, &pos, "`<-` (match-bind) is only allowed in the head of an `if`/`while`, a match guard, or an `&&`/`||` operand");
             }
             // A `{` after a type name or call is a brace construction, unless we are parsing a
             // condition where the `{` opens the body block.
-            if !self.prevent_construct
+            if self.ctx.can_construct()
                 && self.tokens.matches(TokenType::LeftBrace)
                 && self.is_constructible(left)
             {
@@ -653,13 +699,33 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             } else if let Some(op) = Operator::parse_postfix(self.tokens, min_precedence) {
                 left = self.parse_expr_postfix(op, left)?;
             } else if let Some(op) = Operator::parse_infix(self.tokens, min_precedence) {
-                left = self.parse_expr_infix(op, left)?;
+                left = self.parse_infix_rhs(op, left, allow_matchbind)?;
             } else {
                 break;
             }
         }
 
         Ok(left)
+    }
+
+    /// Parses the leading operand. When the position permits it and the tokens form one, this is a
+    /// match-bind; otherwise an ordinary prefix or atom.
+    fn parse_leading(&mut self, allow_matchbind: bool) -> Result<AstId<Expr>, anyhow::Error> {
+        if allow_matchbind && self.scan_is_match_bind() {
+            self.parse_match_bind()
+        } else {
+            self.parse_primary()
+        }
+    }
+
+    /// Parses an infix operator and its right operand onto `left`. An `&&`/`||` operand stays a
+    /// condition context when the enclosing position allowed a match-bind, so one may begin there.
+    fn parse_infix_rhs(&mut self, op: Operator, left: AstId<Expr>, allow_matchbind: bool) -> Result<AstId<Expr>, anyhow::Error> {
+        if allow_matchbind && matches!(op, Operator::LogicalAnd | Operator::LogicalOr) {
+            self.with_ctx(ExprCtx::cond_operand(self.ctx), |p| p.parse_expr_infix(op, left))
+        } else {
+            self.parse_expr_infix(op, left)
+        }
     }
 
     /// Parses a primary expression: a literal, an array or dict literal, or an identifier.
@@ -905,12 +971,86 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub fn parse_matcher_root(tokens: &'vm mut TokenStream<'vm>) -> Result<(Ast, AstId<Matcher>), anyhow::Error> {
         let mut ast = Ast::new();
         let matcher = {
-            let mut parser = Parser { tokens, ast: &mut ast, current_type: None, prevent_construct: false, stop_at_arrow: false };
+            let mut parser = Parser { tokens, ast: &mut ast, current_type: None, ctx: ExprCtx::default() };
             let matcher = parser.parse_matcher()?;
             parser.tokens.expect(TokenType::EOF)?;
             matcher
         };
         Ok((ast, matcher))
+    }
+
+    /// Whether the tokens at the cursor begin a match-bind: a depth-zero `<-` reached through
+    /// only matcher tokens and balanced groups. A non-matcher token at depth zero ends the scan.
+    fn scan_is_match_bind(&self) -> bool {
+        let mut i = 0;
+        let mut depth = 0u32;
+        loop {
+            let kind = self.tokens.peek(i).kind;
+            match kind {
+                TokenType::EOF => return false,
+                TokenType::LeftArrow if depth == 0 => return true,
+                TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => depth += 1,
+                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
+                    if depth == 0 { return false; }
+                    depth -= 1;
+                },
+                _ if depth == 0 && !Self::is_matcher_token(kind) => return false,
+                _ => {},
+            }
+            i += 1;
+        }
+    }
+
+    /// Whether a token can appear in a matcher at nesting depth zero, before its `<-`. The
+    /// combinators are the single `|`/`&`. The doubled `||`/`&&` are boundaries.
+    fn is_matcher_token(kind: TokenType) -> bool {
+        matches!(kind,
+            TokenType::Identifier
+            | TokenType::NumericLiteral | TokenType::StringLiteral
+            | TokenType::True | TokenType::False | TokenType::Null
+            | TokenType::Is | TokenType::Has
+            | TokenType::At | TokenType::Pipe | TokenType::Amp | TokenType::DotDot)
+    }
+
+    /// MATCHER "<-" expr. The scrutinee parses tighter than the comparison and boolean operators.
+    /// So `{ a } <- x ?? y` is `({ a } <- x) ?? y`, and `{} <- x && rest` is `({} <- x) && rest`.
+    fn parse_match_bind(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        let pos = self.tokens.peek(0).pos.clone();
+        let matcher = self.parse_matcher()?;
+        self.validate_top_operand(matcher)?;
+        self.tokens.expect(TokenType::LeftArrow)?;
+        let scrutinee_precedence = Operator::Is.infix_precedence().unwrap() + 1;
+        let scrutinee = self.parse_expr_precedence(scrutinee_precedence)?;
+        if self.tokens.matches(TokenType::LeftArrow) {
+            let arrow_pos = self.tokens.peek(0).pos.clone();
+            parse_error!(self, &arrow_pos, "`<-` is non-associative; parenthesize the scrutinee to nest a match-bind");
+        }
+        Ok(self.ast.add_expr(Expr::MatchBind(matcher, scrutinee), pos))
+    }
+
+    /// Rejects a top-level `<-` operand that tests nothing useful: a bare binder or a pure-value
+    /// matcher. A structural/type/array test or any contained binder is allowed.
+    fn validate_top_operand(&self, matcher: AstId<Matcher>) -> Result<(), anyhow::Error> {
+        let pos = self.ast.pos(&matcher).clone();
+        match self.ast.get(&matcher) {
+            Matcher::Binder(name) => {
+                let name = self.ast.text(*name).to_string();
+                parse_error!(self, &pos, "a bare name on the left of `<-` only binds it; write `is {name}` to test its type, or put a space between `<` and `-` for a comparison `{name} < -...`");
+            },
+            _ if self.is_pure_value(matcher) => {
+                parse_error!(self, &pos, "the left of `<-` tests a value but binds nothing; use `==` for an equality test or a shape like `{{ k: _ }}`");
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether a matcher only compares a value or nothing.
+    fn is_pure_value(&self, matcher: AstId<Matcher>) -> bool {
+        match self.ast.get(&matcher) {
+            Matcher::Wildcard | Matcher::Literal(_) => true,
+            Matcher::Or(alts) => alts.iter().all(|a| self.is_pure_value(*a)),
+            _ => false,
+        }
     }
 
     /// matcher := IDENT "@" matcher | or_matcher

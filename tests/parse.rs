@@ -254,3 +254,76 @@ fn match_trailing_comma() {
 fn match_empty_is_rejected() {
     assert!(try_parse("match x { }").is_err());
 }
+
+/// The condition of a single leading `if`/`while` statement.
+fn condition(ast: &Ast) -> AstId<Expr> {
+    let stmts = top_stmts(ast);
+    match ast.get(&stmts[0]) {
+        Stmt::If(cond, _, _) => *cond,
+        Stmt::While(cond, _) => *cond,
+        _ => panic!("not an if/while"),
+    }
+}
+
+#[test]
+fn match_bind_in_if_and_while() {
+    let ast = parse("if { x } <- v { }");
+    assert!(matches!(ast.get(&condition(&ast)), Expr::MatchBind(_, _)));
+
+    let ast = parse("while [a, ..] <- v { }");
+    assert!(matches!(ast.get(&condition(&ast)), Expr::MatchBind(_, _)));
+}
+
+#[test]
+fn match_bind_in_and_operands() {
+    // A match-bind is recognized on either side of `&&`.
+    let ast = parse("if { x } <- v && ok { }");
+    let Expr::Binary(Operator::LogicalAnd, left, _) = ast.get(&condition(&ast)) else { panic!("not &&") };
+    assert!(matches!(ast.get(left), Expr::MatchBind(_, _)));
+
+    let ast = parse("if ok && { x } <- v { }");
+    let Expr::Binary(Operator::LogicalAnd, _, right) = ast.get(&condition(&ast)) else { panic!("not &&") };
+    assert!(matches!(ast.get(right), Expr::MatchBind(_, _)));
+}
+
+#[test]
+fn match_bind_precedence_cutoff() {
+    // `??` binds looser than `<-`, so `{ a } <- x ?? y` is `({ a } <- x) ?? y`.
+    let ast = parse("if { a } <- x ?? y { }");
+    let Expr::Binary(Operator::Coalesce, left, _) = ast.get(&condition(&ast)) else { panic!("not ??") };
+    assert!(matches!(ast.get(left), Expr::MatchBind(_, _)));
+}
+
+#[test]
+fn match_bind_in_guard() {
+    let ast = parse("match x { _ if { a } <- y => g() }");
+    let stmts = top_stmts(&ast);
+    let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match") };
+    let guard = arms[0].guard.expect("missing guard");
+    assert!(matches!(ast.get(&guard), Expr::MatchBind(_, _)));
+}
+
+#[test]
+fn match_bind_is_non_associative() {
+    // A bare binder operand and a chained `<-` are both parse errors.
+    assert!(try_parse("if a <- b <- c { }").is_err());
+    assert!(try_parse("if { x } <- y <- z { }").is_err());
+}
+
+#[test]
+fn match_bind_rejected_outside_condition() {
+    assert!(try_parse("say ok = { x } <- v;").is_err());
+}
+
+#[test]
+fn match_bind_rejects_pure_value_operand() {
+    assert!(try_parse("if 5 <- x { }").is_err());
+    assert!(try_parse("if 1 | 2 <- x { }").is_err());
+}
+
+#[test]
+fn match_bind_bare_binder_hint() {
+    let err = try_parse("if a <- b { }").err().expect("expected a parse error");
+    assert!(err.contains("is a"), "should point to a type test: {err}");
+    assert!(err.contains("space between `<` and `-`"), "should give the spacing hint: {err}");
+}

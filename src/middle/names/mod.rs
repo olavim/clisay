@@ -274,6 +274,7 @@ impl<'a> Resolver<'a> {
             Expr::This => {},
             Expr::SafeAccess(target, member, _) => { self.visit_expr(target)?; self.visit_expr(member)?; },
             Expr::Assert(operand) => self.visit_expr(operand)?,
+            Expr::MatchBind(..) => return Err(self.error("`<-` match-bind is not yet supported", e)),
         }
         Ok(())
     }

@@ -78,6 +78,9 @@ pub enum Expr {
     SafeAccess(AstId<Expr>, AstId<Expr>, bool),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
+    /// `MATCHER <- expr`: matches the matcher against the value and yields a boolean,
+    /// publishing the matcher's binders on success. Legal only in condition contexts.
+    MatchBind(AstId<Matcher>, AstId<Expr>),
 }
 
 /// A scalar literal in a matcher: an equality value (`v == s`) or a shape key.
