@@ -1,10 +1,10 @@
-null is null; // error: `is` is nominal and needs a type name; use `{ ... }` for a structural shape
+null is null; // error: `is` needs a type name
 // @split
-null is 0; // error: `is` is nominal and needs a type name; use `{ ... }` for a structural shape
+null is 0; // error: `is` needs a type name
 // @split
-null is true; // error: `is` is nominal and needs a type name; use `{ ... }` for a structural shape
+null is true; // error: `is` needs a type name
 // @split
-null is false; // error: `is` is nominal and needs a type name; use `{ ... }` for a structural shape
+null is false; // error: `is` needs a type name
 // @split
 say s = 0;
 null is s; // error: 's' is not a type or trait

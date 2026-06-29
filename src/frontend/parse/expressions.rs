@@ -103,14 +103,22 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
                 Expr::Index(expr, id, true) // `.name` member access
             },
-            Operator::Is | Operator::Has => {
-                self.tokens.back();
-                let matcher = self.parse_matcher()?;
-                match self.ast.get(&matcher) {
-                    Matcher::Type { nominal: true, name, shape: None } => Expr::Is(expr, *name),
-                    _ => Expr::Has(expr, matcher),
+            Operator::Is => {
+                let name_token = self.tokens.peek(0).clone();
+                if name_token.kind != TokenType::Identifier {
+                    parse_error!(self, &pos, "`is` needs a type name");
+                }
+                let name = self.parse_identifier()?;
+                let name = self.ast.intern(&name);
+                match self.parse_type_shape()? {
+                    Some(shape) => {
+                        let m = self.ast.add_matcher(Matcher::Type { nominal: true, name, shape: Some(shape) }, name_token.pos);
+                        Expr::Has(expr, m)
+                    },
+                    None => Expr::Is(expr, name),
                 }
             },
+            Operator::Has => Expr::Has(expr, self.parse_has_spec()?),
             Operator::Arrow => {
                 let right = self.parse_block_or_expr(op.infix_precedence().unwrap())?;
                 let params = expr.as_comma_separated(self.ast).iter()
