@@ -15,7 +15,7 @@ use nohash_hasher::IntSet;
 use crate::compiler_error;
 use crate::core::objects::{TypeMember, UpvalueLocation};
 use crate::middle::hir::{
-    Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnShape, Symbol,
+    Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchBody, HirStmt, ReturnShape, Symbol,
 };
 
 /// Where a bare identifier binds.
@@ -819,11 +819,13 @@ impl<'a> Resolver<'a> {
                 if let Some(f) = finally { self.collect_assigned_fields(f, out); }
             },
             HirStmt::Say(field) => if let Some(v) = &field.value { self.collect_assigned_fields(v, out); },
-            HirStmt::Match(scrutinee, arms) => {
+            HirStmt::Match(scrutinee, body) => {
                 self.collect_assigned_fields(scrutinee, out);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard { self.collect_assigned_fields(guard, out); }
-                    self.collect_assigned_fields(&arm.body, out);
+                if let HirMatchBody::Arms(arms) = body {
+                    for arm in arms {
+                        if let Some(guard) = &arm.guard { self.collect_assigned_fields(guard, out); }
+                        self.collect_assigned_fields(&arm.body, out);
+                    }
                 }
             },
             // Nested functions/types do not establish init assignment in this body.

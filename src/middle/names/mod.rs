@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchElem, Matcher, Stmt, Symbol, TypeDecl};
+use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchBody, MatchElem, Matcher, Stmt, Symbol, TypeDecl};
 
 /// What an identifier reference binds to.
 pub enum Binding {
@@ -197,12 +197,15 @@ impl<'a> Resolver<'a> {
             Stmt::Say(field) => if let Some(value) = &field.value { self.visit_expr(value)?; },
             Stmt::Fn(decl) => self.visit_fn(decl)?,
             Stmt::Type(decl) => self.visit_type(stmt, decl)?,
-            Stmt::Match(scrutinee, arms) => {
+            Stmt::Match(scrutinee, body) => {
                 self.visit_expr(scrutinee)?;
-                for arm in arms {
-                    self.matcher_binders(&arm.matcher)?;
-                    if let Some(guard) = &arm.guard { self.visit_expr(guard)?; }
-                    self.visit_expr(&arm.body)?;
+                match body {
+                    MatchBody::Arms(arms) => for arm in arms {
+                        self.matcher_binders(&arm.matcher)?;
+                        if let Some(guard) = &arm.guard { self.visit_expr(guard)?; }
+                        self.visit_expr(&arm.body)?;
+                    },
+                    MatchBody::Matcher(matcher) => { self.matcher_binders(matcher)?; },
                 }
             },
         }

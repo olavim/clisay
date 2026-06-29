@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::middle::hir::{Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ReturnShape, Symbol};
+use crate::middle::hir::{Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchBody, HirStmt, HirTypeDecl, ReturnShape, Symbol};
 
 /// A function's per-parameter nullability and return shape.
 pub struct FnSig {
@@ -122,11 +122,13 @@ impl<'a> Collector<'a> {
                 if let Some(finally) = finally { self.expr(finally); }
             },
             HirStmt::Say(field) => if let Some(value) = field.value { self.expr(&value); },
-            HirStmt::Match(scrutinee, arms) => {
+            HirStmt::Match(scrutinee, body) => {
                 self.expr(scrutinee);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard { self.expr(guard); }
-                    self.expr(&arm.body);
+                if let HirMatchBody::Arms(arms) = body {
+                    for arm in arms {
+                        if let Some(guard) = &arm.guard { self.expr(guard); }
+                        self.expr(&arm.body);
+                    }
                 }
             },
         }

@@ -1,17 +1,13 @@
 //! Lowering: AST to HIR transformation.
-//!
-//! The generic statement/expression transform lives here. The trait-composition
-//! concern is split out: `traits` handles trait scoping and member folding (`with`),
-//! and `init` handles initializer assembly and `init` orchestration.
 
 mod init;
 mod traits;
 
 use anyhow::anyhow;
 
-use crate::ast::{Arm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, Stmt, Symbol, TypeDecl};
+use crate::ast::{MatchArm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchBody, MatchElem, MatchScalar, Matcher, Operator, Param, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
+    BinOp, Hir, HirMatchArm, HirMatchBody, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
 };
 use crate::middle::names::NameBindings;
 
@@ -31,18 +27,13 @@ pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
 
 struct Lowerer<'a> {
     ast: &'a Ast,
-    /// Name-resolution facts resolved over the AST before lowering: each `type`/`trait`'s flattened
-    /// `with`-set and resolved `req` traits, and which identifiers name an in-scope trait. See
-    /// `middle::names`.
     names: &'a NameBindings,
     hir: Hir,
     /// The traits the composer currently being lowered provides (its flattened `with`-set).
-    /// Used to validate qualified `T.method(...)` calls. Empty outside a composer body.
     provided_traits: std::collections::HashSet<Symbol>,
     /// Qualified-call alias method names (`"<Trait>.<method>"`) emitted for the current
     /// composer: the methods a host override shadowed out of the plain namespace, still
-    /// reachable via `T.method(...)`. A qualified call resolves to an alias if one exists,
-    /// else to the plain method name.
+    /// reachable via `T.method(...)`.
     emitted_aliases: std::collections::HashSet<String>,
 }
 
@@ -101,10 +92,13 @@ impl<'a> Lowerer<'a> {
                 HirStmt::If(cond, then, otherwise)
             },
             Stmt::Block(body) => HirStmt::Block(self.expr(body)?),
-            Stmt::Match(scrutinee, arms) => {
+            Stmt::Match(scrutinee, body) => {
                 let scrutinee = self.expr(scrutinee)?;
-                let arms = arms.iter().map(|arm| self.lower_match_arm(arm)).collect::<Result<_, _>>()?;
-                HirStmt::Match(scrutinee, arms)
+                let body = match body {
+                    MatchBody::Arms(arms) => HirMatchBody::Arms(arms.iter().map(|arm| self.lower_match_arm(arm)).collect::<Result<_, _>>()?),
+                    MatchBody::Matcher(matcher) => HirMatchBody::Matcher(Box::new(self.lower_matcher(matcher)?)),
+                };
+                HirStmt::Match(scrutinee, body)
             },
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),
@@ -267,7 +261,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_match_arm(&mut self, arm: &Arm) -> Result<HirMatchArm, anyhow::Error> {
+    fn lower_match_arm(&mut self, arm: &MatchArm) -> Result<HirMatchArm, anyhow::Error> {
         Ok(HirMatchArm {
             matcher: self.lower_matcher(&arm.matcher)?,
             guard: self.opt_expr(&arm.guard)?,

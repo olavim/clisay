@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FnDecl, Literal, MatchBody, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 fn top_stmts(ast: &Ast) -> Vec<AstId<Stmt>> {
@@ -227,7 +227,7 @@ fn matcher_rejected_forms() {
 fn match_statement_arms() {
     let ast = parse("match x { is Point { a } => f(), _ => g() }");
     let stmts = top_stmts(&ast);
-    let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match") };
+    let Stmt::Match(_, MatchBody::Arms(arms)) = ast.get(&stmts[0]) else { panic!("not a match dispatch") };
     assert_eq!(arms.len(), 2);
     assert!(arms[0].guard.is_none());
 }
@@ -237,7 +237,7 @@ fn match_guard_uses_low_precedence_operator() {
     // `=>` delimits the guard, so a bare `??` guard is not swallowed as a lambda.
     let ast = parse("match x { _ if a ?? b => g() }");
     let stmts = top_stmts(&ast);
-    let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match") };
+    let Stmt::Match(_, MatchBody::Arms(arms)) = ast.get(&stmts[0]) else { panic!("not a match dispatch") };
     let guard = arms[0].guard.expect("missing guard");
     assert!(matches!(ast.get(&guard), Expr::Binary(Operator::Coalesce, _, _)));
 }
@@ -246,8 +246,44 @@ fn match_guard_uses_low_precedence_operator() {
 fn match_trailing_comma() {
     let ast = parse("match x { _ => g(), }");
     let stmts = top_stmts(&ast);
-    let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match") };
+    let Stmt::Match(_, MatchBody::Arms(arms)) = ast.get(&stmts[0]) else { panic!("not a match dispatch") };
     assert_eq!(arms.len(), 1);
+}
+
+#[test]
+fn match_shape_block() {
+    let ast = parse("match d { kind: \"move\", dx, dy }");
+    let stmts = top_stmts(&ast);
+    let Stmt::Match(_, MatchBody::Matcher(matcher)) = ast.get(&stmts[0]) else { panic!("not a single matcher") };
+    let Matcher::Shape(fields) = ast.get(matcher) else { panic!("not a shape") };
+    assert_eq!(fields.len(), 3);
+    assert_eq!(fields[0].key, MatchScalar::String("kind".into()));
+    assert!(matches!(ast.get(&fields[2].value), Matcher::Binder(_)));
+}
+
+#[test]
+fn match_single_matcher_block() {
+    let ast = parse("match d { is A | is B }");
+    let stmts = top_stmts(&ast);
+    let Stmt::Match(_, MatchBody::Matcher(matcher)) = ast.get(&stmts[0]) else { panic!("not a single matcher") };
+    assert!(matches!(ast.get(matcher), Matcher::Or(_)));
+}
+
+#[test]
+fn match_lone_ident_is_a_shape() {
+    let ast = parse("match d { x }");
+    let stmts = top_stmts(&ast);
+    let Stmt::Match(_, MatchBody::Matcher(matcher)) = ast.get(&stmts[0]) else { panic!("not a single matcher") };
+    let Matcher::Shape(fields) = ast.get(matcher) else { panic!("a lone ident should be a shorthand shape") };
+    assert_eq!(fields[0].key, MatchScalar::String("x".into()));
+}
+
+#[test]
+fn match_mixed_kinds_are_rejected() {
+    assert!(try_parse("match d { is A => f(), x: 1 }").is_err());
+    assert!(try_parse("match d { is A, is B }").is_err());
+    assert!(try_parse("match d { x: 1, is A }").is_err());
+    assert!(try_parse("match d { is A: 1 }").is_err());
 }
 
 #[test]

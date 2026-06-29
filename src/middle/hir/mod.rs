@@ -170,6 +170,12 @@ pub struct HirTypeDecl {
     pub provides: Vec<Symbol>,
 }
 
+/// The classified body of a `match`: a dispatch over arms or a single boolean matcher.
+pub enum HirMatchBody {
+    Arms(Vec<HirMatchArm>),
+    Matcher(Box<HirMatcher>),
+}
+
 /// One arm of a `match`.
 pub struct HirMatchArm {
     pub matcher: HirMatcher,
@@ -189,8 +195,7 @@ pub enum HirStmt {
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
     Trait(Box<HirTypeDecl>),
-    /// `match scrutinee { arms }`: dispatches the scrutinee across the arms.
-    Match(HirId<HirExpr>, Vec<HirMatchArm>),
+    Match(HirId<HirExpr>, HirMatchBody),
 }
 
 pub enum HirNodeKind {

@@ -199,11 +199,16 @@ pub struct TypeDecl {
     pub inner_members: HashSet<Symbol>,
 }
 
-/// One arm of a `match`.
-pub struct Arm {
+pub struct MatchArm {
     pub matcher: AstId<Matcher>,
     pub guard: Option<AstId<Expr>>,
     pub body: AstId<Expr>,
+}
+
+/// A `match` block. Either a dispatch over arms or a single matcher tested as a boolean.
+pub enum MatchBody {
+    Arms(Vec<MatchArm>),
+    Matcher(AstId<Matcher>),
 }
 
 pub enum Stmt {
@@ -220,8 +225,8 @@ pub enum Stmt {
     Say(FieldInit),
     Fn(FnDecl),
     Type(Box<TypeDecl>),
-    /// A match statement: Match(scrutinee, arms).
-    Match(AstId<Expr>, Vec<Arm>)
+    /// A match statement: Match(scrutinee, body).
+    Match(AstId<Expr>, MatchBody)
 }
 
 pub enum NodeKind {
