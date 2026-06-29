@@ -145,4 +145,5 @@ opcodes! {
     GreaterThanEqual => GREATER_THAN_EQUAL,
     Is => IS(Const),
     HasMember => HAS_MEMBER(Const),
+    ArrayLen => ARRAY_LEN,
 }

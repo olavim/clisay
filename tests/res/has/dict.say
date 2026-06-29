@@ -1,8 +1,8 @@
 say d = { x: 1, y: 2, nested: { a: 10 } };
 
 // key presence and absence
-print(d has "x");             // expect: true
-print(d has "z");             // expect: false
+print(d has { x: _ });        // expect: true
+print(d has { z: _ });        // expect: false
 
 // dict value match
 print(d has { x: 1 });        // expect: true
@@ -15,11 +15,11 @@ say e = { a: null };
 print(e has { a: null });     // expect: true
 print(d has { x: null });     // expect: false
 
-// the array form is an AND of specs
-print(d has ["x", "y"]);      // expect: true
-print(d has ["x", "z"]);      // expect: false
-print(d has [{ x: 1 }, "y"]); // expect: true
-print(d has [{ x: 2 }, "y"]); // expect: false
+// a multi-key presence test folds into one shape
+print(d has { x: _, y: _ });  // expect: true
+print(d has { x: _, z: _ });  // expect: false
+print(d has { x: 1, y: _ });  // expect: true
+print(d has { x: 2, y: _ });  // expect: false
 
 // nested specs recurse into member values
 print(d has { nested: { a: 10 } }); // expect: true

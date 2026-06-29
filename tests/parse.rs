@@ -101,8 +101,8 @@ fn assert_operator() {
 
 #[test]
 fn has_operator() {
-    let ast = parse("say x = a has \"b\";");
-    assert!(matches!(ast.get(&say_value(&ast)), Expr::Binary(Operator::Has, _, _)));
+    let ast = parse("say x = a has { b: _ };");
+    assert!(matches!(ast.get(&say_value(&ast)), Expr::Has(_, _)));
 }
 
 #[test]

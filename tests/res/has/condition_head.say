@@ -1,0 +1,19 @@
+// In an `if`/`while` head a trailing `{` is the body, not the type's shape. In a value position
+// the trailing `{` is the type's destructuring shape.
+trait K { req a; }
+type T with K { pub a; pub b; init() { this.a = 1; this.b = 2; } }
+say x = T();
+
+if x has T { print("if"); } // expect: if
+if x has T & is K { print("and"); } // expect: and
+if x is K & has T { print("and"); } // expect: and
+
+say mut n = 0;
+while n < 2 && x has K { print("while"); n = n + 1; }
+// expect: while
+// expect: while
+
+say ok = x has T { a: 1 };
+print(ok); // expect: true
+say no = x has T { a: 2 };
+print(no); // expect: false

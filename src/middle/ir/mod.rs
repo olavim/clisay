@@ -103,6 +103,7 @@ pub enum Inst {
     GreaterThanEqual,
     Is(u8),
     HasMember(u8),
+    ArrayLen,
 }
 
 pub struct Ir {

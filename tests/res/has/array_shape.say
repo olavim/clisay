@@ -1,0 +1,17 @@
+// An array operand is a positional shape: exact length and each element matches at its position.
+say a = [1, 2];
+print(a has [1, 2]); // expect: true
+print(a has [1, 3]); // expect: false
+print(a has [1]); // expect: false
+print(a has [1, 2, 3]); // expect: false
+print([] has []); // expect: true
+print(a has []); // expect: false
+
+// a non-array never matches an array shape
+print(5 has [1]); // expect: false
+print({ x: 1 } has [1]); // expect: false
+
+// elements may be nested shapes
+say b = [{ x: 1 }, 2];
+print(b has [{ x: 1 }, 2]); // expect: true
+print(b has [{ x: 2 }, 2]); // expect: false
