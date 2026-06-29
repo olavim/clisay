@@ -157,7 +157,6 @@ impl<'a> Collector<'a> {
             },
             HirExpr::Literal(lit) => self.literal(lit),
             HirExpr::Identifier(_) | HirExpr::This => {},
-            HirExpr::MatchBind(_, scrutinee) => self.expr(scrutinee),
         }
     }
 

@@ -1,4 +1,4 @@
-//! Pattern matching: the `match` statement, the `<-` match-bind, and the matcher grammar.
+//! Pattern matching: the `match` statement and the matcher grammar.
 
 use super::*;
 
@@ -49,8 +49,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_expr(Expr::Block(vec![stmt]), pos))
     }
 
-    /// Parses a guard expression, stopping before the arm's `=>`. A guard is a condition
-    /// context, so a `<-` match-bind may appear in it.
+    /// Parses a guard expression, stopping before the arm's `=>`.
     pub(super) fn parse_guard(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         self.with_ctx(ExprCtx::guard(), |p| p.parse_expr_precedence(0))
     }
@@ -65,80 +64,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             matcher
         };
         Ok((ast, matcher))
-    }
-
-    /// Whether the tokens at the cursor begin a match-bind: a depth-zero `<-` reached through
-    /// only matcher tokens and balanced groups. A non-matcher token at depth zero ends the scan.
-    pub(super) fn scan_is_match_bind(&self) -> bool {
-        let mut i = 0;
-        let mut depth = 0u32;
-        loop {
-            let kind = self.tokens.peek(i).kind;
-            match kind {
-                TokenType::EOF => return false,
-                TokenType::LeftArrow if depth == 0 => return true,
-                TokenType::LeftParen | TokenType::LeftBracket | TokenType::LeftBrace => depth += 1,
-                TokenType::RightParen | TokenType::RightBracket | TokenType::RightBrace => {
-                    if depth == 0 { return false; }
-                    depth -= 1;
-                },
-                _ if depth == 0 && !Self::is_matcher_token(kind) => return false,
-                _ => {},
-            }
-            i += 1;
-        }
-    }
-
-    /// Whether a token can appear in a matcher at nesting depth zero, before its `<-`. The
-    /// combinators are the single `|`/`&`. The doubled `||`/`&&` are boundaries.
-    pub(super) fn is_matcher_token(kind: TokenType) -> bool {
-        matches!(kind,
-            TokenType::Identifier
-            | TokenType::NumericLiteral | TokenType::StringLiteral
-            | TokenType::True | TokenType::False | TokenType::Null
-            | TokenType::Is | TokenType::Has
-            | TokenType::At | TokenType::Pipe | TokenType::Amp | TokenType::DotDot)
-    }
-
-    /// MATCHER "<-" expr. The scrutinee parses tighter than the comparison and boolean operators.
-    /// So `{ a } <- x ?? y` is `({ a } <- x) ?? y`, and `{} <- x && rest` is `({} <- x) && rest`.
-    pub(super) fn parse_match_bind(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        let pos = self.tokens.peek(0).pos.clone();
-        let matcher = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
-        self.validate_top_operand(matcher)?;
-        self.tokens.expect(TokenType::LeftArrow)?;
-        let scrutinee_precedence = Operator::Is.infix_precedence().unwrap() + 1;
-        let scrutinee = self.parse_expr_precedence(scrutinee_precedence)?;
-        if self.tokens.matches(TokenType::LeftArrow) {
-            let arrow_pos = self.tokens.peek(0).pos.clone();
-            parse_error!(self, &arrow_pos, "`<-` is non-associative; parenthesize the scrutinee to nest a match-bind");
-        }
-        Ok(self.ast.add_expr(Expr::MatchBind(matcher, scrutinee), pos))
-    }
-
-    /// Rejects a top-level `<-` operand that tests nothing useful: a bare binder or a pure-value
-    /// matcher. A structural/type/array test or any contained binder is allowed.
-    pub(super) fn validate_top_operand(&self, matcher: AstId<Matcher>) -> Result<(), anyhow::Error> {
-        let pos = self.ast.pos(&matcher).clone();
-        match self.ast.get(&matcher) {
-            Matcher::Binder(name) => {
-                let name = self.ast.text(*name).to_string();
-                parse_error!(self, &pos, "a bare name on the left of `<-` only binds it; write `is {name}` to test its type, or put a space between `<` and `-` for a comparison `{name} < -...`");
-            },
-            _ if self.is_pure_value(matcher) => {
-                parse_error!(self, &pos, "the left of `<-` tests a value but binds nothing; use `==` for an equality test or a shape like `{{ k: _ }}`");
-            },
-            _ => Ok(()),
-        }
-    }
-
-    /// Whether a matcher only compares a value or nothing.
-    pub(super) fn is_pure_value(&self, matcher: AstId<Matcher>) -> bool {
-        match self.ast.get(&matcher) {
-            Matcher::Wildcard | Matcher::Literal(_) => true,
-            Matcher::Or(alts) => alts.iter().all(|a| self.is_pure_value(*a)),
-            _ => false,
-        }
     }
 
     /// matcher := IDENT "@" matcher | or_matcher

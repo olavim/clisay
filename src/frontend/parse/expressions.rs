@@ -16,8 +16,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.with_ctx(ExprCtx::default(), |p| p.parse_expr_precedence(0))
     }
 
-    /// Parses an `if`/`while` head: a condition where a trailing `{` is the body block and a
-    /// `<-` match-bind may begin.
+    /// Parses an `if`/`while` head: a condition where a trailing `{` is the body block.
     pub(super) fn parse_condition(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         self.with_ctx(ExprCtx::condition(), |p| p.parse_expr_precedence(0))
     }
@@ -61,20 +60,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     pub(super) fn parse_expr_precedence(&mut self, min_precedence: u8) -> Result<AstId<Expr>, anyhow::Error> {
-        // Operands parsed below this leading position must not inherit the permission; an
-        // `&&`/`||` re-grants it.
-        let allow_matchbind = self.ctx.take_matchbind();
-        let mut left = self.parse_leading(allow_matchbind)?;
+        let mut left = self.parse_primary()?;
 
         loop {
             // In a match arm guard, a `=>` delimits the body. Stop before it so it is not read as a lambda.
             if self.ctx.stops_at_arrow() && self.tokens.matches(TokenType::FatArrow) {
                 break;
-            }
-            // A recognized match-bind consumes its own `<-`, so a `<-` reached here is misplaced.
-            if self.tokens.matches(TokenType::LeftArrow) {
-                let pos = self.tokens.peek(0).pos.clone();
-                parse_error!(self, &pos, "`<-` (match-bind) is only allowed in the head of an `if`/`while`, a match guard, or an `&&`/`||` operand");
             }
             // A `{` after a type name or call is a brace construction, unless we are parsing a
             // condition where the `{` opens the body block.
@@ -86,33 +77,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             } else if let Some(op) = Operator::parse_postfix(self.tokens, min_precedence) {
                 left = self.parse_expr_postfix(op, left)?;
             } else if let Some(op) = Operator::parse_infix(self.tokens, min_precedence) {
-                left = self.parse_infix_rhs(op, left, allow_matchbind)?;
+                left = self.parse_expr_infix(op, left)?;
             } else {
                 break;
             }
         }
 
         Ok(left)
-    }
-
-    /// Parses the leading operand. When the position permits it and the tokens form one, this is a
-    /// match-bind; otherwise an ordinary prefix or atom.
-    pub(super) fn parse_leading(&mut self, allow_matchbind: bool) -> Result<AstId<Expr>, anyhow::Error> {
-        if allow_matchbind && self.scan_is_match_bind() {
-            self.parse_match_bind()
-        } else {
-            self.parse_primary()
-        }
-    }
-
-    /// Parses an infix operator and its right operand onto `left`. An `&&`/`||` operand stays a
-    /// condition context when the enclosing position allowed a match-bind, so one may begin there.
-    pub(super) fn parse_infix_rhs(&mut self, op: Operator, left: AstId<Expr>, allow_matchbind: bool) -> Result<AstId<Expr>, anyhow::Error> {
-        if allow_matchbind && matches!(op, Operator::LogicalAnd | Operator::LogicalOr) {
-            self.with_ctx(ExprCtx::cond_operand(self.ctx), |p| p.parse_expr_infix(op, left))
-        } else {
-            self.parse_expr_infix(op, left)
-        }
     }
 
     /// Parses a primary expression: a literal, an array or dict literal, or an identifier.
