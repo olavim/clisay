@@ -32,3 +32,21 @@ fn or_matcher_same_binders_resolves() {
     let src = format!("{POINT} match v {{ is Point {{ x }} | {{ x }} => 0 }}");
     assert!(try_resolve(&src).is_ok());
 }
+
+#[test]
+fn binding_one_liner_outside_a_condition_errors() {
+    let err = try_resolve("say b = match d { kind };").unwrap_err();
+    assert!(err.contains("only allowed in a condition"), "{err}");
+}
+
+#[test]
+fn binding_one_liner_in_a_condition_resolves() {
+    assert!(try_resolve("if match d { kind, dx, dy } { }").is_ok());
+    assert!(try_resolve("if a && match d { kind } { }").is_ok());
+}
+
+#[test]
+fn binderless_one_liner_outside_a_condition_resolves() {
+    let src = format!("{POINT} say b = match d {{ is Point | is Point }};");
+    assert!(try_resolve(&src).is_ok());
+}
