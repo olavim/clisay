@@ -5,9 +5,9 @@ mod traits;
 
 use anyhow::anyhow;
 
-use crate::ast::{Arm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, Stmt, Symbol, TypeDecl};
+use crate::ast::{MatchArm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchBody, MatchElem, MatchScalar, Matcher, Operator, Param, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
+    BinOp, Hir, HirMatchArm, HirMatchBody, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
 };
 use crate::middle::names::NameBindings;
 
@@ -86,10 +86,13 @@ impl<'a> Lowerer<'a> {
                 HirStmt::If(cond, then, otherwise)
             },
             Stmt::Block(body) => HirStmt::Block(self.expr(body)?),
-            Stmt::Match(scrutinee, arms) => {
+            Stmt::Match(scrutinee, body) => {
                 let scrutinee = self.expr(scrutinee)?;
-                let arms = arms.iter().map(|arm| self.lower_match_arm(arm)).collect::<Result<_, _>>()?;
-                HirStmt::Match(scrutinee, arms)
+                let body = match body {
+                    MatchBody::Arms(arms) => HirMatchBody::Arms(arms.iter().map(|arm| self.lower_match_arm(arm)).collect::<Result<_, _>>()?),
+                    MatchBody::Matcher(matcher) => HirMatchBody::Matcher(Box::new(self.lower_matcher(matcher)?)),
+                };
+                HirStmt::Match(scrutinee, body)
             },
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),
@@ -248,7 +251,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_match_arm(&mut self, arm: &Arm) -> Result<HirMatchArm, anyhow::Error> {
+    fn lower_match_arm(&mut self, arm: &MatchArm) -> Result<HirMatchArm, anyhow::Error> {
         Ok(HirMatchArm {
             matcher: self.lower_matcher(&arm.matcher)?,
             guard: self.opt_expr(&arm.guard)?,
