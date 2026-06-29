@@ -86,8 +86,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(left)
     }
 
-    /// Parses a primary expression: a literal, an array or dict literal, or an identifier.
+    /// Parses a primary expression: a literal, an array or dict literal, an identifier, or a
+    /// `match` one-liner.
     pub(super) fn parse_primary(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        if self.tokens.matches(TokenType::Match) {
+            return self.parse_match_expr();
+        }
         match Operator::parse_prefix(self.tokens, 0) {
             Some(op) => self.parse_expr_prefix(op),
             _ => self.parse_expr_atom(),

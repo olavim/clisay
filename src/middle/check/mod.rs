@@ -332,6 +332,7 @@ impl<'a> Checker<'a> {
                 }
                 Typed::nonnull()
             },
+            HirExpr::Match(..) => return Err(self.error("`match` is not yet supported".to_string(), expr)),
             HirExpr::Block(stmts) => {
                 let mark = self.locals.len();
                 for s in stmts { self.stmt(s)?; }

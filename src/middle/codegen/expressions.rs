@@ -37,6 +37,7 @@ impl<'a> Compiler<'a> {
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
             HirExpr::Has(left, matcher) => self.compile_has(left, matcher, expr)?,
+            HirExpr::Match(..) => compiler_error!(self, expr, "`match` is not yet supported"),
             HirExpr::This => self.emit(Inst::LoadLocal(0), expr),
             HirExpr::Coalesce(left, right) => self.coalesce(left, right)?,
             HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(target, member, *is_dot)?,

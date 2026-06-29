@@ -12,6 +12,20 @@ enum MatchEntry {
 impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// match_stmt := "match" expr "{" entry ("," entry)* ","? "}"
     pub(super) fn parse_match(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
+        let (scrutinee, body, pos) = self.parse_match_inner()?;
+        Ok(self.ast.add_stmt(Stmt::Match(scrutinee, body), pos))
+    }
+
+    pub(super) fn parse_match_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        let (scrutinee, body, pos) = self.parse_match_inner()?;
+        match body {
+            MatchBody::Matcher(matcher) => Ok(self.ast.add_expr(Expr::Match(scrutinee, matcher), pos)),
+            MatchBody::Arms(_) => parse_error!(self, &pos, "A `match` with `=>` arms is a statement, not an expression"),
+        }
+    }
+
+    /// Parses `match scrutinee { entries }`.
+    fn parse_match_inner(&mut self) -> Result<(AstId<Expr>, MatchBody, SourcePosition), anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Match)?.pos.clone();
         let scrutinee = self.with_ctx(ExprCtx::scrutinee(), |p| p.parse_expr_precedence(0))?;
         self.tokens.expect(TokenType::LeftBrace)?;
@@ -29,7 +43,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             parse_error!(self, &pos, "A `match` needs at least one entry");
         }
         let body = self.classify_match(entries, &pos)?;
-        Ok(self.ast.add_stmt(Stmt::Match(scrutinee, body), pos))
+        Ok((scrutinee, body, pos))
     }
 
     fn parse_match_entry(&mut self) -> Result<MatchEntry, anyhow::Error> {

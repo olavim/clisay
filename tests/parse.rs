@@ -290,3 +290,36 @@ fn match_mixed_kinds_are_rejected() {
 fn match_empty_is_rejected() {
     assert!(try_parse("match x { }").is_err());
 }
+
+#[test]
+fn match_one_liner_in_if_head() {
+    let ast = parse("if match d { kind, dx, dy } { f(); }");
+    let stmts = top_stmts(&ast);
+    let Stmt::If(cond, _, _) = ast.get(&stmts[0]) else { panic!("not an if") };
+    let Expr::Match(_, matcher) = ast.get(cond) else { panic!("condition is not a one-liner") };
+    assert!(matches!(ast.get(matcher), Matcher::Shape(_)));
+}
+
+#[test]
+fn match_one_liner_in_while_and_and_heads() {
+    let ast = parse("while match q { [head, ..rest] } { g(); }");
+    let Stmt::While(cond, _) = ast.get(&top_stmts(&ast)[0]) else { panic!("not a while") };
+    assert!(matches!(ast.get(cond), Expr::Match(_, _)));
+
+    let ast = parse("if a && match d { kind } { g(); }");
+    let Stmt::If(cond, _, _) = ast.get(&top_stmts(&ast)[0]) else { panic!("not an if") };
+    let Expr::Binary(Operator::LogicalAnd, _, right) = ast.get(cond) else { panic!("not an &&") };
+    assert!(matches!(ast.get(right), Expr::Match(_, _)));
+}
+
+#[test]
+fn match_binderless_one_liner_in_say_value() {
+    let ast = parse("say b = match d { is A | is B };");
+    let Expr::Match(_, matcher) = ast.get(&say_value(&ast)) else { panic!("say value is not a one-liner") };
+    assert!(matches!(ast.get(matcher), Matcher::Or(_)));
+}
+
+#[test]
+fn match_arms_in_expression_position_are_rejected() {
+    assert!(try_parse("say b = match d { _ => 1 };").is_err());
+}

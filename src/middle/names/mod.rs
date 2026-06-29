@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchBody, MatchElem, Matcher, Stmt, Symbol, TypeDecl};
+use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchBody, MatchElem, Matcher, Operator, Stmt, Symbol, TypeDecl};
 
 /// What an identifier reference binds to.
 pub enum Binding {
@@ -63,6 +63,7 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
         ast,
         scopes: Vec::new(),
         trait_flatten_cache: HashMap::new(),
+        in_condition: false,
         out: NameBindings { type_traits: HashMap::new(), name_refs: HashMap::new(), types: HashSet::new() },
     };
     resolver.visit_stmt(&ast.get_root())?;
@@ -92,10 +93,8 @@ struct Resolver<'a> {
     ast: &'a Ast,
     /// The lexical scope stack, innermost last.
     scopes: Vec<Scope>,
-    /// Memoized flattened `with`-sets, keyed by a trait's declaration. A trait reached from several
-    /// composers flattens identically, so the first resolver's result is reused (and cycle-checked
-    /// once).
     trait_flatten_cache: HashMap<AstId<Stmt>, Vec<(Symbol, AstId<Stmt>)>>,
+    in_condition: bool,
     out: NameBindings,
 }
 
@@ -187,9 +186,9 @@ impl<'a> Resolver<'a> {
                 if let Some(catch) = catch { self.visit_catch(catch)?; }
                 if let Some(finally) = finally { self.visit_expr(finally)?; }
             },
-            Stmt::While(cond, body) => { self.visit_expr(cond)?; self.visit_expr(body)?; },
+            Stmt::While(cond, body) => { self.visit_condition(cond)?; self.visit_expr(body)?; },
             Stmt::If(cond, then, otherwise) => {
-                self.visit_expr(cond)?;
+                self.visit_condition(cond)?;
                 self.visit_expr(then)?;
                 if let Some(otherwise) = otherwise { self.visit_stmt(otherwise)?; }
             },
@@ -201,11 +200,11 @@ impl<'a> Resolver<'a> {
                 self.visit_expr(scrutinee)?;
                 match body {
                     MatchBody::Arms(arms) => for arm in arms {
-                        self.matcher_binders(&arm.matcher)?;
-                        if let Some(guard) = &arm.guard { self.visit_expr(guard)?; }
+                        self.collect_matcher_binders(&arm.matcher)?;
+                        if let Some(guard) = &arm.guard { self.visit_condition(guard)?; }
                         self.visit_expr(&arm.body)?;
                     },
-                    MatchBody::Matcher(matcher) => { self.matcher_binders(matcher)?; },
+                    MatchBody::Matcher(matcher) => self.check_match_expr(matcher, false)?,
                 }
             },
         }
@@ -250,7 +249,21 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
+    fn visit_condition(&mut self, e: &AstId<Expr>) -> Result<(), anyhow::Error> {
+        self.in_condition = true;
+        self.visit_expr(e)
+    }
+
+    fn check_match_expr(&self, matcher: &AstId<Matcher>, in_condition: bool) -> Result<(), anyhow::Error> {
+        let binders = self.collect_matcher_binders(matcher)?;
+        if !binders.is_empty() && !in_condition {
+            return Err(self.error("a `match` that binds names is only allowed in a condition", matcher));
+        }
+        Ok(())
+    }
+
     fn visit_expr(&mut self, e: &AstId<Expr>) -> Result<(), anyhow::Error> {
+        let in_condition = std::mem::replace(&mut self.in_condition, false);
         match self.ast.get(e) {
             Expr::Block(stmts) => {
                 self.push_scope();
@@ -258,7 +271,13 @@ impl<'a> Resolver<'a> {
                 self.pop_scope();
             },
             Expr::Unary(_, operand) => self.visit_expr(operand)?,
-            Expr::Binary(_, left, right) => { self.visit_expr(left)?; self.visit_expr(right)?; },
+            Expr::Binary(op, left, right) => {
+                let propagate = in_condition && matches!(op, Operator::LogicalAnd | Operator::LogicalOr);
+                self.in_condition = propagate;
+                self.visit_expr(left)?;
+                self.in_condition = propagate;
+                self.visit_expr(right)?;
+            },
             Expr::Call(callee, args) => {
                 self.visit_expr(callee)?;
                 for arg in args { self.visit_expr(arg)?; }
@@ -285,6 +304,10 @@ impl<'a> Resolver<'a> {
             Expr::SafeAccess(target, member, _) => { self.visit_expr(target)?; self.visit_expr(member)?; },
             Expr::Assert(operand) => self.visit_expr(operand)?,
             Expr::Has(left, _) => self.visit_expr(left)?,
+            Expr::Match(scrutinee, matcher) => {
+                self.visit_expr(scrutinee)?;
+                self.check_match_expr(matcher, in_condition)?;
+            },
         }
         Ok(())
     }
@@ -299,10 +322,7 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// The set of names a matcher binds, validating its `is`/`has` type names and enforcing the
-    /// binder rules. Conjunctive parts (shape fields, array elements, `&`, `@`) must bind distinct
-    /// names. Every alternative of an `|` must bind the same set.
-    fn matcher_binders(&self, id: &AstId<Matcher>) -> Result<HashSet<Symbol>, anyhow::Error> {
+    fn collect_matcher_binders(&self, id: &AstId<Matcher>) -> Result<HashSet<Symbol>, anyhow::Error> {
         match self.ast.get(id) {
             Matcher::Wildcard | Matcher::Literal(_) => Ok(HashSet::new()),
             Matcher::Binder(name) => Ok(HashSet::from([*name])),
@@ -311,14 +331,14 @@ impl<'a> Resolver<'a> {
                     return Err(self.error(format!("'{}' is not a type or trait", self.ast.text(*name)), id));
                 }
                 match shape {
-                    Some(shape) => self.matcher_binders(shape),
+                    Some(shape) => self.collect_matcher_binders(shape),
                     None => Ok(HashSet::new()),
                 }
             },
             Matcher::Shape(fields) => {
                 let mut binders = HashSet::new();
                 for field in fields {
-                    let sub = self.matcher_binders(&field.value)?;
+                    let sub = self.collect_matcher_binders(&field.value)?;
                     self.merge_distinct(&mut binders, sub, id)?;
                 }
                 Ok(binders)
@@ -327,7 +347,7 @@ impl<'a> Resolver<'a> {
                 let mut binders = HashSet::new();
                 for element in elements {
                     let sub = match element {
-                        MatchElem::Elem(matcher) => self.matcher_binders(matcher)?,
+                        MatchElem::Elem(matcher) => self.collect_matcher_binders(matcher)?,
                         MatchElem::Rest(Some(name)) => HashSet::from([*name]),
                         MatchElem::Rest(None) => HashSet::new(),
                     };
@@ -337,14 +357,14 @@ impl<'a> Resolver<'a> {
             },
             Matcher::As(name, inner) => {
                 let mut binders = HashSet::from([*name]);
-                let sub = self.matcher_binders(inner)?;
+                let sub = self.collect_matcher_binders(inner)?;
                 self.merge_distinct(&mut binders, sub, id)?;
                 Ok(binders)
             },
             Matcher::And(parts) => {
                 let mut binders = HashSet::new();
                 for part in parts {
-                    let sub = self.matcher_binders(part)?;
+                    let sub = self.collect_matcher_binders(part)?;
                     self.merge_distinct(&mut binders, sub, id)?;
                 }
                 Ok(binders)
@@ -352,9 +372,9 @@ impl<'a> Resolver<'a> {
             // Alternatives are parallel, so each is checked on its own and all must agree on the bound set.
             Matcher::Or(alternatives) => {
                 let mut alts = alternatives.iter();
-                let first = self.matcher_binders(alts.next().unwrap())?;
+                let first = self.collect_matcher_binders(alts.next().unwrap())?;
                 for alt in alts {
-                    if self.matcher_binders(alt)? != first {
+                    if self.collect_matcher_binders(alt)? != first {
                         return Err(self.error("or-matcher alternatives must bind the same names", id));
                     }
                 }

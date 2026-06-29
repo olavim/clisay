@@ -73,6 +73,7 @@ pub enum HirExpr {
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(HirId<HirExpr>),
     Has(HirId<HirExpr>, Box<HirMatcher>),
+    Match(HirId<HirExpr>, Box<HirMatcher>),
 }
 
 /// A lowered matcher: it tests a value and binds sub-values out into names. The bindingless

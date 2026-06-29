@@ -181,6 +181,10 @@ impl<'a> Lowerer<'a> {
                 self.validate_has_operand(matcher)?;
                 HirExpr::Has(left, Box::new(self.lower_matcher(matcher)?))
             },
+            Expr::Match(scrutinee, matcher) => {
+                let scrutinee = self.expr(scrutinee)?;
+                HirExpr::Match(scrutinee, Box::new(self.lower_matcher(matcher)?))
+            },
         };
         Ok(self.hir.add(kind, pos))
     }

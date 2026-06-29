@@ -82,6 +82,8 @@ pub enum Expr {
     /// matcher is the bindingless subset of the `match` grammar. A bare nominal `is T` uses `Is`
     /// instead; everything richer (shapes, `&`/`|`) lands here.
     Has(AstId<Expr>, AstId<Matcher>),
+    /// A `match` one-liner `match scrutinee { MATCHER }` used as a boolean.
+    Match(AstId<Expr>, AstId<Matcher>),
 }
 
 /// A scalar literal in a matcher: an equality value (`v == s`) or a shape key.

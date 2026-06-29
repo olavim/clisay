@@ -498,6 +498,7 @@ impl<'a> Resolver<'a> {
             HirExpr::Is(target, _) => self.expression(target)?,
             // `x has spec`: bind the left value; the spec is a static shape with no bindings.
             HirExpr::Has(left, _) => self.expression(left)?,
+            HirExpr::Match(..) => compiler_error!(self, expr, "`match` is not yet supported"),
             HirExpr::Construct(callee, args, brace) => {
                 let callee = *callee;
                 let args = args.clone();
@@ -785,7 +786,7 @@ impl<'a> Resolver<'a> {
                 self.collect_assigned_fields(value, out);
             },
             HirExpr::Block(stmts) => for s in stmts { self.collect_assigned_fields_stmt(s, out); },
-            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Has(x, _) => self.collect_assigned_fields(x, out),
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Has(x, _) | HirExpr::Match(x, _) => self.collect_assigned_fields(x, out),
             HirExpr::Binary(_, l, r) => { self.collect_assigned_fields(l, out); self.collect_assigned_fields(r, out); },
             HirExpr::Call(c, args) => {
                 self.collect_assigned_fields(c, out);
