@@ -1,4 +1,4 @@
-use clisay::internals::{lower, Hir, HirExpr, HirFnDecl, HirId, HirStmt, ReturnShape};
+use clisay::internals::{lower, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt, ReturnShape};
 
 /// The top-level statements of a lowered program (unwraps the root block).
 fn top_stmts(hir: &Hir) -> Vec<HirId<HirStmt>> {
@@ -6,6 +6,13 @@ fn top_stmts(hir: &Hir) -> Vec<HirId<HirStmt>> {
     let HirStmt::Expression(block) = hir.get(&root) else { panic!("root is not an expression statement") };
     let HirExpr::Block(stmts) = hir.get(block) else { panic!("root expression is not a block") };
     stmts.clone()
+}
+
+fn if_match_bind(hir: &Hir) -> &HirMatcher {
+    let stmts = top_stmts(hir);
+    let HirStmt::If(cond, ..) = hir.get(&stmts[0]) else { panic!("first statement is not an if") };
+    let HirExpr::MatchBind(matcher, _) = hir.get(cond) else { panic!("if condition is not a match-bind") };
+    matcher
 }
 
 fn nth_fn<'a>(hir: &'a Hir, stmts: &[HirId<HirStmt>], i: usize) -> &'a HirFnDecl {
@@ -71,4 +78,43 @@ fn type_field_flags_survive_lowering() {
     let count = hir.symbol_of("count").expect("count not interned");
     assert!(decl.nullable_fields.contains(&next));
     assert!(decl.mut_fields.contains(&count));
+}
+
+#[test]
+fn match_bind_shorthand_field_lowers_to_binder() {
+    let hir = lower("if { x } <- v { }");
+    let HirMatcher::Shape(fields) = if_match_bind(&hir) else { panic!("not a shape matcher") };
+    assert_eq!(fields.len(), 1);
+    assert!(matches!(fields[0].key, HirLiteral::String(ref s) if s == "x"));
+    let x = hir.symbol_of("x").expect("x not interned");
+    assert!(matches!(fields[0].value, HirMatcher::Binder(b) if b == x));
+}
+
+#[test]
+fn match_bind_array_rest_lowers() {
+    let hir = lower("if [start, ..rest] <- v { }");
+    let HirMatcher::Array(elements) = if_match_bind(&hir) else { panic!("not an array matcher") };
+    assert_eq!(elements.len(), 2);
+    assert!(matches!(elements[0], HirMatchElem::Elem(HirMatcher::Binder(_))));
+    let rest = hir.symbol_of("rest").expect("rest not interned");
+    assert!(matches!(elements[1], HirMatchElem::Rest(Some(r)) if r == rest));
+}
+
+#[test]
+fn match_bind_combinators_lower() {
+    let hir = lower("if has A & is B <- v { }\ntype A { }\ntype B { }");
+    let HirMatcher::And(parts) = if_match_bind(&hir) else { panic!("not an and matcher") };
+    assert_eq!(parts.len(), 2);
+    assert!(matches!(parts[0], HirMatcher::Type { nominal: false, .. }));
+    assert!(matches!(parts[1], HirMatcher::Type { nominal: true, .. }));
+}
+
+#[test]
+fn match_statement_lowers_to_arms() {
+    let hir = lower("match v { is A => 1, _ => 0 }\ntype A { }");
+    let stmts = top_stmts(&hir);
+    let HirStmt::Match(_, arms) = hir.get(&stmts[0]) else { panic!("first statement is not a match") };
+    assert_eq!(arms.len(), 2);
+    assert!(matches!(arms[0].matcher, HirMatcher::Type { nominal: true, .. }));
+    assert!(matches!(arms[1].matcher, HirMatcher::Wildcard));
 }

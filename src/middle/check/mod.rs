@@ -287,6 +287,7 @@ impl<'a> Checker<'a> {
                 }
                 if let Some(finally) = finally { self.expr(finally)?; }
             },
+            HirStmt::Match(..) => return Err(self.error("`match` is not yet supported".to_string(), stmt)),
         }
         Ok(())
     }
@@ -357,6 +358,7 @@ impl<'a> Checker<'a> {
                 }
                 Typed::of(Nullness::NonNull, typed.tag)
             },
+            HirExpr::MatchBind(..) => return Err(self.error("`<-` match-bind is not yet supported".to_string(), expr)),
         })
     }
 

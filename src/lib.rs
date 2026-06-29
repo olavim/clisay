@@ -29,7 +29,7 @@ pub mod internals {
     pub use crate::ast::{Arm, Ast, AstId, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
     pub use crate::frontend::lex::{ContextualKeyword, Token, TokenType};
     pub use crate::middle::hir::{
-        Hir, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl,
+        Hir, HirMatchArm, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, HirTypeDecl,
     };
     pub use crate::middle::bind::{Bindings, TypeLayout};
     pub use crate::middle::check::Barriers;
