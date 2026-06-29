@@ -1,0 +1,5 @@
+// A matcher binder is immutable, like a `say` without `mut`.
+say d = { x: 1 };
+if match d { x } {
+    x = 5; // error: Cannot reassign immutable binding 'x'; declare it 'mut'
+}
