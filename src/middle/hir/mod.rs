@@ -75,6 +75,44 @@ pub enum HirExpr {
     Assert(HirId<HirExpr>),
     /// `expr has spec`: a structural containment test yielding a boolean.
     Has(HirId<HirExpr>, HasSpec),
+    /// `matcher <- expr`: matches the matcher against the value, yielding a boolean and
+    /// publishing the matcher's binders on success.
+    MatchBind(Box<HirMatcher>, HirId<HirExpr>),
+}
+
+/// A lowered matcher: it tests a value and binds sub-values out into names. The bindingless
+/// subset mirrors `HasSpec`. The binder kinds are layered on top of that structure.
+pub enum HirMatcher {
+    /// `_`: matches anything, binds nothing.
+    Wildcard,
+    /// A scalar literal compared with `==`.
+    Literal(HirLiteral),
+    /// A bare name that binds the whole value.
+    Binder(Symbol),
+    /// `is T shape?` or `has T shape?`.
+    Type { nominal: bool, name: Symbol, shape: Option<Box<HirMatcher>> },
+    /// A structural shape `{ k: m, ... }`.
+    Shape(Vec<HirMatchField>),
+    /// An array shape `[ ... ]` with at most one rest element.
+    Array(Vec<HirMatchElem>),
+    /// `name @ m`: binds the whole value and also matches `m`.
+    As(Symbol, Box<HirMatcher>),
+    /// `a | b | ...`: alternatives tried left to right.
+    Or(Vec<HirMatcher>),
+    /// `a & b & ...`: all must match.
+    And(Vec<HirMatcher>),
+}
+
+/// A field of a shape matcher `{ key: value }`.
+pub struct HirMatchField {
+    pub key: HirLiteral,
+    pub value: HirMatcher,
+}
+
+/// An element of an array matcher. `Rest` is `..` or `..name`, at most one per array.
+pub enum HirMatchElem {
+    Elem(HirMatcher),
+    Rest(Option<Symbol>),
 }
 
 /// The compile-time right-hand side of `x has spec`.
@@ -157,6 +195,13 @@ pub struct HirTypeDecl {
     pub provides: Vec<Symbol>,
 }
 
+/// One arm of a `match`.
+pub struct HirMatchArm {
+    pub matcher: HirMatcher,
+    pub guard: Option<HirId<HirExpr>>,
+    pub body: HirId<HirExpr>,
+}
+
 pub enum HirStmt {
     Expression(HirId<HirExpr>),
     Return(Option<HirId<HirExpr>>),
@@ -169,6 +214,8 @@ pub enum HirStmt {
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
     Trait(Box<HirTypeDecl>),
+    /// `match scrutinee { arms }`: dispatches the scrutinee across the arms.
+    Match(HirId<HirExpr>, Vec<HirMatchArm>),
 }
 
 pub enum HirNodeKind {

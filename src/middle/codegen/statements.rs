@@ -144,6 +144,7 @@ impl<'a> Compiler<'a> {
             HirStmt::Block(body) => {
                 self.expression_stmt(body)?;
             }
+            HirStmt::Match(..) => compiler_error!(self, stmt_id, "`match` is not yet supported"),
         };
 
         Ok(())

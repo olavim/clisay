@@ -122,6 +122,13 @@ impl<'a> Collector<'a> {
                 if let Some(finally) = finally { self.expr(finally); }
             },
             HirStmt::Say(field) => if let Some(value) = field.value { self.expr(&value); },
+            HirStmt::Match(scrutinee, arms) => {
+                self.expr(scrutinee);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard { self.expr(guard); }
+                    self.expr(&arm.body);
+                }
+            },
         }
     }
 
@@ -150,6 +157,7 @@ impl<'a> Collector<'a> {
             },
             HirExpr::Literal(lit) => self.literal(lit),
             HirExpr::Identifier(_) | HirExpr::This => {},
+            HirExpr::MatchBind(_, scrutinee) => self.expr(scrutinee),
         }
     }
 

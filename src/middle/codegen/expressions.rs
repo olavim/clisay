@@ -42,6 +42,7 @@ impl<'a> Compiler<'a> {
             HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(target, member, *is_dot)?,
             // `!` leaves its operand's value; the barrier below guards it when the check pass flagged it.
             HirExpr::Assert(operand) => self.expression(operand)?,
+            HirExpr::MatchBind(..) => compiler_error!(self, expr, "`<-` match-bind is not yet supported"),
         };
 
         // A value that the check pass marked as an `unknown` crossing into a non-null slot is guarded.

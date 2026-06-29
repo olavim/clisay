@@ -439,6 +439,7 @@ impl<'a> Resolver<'a> {
                 }
             },
             HirStmt::Block(body) => self.expression(body)?,
+            HirStmt::Match(..) => compiler_error!(self, stmt_id, "`match` is not yet supported"),
         };
         Ok(())
     }
@@ -510,6 +511,7 @@ impl<'a> Resolver<'a> {
             },
             HirExpr::SafeAccess(target, member, _) => self.index(target, member)?,
             HirExpr::Assert(operand) => self.expression(operand)?,
+            HirExpr::MatchBind(..) => compiler_error!(self, expr, "`<-` match-bind is not yet supported"),
         };
         Ok(())
     }
@@ -818,6 +820,13 @@ impl<'a> Resolver<'a> {
                 if let Some(f) = finally { self.collect_assigned_fields(f, out); }
             },
             HirStmt::Say(field) => if let Some(v) = &field.value { self.collect_assigned_fields(v, out); },
+            HirStmt::Match(scrutinee, arms) => {
+                self.collect_assigned_fields(scrutinee, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard { self.collect_assigned_fields(guard, out); }
+                    self.collect_assigned_fields(&arm.body, out);
+                }
+            },
             // Nested functions/types do not establish init assignment in this body.
             HirStmt::Fn(_) | HirStmt::Type(_) | HirStmt::Trait(_) => {},
         }

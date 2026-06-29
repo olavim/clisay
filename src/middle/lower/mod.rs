@@ -9,9 +9,9 @@ mod traits;
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, Operator, Param, Stmt, Symbol, TypeDecl};
+use crate::ast::{Arm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, HasMatch, HasSpec, Hir, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp,
+    BinOp, HasMatch, HasSpec, Hir, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
 };
 use crate::middle::names::NameBindings;
 
@@ -101,7 +101,11 @@ impl<'a> Lowerer<'a> {
                 HirStmt::If(cond, then, otherwise)
             },
             Stmt::Block(body) => HirStmt::Block(self.expr(body)?),
-            Stmt::Match(..) => return Err(self.error("`match` is not yet supported", stmt_id)),
+            Stmt::Match(scrutinee, arms) => {
+                let scrutinee = self.expr(scrutinee)?;
+                let arms = arms.iter().map(|arm| self.lower_match_arm(arm)).collect::<Result<_, _>>()?;
+                HirStmt::Match(scrutinee, arms)
+            },
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),
             Stmt::Type(decl) => {
@@ -180,7 +184,10 @@ impl<'a> Lowerer<'a> {
             // Codegen desugars them later.
             Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
             Expr::Assert(operand) => HirExpr::Assert(self.expr(operand)?),
-            Expr::MatchBind(..) => return Err(self.error("`<-` match-bind is not yet supported", expr_id)),
+            Expr::MatchBind(matcher, scrutinee) => {
+                let matcher = Box::new(self.lower_matcher(matcher)?);
+                HirExpr::MatchBind(matcher, self.expr(scrutinee)?)
+            },
         };
         Ok(self.hir.add(kind, pos))
     }
@@ -259,6 +266,53 @@ impl<'a> Lowerer<'a> {
             )),
             _ => Err(self.error("A `has` value must be a literal, `is T`, `has T`, or a nested shape", id)),
         }
+    }
+
+    fn lower_match_arm(&mut self, arm: &Arm) -> Result<HirMatchArm, anyhow::Error> {
+        Ok(HirMatchArm {
+            matcher: self.lower_matcher(&arm.matcher)?,
+            guard: self.opt_expr(&arm.guard)?,
+            body: self.expr(&arm.body)?,
+        })
+    }
+
+    fn lower_matcher(&mut self, id: &AstId<Matcher>) -> Result<HirMatcher, anyhow::Error> {
+        Ok(match self.ast.get(id) {
+            Matcher::Wildcard => HirMatcher::Wildcard,
+            Matcher::Literal(scalar) => HirMatcher::Literal(match_scalar(scalar)),
+            Matcher::Binder(name) => HirMatcher::Binder(*name),
+            Matcher::Type { nominal, name, shape } => {
+                let shape = match shape {
+                    Some(shape) => Some(Box::new(self.lower_matcher(shape)?)),
+                    None => None,
+                };
+                HirMatcher::Type { nominal: *nominal, name: *name, shape }
+            },
+            Matcher::Shape(fields) => {
+                let mut lowered = Vec::with_capacity(fields.len());
+                for field in fields {
+                    lowered.push(HirMatchField { key: match_scalar(&field.key), value: self.lower_matcher(&field.value)? });
+                }
+                HirMatcher::Shape(lowered)
+            },
+            Matcher::Array(elements) => {
+                let mut lowered = Vec::with_capacity(elements.len());
+                for element in elements {
+                    lowered.push(match element {
+                        MatchElem::Elem(matcher) => HirMatchElem::Elem(self.lower_matcher(matcher)?),
+                        MatchElem::Rest(name) => HirMatchElem::Rest(*name),
+                    });
+                }
+                HirMatcher::Array(lowered)
+            },
+            Matcher::As(name, inner) => HirMatcher::As(*name, Box::new(self.lower_matcher(inner)?)),
+            Matcher::Or(alternatives) => HirMatcher::Or(self.lower_matchers(alternatives)?),
+            Matcher::And(parts) => HirMatcher::And(self.lower_matchers(parts)?),
+        })
+    }
+
+    fn lower_matchers(&mut self, ids: &[AstId<Matcher>]) -> Result<Vec<HirMatcher>, anyhow::Error> {
+        ids.iter().map(|id| self.lower_matcher(id)).collect()
     }
 
     /// The key a `has` dict-spec entry denotes. A key is any scalar literal, mirroring dict
@@ -364,6 +418,15 @@ fn lower_binop(op: &Operator) -> BinOp {
         Operator::BitOr => BinOp::BitOr,
         Operator::BitXor => BinOp::BitXor,
         _ => unreachable!("not a runtime binary operator"),
+    }
+}
+
+fn match_scalar(scalar: &MatchScalar) -> HirLiteral {
+    match scalar {
+        MatchScalar::Null => HirLiteral::Null,
+        MatchScalar::Boolean(b) => HirLiteral::Boolean(*b),
+        MatchScalar::Number(n) => HirLiteral::Number(*n),
+        MatchScalar::String(s) => HirLiteral::String(s.clone()),
     }
 }
 
