@@ -40,6 +40,11 @@ impl ExprCtx {
         ExprCtx { stop_at_arrow: true, allow_matchbind: true, ..Default::default() }
     }
 
+    /// A matcher interior, where a `{` after a type is a destructuring shape, not a body block.
+    fn matcher() -> ExprCtx {
+        ExprCtx { prevent_construct: false, ..Default::default() }
+    }
+
     /// A construction body derived from `outer`: nested braces construct, other modes carry over.
     fn construct(outer: ExprCtx) -> ExprCtx {
         ExprCtx { prevent_construct: false, ..outer }

@@ -333,6 +333,15 @@ impl Vm {
         self.stack.push(Value::from(present));
     }
 
+    pub(super) fn op_array_len(&mut self) {
+        let receiver = self.stack.pop();
+        let len = match receiver.kind() {
+            ValueKind::Object(ObjectKind::Array) => unsafe { &*receiver.as_object().as_array_ptr() }.values.len() as f64,
+            _ => -1.0,
+        };
+        self.stack.push(Value::from(len));
+    }
+
     /// Resolves `dict.name` to a bound method of the `dict` method surface.
     fn get_dict_method(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let dict_type = unsafe { &*self.native_types.dict };

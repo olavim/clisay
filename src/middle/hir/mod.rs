@@ -59,7 +59,6 @@ pub enum HirExpr {
     Index(HirId<HirExpr>, HirId<HirExpr>, bool),
     Literal(HirLiteral),
     Identifier(Symbol),
-    /// `expr is T`: a nominal capability test against the type/trait named `T`.
     Is(HirId<HirExpr>, Symbol),
     /// Brace construction `C(args) { field: value, ... }`: the callee type expression, the
     /// `init` args, then the brace field initializers.
@@ -73,8 +72,7 @@ pub enum HirExpr {
     SafeAccess(HirId<HirExpr>, HirId<HirExpr>, bool),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(HirId<HirExpr>),
-    /// `expr has spec`: a structural containment test yielding a boolean.
-    Has(HirId<HirExpr>, HasSpec),
+    Has(HirId<HirExpr>, Box<HirMatcher>),
     /// `matcher <- expr`: matches the matcher against the value, yielding a boolean and
     /// publishing the matcher's binders on success.
     MatchBind(Box<HirMatcher>, HirId<HirExpr>),
@@ -113,26 +111,6 @@ pub struct HirMatchField {
 pub enum HirMatchElem {
     Elem(HirMatcher),
     Rest(Option<Symbol>),
-}
-
-/// The compile-time right-hand side of `x has spec`.
-pub enum HasSpec {
-    /// `k`: the value has member/key `k`, where `k` is any scalar literal.
-    Key(HirLiteral),
-    /// `T`: the value has every public member name the type/trait `T` declares.
-    Surface(Symbol),
-    /// `[s1, ...]`: every element spec holds (the AND-combinator).
-    All(Vec<HasSpec>),
-    /// `{k: m, ...}`: each scalar-literal key `k` is present and its member value matches `m`.
-    Fields(Vec<(HirLiteral, HasMatch)>),
-}
-
-/// The value side of a `has` spec entry.
-pub enum HasMatch {
-    /// A scalar literal compared with `==`.
-    Eq(HirLiteral),
-    /// A nested spec applied to the member value.
-    Spec(HasSpec),
 }
 
 pub struct HirFieldInit {

@@ -1,6 +1,6 @@
 use crate::compiler_error;
 use crate::core::value::Value;
-use crate::middle::hir::{BinOp, HasMatch, HasSpec, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
+use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, Symbol, UnOp};
 use crate::middle::ir::Inst;
 use crate::middle::bind::{FnKind, Member, Place};
 
@@ -36,7 +36,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::Is(idx), expr);
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
-            HirExpr::Has(left, spec) => self.compile_has(left, spec, expr)?,
+            HirExpr::Has(left, matcher) => self.compile_has(left, matcher, expr)?,
             HirExpr::This => self.emit(Inst::LoadLocal(0), expr),
             HirExpr::Coalesce(left, right) => self.coalesce(left, right)?,
             HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(target, member, *is_dot)?,
@@ -196,43 +196,84 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `left has spec`. The left value is evaluated once and kept on the stack; the spec
-    /// is a short-circuiting AND whose tests branch to a single `fail` site.
-    fn compile_has(&mut self, left: &HirId<HirExpr>, spec: &HasSpec, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn compile_has(&mut self, left: &HirId<HirExpr>, matcher: &HirMatcher, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.expression(left)?;
-        self.compile_has_spec(spec, node)
+        self.compile_matcher_test(matcher, node)
     }
 
-    /// Compiles a `has` spec against the receiver on top of the stack.
-    fn compile_has_spec(&mut self, spec: &HasSpec, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        match spec {
-            HasSpec::Key(key) => {
-                let idx = self.has_spec_key_constant(key)?;
-                self.emit(Inst::HasMember(idx), node);
+    fn compile_matcher_test(&mut self, m: &HirMatcher, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match m {
+            HirMatcher::Wildcard => {
+                self.emit(Inst::Pop, node);
+                self.emit(Inst::PushTrue, node);
                 Ok(())
             },
-            HasSpec::Surface(ty) => {
-                let members = match self.bindings.surface(*ty) {
-                    Some(members) => members.to_vec(),
-                    None => compiler_error!(self, node, "'{}' is not a type or trait", self.hir.text(*ty)),
-                };
-                self.compile_has_spec_and(members.len(), node, &|c, i, n| {
-                    let idx = c.has_member_constant(members[i])?;
-                    c.emit(Inst::HasMember(idx), n);
-                    Ok(())
-                })
+            HirMatcher::Literal(lit) => {
+                self.literal(node, lit)?;
+                self.emit(Inst::Equal, node);
+                Ok(())
             },
-            HasSpec::All(specs) => self.compile_has_spec_and(specs.len(), node, &|c, i, n| c.compile_has_spec(&specs[i], n)),
-            HasSpec::Fields(entries) => self.compile_has_spec_and(entries.len(), node, &|c, i, n| {
-                let (key, m) = &entries[i];
-                c.compile_has_spec_field(key, m, n)
+            HirMatcher::Type { nominal, name, shape } => self.compile_type_test(*nominal, *name, shape, node),
+            HirMatcher::Shape(fields) => self.compile_test_and(fields.len(), node, &|c, i, n| {
+                c.compile_shape_field(&fields[i].key, &fields[i].value, n)
+            }),
+            HirMatcher::Array(elements) => self.compile_array_test(elements, node),
+            HirMatcher::And(parts) => self.compile_test_and(parts.len(), node, &|c, i, n| c.compile_matcher_test(&parts[i], n)),
+            HirMatcher::Or(parts) => self.compile_test_or(parts.len(), node, &|c, i, n| c.compile_matcher_test(&parts[i], n)),
+            HirMatcher::Binder(_) | HirMatcher::As(..) => compiler_error!(self, node, "a `has` matcher cannot bind"),
+        }
+    }
+
+    fn compile_type_test(&mut self, nominal: bool, name: Symbol, shape: &Option<Box<HirMatcher>>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match shape {
+            None => self.compile_type_atom(nominal, name, node),
+            Some(shape) => self.compile_test_and(2, node, &|c, i, n| match i {
+                0 => c.compile_type_atom(nominal, name, n),
+                _ => c.compile_matcher_test(shape, n),
             }),
         }
     }
 
-    /// Compiles a short-circuiting AND of `count` has-specs.
-    fn compile_has_spec_and(&mut self, count: usize, node: &HirId<HirExpr>, compile_test: &dyn Fn(&mut Self, usize, &HirId<HirExpr>) -> Result<(), anyhow::Error>) -> Result<(), anyhow::Error> {
-        // An empty spec (`v has []`) holds for any value. Drop the receiver and yield true.
+    fn compile_type_atom(&mut self, nominal: bool, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if nominal {
+            let name_ref = self.gc.intern(self.hir.text(name));
+            let idx = self.ir.add_constant(Value::from(name_ref))?;
+            self.emit(Inst::Is(idx), node);
+            return Ok(());
+        }
+        let members = match self.bindings.surface(name) {
+            Some(members) => members.to_vec(),
+            None => compiler_error!(self, node, "'{}' is not a type or trait", self.hir.text(name)),
+        };
+        self.compile_test_and(members.len(), node, &|c, i, n| {
+            let idx = c.has_member_constant(members[i])?;
+            c.emit(Inst::HasMember(idx), n);
+            Ok(())
+        })
+    }
+
+    fn compile_array_test(&mut self, elements: &[HirMatchElem], node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let len = elements.len();
+        self.compile_test_and(len + 1, node, &|c, i, n| {
+            if i == 0 {
+                c.emit(Inst::ArrayLen, n);
+                let idx = c.ir.add_constant(Value::from(len as f64))?;
+                c.emit(Inst::PushConstant(idx), n);
+                c.emit(Inst::Equal, n);
+                return Ok(());
+            }
+            let HirMatchElem::Elem(elem) = &elements[i - 1] else {
+                compiler_error!(c, n, "a `has` array shape cannot use a rest `..`");
+            };
+            let idx = c.ir.add_constant(Value::from((i - 1) as f64))?;
+            c.emit(Inst::PushConstant(idx), n);
+            c.emit(Inst::GetIndex, n);
+            c.compile_matcher_test(elem, n)
+        })
+    }
+
+    fn compile_test_and(&mut self, count: usize, node: &HirId<HirExpr>, compile_test: &dyn Fn(&mut Self, usize, &HirId<HirExpr>) -> Result<(), anyhow::Error>) -> Result<(), anyhow::Error> {
+        // An empty AND holds for any receiver, so drop it and yield true.
         if count == 0 {
             self.emit(Inst::Pop, node);
             self.emit(Inst::PushTrue, node);
@@ -258,13 +299,41 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles one `has` dict entry. A non-null `==` match needs no membership check, since an
-    /// absent member loads as null and never equals a non-null literal. A null match must also
-    /// check presence, because an absent member loads as null too.
-    fn compile_has_spec_field(&mut self, key: &HirLiteral, m: &HasMatch, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn compile_test_or(&mut self, count: usize, node: &HirId<HirExpr>, compile_test: &dyn Fn(&mut Self, usize, &HirId<HirExpr>) -> Result<(), anyhow::Error>) -> Result<(), anyhow::Error> {
+        if count == 1 {
+            return compile_test(self, 0, node);
+        }
+        let end = self.ir.new_label();
+        for i in 0..count {
+            let last = i == count - 1;
+            let next = self.ir.new_label();
+            // Every alternative but the last keeps a copy so a later one can retry the receiver.
+            if !last {
+                self.emit(Inst::Dup, node);
+            }
+            compile_test(self, i, node)?;
+            self.emit(Inst::JumpIfFalse(next), node);
+            if !last {
+                self.emit(Inst::Pop, node); // matched: drop the surviving receiver
+            }
+            self.emit(Inst::PushTrue, node);
+            self.emit(Inst::Jump(end), node);
+            self.ir.bind(next);
+        }
+        // Reached only when the last alternative failed. Its receiver was already consumed.
+        self.emit(Inst::PushFalse, node);
+        self.ir.bind(end);
+        Ok(())
+    }
+
+    fn compile_shape_field(&mut self, key: &HirLiteral, value: &HirMatcher, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let key_idx = self.has_spec_key_constant(key)?;
-        match m {
-            HasMatch::Eq(HirLiteral::Null) => self.compile_has_spec_and(2, node, &|c, i, n| match i {
+        match value {
+            HirMatcher::Wildcard => {
+                self.emit(Inst::HasMember(key_idx), node);
+                Ok(())
+            },
+            HirMatcher::Literal(HirLiteral::Null) => self.compile_test_and(2, node, &|c, i, n| match i {
                 0 => { c.emit(Inst::HasMember(key_idx), n); Ok(()) },
                 _ => {
                     c.emit(Inst::GetIndexOrNull(key_idx), n);
@@ -273,15 +342,15 @@ impl<'a> Compiler<'a> {
                     Ok(())
                 },
             }),
-            HasMatch::Eq(lit) => {
+            HirMatcher::Literal(lit) => {
                 self.emit(Inst::GetIndexOrNull(key_idx), node);
                 self.literal(node, lit)?;
                 self.emit(Inst::Equal, node);
                 Ok(())
             },
-            HasMatch::Spec(spec) => {
+            nested => {
                 self.emit(Inst::GetIndexOrNull(key_idx), node);
-                self.compile_has_spec(spec, node)
+                self.compile_matcher_test(nested, node)
             },
         }
     }

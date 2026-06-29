@@ -281,6 +281,7 @@ impl<'a> Resolver<'a> {
             Expr::This => {},
             Expr::SafeAccess(target, member, _) => { self.visit_expr(target)?; self.visit_expr(member)?; },
             Expr::Assert(operand) => self.visit_expr(operand)?,
+            Expr::Has(left, _) => self.visit_expr(left)?,
             Expr::MatchBind(matcher, scrutinee) => {
                 self.visit_expr(scrutinee)?;
                 self.matcher_binders(matcher)?;

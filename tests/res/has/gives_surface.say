@@ -1,0 +1,20 @@
+// A `gives` delegate's forwarders count toward the host's `has` surface.
+trait Powered {
+    pub fn start()! { return "vroom"; }
+    pub fn stop()! { return "stop"; }
+}
+type Engine with Powered { init() {} }
+
+type Car {
+    engine gives Powered;
+    init() { this.engine = Engine(); }
+}
+
+say c = Car();
+print(c has Powered); // expect: true
+print(c has { start: _, stop: _ }); // expect: true
+print(c has { fly: _ }); // expect: false
+
+// the delegated trait is provided nominally too
+print(c is Powered); // expect: true
+print(c is Car); // expect: true

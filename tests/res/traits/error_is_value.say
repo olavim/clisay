@@ -1,10 +1,10 @@
-null is null; // error: Unexpected token: Expected '<identifier>' but found 'null'
+null is null; // error: `is` is nominal and needs a type name; use `{ ... }` for a structural shape
 // @split
-null is 0; // error: Unexpected token: Expected '<identifier>' but found 'lit(0)'
+null is 0; // error: `is` is nominal and needs a type name; use `{ ... }` for a structural shape
 // @split
-null is true; // error: Unexpected token: Expected '<identifier>' but found 'true'
+null is true; // error: `is` is nominal and needs a type name; use `{ ... }` for a structural shape
 // @split
-null is false; // error: Unexpected token: Expected '<identifier>' but found 'false'
+null is false; // error: `is` is nominal and needs a type name; use `{ ... }` for a structural shape
 // @split
 say s = 0;
 null is s; // error: 's' is not a type or trait

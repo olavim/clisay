@@ -27,7 +27,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     /// arm := matcher ("if" guard)? "=>" body
     pub(super) fn parse_match_arm(&mut self) -> Result<Arm, anyhow::Error> {
-        let matcher = self.parse_matcher()?;
+        let matcher = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
         let guard = match self.tokens.next_if(TokenType::If) {
             Some(_) => Some(self.parse_guard()?),
             None => None,
@@ -104,7 +104,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// So `{ a } <- x ?? y` is `({ a } <- x) ?? y`, and `{} <- x && rest` is `({} <- x) && rest`.
     pub(super) fn parse_match_bind(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
-        let matcher = self.parse_matcher()?;
+        let matcher = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
         self.validate_top_operand(matcher)?;
         self.tokens.expect(TokenType::LeftArrow)?;
         let scrutinee_precedence = Operator::Is.infix_precedence().unwrap() + 1;
@@ -159,11 +159,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub(super) fn parse_or_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let first = self.parse_and_matcher()?;
-        if !self.tokens.matches_single(TokenType::Pipe) {
+        if !self.tokens.matches(TokenType::Pipe) {
             return Ok(first);
         }
         let mut alternatives = vec![first];
-        while self.tokens.next_if_single(TokenType::Pipe).is_some() {
+        while self.tokens.next_if(TokenType::Pipe).is_some() {
             alternatives.push(self.parse_and_matcher()?);
         }
         Ok(self.ast.add_matcher(Matcher::Or(alternatives), pos))
@@ -173,11 +173,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub(super) fn parse_and_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let first = self.parse_primary_matcher()?;
-        if !self.tokens.matches_single(TokenType::Amp) {
+        if !self.tokens.matches(TokenType::Amp) {
             return Ok(first);
         }
         let mut parts = vec![first];
-        while self.tokens.next_if_single(TokenType::Amp).is_some() {
+        while self.tokens.next_if(TokenType::Amp).is_some() {
             parts.push(self.parse_primary_matcher()?);
         }
         Ok(self.ast.add_matcher(Matcher::And(parts), pos))
@@ -202,7 +202,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::LeftBracket => self.parse_array_matcher(),
             TokenType::LeftParen => {
                 self.tokens.next();
-                let inner = self.parse_matcher()?;
+                let inner = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
                 self.tokens.expect(TokenType::RightParen)?;
                 Ok(inner)
             },
@@ -224,23 +224,24 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.parse_typed_matcher(true, pos)
     }
 
-    /// `has` type_ref shape? or `has` shape.
+    /// `has` type_ref shape?, `has` shape, or `has` array.
     pub(super) fn parse_has_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
         let pos = self.tokens.next().pos.clone();
-        if self.tokens.peek(0).kind == TokenType::LeftBrace {
-            return self.parse_shape_matcher();
+        match self.tokens.peek(0).kind {
+            TokenType::LeftBrace => self.parse_shape_matcher(),
+            TokenType::LeftBracket => self.parse_array_matcher(),
+            TokenType::Identifier => self.parse_typed_matcher(false, pos),
+            TokenType::NumericLiteral | TokenType::StringLiteral
+            | TokenType::True | TokenType::False | TokenType::Null =>
+                parse_error!(self, &pos, "a bare scalar tests equality; for key presence write `{{ k: _ }}`, for equality use `==`"),
+            _ => parse_error!(self, &pos, "`has` needs a type name, a shape, or an array"),
         }
-        if self.tokens.peek(0).kind != TokenType::Identifier {
-            parse_error!(self, &pos, "`has` needs a type name or a shape");
-        }
-        self.parse_typed_matcher(false, pos)
     }
 
-    /// A type test `T shape?` after its `is`/`has` keyword.
     pub(super) fn parse_typed_matcher(&mut self, nominal: bool, pos: SourcePosition) -> Result<AstId<Matcher>, anyhow::Error> {
         let name = self.parse_identifier()?;
         let name = self.ast.intern(&name);
-        let shape = if self.tokens.peek(0).kind == TokenType::LeftBrace {
+        let shape = if self.ctx.can_construct() && self.tokens.peek(0).kind == TokenType::LeftBrace {
             Some(self.parse_shape_matcher()?)
         } else {
             None
@@ -255,7 +256,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut seen: HashSet<String> = HashSet::new();
 
         while !self.tokens.matches(TokenType::RightBrace) {
-            let field = self.parse_shape_field()?;
+            let field = self.with_ctx(ExprCtx::matcher(), |p| p.parse_shape_field())?;
             let dedup = match &field.key {
                 MatchScalar::String(s) => format!("s:{s}"),
                 MatchScalar::Number(n) => format!("n:{n}"),
@@ -325,7 +326,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 };
                 elements.push(MatchElem::Rest(name));
             } else {
-                let matcher = self.parse_matcher()?;
+                let matcher = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
                 elements.push(MatchElem::Elem(matcher));
             }
             if self.tokens.next_if(TokenType::Comma).is_none() {

@@ -11,7 +11,7 @@ use anyhow::anyhow;
 
 use crate::ast::{Arm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, HasMatch, HasSpec, Hir, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
+    BinOp, Hir, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
 };
 use crate::middle::names::NameBindings;
 
@@ -180,10 +180,13 @@ impl<'a> Lowerer<'a> {
                 HirExpr::Construct(callee, args, brace)
             },
             Expr::This => HirExpr::This,
-            // Safe navigation and the non-null assertion stay as dedicated HIR nodes.
-            // Codegen desugars them later.
             Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
             Expr::Assert(operand) => HirExpr::Assert(self.expr(operand)?),
+            Expr::Has(left, matcher) => {
+                let left = self.expr(left)?;
+                self.validate_has_operand(matcher, true)?;
+                HirExpr::Has(left, Box::new(self.lower_matcher(matcher)?))
+            },
             Expr::MatchBind(matcher, scrutinee) => {
                 let matcher = Box::new(self.lower_matcher(matcher)?);
                 HirExpr::MatchBind(matcher, self.expr(scrutinee)?)
@@ -204,7 +207,6 @@ impl<'a> Lowerer<'a> {
         let kind = match op {
             Operator::Assign => HirExpr::Assign(self.expr(left)?, self.expr(right)?),
             Operator::MemberAccess => HirExpr::Index(self.expr(left)?, self.expr(right)?, true),
-            Operator::Has => HirExpr::Has(self.expr(left)?, self.lower_spec(right)?),
             Operator::Comma => return Err(self.error("Unexpected ','", right)),
             // Null-coalescing stays a dedicated HIR node. Codegen short-circuits it later.
             Operator::Coalesce => HirExpr::Coalesce(self.expr(left)?, self.expr(right)?),
@@ -217,54 +219,53 @@ impl<'a> Lowerer<'a> {
         exprs.iter().map(|e| self.expr(e)).collect()
     }
 
-    fn lower_spec(&mut self, id: &AstId<Expr>) -> Result<HasSpec, anyhow::Error> {
+    fn validate_has_operand(&self, id: &AstId<Matcher>, top: bool) -> Result<(), anyhow::Error> {
         match self.ast.get(id) {
-            // Any scalar literal is a key: `has "x"`, `has 1`, `has true`, `has null`.
-            Expr::Literal(lit @ (Literal::String(_) | Literal::Number(_) | Literal::Boolean(_) | Literal::Null)) => {
-                Ok(HasSpec::Key(self.literal(lit)?))
-            },
-            // An identifier in spec position names a type/trait, never a runtime value.
-            Expr::Identifier(name) => {
+            Matcher::Binder(name) => Err(self.error(format!(
+                "A `has` value must be a literal, `is T`, `has T`, or a nested shape; did you mean `has {}`?",
+                self.hir.text(*name)), id)),
+            Matcher::As(..) => Err(self.error("`has` binds nothing; an `@` as-binding is only for `match` and `<-`", id)),
+            Matcher::Wildcard if top => Err(self.error("`has _` always holds; `has` takes a shape or type", id)),
+            Matcher::Wildcard => Ok(()),
+            Matcher::Literal(_) if top => Err(self.error("a bare scalar tests equality; for key presence write `{ k: _ }`, for equality use `==`", id)),
+            Matcher::Literal(_) => Ok(()),
+            Matcher::Type { name, shape, .. } => {
                 if !self.names.is_type_or_trait(*name) {
                     return Err(self.error(format!("'{}' is not a type or trait", self.hir.text(*name)), id));
                 }
-                Ok(HasSpec::Surface(*name))
-            },
-            Expr::Literal(Literal::Array(elements)) => {
-                let specs = elements.iter().map(|e| self.lower_spec(e)).collect::<Result<_, _>>()?;
-                Ok(HasSpec::All(specs))
-            },
-            Expr::Literal(Literal::Dict(pairs)) => {
-                let mut fields = Vec::with_capacity(pairs.len());
-                for (key, value) in pairs {
-                    let name = self.spec_key(key)?;
-                    fields.push((name, self.lower_match(value)?));
+                match shape {
+                    Some(shape) => self.validate_has_operand(shape, false),
+                    None => Ok(()),
                 }
-                Ok(HasSpec::Fields(fields))
             },
-            _ => Err(self.error("The right side of `has` must be a key, a type, or a literal shape, not a value", id)),
-        }
-    }
-
-    /// Lowers the value side of a `has` spec entry.
-    fn lower_match(&mut self, id: &AstId<Expr>) -> Result<HasMatch, anyhow::Error> {
-        match self.ast.get(id) {
-            Expr::Literal(lit @ (Literal::Null | Literal::Boolean(_) | Literal::Number(_) | Literal::String(_))) => {
-                Ok(HasMatch::Eq(self.literal(lit)?))
+            Matcher::Shape(fields) => {
+                for field in fields {
+                    if let Matcher::Binder(b) = self.ast.get(&field.value) {
+                        if let MatchScalar::String(s) = &field.key {
+                            if s == self.hir.text(*b) {
+                                return Err(self.error(format!(
+                                    "`has` does not bind; `{{ {s} }}` would bind {s}. For key presence write `{{ {s}: _ }}`"), &field.value));
+                            }
+                        }
+                    }
+                    self.validate_has_operand(&field.value, false)?;
+                }
+                Ok(())
             },
-            Expr::Literal(Literal::Array(_) | Literal::Dict(_)) => {
-                Ok(HasMatch::Spec(self.lower_spec(id)?))
+            Matcher::Array(elements) => {
+                for element in elements {
+                    match element {
+                        MatchElem::Elem(m) => self.validate_has_operand(m, false)?,
+                        MatchElem::Rest(_) => return Err(self.error(
+                            "a `has` array shape cannot use a rest `..`; list the elements, or use a `match`/`<-` matcher", id)),
+                    }
+                }
+                Ok(())
             },
-            // A bare name in a value position would bind, which `has` does not do.
-            // Suggest `has <name>`, the structural test the bare name used to mean.
-            Expr::Identifier(name) => Err(self.error(
-                format!(
-                    "A `has` value must be a literal, `is T`, `has T`, or a nested shape; did you mean `has {}`?",
-                    self.hir.text(*name)
-                ),
-                id,
-            )),
-            _ => Err(self.error("A `has` value must be a literal, `is T`, `has T`, or a nested shape", id)),
+            Matcher::And(parts) | Matcher::Or(parts) => {
+                for part in parts { self.validate_has_operand(part, top)?; }
+                Ok(())
+            },
         }
     }
 
@@ -313,17 +314,6 @@ impl<'a> Lowerer<'a> {
 
     fn lower_matchers(&mut self, ids: &[AstId<Matcher>]) -> Result<Vec<HirMatcher>, anyhow::Error> {
         ids.iter().map(|id| self.lower_matcher(id)).collect()
-    }
-
-    /// The key a `has` dict-spec entry denotes. A key is any scalar literal, mirroring dict
-    /// literals; a computed key is a runtime value and is rejected.
-    fn spec_key(&mut self, id: &AstId<Expr>) -> Result<HirLiteral, anyhow::Error> {
-        match self.ast.get(id) {
-            Expr::Literal(lit @ (Literal::String(_) | Literal::Number(_) | Literal::Boolean(_) | Literal::Null)) => {
-                Ok(self.literal(lit)?)
-            },
-            _ => Err(self.error("A `has` key must be a literal value", id)),
-        }
     }
 
     fn literal(&mut self, literal: &Literal) -> Result<HirLiteral, anyhow::Error> {

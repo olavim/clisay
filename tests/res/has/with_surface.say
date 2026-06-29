@@ -1,0 +1,27 @@
+// A `with`-composed type folds its traits' public members into its own `has` surface.
+trait Clock { pub fn tick()! { return 1; } }
+trait Greeter {
+    req greeting;
+    pub fn greet()! { return this.greeting; }
+}
+type Player with Clock, Greeter {
+    pub greeting = "hi";
+    pub name;
+    init(name) { this.name = name; }
+}
+
+say p = Player("hero");
+print(p has Clock); // expect: true
+print(p has Greeter); // expect: true
+print(p has { tick: _ }); // expect: true
+print(p has { greet: _, greeting: _ }); // expect: true
+print(p has { missing: _ }); // expect: false
+
+// the folded traits are provided nominally too
+print(p is Clock); // expect: true
+print(p is Greeter); // expect: true
+
+// a dict exposing the trait's surface satisfies `has` structurally, never `is`
+say d = { tick: 1 };
+print(d has Clock); // expect: true
+print(d is Clock); // expect: false

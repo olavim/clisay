@@ -132,15 +132,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
                 Expr::Index(expr, id, true) // `.name` member access
             },
-            Operator::Is => {
-                // The right operand is a static type/trait name, not an expression.
-                let name = self.parse_identifier()?;
-                Expr::Is(expr, self.ast.intern(&name))
-            },
-            Operator::Has => {
-                // The right operand is a static spec read as a primary. Later passes validate it.
-                let right = self.parse_primary()?;
-                Expr::Binary(op, expr, right)
+            Operator::Is | Operator::Has => {
+                self.tokens.back();
+                let matcher = self.parse_matcher()?;
+                match self.ast.get(&matcher) {
+                    Matcher::Type { nominal: true, name, shape: None } => Expr::Is(expr, *name),
+                    _ => Expr::Has(expr, matcher),
+                }
             },
             Operator::Arrow => {
                 let right = self.parse_block_or_expr(op.infix_precedence().unwrap())?;

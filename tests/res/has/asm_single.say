@@ -1,4 +1,4 @@
-0 has "a";
+0 has { a: _ };
 // expect asm:
 // 0: PUSH_CONSTANT 0
 // 2: HAS_MEMBER "a"

@@ -78,6 +78,10 @@ pub enum Expr {
     SafeAccess(AstId<Expr>, AstId<Expr>, bool),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
+    /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean. The
+    /// matcher is the bindingless subset of the `match` grammar. A bare nominal `is T` uses `Is`
+    /// instead; everything richer (shapes, `&`/`|`) lands here.
+    Has(AstId<Expr>, AstId<Matcher>),
     /// `MATCHER <- expr`: matches the matcher against the value and yields a boolean,
     /// publishing the matcher's binders on success. Legal only in condition contexts.
     MatchBind(AstId<Matcher>, AstId<Expr>),

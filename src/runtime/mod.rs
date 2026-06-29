@@ -609,6 +609,7 @@ impl Vm {
                 opcode::GREATER_THAN_EQUAL => delegate!(self.op_greater_than_equal()?),
                 opcode::IS => delegate!(self.op_is()),
                 opcode::HAS_MEMBER => delegate!(self.op_has_member()),
+                opcode::ARRAY_LEN => delegate!(self.op_array_len()),
                 opcode::DUP => self.op_dup(),
                 _ => unsafe { std::hint::unreachable_unchecked() }
             }
