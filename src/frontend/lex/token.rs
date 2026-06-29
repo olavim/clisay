@@ -191,7 +191,6 @@ tokens! {
     Dot => ".",
     DotDot => "..",
     At => "@",
-    LeftArrow => "<-",
     EqualEqual => "==",
     NotEqual => "!=",
     LessEqual => "<=",

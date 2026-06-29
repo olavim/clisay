@@ -20,10 +20,9 @@ fn lexes_exclamation() {
 }
 
 #[test]
-fn lexes_match_bind_arrow_greedily() {
-    // `<-` is one token, so `a<-b` is a match-bind, never `a < -b`.
-    assert_eq!(kinds("a<-b"), vec![TokenType::Identifier, TokenType::LeftArrow, TokenType::Identifier]);
-    // A spaced less-than against a negated operand stays two tokens.
+fn lexes_less_than_against_negation() {
+    // With no `<-` token, `a<-b` lexes as a less-than against a negated operand.
+    assert_eq!(kinds("a<-b"), vec![TokenType::Identifier, TokenType::LessThan, TokenType::Minus, TokenType::Identifier]);
     assert_eq!(kinds("a < -b"), vec![TokenType::Identifier, TokenType::LessThan, TokenType::Minus, TokenType::Identifier]);
 }
 

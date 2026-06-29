@@ -511,7 +511,6 @@ impl<'a> Resolver<'a> {
             },
             HirExpr::SafeAccess(target, member, _) => self.index(target, member)?,
             HirExpr::Assert(operand) => self.expression(operand)?,
-            HirExpr::MatchBind(..) => compiler_error!(self, expr, "`<-` match-bind is not yet supported"),
         };
         Ok(())
     }

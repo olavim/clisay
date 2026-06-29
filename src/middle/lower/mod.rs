@@ -187,10 +187,6 @@ impl<'a> Lowerer<'a> {
                 self.validate_has_operand(matcher, true)?;
                 HirExpr::Has(left, Box::new(self.lower_matcher(matcher)?))
             },
-            Expr::MatchBind(matcher, scrutinee) => {
-                let matcher = Box::new(self.lower_matcher(matcher)?);
-                HirExpr::MatchBind(matcher, self.expr(scrutinee)?)
-            },
         };
         Ok(self.hir.add(kind, pos))
     }
@@ -224,7 +220,7 @@ impl<'a> Lowerer<'a> {
             Matcher::Binder(name) => Err(self.error(format!(
                 "A `has` value must be a literal, `is T`, `has T`, or a nested shape; did you mean `has {}`?",
                 self.hir.text(*name)), id)),
-            Matcher::As(..) => Err(self.error("`has` binds nothing; an `@` as-binding is only for `match` and `<-`", id)),
+            Matcher::As(..) => Err(self.error("`has` binds nothing; an `@` as-binding is only for `match`", id)),
             Matcher::Wildcard if top => Err(self.error("`has _` always holds; `has` takes a shape or type", id)),
             Matcher::Wildcard => Ok(()),
             Matcher::Literal(_) if top => Err(self.error("a bare scalar tests equality; for key presence write `{ k: _ }`, for equality use `==`", id)),
@@ -257,7 +253,7 @@ impl<'a> Lowerer<'a> {
                     match element {
                         MatchElem::Elem(m) => self.validate_has_operand(m, false)?,
                         MatchElem::Rest(_) => return Err(self.error(
-                            "a `has` array shape cannot use a rest `..`; list the elements, or use a `match`/`<-` matcher", id)),
+                            "a `has` array shape cannot use a rest `..`; list the elements, or use a `match` matcher", id)),
                     }
                 }
                 Ok(())

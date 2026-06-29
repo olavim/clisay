@@ -8,11 +8,10 @@ fn top_stmts(hir: &Hir) -> Vec<HirId<HirStmt>> {
     stmts.clone()
 }
 
-fn if_match_bind(hir: &Hir) -> &HirMatcher {
+fn first_arm_matcher(hir: &Hir) -> &HirMatcher {
     let stmts = top_stmts(hir);
-    let HirStmt::If(cond, ..) = hir.get(&stmts[0]) else { panic!("first statement is not an if") };
-    let HirExpr::MatchBind(matcher, _) = hir.get(cond) else { panic!("if condition is not a match-bind") };
-    matcher
+    let HirStmt::Match(_, arms) = hir.get(&stmts[0]) else { panic!("first statement is not a match") };
+    &arms[0].matcher
 }
 
 fn nth_fn<'a>(hir: &'a Hir, stmts: &[HirId<HirStmt>], i: usize) -> &'a HirFnDecl {
@@ -81,9 +80,9 @@ fn type_field_flags_survive_lowering() {
 }
 
 #[test]
-fn match_bind_shorthand_field_lowers_to_binder() {
-    let hir = lower("if { x } <- v { }");
-    let HirMatcher::Shape(fields) = if_match_bind(&hir) else { panic!("not a shape matcher") };
+fn shorthand_field_lowers_to_binder() {
+    let hir = lower("match v { { x } => 0 }");
+    let HirMatcher::Shape(fields) = first_arm_matcher(&hir) else { panic!("not a shape matcher") };
     assert_eq!(fields.len(), 1);
     assert!(matches!(fields[0].key, HirLiteral::String(ref s) if s == "x"));
     let x = hir.symbol_of("x").expect("x not interned");
@@ -91,9 +90,9 @@ fn match_bind_shorthand_field_lowers_to_binder() {
 }
 
 #[test]
-fn match_bind_array_rest_lowers() {
-    let hir = lower("if [start, ..rest] <- v { }");
-    let HirMatcher::Array(elements) = if_match_bind(&hir) else { panic!("not an array matcher") };
+fn array_rest_lowers() {
+    let hir = lower("match v { [start, ..rest] => 0 }");
+    let HirMatcher::Array(elements) = first_arm_matcher(&hir) else { panic!("not an array matcher") };
     assert_eq!(elements.len(), 2);
     assert!(matches!(elements[0], HirMatchElem::Elem(HirMatcher::Binder(_))));
     let rest = hir.symbol_of("rest").expect("rest not interned");
@@ -101,9 +100,9 @@ fn match_bind_array_rest_lowers() {
 }
 
 #[test]
-fn match_bind_combinators_lower() {
-    let hir = lower("if has A & is B <- v { }\ntype A { }\ntype B { }");
-    let HirMatcher::And(parts) = if_match_bind(&hir) else { panic!("not an and matcher") };
+fn combinators_lower() {
+    let hir = lower("match v { has A & is B => 0 }\ntype A { }\ntype B { }");
+    let HirMatcher::And(parts) = first_arm_matcher(&hir) else { panic!("not an and matcher") };
     assert_eq!(parts.len(), 2);
     assert!(matches!(parts[0], HirMatcher::Type { nominal: false, .. }));
     assert!(matches!(parts[1], HirMatcher::Type { nominal: true, .. }));

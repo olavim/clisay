@@ -20,14 +20,12 @@ enum Visibility { Pub, Inner, Private }
 struct ExprCtx {
     prevent_construct: bool,
     stop_at_arrow: bool,
-    /// A `<-` match-bind may begin here.
-    allow_matchbind: bool,
 }
 
 impl ExprCtx {
-    /// An `if`/`while` head: a trailing `{` is the body, and a `<-` match-bind may begin.
+    /// An `if`/`while` head: a trailing `{` is the body, not a construction.
     fn condition() -> ExprCtx {
-        ExprCtx { prevent_construct: true, allow_matchbind: true, ..Default::default() }
+        ExprCtx { prevent_construct: true, ..Default::default() }
     }
 
     /// A `match` scrutinee: a trailing `{` opens the match body, not a construction.
@@ -35,9 +33,9 @@ impl ExprCtx {
         ExprCtx { prevent_construct: true, ..Default::default() }
     }
 
-    /// A `match` arm guard: a `=>` ends it, and a `<-` match-bind may begin.
+    /// A `match` arm guard: a `=>` ends it instead of starting a lambda.
     fn guard() -> ExprCtx {
-        ExprCtx { stop_at_arrow: true, allow_matchbind: true, ..Default::default() }
+        ExprCtx { stop_at_arrow: true, ..Default::default() }
     }
 
     /// A matcher interior, where a `{` after a type is a destructuring shape, not a body block.
@@ -50,22 +48,11 @@ impl ExprCtx {
         ExprCtx { prevent_construct: false, ..outer }
     }
 
-    /// An `&&`/`||` operand derived from `outer`: a `<-` match-bind may begin, other modes carry over.
-    fn cond_operand(outer: ExprCtx) -> ExprCtx {
-        ExprCtx { allow_matchbind: true, ..outer }
-    }
-
     /// Whether a `{` after a constructible expression starts a brace construction.
     fn can_construct(&self) -> bool { !self.prevent_construct }
-    
+
     /// Whether a `=>` ends the current expression instead of starting a lambda.
     fn stops_at_arrow(&self) -> bool { self.stop_at_arrow }
-
-    /// Takes the match-bind permission, clearing it. A match-bind is recognized only at a leading
-    /// position, so the permission is consumed once per climb.
-    fn take_matchbind(&mut self) -> bool {
-        std::mem::replace(&mut self.allow_matchbind, false)
-    }
 }
 
 pub struct Parser<'parser, 'vm> {
