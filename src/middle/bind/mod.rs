@@ -1,8 +1,4 @@
 //! Binding and layout. A single lexical walk of the HIR that assigns each name its runtime location.
-//! Produces a [`Bindings`] table that `codegen` consumes.
-//!
-//! Name-level questions (what is in scope, name collisions, trait references) are settled earlier in
-//! `middle::names`; this pass assumes a well-formed namespace and only decides *where* things live.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -15,7 +11,7 @@ use nohash_hasher::IntSet;
 use crate::compiler_error;
 use crate::core::objects::{TypeMember, UpvalueLocation};
 use crate::middle::hir::{
-    Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchBody, HirStmt, ReturnShape, Symbol,
+    BinOp, Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchBody, HirStmt, ReturnShape, Symbol,
 };
 
 /// Where a bare identifier binds.
@@ -27,13 +23,6 @@ pub enum Place {
     Field(u8),
     /// A global, by symbol (codegen interns its text into the constant pool).
     Global(Symbol),
-}
-
-/// How a `this` member access (`this.x`, `this["x"]`) resolves: a direct member slot
-/// (`GET`/`SET_PROPERTY_ID`).
-#[derive(Clone, Copy)]
-pub enum Member {
-    ById(u8),
 }
 
 /// A local cleanup emitted when a scope exits, top of stack first.
@@ -122,7 +111,7 @@ pub struct Bindings {
     /// Identifier uses and assignment targets => their binding.
     places: FnvHashMap<HirId<HirExpr>, Place>,
     /// `this`/`super` member accesses => their resolution.
-    members: FnvHashMap<HirId<HirExpr>, Member>,
+    members: FnvHashMap<HirId<HirExpr>, u8>,
     /// `say`/`fn`/`type` statements => the local slot they occupy.
     slots: FnvHashMap<HirId<HirStmt>, u8>,
     /// Function bodies => the captured upvalues of that function.
@@ -143,7 +132,7 @@ impl Bindings {
         self.places[id]
     }
 
-    pub fn member(&self, id: &HirId<HirExpr>) -> Member {
+    pub fn member(&self, id: &HirId<HirExpr>) -> u8 {
         self.members[id]
     }
 
@@ -427,20 +416,76 @@ impl<'a> Resolver<'a> {
                 self.bindings.slots.insert(*stmt_id, slot);
             },
             HirStmt::Expression(expr) => self.expression(expr)?,
-            HirStmt::While(cond, body) => {
-                self.expression(cond)?;
-                self.expression(body)?;
-            },
+            HirStmt::While(cond, body) => self.conditioned(cond, body)?,
             HirStmt::If(cond, then, otherwise) => {
-                self.expression(cond)?;
-                self.expression(then)?;
+                self.conditioned(cond, then)?;
                 if let Some(otherwise) = otherwise {
                     self.statement(otherwise)?;
                 }
             },
             HirStmt::Block(body) => self.expression(body)?,
-            HirStmt::Match(..) => compiler_error!(self, stmt_id, "`match` is not yet supported"),
+            HirStmt::Match(scrutinee, body) => {
+                self.expression(scrutinee)?;
+                if let HirMatchBody::Arms(arms) = body {
+                    for arm in arms {
+                        self.enter_scope();
+                        for name in arm.matcher.binders() {
+                            self.declare_local(name)?;
+                        }
+                        // The guard sees the matcher's binders. A binding match in the guard adds
+                        // its own binders to the arm body.
+                        if let Some(guard) = &arm.guard {
+                            self.resolve_condition(guard)?;
+                        }
+
+                        let HirExpr::Block(stmts) = self.hir.get(&arm.body) else { unreachable!("an arm body is a block") };
+                        self.statement_body(stmts)?;
+                        self.exit_scope(&arm.body);
+                    }
+                }
+            },
         };
+        Ok(())
+    }
+
+    /// Resolves a condition and its dominated body in one scope, so the condition's binders are
+    /// live in the body and dropped after.
+    fn conditioned(&mut self, cond: &HirId<HirExpr>, body: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        self.enter_scope();
+        self.resolve_condition(cond)?;
+        self.expression(body)?;
+        self.exit_scope(cond);
+        Ok(())
+    }
+
+    /// Resolves a condition, declaring into the current scope the binders a true result makes
+    /// live. An `&&` keeps both sides' binders. An `||` resolves each side but keeps only the
+    /// names both sides bind, since either side may have matched.
+    fn resolve_condition(&mut self, cond: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match self.hir.get(cond) {
+            HirExpr::Binary(BinOp::And, left, right) => {
+                self.resolve_condition(left)?;
+                self.resolve_condition(right)?;
+            },
+            HirExpr::Binary(BinOp::Or, left, right) => {
+                // Resolve each side for its scrutinees, then drop its binders.
+                let mark = self.locals.len();
+                self.resolve_condition(left)?;
+                self.locals.truncate(mark);
+                self.resolve_condition(right)?;
+                self.locals.truncate(mark);
+                for name in self.hir.condition_binders(cond) {
+                    self.declare_local(name)?;
+                }
+            },
+            HirExpr::Match(scrutinee, matcher) => {
+                self.expression(scrutinee)?;
+                for name in matcher.binders() {
+                    self.declare_local(name)?;
+                }
+            },
+            _ => self.expression(cond)?,
+        }
         Ok(())
     }
 
@@ -498,7 +543,7 @@ impl<'a> Resolver<'a> {
             HirExpr::Is(target, _) => self.expression(target)?,
             // `x has spec`: bind the left value; the spec is a static shape with no bindings.
             HirExpr::Has(left, _) => self.expression(left)?,
-            HirExpr::Match(..) => compiler_error!(self, expr, "`match` is not yet supported"),
+            HirExpr::Match(scrutinee, _) => self.expression(scrutinee)?,
             HirExpr::Construct(callee, args, brace) => {
                 let callee = *callee;
                 let args = args.clone();
@@ -518,7 +563,7 @@ impl<'a> Resolver<'a> {
 
     /// Resolves and validates a brace construction `C(args) { field: value, ... }`: the type must
     /// be known, the paren args must match its `init` arity, and each brace field must be a `pub`
-    /// field the `init` does not assign, with no duplicates. Records the resolved field ids.
+    /// field the `init` does not assign, with no duplicates.
     fn construct(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
         self.expression(callee)?;
         for a in args { self.expression(a)?; }
@@ -617,7 +662,7 @@ impl<'a> Resolver<'a> {
         // per-trait slot, otherwise the plain name.
         let lookup = member_name.map(|name| self.private_member(name).unwrap_or(name));
         if let Some(member_id) = lookup.and_then(|name| target_type.resolve_id(name)) {
-            self.bindings.members.insert(*target, Member::ById(member_id));
+            self.bindings.members.insert(*target, member_id);
             return Ok(());
         }
 

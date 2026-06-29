@@ -111,6 +111,35 @@ pub enum HirMatchElem {
     Rest(Option<Symbol>),
 }
 
+impl HirMatcher {
+    /// The names this matcher binds, in the left-to-right order codegen stores them.
+    pub fn binders(&self) -> Vec<Symbol> {
+        let mut out = Vec::new();
+        self.collect_binders(&mut out);
+        out
+    }
+
+    fn collect_binders(&self, out: &mut Vec<Symbol>) {
+        match self {
+            HirMatcher::Wildcard | HirMatcher::Literal(_) => {},
+            HirMatcher::Binder(name) => out.push(*name),
+            HirMatcher::Type { shape, .. } => if let Some(shape) = shape { shape.collect_binders(out) },
+            HirMatcher::Shape(fields) => for field in fields { field.value.collect_binders(out) },
+            HirMatcher::Array(elements) => for element in elements {
+                match element {
+                    HirMatchElem::Elem(matcher) => matcher.collect_binders(out),
+                    HirMatchElem::Rest(Some(name)) => out.push(*name),
+                    HirMatchElem::Rest(None) => {},
+                }
+            },
+            HirMatcher::As(name, inner) => { out.push(*name); inner.collect_binders(out); },
+            HirMatcher::And(parts) => for part in parts { part.collect_binders(out) },
+            // Alternatives bind the same set, so the first one's binders stand for all.
+            HirMatcher::Or(alternatives) => if let Some(first) = alternatives.first() { first.collect_binders(out) },
+        }
+    }
+}
+
 pub struct HirFieldInit {
     pub name: Symbol,
     pub value: Option<HirId<HirExpr>>,
@@ -302,6 +331,26 @@ impl Hir {
 
     pub fn get_root(&self) -> HirId<HirStmt> {
         HirId { id: self.nodes.len() - 1, _marker: PhantomData }
+    }
+
+    /// The binder names a condition makes live in its true branch, in store order. `&&` unions
+    /// both sides. An `||` contributes a name only when both sides bind the identical set.
+    pub fn condition_binders(&self, cond: &HirId<HirExpr>) -> Vec<Symbol> {
+        match self.get(cond) {
+            HirExpr::Match(_, matcher) => matcher.binders(),
+            HirExpr::Binary(BinOp::And, left, right) => {
+                let mut out = self.condition_binders(left);
+                out.extend(self.condition_binders(right));
+                out
+            },
+            HirExpr::Binary(BinOp::Or, left, right) => {
+                let left = self.condition_binders(left);
+                let right = self.condition_binders(right);
+                let same = left.len() == right.len() && left.iter().all(|name| right.contains(name));
+                if same { left } else { Vec::new() }
+            },
+            _ => Vec::new(),
+        }
     }
 
     pub(crate) fn add<T: HirNode>(&mut self, kind: T, pos: SourcePosition) -> HirId<T> {

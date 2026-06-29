@@ -2,7 +2,7 @@ use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, Symbol, UnOp};
 use crate::middle::ir::Inst;
-use crate::middle::bind::{FnKind, Member, Place};
+use crate::middle::bind::{FnKind, Place};
 
 use super::Compiler;
 
@@ -404,7 +404,7 @@ impl<'a> Compiler<'a> {
 
     fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, is_dot: bool, op: IndexOp) -> Result<(), anyhow::Error> {
         if matches!(self.hir.get(target), HirExpr::This) {
-            let Member::ById(member_id) = self.bindings.member(target);
+            let member_id = self.bindings.member(target);
             return self.index_member_by_id(target, member_id, op);
         }
 
