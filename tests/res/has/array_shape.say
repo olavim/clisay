@@ -1,4 +1,5 @@
-// An array operand is a positional shape: exact length and each element matches at its position.
+// An array operand is a positional shape: exact length, each element matched at its position. A
+// nameless `..` relaxes the length and matches a front prefix plus a back suffix.
 say a = [1, 2];
 print(a has [1, 2]); // expect: true
 print(a has [1, 3]); // expect: false
@@ -15,3 +16,15 @@ print({ x: 1 } has [1]); // expect: false
 say b = [{ x: 1 }, 2];
 print(b has [{ x: 1 }, 2]); // expect: true
 print(b has [{ x: 2 }, 2]); // expect: false
+
+// a nameless `..` matches a front prefix and a back suffix, ignoring the middle
+say c = [1, 2, 3, 4];
+print(c has [1, ..]); // expect: true
+print(c has [.., 4]); // expect: true
+print(c has [1, .., 4]); // expect: true
+print(c has [1, .., 3]); // expect: false
+print(c has [9, ..]); // expect: false
+print([] has [..]); // expect: true
+print(5 has [.., 1]); // expect: false
+say d = [{ a: 1 }, 0, { b: 2 }];
+print(d has [{ a: 1 }, .., { b: 2 }]); // expect: true

@@ -158,7 +158,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Identifier => self.parse_typed_matcher(false, pos),
             TokenType::NumericLiteral | TokenType::StringLiteral
             | TokenType::True | TokenType::False | TokenType::Null =>
-                parse_error!(self, &pos, "a bare scalar tests equality; for key presence write `{{ k: _ }}`, for equality use `==`"),
+                parse_error!(self, &pos, "`has` needs a type name, a shape, or an array; for key presence use `{{ k: _ }}`, for equality use `==`"),
             _ => parse_error!(self, &pos, "`has` needs a type name, a shape, or an array"),
         }
     }
@@ -166,12 +166,45 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub(super) fn parse_typed_matcher(&mut self, nominal: bool, pos: SourcePosition) -> Result<AstId<Matcher>, anyhow::Error> {
         let name = self.parse_identifier()?;
         let name = self.ast.intern(&name);
-        let shape = if self.ctx.can_construct() && self.tokens.peek(0).kind == TokenType::LeftBrace {
+        let shape = if self.tokens.peek(0).kind == TokenType::LeftBrace {
             Some(self.parse_shape_matcher()?)
         } else {
             None
         };
         Ok(self.ast.add_matcher(Matcher::Type { nominal, name, shape }, pos))
+    }
+
+    pub(super) fn parse_has_spec(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
+        let token = self.tokens.peek(0).clone();
+        let pos = token.pos.clone();
+        match token.kind {
+            TokenType::Identifier => {
+                let name = self.parse_identifier()?;
+                let name = self.ast.intern(&name);
+                let shape = self.parse_type_shape()?;
+                Ok(self.ast.add_matcher(Matcher::Type { nominal: false, name, shape }, pos))
+            },
+            TokenType::LeftBrace => self.parse_shape_matcher(),
+            TokenType::LeftBracket => self.parse_array_matcher(),
+            TokenType::NumericLiteral | TokenType::StringLiteral
+            | TokenType::True | TokenType::False | TokenType::Null =>
+                parse_error!(self, &pos, "`has` needs a type name, a shape, or an array; for key presence use `{{ k: _ }}`, for equality use `==`"),
+            _ => parse_error!(self, &pos, "`has` needs a type name, a shape, or an array"),
+        }
+    }
+
+    /// An optional `{ ... }` destructuring shape after a `has T`/`is T` operator. A `{` opens a
+    /// shape only when it reads as `{ key: ... }`.
+    pub(super) fn parse_type_shape(&mut self) -> Result<Option<AstId<Matcher>>, anyhow::Error> {
+        let opens_shape = self.tokens.peek(0).kind == TokenType::LeftBrace
+            && matches!(self.tokens.peek(1).kind,
+                TokenType::Identifier | TokenType::NumericLiteral | TokenType::StringLiteral
+                | TokenType::True | TokenType::False | TokenType::Null)
+            && self.tokens.peek(2).kind == TokenType::Colon;
+        match opens_shape {
+            true => Ok(Some(self.parse_shape_matcher()?)),
+            false => Ok(None),
+        }
     }
 
     /// shape := "{" ( field ("," field)* ","? )? "}"

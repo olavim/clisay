@@ -1,0 +1,19 @@
+// `is`/`has` are singular tests; combine them with `&&`/`||` like any boolean.
+trait Polygon { req sides; }
+trait Logger { req log; }
+type Shape { pub sides; init() { this.sides = 3; } }
+
+say d = { sides: 3, log: 1 };
+print(d has Polygon && d has Logger); // expect: true
+print(d has Polygon && d has Logger && d has { extra: _ }); // expect: false
+print(d has { sides: _ } && d has { log: _ }); // expect: true
+
+say e = { sides: 3 };
+print(e has Polygon && e has Logger); // expect: false
+print(e has Polygon || e has Logger); // expect: true
+
+// `&&`/`||` mix structural and nominal freely
+say s = Shape();
+print(s has Polygon && s is Shape); // expect: true
+print(d has Polygon && d is Shape); // expect: false
+print(d has { missing: _ } || d has Polygon); // expect: true

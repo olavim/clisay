@@ -252,22 +252,47 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_array_test(&mut self, elements: &[HirMatchElem], node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let len = elements.len();
-        self.compile_test_and(len + 1, node, &|c, i, n| {
-            if i == 0 {
+        // One AND test per step: the length, then each element by a front or back index. A nameless
+        // `..` splits the elements into a prefix and a suffix and makes the length test a minimum.
+        #[derive(Clone, Copy)]
+        enum Step<'a> { Len(usize, bool), Front(usize, &'a HirMatcher), Back(usize, &'a HirMatcher) }
+
+        let rest = elements.iter().position(|e| matches!(e, HirMatchElem::Rest(_)));
+        let (prefix, suffix) = match rest {
+            Some(p) => (&elements[..p], &elements[p + 1..]),
+            None => (elements, &elements[elements.len()..]),
+        };
+        let mut steps = vec![Step::Len(prefix.len() + suffix.len(), rest.is_none())];
+        for (idx, elem) in prefix.iter().enumerate() {
+            if let HirMatchElem::Elem(matcher) = elem { steps.push(Step::Front(idx, matcher)); }
+        }
+        for (idx, elem) in suffix.iter().enumerate() {
+            if let HirMatchElem::Elem(matcher) = elem { steps.push(Step::Back(suffix.len() - idx, matcher)); }
+        }
+
+        self.compile_test_and(steps.len(), node, &|c, i, n| match steps[i] {
+            Step::Len(min, exact) => {
                 c.emit(Inst::ArrayLen, n);
-                let idx = c.ir.add_constant(Value::from(len as f64))?;
+                let idx = c.ir.add_constant(Value::from(min as f64))?;
                 c.emit(Inst::PushConstant(idx), n);
-                c.emit(Inst::Equal, n);
-                return Ok(());
-            }
-            let HirMatchElem::Elem(elem) = &elements[i - 1] else {
-                compiler_error!(c, n, "a `has` array shape cannot use a rest `..`");
-            };
-            let idx = c.ir.add_constant(Value::from((i - 1) as f64))?;
-            c.emit(Inst::PushConstant(idx), n);
-            c.emit(Inst::GetIndex, n);
-            c.compile_matcher_test(elem, n)
+                c.emit(if exact { Inst::Equal } else { Inst::GreaterThanEqual }, n);
+                Ok(())
+            },
+            Step::Front(prefix_idx, matcher) => {
+                let const_idx = c.ir.add_constant(Value::from(prefix_idx as f64))?;
+                c.emit(Inst::PushConstant(const_idx), n);
+                c.emit(Inst::GetIndex, n);
+                c.compile_matcher_test(matcher, n)
+            },
+            Step::Back(suffix_idx, matcher) => {
+                c.emit(Inst::Dup, n);
+                c.emit(Inst::ArrayLen, n);
+                let const_idx = c.ir.add_constant(Value::from(suffix_idx as f64))?;
+                c.emit(Inst::PushConstant(const_idx), n);
+                c.emit(Inst::Subtract, n);
+                c.emit(Inst::GetIndex, n);
+                c.compile_matcher_test(matcher, n)
+            },
         })
     }
 
@@ -278,17 +303,21 @@ impl<'a> Compiler<'a> {
             self.emit(Inst::PushTrue, node);
             return Ok(());
         }
+
         if count == 1 {
             return compile_test(self, 0, node);
         }
+
         let fail = self.ir.new_label();
         let end = self.ir.new_label();
+
         // Each test but the last runs on a duplicate so the receiver survives for the next.
         for i in 0..count - 1 {
             self.emit(Inst::Dup, node);
             compile_test(self, i, node)?;
             self.emit(Inst::JumpIfFalse(fail), node);
         }
+
         compile_test(self, count - 1, node)?;
         self.emit(Inst::Jump(end), node);
         self.ir.bind(fail);

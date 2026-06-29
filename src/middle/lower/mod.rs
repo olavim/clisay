@@ -184,7 +184,7 @@ impl<'a> Lowerer<'a> {
             Expr::Assert(operand) => HirExpr::Assert(self.expr(operand)?),
             Expr::Has(left, matcher) => {
                 let left = self.expr(left)?;
-                self.validate_has_operand(matcher, true)?;
+                self.validate_has_operand(matcher)?;
                 HirExpr::Has(left, Box::new(self.lower_matcher(matcher)?))
             },
         };
@@ -215,22 +215,25 @@ impl<'a> Lowerer<'a> {
         exprs.iter().map(|e| self.expr(e)).collect()
     }
 
-    fn validate_has_operand(&self, id: &AstId<Matcher>, top: bool) -> Result<(), anyhow::Error> {
+    fn validate_has_operand(&self, id: &AstId<Matcher>) -> Result<(), anyhow::Error> {
         match self.ast.get(id) {
-            Matcher::Binder(name) => Err(self.error(format!(
-                "A `has` value must be a literal, `is T`, `has T`, or a nested shape; did you mean `has {}`?",
-                self.hir.text(*name)), id)),
+            Matcher::Wildcard | Matcher::Literal(_) => Ok(()),
+            Matcher::Binder(name) => {
+                let text = self.hir.text(*name);
+                if self.names.is_type_or_trait(*name) {
+                    Err(self.error(format!("`has` does not bind; `{text}` would bind it. Write `is {text}` or `has {text}` to test the type"), id))
+                } else {
+                    Err(self.error(format!("`has` does not bind; `{text}` would bind it. Use a literal or `_` to test the value, or `match` to bind"), id))
+                }
+            },
             Matcher::As(..) => Err(self.error("`has` binds nothing; an `@` as-binding is only for `match`", id)),
-            Matcher::Wildcard if top => Err(self.error("`has _` always holds; `has` takes a shape or type", id)),
-            Matcher::Wildcard => Ok(()),
-            Matcher::Literal(_) if top => Err(self.error("a bare scalar tests equality; for key presence write `{ k: _ }`, for equality use `==`", id)),
-            Matcher::Literal(_) => Ok(()),
             Matcher::Type { name, shape, .. } => {
                 if !self.names.is_type_or_trait(*name) {
                     return Err(self.error(format!("'{}' is not a type or trait", self.hir.text(*name)), id));
                 }
+                // A trailing shape is fine as long as its fields bind nothing.
                 match shape {
-                    Some(shape) => self.validate_has_operand(shape, false),
+                    Some(shape) => self.validate_has_operand(shape),
                     None => Ok(()),
                 }
             },
@@ -244,24 +247,23 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                     }
-                    self.validate_has_operand(&field.value, false)?;
+                    self.validate_has_operand(&field.value)?;
                 }
                 Ok(())
             },
             Matcher::Array(elements) => {
                 for element in elements {
                     match element {
-                        MatchElem::Elem(m) => self.validate_has_operand(m, false)?,
-                        MatchElem::Rest(_) => return Err(self.error(
-                            "a `has` array shape cannot use a rest `..`; list the elements, or use a `match` matcher", id)),
+                        MatchElem::Elem(m) => self.validate_has_operand(m)?,
+                        MatchElem::Rest(None) => {},
+                        MatchElem::Rest(Some(_)) => return Err(self.error(
+                            "a `has` array cannot bind a rest; `..name` is only for `match`. Use a nameless `..` to skip the middle", id)),
                     }
                 }
                 Ok(())
             },
-            Matcher::And(parts) | Matcher::Or(parts) => {
-                for part in parts { self.validate_has_operand(part, top)?; }
-                Ok(())
-            },
+            Matcher::And(_) | Matcher::Or(_) => Err(self.error(
+                "`&` and `|` combine matchers only in `match`; `has` is a single test, so combine with `&&` or `||`", id)),
         }
     }
 

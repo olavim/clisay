@@ -1,2 +1,2 @@
 say d = { x: 1 };
-d has "x"; // error: a bare scalar tests equality; for key presence write `{ k: _ }`, for equality use `==`
+d has "x"; // error: `has` needs a type name, a shape, or an array; for key presence use `{ k: _ }`, for equality use `==`
