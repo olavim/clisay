@@ -123,8 +123,10 @@ pub struct Bindings {
     surfaces: FnvHashMap<Symbol, Vec<Symbol>>,
     /// Scope nodes (by HIR node index) => locals to clean up on exit.
     cleanups: FnvHashMap<usize, Vec<Cleanup>>,
-    /// Brace-construction expressions => the resolved member ids of their brace fields, in order.
+    /// Brace-construction expressions => the resolved member ids of their brace fields.
     construct_fields: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
+    /// Binding `match` nodes => the local slot of each binder.
+    match_binders: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
 }
 
 impl Bindings {
@@ -148,7 +150,6 @@ impl Bindings {
         &self.types[id]
     }
 
-    /// The public member names of the type/trait named `name`, or `None` if it names neither.
     pub fn surface(&self, name: Symbol) -> Option<&[Symbol]> {
         self.surfaces.get(&name).map(Vec::as_slice)
     }
@@ -159,6 +160,10 @@ impl Bindings {
 
     pub fn construct_fields(&self, id: &HirId<HirExpr>) -> &[u8] {
         &self.construct_fields[id]
+    }
+
+    pub fn match_binders(&self, id: &HirId<HirExpr>) -> Option<&[u8]> {
+        self.match_binders.get(id).map(Vec::as_slice)
     }
 }
 
@@ -435,7 +440,7 @@ impl<'a> Resolver<'a> {
                         // The guard sees the matcher's binders. A binding match in the guard adds
                         // its own binders to the arm body.
                         if let Some(guard) = &arm.guard {
-                            self.resolve_condition(guard)?;
+                            self.resolve_condition(guard, true)?;
                         }
 
                         let HirExpr::Block(stmts) = self.hir.get(&arm.body) else { unreachable!("an arm body is a block") };
@@ -452,7 +457,7 @@ impl<'a> Resolver<'a> {
     /// live in the body and dropped after.
     fn conditioned(&mut self, cond: &HirId<HirExpr>, body: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.enter_scope();
-        self.resolve_condition(cond)?;
+        self.resolve_condition(cond, true)?;
         self.expression(body)?;
         self.exit_scope(cond);
         Ok(())
@@ -461,18 +466,18 @@ impl<'a> Resolver<'a> {
     /// Resolves a condition, declaring into the current scope the binders a true result makes
     /// live. An `&&` keeps both sides' binders. An `||` resolves each side but keeps only the
     /// names both sides bind, since either side may have matched.
-    fn resolve_condition(&mut self, cond: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn resolve_condition(&mut self, cond: &HirId<HirExpr>, record: bool) -> Result<(), anyhow::Error> {
         match self.hir.get(cond) {
             HirExpr::Binary(BinOp::And, left, right) => {
-                self.resolve_condition(left)?;
-                self.resolve_condition(right)?;
+                self.resolve_condition(left, record)?;
+                self.resolve_condition(right, record)?;
             },
             HirExpr::Binary(BinOp::Or, left, right) => {
                 // Resolve each side for its scrutinees, then drop its binders.
                 let mark = self.locals.len();
-                self.resolve_condition(left)?;
+                self.resolve_condition(left, false)?;
                 self.locals.truncate(mark);
-                self.resolve_condition(right)?;
+                self.resolve_condition(right, false)?;
                 self.locals.truncate(mark);
                 for name in self.hir.condition_binders(cond) {
                     self.declare_local(name)?;
@@ -480,8 +485,12 @@ impl<'a> Resolver<'a> {
             },
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
+                let mut slots = Vec::new();
                 for name in matcher.binders() {
-                    self.declare_local(name)?;
+                    slots.push(self.declare_local(name)?);
+                }
+                if record && !slots.is_empty() {
+                    self.bindings.match_binders.insert(*cond, slots);
                 }
             },
             _ => self.expression(cond)?,

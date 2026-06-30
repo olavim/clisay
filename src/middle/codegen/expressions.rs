@@ -37,7 +37,18 @@ impl<'a> Compiler<'a> {
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
             HirExpr::Has(left, matcher) => self.compile_has(left, matcher, expr)?,
-            HirExpr::Match(..) => compiler_error!(self, expr, "`match` is not yet supported"),
+            // A one-liner match yields a boolean. A binding match also stores its binders into the
+            // slots reserved by the enclosing condition; a binderless one is the plain test.
+            HirExpr::Match(scrutinee, matcher) => {
+                self.expression(scrutinee)?;
+                match self.bindings.match_binders(expr) {
+                    Some(slots) => {
+                        let binders: Vec<(Symbol, u8)> = matcher.binders().into_iter().zip(slots.iter().copied()).collect();
+                        self.compile_binding_matcher(matcher, &binders, expr)?;
+                    },
+                    None => self.compile_matcher_test(matcher, expr)?,
+                }
+            },
             HirExpr::This => self.emit(Inst::LoadLocal(0), expr),
             HirExpr::Coalesce(left, right) => self.coalesce(left, right)?,
             HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(target, member, *is_dot)?,
@@ -384,6 +395,140 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    fn compile_binding_matcher(&mut self, m: &HirMatcher, binders: &[(Symbol, u8)], node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        match m {
+            HirMatcher::Wildcard => {
+                self.emit(Inst::Pop, node);
+                self.emit(Inst::PushTrue, node);
+                Ok(())
+            },
+            HirMatcher::Literal(lit) => {
+                self.literal(node, lit)?;
+                self.emit(Inst::Equal, node);
+                Ok(())
+            },
+            HirMatcher::Binder(name) => {
+                self.emit(Inst::StoreLocalPop(slot_of(binders, *name)), node);
+                self.emit(Inst::PushTrue, node);
+                Ok(())
+            },
+            HirMatcher::As(name, inner) => {
+                self.emit(Inst::Dup, node);
+                self.emit(Inst::StoreLocalPop(slot_of(binders, *name)), node);
+                self.compile_binding_matcher(inner, binders, node)
+            },
+            HirMatcher::Type { nominal, name, shape } => match shape {
+                None => self.compile_type_atom(*nominal, *name, node),
+                Some(shape) => {
+                    let (nominal, name) = (*nominal, *name);
+                    self.compile_test_and(2, node, &|c, i, n| match i {
+                        0 => c.compile_type_atom(nominal, name, n),
+                        _ => c.compile_binding_matcher(shape, binders, n),
+                    })
+                },
+            },
+            HirMatcher::Shape(fields) => self.compile_test_and(fields.len(), node, &|c, i, n| {
+                c.compile_binding_field(&fields[i].key, &fields[i].value, binders, n)
+            }),
+            HirMatcher::Array(elements) => self.compile_binding_array(elements, binders, node),
+            HirMatcher::And(parts) => self.compile_test_and(parts.len(), node, &|c, i, n| c.compile_binding_matcher(&parts[i], binders, n)),
+            // Each alternative binds the same names, so it stores into the same slots before the
+            // shared continuation.
+            HirMatcher::Or(parts) => self.compile_test_or(parts.len(), node, &|c, i, n| c.compile_binding_matcher(&parts[i], binders, n)),
+        }
+    }
+
+    fn compile_binding_field(&mut self, key: &HirLiteral, value: &HirMatcher, binders: &[(Symbol, u8)], node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let key_idx = self.has_spec_key_constant(key)?;
+        match value {
+            HirMatcher::Wildcard => {
+                self.emit(Inst::HasMember(key_idx), node);
+                Ok(())
+            },
+            // `{ k }` shorthand: require key present, bind its value.
+            HirMatcher::Binder(name) => {
+                self.emit(Inst::Dup, node);
+                self.emit(Inst::GetIndexOrNull(key_idx), node);
+                self.emit(Inst::StoreLocalPop(slot_of(binders, *name)), node);
+                self.emit(Inst::HasMember(key_idx), node);
+                Ok(())
+            },
+            HirMatcher::Literal(HirLiteral::Null) => self.compile_test_and(2, node, &|c, i, n| match i {
+                0 => { c.emit(Inst::HasMember(key_idx), n); Ok(()) },
+                _ => {
+                    c.emit(Inst::GetIndexOrNull(key_idx), n);
+                    c.emit(Inst::PushNull, n);
+                    c.emit(Inst::Equal, n);
+                    Ok(())
+                },
+            }),
+            HirMatcher::Literal(lit) => {
+                self.emit(Inst::GetIndexOrNull(key_idx), node);
+                self.literal(node, lit)?;
+                self.emit(Inst::Equal, node);
+                Ok(())
+            },
+            nested => {
+                self.emit(Inst::GetIndexOrNull(key_idx), node);
+                self.compile_binding_matcher(nested, binders, node)
+            },
+        }
+    }
+
+    fn compile_binding_array(&mut self, elements: &[HirMatchElem], binders: &[(Symbol, u8)], node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        #[derive(Clone, Copy)]
+        enum Step<'a> { Len(usize, bool), Front(usize, &'a HirMatcher), Rest(u8, u8, u8), Back(usize, &'a HirMatcher) }
+
+        let rest = elements.iter().position(|e| matches!(e, HirMatchElem::Rest(_)));
+        let (prefix, suffix) = match rest {
+            Some(p) => (&elements[..p], &elements[p + 1..]),
+            None => (elements, &elements[elements.len()..]),
+        };
+        let mut steps = vec![Step::Len(prefix.len() + suffix.len(), rest.is_none())];
+        for (idx, elem) in prefix.iter().enumerate() {
+            if let HirMatchElem::Elem(matcher) = elem { steps.push(Step::Front(idx, matcher)); }
+        }
+        if let Some(p) = rest {
+            if let HirMatchElem::Rest(Some(name)) = &elements[p] {
+                steps.push(Step::Rest(prefix.len() as u8, suffix.len() as u8, slot_of(binders, *name)));
+            }
+        }
+        for (idx, elem) in suffix.iter().enumerate() {
+            if let HirMatchElem::Elem(matcher) = elem { steps.push(Step::Back(suffix.len() - idx, matcher)); }
+        }
+
+        self.compile_test_and(steps.len(), node, &|c, i, n| match steps[i] {
+            Step::Len(min, exact) => {
+                c.emit(Inst::ArrayLen, n);
+                let idx = c.ir.add_constant(Value::from(min as f64))?;
+                c.emit(Inst::PushConstant(idx), n);
+                c.emit(if exact { Inst::Equal } else { Inst::GreaterThanEqual }, n);
+                Ok(())
+            },
+            Step::Front(prefix_idx, matcher) => {
+                let const_idx = c.ir.add_constant(Value::from(prefix_idx as f64))?;
+                c.emit(Inst::PushConstant(const_idx), n);
+                c.emit(Inst::GetIndex, n);
+                c.compile_binding_matcher(matcher, binders, n)
+            },
+            Step::Rest(prefix_len, suffix_len, slot) => {
+                c.emit(Inst::ArrayMiddle(prefix_len, suffix_len), n);
+                c.emit(Inst::StoreLocalPop(slot), n);
+                c.emit(Inst::PushTrue, n);
+                Ok(())
+            },
+            Step::Back(suffix_idx, matcher) => {
+                c.emit(Inst::Dup, n);
+                c.emit(Inst::ArrayLen, n);
+                let const_idx = c.ir.add_constant(Value::from(suffix_idx as f64))?;
+                c.emit(Inst::PushConstant(const_idx), n);
+                c.emit(Inst::Subtract, n);
+                c.emit(Inst::GetIndex, n);
+                c.compile_binding_matcher(matcher, binders, n)
+            },
+        })
+    }
+
     /// Interns a member name (a string key) into the constant pool, returning its index.
     fn has_member_constant(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
         let name_ref = self.gc.intern(self.hir.text(name));
@@ -544,6 +689,11 @@ fn binop_inst(op: BinOp) -> Inst {
         BinOp::BitOr => Inst::BitOr,
         BinOp::BitXor => Inst::BitXor,
     }
+}
+
+/// The reserved local slot a binder name stores into.
+fn slot_of(binders: &[(Symbol, u8)], name: Symbol) -> u8 {
+    binders.iter().find(|(n, _)| *n == name).map(|(_, slot)| *slot).expect("a binder's slot was recorded")
 }
 
 fn unop_inst(op: UnOp) -> Inst {

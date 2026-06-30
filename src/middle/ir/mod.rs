@@ -107,6 +107,8 @@ pub enum Inst {
     Is(u8),
     HasMember(u8),
     ArrayLen,
+    /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
+    ArrayMiddle(u8, u8),
 }
 
 pub struct Ir {

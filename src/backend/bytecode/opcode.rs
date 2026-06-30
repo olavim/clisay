@@ -151,4 +151,5 @@ opcodes! {
     Is => IS(Const),
     HasMember => HAS_MEMBER(Const),
     ArrayLen => ARRAY_LEN,
+    ArrayMiddle => ARRAY_MIDDLE(Byte, Byte),
 }

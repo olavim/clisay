@@ -107,6 +107,11 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(c, pos);
         }
 
+        ArrayMiddle(prefix, suffix) => {
+            chunk.write(prefix, pos);
+            chunk.write(suffix, pos);
+        }
+
         Invoke(name, arg_count) => {
             chunk.write(name, pos);
             chunk.write(arg_count, pos);
