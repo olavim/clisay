@@ -20,6 +20,9 @@ impl<'a> Checker<'a> {
                     let (mutable, assigned, declared_nullable) =
                         (self.locals[i].mutable, self.locals[i].assigned, self.locals[i].declared_nullable);
                     if !mutable && assigned {
+                        if self.locals[i].binder {
+                            return Err(self.error(format!("Cannot reassign matcher binder '{}'; copy it into a `say mut` to change it", self.hir.text(name)), lhs));
+                        }
                         return Err(self.error(format!("Cannot reassign immutable binding '{}'; declare it 'mut'", self.hir.text(name)), lhs));
                     }
                     self.check_into_slot(typed.nullness, declared_nullable, name, lhs)?;

@@ -1,6 +1,6 @@
 // Array rest in leading, middle (named slice), and trailing positions.
 say a = [1, 2, 3, 4, 5];
-if match a { [first, ..mid, last] } {
+if a ~ [first, ..mid, last] {
     print(first); // expect: 1
     print(last); // expect: 5
     print(mid.length()); // expect: 3
@@ -8,11 +8,11 @@ if match a { [first, ..mid, last] } {
 }
 
 say b = [10, 20, 30];
-if match b { [.., end] } {
+if b ~ [.., end] {
     print(end); // expect: 30
 }
 
 say c = [7, 8, 9];
-if match c { [start, ..] } {
+if c ~ [start, ..] {
     print(start); // expect: 7
 }

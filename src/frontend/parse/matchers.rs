@@ -2,125 +2,38 @@
 
 use super::*;
 
-/// One parsed entry of a `match` block, before classification.
-enum MatchEntry {
-    Arm(MatchArm),
-    Field(MatchField),
-    Bare(AstId<Matcher>),
-}
-
 impl<'parser, 'vm> Parser<'parser, 'vm> {
-    /// match_stmt := "match" expr "{" entry ("," entry)* ","? "}"
+    /// match_stmt := "match" expr "{" arm ("," arm)* ","? "}"
     pub(super) fn parse_match(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
-        let (scrutinee, body, pos) = self.parse_match_inner()?;
-        Ok(self.ast.add_stmt(Stmt::Match(scrutinee, body), pos))
-    }
-
-    pub(super) fn parse_match_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        let (scrutinee, body, pos) = self.parse_match_inner()?;
-        match body {
-            MatchBody::Matcher(matcher) => Ok(self.ast.add_expr(Expr::Match(scrutinee, matcher), pos)),
-            MatchBody::Arms(_) => parse_error!(self, &pos, "A `match` with `=>` arms is a statement, not an expression"),
-        }
-    }
-
-    /// Parses `match scrutinee { entries }`.
-    fn parse_match_inner(&mut self) -> Result<(AstId<Expr>, MatchBody, SourcePosition), anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Match)?.pos.clone();
         let scrutinee = self.with_ctx(ExprCtx::scrutinee(), |p| p.parse_expr_precedence(0))?;
         self.tokens.expect(TokenType::LeftBrace)?;
 
-        let mut entries: Vec<MatchEntry> = Vec::new();
+        let mut arms: Vec<MatchArm> = Vec::new();
         while !self.tokens.matches(TokenType::RightBrace) {
-            entries.push(self.parse_match_entry()?);
+            arms.push(self.parse_arm()?);
             if self.tokens.next_if(TokenType::Comma).is_none() {
                 break;
             }
         }
         self.tokens.expect(TokenType::RightBrace)?;
 
-        if entries.is_empty() {
-            parse_error!(self, &pos, "A `match` needs at least one entry");
+        if arms.is_empty() {
+            parse_error!(self, &pos, "A `match` needs at least one arm");
         }
-        let body = self.classify_match(entries, &pos)?;
-        Ok((scrutinee, body, pos))
+        Ok(self.ast.add_stmt(Stmt::Match(scrutinee, arms), pos))
     }
 
-    fn parse_match_entry(&mut self) -> Result<MatchEntry, anyhow::Error> {
-        let head = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
-        match self.tokens.peek(0).kind {
-            TokenType::If | TokenType::FatArrow => {
-                let guard = match self.tokens.next_if(TokenType::If) {
-                    Some(_) => Some(self.parse_guard()?),
-                    None => None,
-                };
-                self.tokens.expect(TokenType::FatArrow)?;
-                let body = self.parse_arm_body()?;
-                Ok(MatchEntry::Arm(MatchArm { matcher: head, guard, body }))
-            },
-            TokenType::Colon => {
-                self.tokens.next();
-                let key = self.head_as_key(&head)?;
-                let value = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
-                Ok(MatchEntry::Field(MatchField { key, value }))
-            },
-            _ => Ok(MatchEntry::Bare(head)),
-        }
-    }
-
-    /// Rereads a parsed matcher head as a shape key.
-    fn head_as_key(&self, head: &AstId<Matcher>) -> Result<MatchScalar, anyhow::Error> {
-        match self.ast.get(head) {
-            Matcher::Binder(name) => Ok(MatchScalar::String(self.ast.text(*name).to_string())),
-            Matcher::Literal(scalar) => Ok(scalar.clone()),
-            _ => parse_error!(self, self.ast.pos(head), "A shape key must be a scalar or an identifier"),
-        }
-    }
-
-    /// Classifies the parsed entries into either arms or a single matcher.
-    fn classify_match(&mut self, entries: Vec<MatchEntry>, pos: &SourcePosition) -> Result<MatchBody, anyhow::Error> {
-        if entries.iter().any(|entry| matches!(entry, MatchEntry::Arm(_))) {
-            let mut arms = Vec::with_capacity(entries.len());
-            for entry in entries {
-                match entry {
-                    MatchEntry::Arm(arm) => arms.push(arm),
-                    _ => parse_error!(self, pos, "A `match` cannot mix arms with a shape or bare matcher"),
-                }
-            }
-            return Ok(MatchBody::Arms(arms));
-        }
-
-        let mut fields: Vec<MatchField> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut bares: Vec<AstId<Matcher>> = Vec::new();
-        for entry in entries {
-            let field = match entry {
-                MatchEntry::Field(field) => field,
-                MatchEntry::Bare(matcher) => match self.ast.get(&matcher) {
-                    Matcher::Binder(name) => MatchField { key: MatchScalar::String(self.ast.text(*name).to_string()), value: matcher },
-                    _ => { bares.push(matcher); continue; },
-                },
-                MatchEntry::Arm(_) => unreachable!("arms are handled above"),
-            };
-            if !seen.insert(scalar_dedup(&field.key)) {
-                parse_error!(self, pos, "Duplicate key in a shape matcher");
-            }
-            fields.push(field);
-        }
-
-        match (fields.is_empty(), bares.len()) {
-            (false, 0) => Ok(MatchBody::Matcher(self.ast.add_matcher(Matcher::Shape(fields), pos.clone()))),
-            (true, 1) => {
-                let matcher = bares.pop().unwrap();
-                // A lone bare shape doubles the braces: the block already is the shape.
-                if matches!(self.ast.get(&matcher), Matcher::Shape(_)) {
-                    parse_error!(self, pos, "A bare shape here is redundant; write its fields directly, like `match x {{ a: 1, b }}`");
-                }
-                Ok(MatchBody::Matcher(matcher))
-            },
-            (true, _) => parse_error!(self, pos, "A `match` has more than one bare matcher"),
-            (false, _) => parse_error!(self, pos, "A `match` cannot mix a shape field with a bare matcher"),
-        }
+    /// arm := matcher ("if" guard)? "=>" body
+    fn parse_arm(&mut self) -> Result<MatchArm, anyhow::Error> {
+        let matcher = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
+        let guard = match self.tokens.next_if(TokenType::If) {
+            Some(_) => Some(self.parse_guard()?),
+            None => None,
+        };
+        self.tokens.expect(TokenType::FatArrow)?;
+        let body = self.parse_arm_body()?;
+        Ok(MatchArm { matcher, guard, body })
     }
 
     /// An arm body: a `{ ... }` block, or a single expression run for effect.

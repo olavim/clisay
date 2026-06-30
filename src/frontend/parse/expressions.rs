@@ -86,12 +86,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(left)
     }
 
-    /// Parses a primary expression: a literal, an array or dict literal, an identifier, or a
-    /// `match` one-liner.
+    /// Parses a primary expression: a literal, an array or dict literal, or an identifier.
     pub(super) fn parse_primary(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        if self.tokens.matches(TokenType::Match) {
-            return self.parse_match_expr();
-        }
         match Operator::parse_prefix(self.tokens, 0) {
             Some(op) => self.parse_expr_prefix(op),
             _ => self.parse_expr_atom(),
@@ -123,6 +119,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 }
             },
             Operator::Has => Expr::Has(expr, self.parse_has_spec()?),
+            Operator::Match => {
+                let matcher = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
+                if let Some(Operator::Match) = Operator::peek_infix(self.tokens, 0) {
+                    parse_error!(self, &pos, "`~` does not chain. Combine tests with `&` and `|`, or join tests with `&&` and `||`");
+                }
+                Expr::Match(expr, matcher)
+            },
             Operator::Arrow => {
                 let right = self.parse_block_or_expr(op.infix_precedence().unwrap())?;
                 let params = expr.as_comma_separated(self.ast).iter()

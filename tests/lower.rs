@@ -1,4 +1,4 @@
-use clisay::internals::{lower, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchBody, HirMatchElem, HirMatcher, HirStmt, ReturnShape};
+use clisay::internals::{lower, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt, ReturnShape};
 
 /// The top-level statements of a lowered program (unwraps the root block).
 fn top_stmts(hir: &Hir) -> Vec<HirId<HirStmt>> {
@@ -10,7 +10,7 @@ fn top_stmts(hir: &Hir) -> Vec<HirId<HirStmt>> {
 
 fn first_arm_matcher(hir: &Hir) -> &HirMatcher {
     let stmts = top_stmts(hir);
-    let HirStmt::Match(_, HirMatchBody::Arms(arms)) = hir.get(&stmts[0]) else { panic!("first statement is not a match dispatch") };
+    let HirStmt::Match(_, arms) = hir.get(&stmts[0]) else { panic!("first statement is not a match dispatch") };
     &arms[0].matcher
 }
 
@@ -112,7 +112,7 @@ fn combinators_lower() {
 fn match_statement_lowers_to_arms() {
     let hir = lower("match v { is A => 1, _ => 0 }\ntype A { }");
     let stmts = top_stmts(&hir);
-    let HirStmt::Match(_, HirMatchBody::Arms(arms)) = hir.get(&stmts[0]) else { panic!("first statement is not a match dispatch") };
+    let HirStmt::Match(_, arms) = hir.get(&stmts[0]) else { panic!("first statement is not a match dispatch") };
     assert_eq!(arms.len(), 2);
     assert!(matches!(arms[0].matcher, HirMatcher::Type { nominal: true, .. }));
     assert!(matches!(arms[1].matcher, HirMatcher::Wildcard));
