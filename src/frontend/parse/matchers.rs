@@ -110,7 +110,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         match (fields.is_empty(), bares.len()) {
             (false, 0) => Ok(MatchBody::Matcher(self.ast.add_matcher(Matcher::Shape(fields), pos.clone()))),
-            (true, 1) => Ok(MatchBody::Matcher(bares.pop().unwrap())),
+            (true, 1) => {
+                let matcher = bares.pop().unwrap();
+                // A lone bare shape doubles the braces: the block already is the shape.
+                if matches!(self.ast.get(&matcher), Matcher::Shape(_)) {
+                    parse_error!(self, pos, "A bare shape here is redundant; write its fields directly, like `match x {{ a: 1, b }}`");
+                }
+                Ok(MatchBody::Matcher(matcher))
+            },
             (true, _) => parse_error!(self, pos, "A `match` has more than one bare matcher"),
             (false, _) => parse_error!(self, pos, "A `match` cannot mix a shape field with a bare matcher"),
         }

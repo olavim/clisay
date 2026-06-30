@@ -1,0 +1,14 @@
+// A binding one-liner in an if head: bound names are in scope in the then branch only.
+say d = { kind: "move", dx: 3, dy: 4 };
+if match d { kind, dx, dy } {
+    print(kind); // expect: move
+    print(dx); // expect: 3
+    print(dy); // expect: 4
+}
+
+say r = { a: 1 };
+if match r { missing } {
+    print("yes");
+} else {
+    print("no"); // expect: no
+}

@@ -1,0 +1,3 @@
+// A lone bare shape doubles the braces; the block already serves as the shape.
+say w = { left: 1 };
+say ok = match w { { left: v } }; // error: A bare shape here is redundant; write its fields directly, like `match x { a: 1, b }`
