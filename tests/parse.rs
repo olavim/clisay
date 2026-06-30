@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FnDecl, Literal, MatchBody, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 fn top_stmts(ast: &Ast) -> Vec<AstId<Stmt>> {
@@ -227,7 +227,7 @@ fn matcher_rejected_forms() {
 fn match_statement_arms() {
     let ast = parse("match x { is Point { a } => f(), _ => g() }");
     let stmts = top_stmts(&ast);
-    let Stmt::Match(_, MatchBody::Arms(arms)) = ast.get(&stmts[0]) else { panic!("not a match dispatch") };
+    let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match dispatch") };
     assert_eq!(arms.len(), 2);
     assert!(arms[0].guard.is_none());
 }
@@ -237,7 +237,7 @@ fn match_guard_uses_low_precedence_operator() {
     // `=>` delimits the guard, so a bare `??` guard is not swallowed as a lambda.
     let ast = parse("match x { _ if a ?? b => g() }");
     let stmts = top_stmts(&ast);
-    let Stmt::Match(_, MatchBody::Arms(arms)) = ast.get(&stmts[0]) else { panic!("not a match dispatch") };
+    let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match dispatch") };
     let guard = arms[0].guard.expect("missing guard");
     assert!(matches!(ast.get(&guard), Expr::Binary(Operator::Coalesce, _, _)));
 }
@@ -246,44 +246,17 @@ fn match_guard_uses_low_precedence_operator() {
 fn match_trailing_comma() {
     let ast = parse("match x { _ => g(), }");
     let stmts = top_stmts(&ast);
-    let Stmt::Match(_, MatchBody::Arms(arms)) = ast.get(&stmts[0]) else { panic!("not a match dispatch") };
+    let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match dispatch") };
     assert_eq!(arms.len(), 1);
 }
 
 #[test]
-fn match_shape_block() {
-    let ast = parse("match d { kind: \"move\", dx, dy }");
-    let stmts = top_stmts(&ast);
-    let Stmt::Match(_, MatchBody::Matcher(matcher)) = ast.get(&stmts[0]) else { panic!("not a single matcher") };
-    let Matcher::Shape(fields) = ast.get(matcher) else { panic!("not a shape") };
-    assert_eq!(fields.len(), 3);
-    assert_eq!(fields[0].key, MatchScalar::String("kind".into()));
-    assert!(matches!(ast.get(&fields[2].value), Matcher::Binder(_)));
-}
-
-#[test]
-fn match_single_matcher_block() {
-    let ast = parse("match d { is A | is B }");
-    let stmts = top_stmts(&ast);
-    let Stmt::Match(_, MatchBody::Matcher(matcher)) = ast.get(&stmts[0]) else { panic!("not a single matcher") };
-    assert!(matches!(ast.get(matcher), Matcher::Or(_)));
-}
-
-#[test]
-fn match_lone_ident_is_a_shape() {
-    let ast = parse("match d { x }");
-    let stmts = top_stmts(&ast);
-    let Stmt::Match(_, MatchBody::Matcher(matcher)) = ast.get(&stmts[0]) else { panic!("not a single matcher") };
-    let Matcher::Shape(fields) = ast.get(matcher) else { panic!("a lone ident should be a shorthand shape") };
-    assert_eq!(fields[0].key, MatchScalar::String("x".into()));
-}
-
-#[test]
-fn match_mixed_kinds_are_rejected() {
+fn match_is_arms_only() {
+    // `match` hosts only `matcher => body` arms; a shape, a bare matcher, or a mix is a parse error.
+    assert!(try_parse("match d { kind: \"move\", dx }").is_err());
+    assert!(try_parse("match d { is A | is B }").is_err());
     assert!(try_parse("match d { is A => f(), x: 1 }").is_err());
     assert!(try_parse("match d { is A, is B }").is_err());
-    assert!(try_parse("match d { x: 1, is A }").is_err());
-    assert!(try_parse("match d { is A: 1 }").is_err());
 }
 
 #[test]
@@ -292,34 +265,56 @@ fn match_empty_is_rejected() {
 }
 
 #[test]
-fn match_one_liner_in_if_head() {
-    let ast = parse("if match d { kind, dx, dy } { f(); }");
+fn match_is_not_an_expression() {
+    // The one-liner lives in `~`, so `match` never appears in value position.
+    assert!(try_parse("say b = match d { _ => 1 };").is_err());
+}
+
+#[test]
+fn tilde_one_liner_in_if_head() {
+    let ast = parse("if d ~ { kind, dx, dy } { f(); }");
     let stmts = top_stmts(&ast);
     let Stmt::If(cond, _, _) = ast.get(&stmts[0]) else { panic!("not an if") };
-    let Expr::Match(_, matcher) = ast.get(cond) else { panic!("condition is not a one-liner") };
+    let Expr::Match(_, matcher) = ast.get(cond) else { panic!("condition is not a `~` one-liner") };
     assert!(matches!(ast.get(matcher), Matcher::Shape(_)));
 }
 
 #[test]
-fn match_one_liner_in_while_and_and_heads() {
-    let ast = parse("while match q { [head, ..rest] } { g(); }");
+fn tilde_one_liner_in_while_and_and_heads() {
+    let ast = parse("while q ~ [head, ..rest] { g(); }");
     let Stmt::While(cond, _) = ast.get(&top_stmts(&ast)[0]) else { panic!("not a while") };
     assert!(matches!(ast.get(cond), Expr::Match(_, _)));
 
-    let ast = parse("if a && match d { kind } { g(); }");
+    // `~` binds tighter than `&&`, so the right operand is the whole `~` test.
+    let ast = parse("if a && d ~ { kind } { g(); }");
     let Stmt::If(cond, _, _) = ast.get(&top_stmts(&ast)[0]) else { panic!("not an if") };
     let Expr::Binary(Operator::LogicalAnd, _, right) = ast.get(cond) else { panic!("not an &&") };
     assert!(matches!(ast.get(right), Expr::Match(_, _)));
 }
 
 #[test]
-fn match_binderless_one_liner_in_say_value() {
-    let ast = parse("say b = match d { is A | is B };");
-    let Expr::Match(_, matcher) = ast.get(&say_value(&ast)) else { panic!("say value is not a one-liner") };
+fn tilde_binderless_one_liner_in_say_value() {
+    let ast = parse("say b = d ~ is A | is B;");
+    let Expr::Match(_, matcher) = ast.get(&say_value(&ast)) else { panic!("say value is not a `~` one-liner") };
     assert!(matches!(ast.get(matcher), Matcher::Or(_)));
 }
 
 #[test]
-fn match_arms_in_expression_position_are_rejected() {
-    assert!(try_parse("say b = match d { _ => 1 };").is_err());
+fn tilde_does_not_chain() {
+    let err = try_parse("say b = a ~ { x } ~ { y };").err().expect("expected a parse error");
+    assert!(err.contains("does not chain"), "{err}");
+}
+
+#[test]
+fn match_arm_guard_requires_arrow() {
+    assert!(try_parse("match x { _ if a }").is_err());
+}
+
+#[test]
+fn tilde_prefix_and_infix_are_distinct() {
+    // Prefix `~` is bitwise-not; infix `~` is test-and-bind.
+    let ast = parse("say a = ~b;");
+    assert!(matches!(ast.get(&say_value(&ast)), Expr::Unary(Operator::BitNot, _)));
+    let ast = parse("say c = d ~ is T;");
+    assert!(matches!(ast.get(&say_value(&ast)), Expr::Match(_, _)));
 }

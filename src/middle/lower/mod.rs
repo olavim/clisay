@@ -3,11 +3,13 @@
 mod init;
 mod traits;
 
+use std::collections::HashSet;
+
 use anyhow::anyhow;
 
-use crate::ast::{MatchArm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchBody, MatchElem, MatchScalar, Matcher, Operator, Param, Stmt, Symbol, TypeDecl};
+use crate::ast::{MatchArm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirMatchArm, HirMatchBody, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
+    BinOp, Hir, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
 };
 use crate::middle::names::NameBindings;
 
@@ -18,8 +20,8 @@ pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
         ast: &ast,
         names,
         hir: Hir::new(ident_ids, ident_texts),
-        provided_traits: std::collections::HashSet::new(),
-        emitted_aliases: std::collections::HashSet::new(),
+        provided_traits: HashSet::new(),
+        emitted_aliases: HashSet::new(),
     };
     lowerer.stmt(&root)?;
     Ok(lowerer.hir)
@@ -30,11 +32,9 @@ struct Lowerer<'a> {
     names: &'a NameBindings,
     hir: Hir,
     /// The traits the composer currently being lowered provides (its flattened `with`-set).
-    provided_traits: std::collections::HashSet<Symbol>,
-    /// Qualified-call alias method names (`"<Trait>.<method>"`) emitted for the current
-    /// composer: the methods a host override shadowed out of the plain namespace, still
-    /// reachable via `T.method(...)`.
-    emitted_aliases: std::collections::HashSet<String>,
+    provided_traits: HashSet<Symbol>,
+    /// Qualified-call alias method names (`"<Trait>.<method>"`) emitted for the current composer.
+    emitted_aliases: HashSet<String>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -92,13 +92,10 @@ impl<'a> Lowerer<'a> {
                 HirStmt::If(cond, then, otherwise)
             },
             Stmt::Block(body) => HirStmt::Block(self.expr(body)?),
-            Stmt::Match(scrutinee, body) => {
+            Stmt::Match(scrutinee, arms) => {
                 let scrutinee = self.expr(scrutinee)?;
-                let body = match body {
-                    MatchBody::Arms(arms) => HirMatchBody::Arms(arms.iter().map(|arm| self.lower_match_arm(arm)).collect::<Result<_, _>>()?),
-                    MatchBody::Matcher(matcher) => HirMatchBody::Matcher(Box::new(self.lower_matcher(matcher)?)),
-                };
-                HirStmt::Match(scrutinee, body)
+                let arms = arms.iter().map(|arm| self.lower_match_arm(arm)).collect::<Result<_, _>>()?;
+                HirStmt::Match(scrutinee, arms)
             },
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),

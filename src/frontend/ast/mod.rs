@@ -10,8 +10,7 @@ pub use operator::Operator;
 
 use crate::frontend::lex::SourcePosition;
 
-/// An interned identifier, a cheap `Copy` identity. Resolved back to text via
-/// [`Ast::text`]. Identifiers are interned by the parser as nodes are built.
+/// An interned identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol(u32);
 
@@ -79,10 +78,11 @@ pub enum Expr {
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
     /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean. The
-    /// matcher is the bindingless subset of the `match` grammar. A bare nominal `is T` uses `Is`
+    /// matcher is the bindingless subset of the matcher grammar. A bare nominal `is T` uses `Is`
     /// instead; everything richer (shapes, `&`/`|`) lands here.
     Has(AstId<Expr>, AstId<Matcher>),
-    /// A `match` one-liner `match scrutinee { MATCHER }` used as a boolean.
+    /// The `scrutinee ~ matcher` one-liner. Yields a boolean and, on success, publishes the
+    /// matcher's binders.
     Match(AstId<Expr>, AstId<Matcher>),
 }
 
@@ -207,12 +207,6 @@ pub struct MatchArm {
     pub body: AstId<Expr>,
 }
 
-/// A `match` block. Either a dispatch over arms or a single matcher tested as a boolean.
-pub enum MatchBody {
-    Arms(Vec<MatchArm>),
-    Matcher(AstId<Matcher>),
-}
-
 pub enum Stmt {
     Expression(AstId<Expr>),
     Return(Option<AstId<Expr>>),
@@ -227,8 +221,8 @@ pub enum Stmt {
     Say(FieldInit),
     Fn(FnDecl),
     Type(Box<TypeDecl>),
-    /// A match statement: Match(scrutinee, body).
-    Match(AstId<Expr>, MatchBody)
+    /// A match statement dispatching the scrutinee over arms.
+    Match(AstId<Expr>, Vec<MatchArm>)
 }
 
 pub enum NodeKind {

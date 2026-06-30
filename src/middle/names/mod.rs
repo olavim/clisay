@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchBody, MatchElem, Matcher, Operator, Stmt, Symbol, TypeDecl};
+use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchElem, Matcher, Operator, Stmt, Symbol, TypeDecl};
 
 /// What an identifier reference binds to.
 pub enum Binding {
@@ -70,9 +70,7 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
     Ok(resolver.out)
 }
 
-/// What kind of binding a declared name introduces. A `say` is sequential and may shadow an
-/// earlier value binding in the same scope. Params are value bindings but don't themselves shadow.
-/// Items (`fn`/`type`/`trait`) cannot shadow or be shadowed.
+/// What kind of binding a declared name introduces.
 #[derive(Clone, Copy, PartialEq)]
 enum DeclKind {
     Say,
@@ -84,8 +82,7 @@ enum DeclKind {
 struct Scope {
     declared: HashMap<Symbol, DeclKind>,
     traits: HashMap<Symbol, AstId<Stmt>>,
-    /// Every `type`/`trait` name in scope (traits included), for validating the right operand of
-    /// `x is T`.
+    /// Every `type`/`trait` name in scope (traits included), for validating the right operand of `x is T`.
     types: HashSet<Symbol>,
 }
 
@@ -196,15 +193,12 @@ impl<'a> Resolver<'a> {
             Stmt::Say(field) => if let Some(value) = &field.value { self.visit_expr(value)?; },
             Stmt::Fn(decl) => self.visit_fn(decl)?,
             Stmt::Type(decl) => self.visit_type(stmt, decl)?,
-            Stmt::Match(scrutinee, body) => {
+            Stmt::Match(scrutinee, arms) => {
                 self.visit_expr(scrutinee)?;
-                match body {
-                    MatchBody::Arms(arms) => for arm in arms {
-                        self.collect_matcher_binders(&arm.matcher)?;
-                        if let Some(guard) = &arm.guard { self.visit_condition(guard)?; }
-                        self.visit_expr(&arm.body)?;
-                    },
-                    MatchBody::Matcher(matcher) => self.check_match_expr(matcher, false)?,
+                for arm in arms {
+                    self.collect_matcher_binders(&arm.matcher)?;
+                    if let Some(guard) = &arm.guard { self.visit_condition(guard)?; }
+                    self.visit_expr(&arm.body)?;
                 }
             },
         }
@@ -257,7 +251,7 @@ impl<'a> Resolver<'a> {
     fn check_match_expr(&self, matcher: &AstId<Matcher>, in_condition: bool) -> Result<(), anyhow::Error> {
         let binders = self.collect_matcher_binders(matcher)?;
         if !binders.is_empty() && !in_condition {
-            return Err(self.error("a `match` that binds names is only allowed in a condition", matcher));
+            return Err(self.error("a `~` that binds names is only allowed in a condition", matcher));
         }
         Ok(())
     }

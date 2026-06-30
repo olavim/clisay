@@ -11,7 +11,7 @@ use nohash_hasher::IntSet;
 use crate::compiler_error;
 use crate::core::objects::{TypeMember, UpvalueLocation};
 use crate::middle::hir::{
-    BinOp, Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchBody, HirStmt, ReturnShape, Symbol,
+    BinOp, Hir, HirTypeDecl, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnShape, Symbol,
 };
 
 /// Where a bare identifier binds.
@@ -429,24 +429,20 @@ impl<'a> Resolver<'a> {
                 }
             },
             HirStmt::Block(body) => self.expression(body)?,
-            HirStmt::Match(scrutinee, body) => {
+            HirStmt::Match(scrutinee, arms) => {
                 self.expression(scrutinee)?;
-                if let HirMatchBody::Arms(arms) = body {
-                    for arm in arms {
-                        self.enter_scope();
-                        for name in arm.matcher.binders() {
-                            self.declare_local(name)?;
-                        }
-                        // The guard sees the matcher's binders. A binding match in the guard adds
-                        // its own binders to the arm body.
-                        if let Some(guard) = &arm.guard {
-                            self.resolve_condition(guard, true)?;
-                        }
-
-                        let HirExpr::Block(stmts) = self.hir.get(&arm.body) else { unreachable!("an arm body is a block") };
-                        self.statement_body(stmts)?;
-                        self.exit_scope(&arm.body);
+                for arm in arms {
+                    self.enter_scope();
+                    for name in arm.matcher.binders() {
+                        self.declare_local(name)?;
                     }
+                    if let Some(guard) = &arm.guard {
+                        self.resolve_condition(guard, true)?;
+                    }
+
+                    let HirExpr::Block(stmts) = self.hir.get(&arm.body) else { unreachable!("an arm body is a block") };
+                    self.statement_body(stmts)?;
+                    self.exit_scope(&arm.body);
                 }
             },
         };
@@ -874,13 +870,11 @@ impl<'a> Resolver<'a> {
                 if let Some(f) = finally { self.collect_assigned_fields(f, out); }
             },
             HirStmt::Say(field) => if let Some(v) = &field.value { self.collect_assigned_fields(v, out); },
-            HirStmt::Match(scrutinee, body) => {
+            HirStmt::Match(scrutinee, arms) => {
                 self.collect_assigned_fields(scrutinee, out);
-                if let HirMatchBody::Arms(arms) = body {
-                    for arm in arms {
-                        if let Some(guard) = &arm.guard { self.collect_assigned_fields(guard, out); }
-                        self.collect_assigned_fields(&arm.body, out);
-                    }
+                for arm in arms {
+                    if let Some(guard) = &arm.guard { self.collect_assigned_fields(guard, out); }
+                    self.collect_assigned_fields(&arm.body, out);
                 }
             },
             // Nested functions/types do not establish init assignment in this body.

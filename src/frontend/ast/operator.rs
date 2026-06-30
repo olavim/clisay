@@ -34,9 +34,8 @@ macro_rules! operators {
                 stream.next();
                 Some(op)
             }
-
-            /// Parses an infix operator at the cursor, advancing only on a match.
-            pub fn parse_infix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
+            
+            pub fn peek_infix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
                 let op = match stream.peek(0).kind {
                     $(TokenType::$in_tok => Operator::$in_op,)*
                     $(TokenType::$inr_tok => Operator::$inr_op,)*
@@ -45,6 +44,12 @@ macro_rules! operators {
                 if op.has_lower_infix_precedence(min_precedence) {
                     return None;
                 }
+                Some(op)
+            }
+
+            /// Parses an infix operator at the cursor, advancing only on a match.
+            pub fn parse_infix(stream: &mut TokenStream, min_precedence: u8) -> Option<Operator> {
+                let op = Operator::peek_infix(stream, min_precedence)?;
                 stream.next();
                 Some(op)
             }
@@ -132,6 +137,7 @@ operators! {
         GreaterThanEqual => GreaterEqual, 10;
         Is => Is, 10;
         Has => Has, 10;
+        Match => Tilde, 10;
         LeftShift => LessLess, 11;
         RightShift => GreaterGreater, 11;
         Add => Plus, 12;

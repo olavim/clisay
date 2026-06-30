@@ -1,6 +1,5 @@
 //! The high-level IR (HIR): a post-lowering node hierarchy in which surface-only
-//! constructs are unrepresentable. Produced by [`crate::middle::lower`] and consumed
-//! by `bind` and `codegen`.
+//! constructs are unrepresentable.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -182,28 +181,18 @@ pub struct HirTypeDecl {
     pub mut_fields: HashSet<Symbol>,
     pub methods: Vec<HirId<HirStmt>>,
     /// The declaring trait of each method in `methods` (parallel), or `None` for a member
-    /// the host type declares itself. Lets the resolver scope each trait method's body to
-    /// its own private members.
+    /// the host type declares itself.
     pub method_traits: Vec<Option<Symbol>>,
     /// Members declared `pub` (externally accessible). See `ast::TypeDecl`.
     pub pub_members: HashSet<Symbol>,
     /// Per trait, that trait's **private** members mapped from their plain name to the
-    /// per-trait renamed slot name (`"<Trait>.<name>"`). The resolver consults this to
-    /// resolve a trait body's `this.x` / bare `x` to the trait's own private member, so two
-    /// traits' same-named privates stay distinct and a private is reachable only from inside
-    /// its declaring trait.
+    /// per-trait renamed slot name (`"<Trait>.<name>"`).
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
     /// For a standalone trait (`HirStmt::Trait`): its **declared surface**.
     pub surface: HashSet<Symbol>,
     /// The trait/type names this type **provides** for `x is T`: its own name plus every
-    /// transitively `with`-mixed trait. Empty for a standalone trait (no runtime type).
+    /// transitively `with`-mixed trait.
     pub provides: Vec<Symbol>,
-}
-
-/// The classified body of a `match`: a dispatch over arms or a single boolean matcher.
-pub enum HirMatchBody {
-    Arms(Vec<HirMatchArm>),
-    Matcher(Box<HirMatcher>),
 }
 
 /// One arm of a `match`.
@@ -225,7 +214,7 @@ pub enum HirStmt {
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
     Trait(Box<HirTypeDecl>),
-    Match(HirId<HirExpr>, HirMatchBody),
+    Match(HirId<HirExpr>, Vec<HirMatchArm>),
 }
 
 pub enum HirNodeKind {

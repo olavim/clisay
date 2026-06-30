@@ -1,6 +1,6 @@
 // A binding match composes into a while head and the right operand of `&&`.
 say mut q = [1, 2, 3];
-while match q { [head, ..tail] } {
+while q ~ [head, ..tail] {
     print(head); // expect: 1
     // expect: 2
     // expect: 3
@@ -8,6 +8,6 @@ while match q { [head, ..tail] } {
 }
 
 say msg = { items: [10, 20] };
-if match msg { items } && match items { [first, ..] } {
+if msg ~ { items } && items ~ [first, ..] {
     print(first); // expect: 10
 }

@@ -37,8 +37,6 @@ impl<'a> Compiler<'a> {
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
             HirExpr::Has(left, matcher) => self.compile_has(left, matcher, expr)?,
-            // A one-liner match yields a boolean. A binding match also stores its binders into the
-            // slots reserved by the enclosing condition; a binderless one is the plain test.
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
                 match self.bindings.match_binders(expr) {
