@@ -1,0 +1,10 @@
+// An `||` whose sides bind the same name set publishes that name in the true branch.
+say a = { ok: 7 };
+if a ~ { ok: value } || a ~ { cached: value } {
+    print(value); // expect: 7
+}
+
+say b = { cached: 8 };
+if b ~ { ok: value } || b ~ { cached: value } {
+    print(value); // expect: 8
+}

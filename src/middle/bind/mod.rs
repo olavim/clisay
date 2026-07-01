@@ -464,37 +464,36 @@ impl<'a> Resolver<'a> {
                 // complex analysis across all arms to ensure it's not e.g. mutated or shadowed.
                 let scrut_slot = self.declare_temp()?;
 
-                // One binder block sized to the widest arm. Each arm renames the block's slots to
-                // its own binder names while its body resolves, then clears them for the next arm.
-                let binder_slots = arms.iter().map(|a| a.matcher.binders().len()).max().unwrap_or(0);
+                // One binder block sized to the widest arm, counting a binding guard's binders too.
+                // Each arm declares its binders from the block base. Truncating after the arm lets
+                // the next arm reuse the same slots.
                 let block_base = self.locals.len();
-                let mut block = Vec::with_capacity(binder_slots);
-                for _ in 0..binder_slots {
-                    block.push(self.declare_temp()?);
-                }
+                let binder_slots = arms.iter()
+                    .map(|a| a.matcher.binders().len() + a.guard.as_ref().map_or(0, |g| self.hir.condition_binders(g).len()))
+                    .max().unwrap_or(0);
 
                 let mut arm_binders = Vec::with_capacity(arms.len());
                 for arm in arms {
-                    // Set the block's slots to the arm's binder names, so the arm body can resolve them.
                     let names = arm.matcher.binders();
                     let mut slots = Vec::with_capacity(names.len());
-                    for (i, name) in names.iter().enumerate() {
-                        self.locals[block_base + i].name = Some(*name);
-                        slots.push((*name, block[i]));
+                    for name in &names {
+                        slots.push((*name, self.declare_local(*name)?));
                     }
 
+                    // A binding guard publishes into the slots right after the matcher's, so its
+                    // stores land inside the reserved block that codegen pushes.
                     if let Some(guard) = &arm.guard {
                         self.resolve_condition(guard, true)?;
                     }
 
                     self.expression(&arm.body)?;
-
-                    // Clear the block's slots for the next arm.
-                    for i in 0..names.len() {
-                        self.locals[block_base + i].name = None;
-                    }
-
+                    self.locals.truncate(block_base);
                     arm_binders.push(slots);
+                }
+
+                // Reserve the block so the scope cleanup pops the scrutinee and every binder slot.
+                for _ in 0..binder_slots {
+                    self.declare_temp()?;
                 }
 
                 self.bindings.match_info.insert(*stmt_id, MatchInfo {
@@ -528,13 +527,17 @@ impl<'a> Resolver<'a> {
                 self.resolve_condition(right, record)?;
             },
             HirExpr::Binary(BinOp::Or, left, right) => {
-                // Resolve each side for its scrutinees, then drop its binders.
+                // Both sides bind the identical set only when the union is non-empty. Then each
+                // side stores into the shared slots, so record its match binders. Otherwise the
+                // sides bind nothing usable, so resolve them only for their scrutinees.
+                let union = self.hir.condition_binders(cond);
+                let record_sides = record && !union.is_empty();
                 let mark = self.locals.len();
-                self.resolve_condition(left, false)?;
+                self.resolve_condition(left, record_sides)?;
                 self.locals.truncate(mark);
-                self.resolve_condition(right, false)?;
+                self.resolve_condition(right, record_sides)?;
                 self.locals.truncate(mark);
-                for name in self.hir.condition_binders(cond) {
+                for name in union {
                     self.declare_local(name)?;
                 }
             },
