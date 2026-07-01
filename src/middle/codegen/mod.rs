@@ -15,6 +15,7 @@ use crate::middle::hir::HirStmt;
 
 mod expressions;
 mod statements;
+mod matching;
 mod functions;
 mod types;
 

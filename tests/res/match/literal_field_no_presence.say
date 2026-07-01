@@ -1,0 +1,29 @@
+// A literal field value rejects an absent key on its own, so no HAS_MEMBER presence test precedes
+// it: the load and compare alone stand in for both presence and equality.
+say v = { k: 5 };
+match v {
+    { k: 5 } => 0,
+    _ => 0,
+}
+// expect asm:
+// 0: PUSH_CONSTANT "k"
+// 2: PUSH_CONSTANT 5
+// 4: DICT <1>
+// 6: STORE_LOCAL L0
+// 8: LOAD_LOCAL L0
+// 10: LOAD_LOCAL L1
+// 12: GET_INDEX_OR_NULL "k"
+// 14: PUSH_CONSTANT 5
+// 16: JUMP_IF_NEQ <22>
+// 19: JUMP <25>
+// 22: JUMP <31>
+// 25: PUSH_CONSTANT 0
+// 27: POP
+// 28: JUMP <37>
+// 31: PUSH_CONSTANT 0
+// 33: POP
+// 34: JUMP <37>
+// 37: POP
+// 38: POP
+// 39: PUSH_NULL
+// 40: RETURN

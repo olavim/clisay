@@ -1,0 +1,33 @@
+// Guards run after a matcher matches; arms are first-match-wins; no match is a no-op.
+type Point { pub x; pub y; init(a, b) { this.x = a; this.y = b; } }
+
+fn classify(p) {
+    match p {
+        is Point { x, y } if x == y => print("diagonal"),
+        is Point { x, y } => { print("point"); print(x); },
+        _ => print("other"),
+    }
+}
+
+classify(Point(5, 5)); // expect: diagonal
+classify(Point(1, 2)); // expect: point
+// expect: 1
+classify(99); // expect: other
+
+fn first(n) {
+    match n {
+        1 => print("one"),
+        1 => print("never"),
+        _ => print("rest"),
+    }
+}
+first(1); // expect: one
+first(2); // expect: rest
+
+fn maybe(n) {
+    match n {
+        1 => print("a"),
+    }
+    print("done");
+}
+maybe(2); // expect: done

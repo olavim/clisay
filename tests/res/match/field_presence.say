@@ -1,0 +1,30 @@
+// Dropping the redundant presence test must keep an absent key from matching. A `null` value and a
+// wildcard value still require the key present; a literal value rejects an absent key on its own.
+fn nullField(v) {
+    match v {
+        { k: null } => print("is-null"),
+        _ => print("no"),
+    }
+}
+nullField({ k: null }); // expect: is-null
+nullField({ j: 1 }); // expect: no
+nullField({ k: 5 }); // expect: no
+
+fn literalField(v) {
+    match v {
+        { k: 5 } => print("five"),
+        _ => print("other"),
+    }
+}
+literalField({ k: 5 }); // expect: five
+literalField({ j: 1 }); // expect: other
+literalField(7); // expect: other
+
+fn wildField(v) {
+    match v {
+        { k: _ } => print("present"),
+        _ => print("absent"),
+    }
+}
+wildField({ k: 0 }); // expect: present
+wildField({ j: 9 }); // expect: absent
