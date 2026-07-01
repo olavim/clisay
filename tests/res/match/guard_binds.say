@@ -1,0 +1,13 @@
+// A binding `~` in a guard publishes its binders to the arm body; a non-matching guard falls through.
+fn classify(v) {
+    match v {
+        { payload } if payload ~ { dx, dy } => { print(dx); print(dy); },
+        { payload } => print("no-coords"),
+        _ => print("other"),
+    }
+}
+
+classify({ payload: { dx: 1, dy: 2 } }); // expect: 1
+// expect: 2
+classify({ payload: 9 }); // expect: no-coords
+classify(0); // expect: other

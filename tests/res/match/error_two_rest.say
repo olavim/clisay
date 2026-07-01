@@ -1,0 +1,5 @@
+// An array matcher allows only one rest; a second is a parse error.
+say a = [1, 2, 3];
+if a ~ [.., ..] { // error: An array matcher allows at most one rest `..`
+    print("no");
+}

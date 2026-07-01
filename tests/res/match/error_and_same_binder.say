@@ -1,0 +1,5 @@
+// An and-matcher whose two sides bind the same name is a duplicate-binder error.
+say v = { x: 1 };
+if v ~ { x } & { x } { // error: binder 'x' is bound more than once in this matcher
+    print(x);
+}
