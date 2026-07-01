@@ -75,8 +75,7 @@ pub enum HirExpr {
     Match(HirId<HirExpr>, Box<HirMatcher>),
 }
 
-/// A lowered matcher: it tests a value and binds sub-values out into names. The bindingless
-/// subset mirrors `HasSpec`. The binder kinds are layered on top of that structure.
+/// A lowered matcher: it tests a value and binds sub-values out into names.
 pub enum HirMatcher {
     /// `_`: matches anything, binds nothing.
     Wildcard,

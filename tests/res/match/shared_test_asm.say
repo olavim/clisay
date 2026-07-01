@@ -1,0 +1,67 @@
+// The decision tree emits each shared presence test once, not once per arm.
+say obj = { a: 1, b: 2, c: 3 };
+match obj {
+    { a, b, c } => 0,
+    { a, b } => 0,
+    { a } => 0,
+}
+// expect asm:
+// 0: PUSH_CONSTANT "a"
+// 2: PUSH_CONSTANT 1
+// 4: PUSH_CONSTANT "b"
+// 6: PUSH_CONSTANT 2
+// 8: PUSH_CONSTANT "c"
+// 10: PUSH_CONSTANT 3
+// 12: DICT <3>
+// 14: STORE_LOCAL L0
+// 16: LOAD_LOCAL L0
+// 18: PUSH_NULL
+// 19: PUSH_NULL
+// 20: PUSH_NULL
+// 21: LOAD_LOCAL L1
+// 23: HAS_MEMBER "a"
+// 25: JUMP_IF_FALSE <87>
+// 28: LOAD_LOCAL L1
+// 30: HAS_MEMBER "b"
+// 32: JUMP_IF_FALSE <78>
+// 35: LOAD_LOCAL L1
+// 37: HAS_MEMBER "c"
+// 39: JUMP_IF_FALSE <63>
+// 42: LOAD_LOCAL L1
+// 44: GET_INDEX_OR_NULL "a"
+// 46: STORE_LOCAL_POP L2
+// 48: LOAD_LOCAL L1
+// 50: GET_INDEX_OR_NULL "b"
+// 52: STORE_LOCAL_POP L3
+// 54: LOAD_LOCAL L1
+// 56: GET_INDEX_OR_NULL "c"
+// 58: STORE_LOCAL_POP L4
+// 60: JUMP <90>
+// 63: LOAD_LOCAL L1
+// 65: GET_INDEX_OR_NULL "a"
+// 67: STORE_LOCAL_POP L2
+// 69: LOAD_LOCAL L1
+// 71: GET_INDEX_OR_NULL "b"
+// 73: STORE_LOCAL_POP L3
+// 75: JUMP <96>
+// 78: LOAD_LOCAL L1
+// 80: GET_INDEX_OR_NULL "a"
+// 82: STORE_LOCAL_POP L2
+// 84: JUMP <102>
+// 87: JUMP <108>
+// 90: PUSH_CONSTANT 0
+// 92: POP
+// 93: JUMP <108>
+// 96: PUSH_CONSTANT 0
+// 98: POP
+// 99: JUMP <108>
+// 102: PUSH_CONSTANT 0
+// 104: POP
+// 105: JUMP <108>
+// 108: POP
+// 109: POP
+// 110: POP
+// 111: POP
+// 112: POP
+// 113: PUSH_NULL
+// 114: RETURN

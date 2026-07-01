@@ -127,6 +127,18 @@ pub struct Bindings {
     construct_fields: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
     /// Binding `match` nodes => the local slot of each binder.
     match_binders: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
+    /// `match` statements => their scrutinee temp and per-arm binder slots.
+    match_info: FnvHashMap<HirId<HirStmt>, MatchInfo>,
+}
+
+/// The slot layout codegen needs for a `match` statement. The scrutinee lives in `scrut_slot`
+/// for the whole match. `arm_binders` gives each arm's binder name-to-slot, reusing the same
+/// slot block across arms since only one arm runs.
+pub struct MatchInfo {
+    pub scrut_slot: u8,
+    pub arm_binders: Vec<Vec<(Symbol, u8)>>,
+    /// Slots reserved for the binder block, the max binder count over all arms.
+    pub binder_slots: u8,
 }
 
 impl Bindings {
@@ -164,6 +176,10 @@ impl Bindings {
 
     pub fn match_binders(&self, id: &HirId<HirExpr>) -> Option<&[u8]> {
         self.match_binders.get(id).map(Vec::as_slice)
+    }
+
+    pub fn match_info(&self, id: &HirId<HirStmt>) -> &MatchInfo {
+        &self.match_info[id]
     }
 }
 
@@ -258,6 +274,16 @@ impl<'a> Resolver<'a> {
         // Duplicate-name collisions across the whole namespace are caught earlier, in `middle::names`.
         self.locals.push(Local { name: Some(name), depth: self.scope_depth, is_captured: false });
 
+        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
+        Ok((self.locals.len() - 1) as u8 - local_offset)
+    }
+
+    /// Reserves an unnamed stack slot, returning its frame-relative index.
+    fn declare_temp(&mut self) -> Result<u8, anyhow::Error> {
+        if self.locals.len() >= u8::MAX as usize {
+            bail!("Too many variables in scope");
+        }
+        self.locals.push(Local { name: None, depth: self.scope_depth, is_captured: false });
         let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
         Ok((self.locals.len() - 1) as u8 - local_offset)
     }
@@ -431,19 +457,52 @@ impl<'a> Resolver<'a> {
             HirStmt::Block(body) => self.expression(body)?,
             HirStmt::Match(scrutinee, arms) => {
                 self.expression(scrutinee)?;
+                self.enter_scope();
+
+                // Store the scrutinee in a temp so each arm can access it without re-evaluating.
+                // If the scrutinee is a local, we could reuse its slot, but that would require
+                // complex analysis across all arms to ensure it's not e.g. mutated or shadowed.
+                let scrut_slot = self.declare_temp()?;
+
+                // One binder block sized to the widest arm. Each arm renames the block's slots to
+                // its own binder names while its body resolves, then clears them for the next arm.
+                let binder_slots = arms.iter().map(|a| a.matcher.binders().len()).max().unwrap_or(0);
+                let block_base = self.locals.len();
+                let mut block = Vec::with_capacity(binder_slots);
+                for _ in 0..binder_slots {
+                    block.push(self.declare_temp()?);
+                }
+
+                let mut arm_binders = Vec::with_capacity(arms.len());
                 for arm in arms {
-                    self.enter_scope();
-                    for name in arm.matcher.binders() {
-                        self.declare_local(name)?;
+                    // Set the block's slots to the arm's binder names, so the arm body can resolve them.
+                    let names = arm.matcher.binders();
+                    let mut slots = Vec::with_capacity(names.len());
+                    for (i, name) in names.iter().enumerate() {
+                        self.locals[block_base + i].name = Some(*name);
+                        slots.push((*name, block[i]));
                     }
+
                     if let Some(guard) = &arm.guard {
                         self.resolve_condition(guard, true)?;
                     }
 
-                    let HirExpr::Block(stmts) = self.hir.get(&arm.body) else { unreachable!("an arm body is a block") };
-                    self.statement_body(stmts)?;
-                    self.exit_scope(&arm.body);
+                    self.expression(&arm.body)?;
+
+                    // Clear the block's slots for the next arm.
+                    for i in 0..names.len() {
+                        self.locals[block_base + i].name = None;
+                    }
+
+                    arm_binders.push(slots);
                 }
+
+                self.bindings.match_info.insert(*stmt_id, MatchInfo {
+                    scrut_slot,
+                    arm_binders,
+                    binder_slots: binder_slots as u8,
+                });
+                self.exit_scope(stmt_id);
             },
         };
         Ok(())

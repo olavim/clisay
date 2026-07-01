@@ -370,7 +370,6 @@ impl Vm {
         loop {
             let op = read_byte!();
             match op {
-                // ---- inlined hot ops (operate on the register-resident `ip`) ----
                 opcode::LOAD_LOCAL => {
                     let idx = read_byte!() as usize;
                     let value = unsafe { *(*self.frames.top()).stack_start.add(idx) };
@@ -507,7 +506,6 @@ impl Vm {
                         ip = self.ip;
                     }
                 },
-                // Fused value-producing `const - local` (const is numeric by emission).
                 opcode::SUB_CONST_LOCAL => {
                     let a_idx = read_byte!() as usize;
                     let b_idx = read_byte!() as usize;
@@ -527,7 +525,6 @@ impl Vm {
                 opcode::MULTIPLY => num_binop!(*, op_multiply),
                 opcode::DIVIDE => num_binop!(/, op_divide),
 
-                // ---- control flow / cold ops: sync, delegate, reload ----
                 opcode::CALL => {
                     let arg_count = read_byte!() as usize;
                     let value = self.stack.peek(arg_count);
@@ -554,7 +551,7 @@ impl Vm {
                             }
                         }
                     }
-                    // Slow path: native fns, bound methods, types, arity errors.
+                    
                     self.ip = ip;
                     self.call(arg_count, value)?;
                     ip = self.ip;

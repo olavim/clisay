@@ -1,0 +1,45 @@
+// A shape key and a surface member with the same name are one presence test, so the `{ x }` binder
+// and `has T` share the `x` check.
+type T { pub x; init(a) { this.x = a; } }
+say t = T(1);
+match t {
+    { x } => 0,
+    has T => 0,
+}
+// expect asm:
+// 0: PUSH_NULL
+// 1: JUMP <13>
+// 4: LOAD_LOCAL L1
+// 6: LOAD_LOCAL L0
+// 8: SET_FIELD_POP <0>
+// 10: LOAD_LOCAL L0
+// 12: RETURN
+// 13: PUSH_TYPE <type T>
+// 15: STORE_LOCAL L0
+// 17: POP
+// 18: LOAD_LOCAL L0
+// 20: PUSH_CONSTANT 1
+// 22: CALL <1>
+// 24: STORE_LOCAL L1
+// 26: LOAD_LOCAL L1
+// 28: PUSH_NULL
+// 29: LOAD_LOCAL L2
+// 31: HAS_MEMBER "x"
+// 33: JUMP_IF_FALSE <45>
+// 36: LOAD_LOCAL L2
+// 38: GET_INDEX_OR_NULL "x"
+// 40: STORE_LOCAL_POP L3
+// 42: JUMP <48>
+// 45: JUMP <60>
+// 48: PUSH_CONSTANT 0
+// 50: POP
+// 51: JUMP <60>
+// 54: PUSH_CONSTANT 0
+// 56: POP
+// 57: JUMP <60>
+// 60: POP
+// 61: POP
+// 62: POP
+// 63: POP
+// 64: PUSH_NULL
+// 65: RETURN
