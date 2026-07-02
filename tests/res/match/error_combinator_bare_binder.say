@@ -1,0 +1,4 @@
+// A bare name is not a valid operand of `&`/`|`.
+type A { init() { } }
+say v = A();
+if v ~ has A & other { print("no"); } // error: a bare name cannot be an operand of `&` or `|`; write `is other` or `has other` to test its type, or `other @ ...` to bind it

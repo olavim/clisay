@@ -1,0 +1,12 @@
+type P { pub x; init(a) { this.x = a; } }
+say p = P(5);
+
+if p is P { print("is-body"); } // expect: is-body
+
+if p is P { x: 5 } { print("is-shape-then-body"); } // expect: is-shape-then-body
+
+if p has { x: 5 } { print("has-body"); } // expect: has-body
+
+say mut n = 0;
+while n < 1 && p is P { n = n + 1; }
+print(n); // expect: 1

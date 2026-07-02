@@ -1,0 +1,6 @@
+// `is` needs a type name.
+say x = 1;
+if x ~ is { a } { print("no"); } // error: `is` needs a type name. Did you mean `is T { ... }`? For a structural test, write `{ ... }` without `is`.
+// @split
+say x = 1;
+if x is { a: 1 } { print("no"); } // error: `is` needs a type name. Did you mean `is T { ... }`? For a structural test, write `{ ... }` without `is`.

@@ -150,6 +150,7 @@ opcodes! {
     GreaterThanEqual => GREATER_THAN_EQUAL,
     Is => IS(Const),
     HasMember => HAS_MEMBER(Const),
+    IsShaped => IS_SHAPED,
     ArrayLen => ARRAY_LEN,
     ArrayMiddle => ARRAY_MIDDLE(Byte, Byte),
 }

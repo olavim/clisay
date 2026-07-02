@@ -333,6 +333,13 @@ impl Vm {
         self.stack.push(Value::from(present));
     }
 
+    pub(super) fn op_is_shaped(&mut self) {
+        let receiver = self.stack.pop();
+        let shaped = matches!(receiver.kind(),
+            ValueKind::Object(ObjectKind::Dict) | ValueKind::Object(ObjectKind::Instance));
+        self.stack.push(Value::from(shaped));
+    }
+
     pub(super) fn op_array_len(&mut self) {
         let receiver = self.stack.pop();
         let len = match receiver.kind() {

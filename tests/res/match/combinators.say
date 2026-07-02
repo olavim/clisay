@@ -1,0 +1,26 @@
+// Combinator precedence and mixing.
+type A { pub n; init(a) { this.n = a; } }
+type B { pub n; init(a) { this.n = a; } }
+
+fn viaAsOr(v?) {
+    if v ~ n @ 1 | 2 | 3 { print(n); } else { print("no"); }
+}
+viaAsOr(2); // expect: 2
+viaAsOr(9); // expect: no
+
+fn viaAsAnd(v?) {
+    if v ~ w @ is A & { n } { print(w.n); print(n); }
+}
+viaAsAnd(A(7)); // expect: 7
+// expect: 7
+
+fn mixAxes(v?) {
+    if v ~ is A { n } | has B { n } { print(n); } else { print("no"); }
+}
+mixAxes(A(1)); // expect: 1
+mixAxes(B(2)); // expect: 2
+
+fn nameWhole(v?) {
+    if v ~ whole @ has A { print(whole.n); }
+}
+nameWhole(A(5)); // expect: 5

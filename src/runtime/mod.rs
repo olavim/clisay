@@ -606,6 +606,7 @@ impl Vm {
                 opcode::GREATER_THAN_EQUAL => delegate!(self.op_greater_than_equal()?),
                 opcode::IS => delegate!(self.op_is()),
                 opcode::HAS_MEMBER => delegate!(self.op_has_member()),
+                opcode::IS_SHAPED => delegate!(self.op_is_shaped()),
                 opcode::ARRAY_LEN => delegate!(self.op_array_len()),
                 opcode::ARRAY_MIDDLE => delegate!(self.op_array_middle()),
                 opcode::DUP => self.op_dup(),

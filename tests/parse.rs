@@ -221,6 +221,39 @@ fn matcher_rejected_forms() {
     assert!(parse_matcher("is { x }").is_err());
     assert!(parse_matcher("{ a: 1, a: 2 }").is_err());
     assert!(parse_matcher("[.., ..]").is_err());
+    // A bare name as an `&`/`|` operand binds the whole value and is rejected.
+    assert!(parse_matcher("has A & b").is_err());
+    assert!(parse_matcher("has A | b").is_err());
+}
+
+#[test]
+fn matcher_negative_literal() {
+    let (ast, m) = matcher("-42");
+    let Matcher::Literal(MatchScalar::Number(n)) = ast.get(&m) else { panic!("not a number literal") };
+    assert_eq!(*n, -42.0);
+}
+
+#[test]
+fn negated_literal_folds_to_a_constant() {
+    let ast = parse("say a = -5;");
+    let Expr::Literal(Literal::Number(n)) = ast.get(&say_value(&ast)) else { panic!("negation of a literal did not fold") };
+    assert_eq!(*n, -5.0);
+
+    // A negated non-literal stays a runtime unary.
+    let ast = parse("say b = -x;");
+    assert!(matches!(ast.get(&say_value(&ast)), Expr::Unary(Operator::Negate, _)));
+}
+
+#[test]
+fn matcher_typed_shape_lookahead() {
+    // A `{ key: ... }` or shorthand shape binds to the type; a statement-like `{` does not.
+    let (ast, m) = matcher("is P { x, y }");
+    let Matcher::Type { shape, .. } = ast.get(&m) else { panic!("not a type matcher") };
+    assert!(shape.is_some());
+
+    let (ast, m) = matcher("is P");
+    let Matcher::Type { shape, .. } = ast.get(&m) else { panic!("not a type matcher") };
+    assert!(shape.is_none());
 }
 
 #[test]

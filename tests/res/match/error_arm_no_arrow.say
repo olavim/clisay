@@ -1,0 +1,6 @@
+// A match arm must separate its matcher from its body with `=>`.
+say x = 1;
+match x {
+    1 print("no"), // error: Unexpected token: Expected '=>' but found 'id(print)'
+    _ => print("other"),
+}

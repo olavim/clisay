@@ -106,7 +106,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Operator::Is => {
                 let name_token = self.tokens.peek(0).clone();
                 if name_token.kind != TokenType::Identifier {
-                    parse_error!(self, &pos, "`is` needs a type name");
+                    return Err(self.is_needs_type_error(&pos));
                 }
                 let name = self.parse_identifier()?;
                 let name = self.ast.intern(&name);
@@ -124,6 +124,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 if let Some(Operator::Match) = Operator::peek_infix(self.tokens, 0) {
                     parse_error!(self, &pos, "`~` does not chain. Combine tests with `&` and `|`, or join tests with `&&` and `||`");
                 }
+                self.validate_match_operator_operand(&matcher)?;
                 Expr::Match(expr, matcher)
             },
             Operator::Arrow => {
@@ -277,7 +278,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             },
             _ => {
                 let right = self.parse_expr_precedence(op.prefix_precedence().unwrap())?;
-                Expr::Unary(op, right)
+                match (&op, self.ast.get(&right)) {
+                    (Operator::Negate, Expr::Literal(Literal::Number(n))) => Expr::Literal(Literal::Number(-*n)),
+                    _ => Expr::Unary(op, right),
+                }
             }
         };
         Ok(self.ast.add_expr(kind, pos))

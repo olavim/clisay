@@ -1,0 +1,27 @@
+// An empty shape compiles to a single IS_SHAPED test.
+say v = { a: 1 };
+match v {
+    {} => 0,
+    _ => 0,
+}
+// expect asm:
+// 0: PUSH_CONSTANT "a"
+// 2: PUSH_CONSTANT 1
+// 4: DICT <1>
+// 6: STORE_LOCAL L0
+// 8: LOAD_LOCAL L0
+// 10: LOAD_LOCAL L1
+// 12: IS_SHAPED
+// 13: JUMP_IF_FALSE <19>
+// 16: JUMP <22>
+// 19: JUMP <28>
+// 22: PUSH_CONSTANT 0
+// 24: POP
+// 25: JUMP <34>
+// 28: PUSH_CONSTANT 0
+// 30: POP
+// 31: JUMP <34>
+// 34: POP
+// 35: POP
+// 36: PUSH_NULL
+// 37: RETURN
