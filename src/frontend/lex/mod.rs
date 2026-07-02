@@ -18,15 +18,28 @@ static REGEX_COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\/\/[^\n\r
 static REGEX_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\r\n|\r|\n)").unwrap());
 static REGEX_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\S\r\n]+").unwrap());
 
+pub struct SourceFile {
+    pub name: String,
+    pub content: Rc<str>
+}
+
 #[derive(Clone)]
 pub struct SourcePosition {
-    pub file: Rc<str>,
+    pub source: Rc<SourceFile>,
+    pub start: usize,
+    pub end: usize,
     pub line: usize
+}
+
+impl SourcePosition {
+    pub fn snippet(&self) -> &str {
+        return &self.source.content[self.start..self.end];
+    }
 }
 
 impl fmt::Display for SourcePosition {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        return write!(f, "{}:{}", self.file, self.line);
+        return write!(f, "{}:{}", self.source.name, self.line);
     }
 }
 
@@ -83,13 +96,14 @@ pub fn tokenize(file_name: String, input: String) -> Result<Vec<Token>, anyhow::
     let mut tokens: Vec<Token> = Vec::new();
     let mut input_index = 0;
     let mut line = 1;
-    let file: Rc<str> = Rc::from(file_name);
+    let source = Rc::new(SourceFile { name: file_name, content: Rc::from(input.as_str()) });
 
     while tokens.last().map_or(true, |t| t.kind != TokenType::EOF) {
-        let pos = SourcePosition { file: file.clone(), line };
-        let mut token = next_token(&input, input_index, &pos)?;
+        let mut pos = SourcePosition { source: source.clone(), start: input_index, end: input_index, line };
+        let mut token = next_token(&source.content, input_index, &pos)?;
+        pos.end = input_index + token.lexeme.len();
+        input_index = pos.end;
         token.pos = pos;
-        input_index += token.lexeme.len();
 
         if token.kind == TokenType::Newline {
             line += 1;
