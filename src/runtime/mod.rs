@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 use crate::Output;
 use crate::core::objects::{ObjBoundMethod, ObjInstance};
 use crate::core::value::ValueKind;
-use crate::frontend::lex::SourcePosition;
+use crate::frontend::lex::{Diagnostic, SourcePosition};
 
 use crate::core::native::array::NativeArray;
 use crate::core::native::dict::NativeDict;
@@ -67,9 +67,9 @@ pub struct TryFrame {
     stack_start: *mut Value
 }
 
-/// A method invoke (`INVOKE`) whose member resolved through a getter.
-/// The arguments are parked here until the getter frame returns its value,
-/// at which point the value is called.
+/// A method invoke whose member resolved through a getter. The arguments
+/// are parked here until the getter frame returns its value, at which point
+/// the value is called.
 struct PendingInvoke {
     args: SmallVec<[Value; 4]>,
     depth: usize
@@ -218,22 +218,29 @@ impl Vm {
         Ok(vm.interpret()?)
     }
 
-    fn stringify_frame(&self, frame: &CallFrame) -> String {
+    fn stringify_frame(&self, frame: &CallFrame, ip: *const OpCode) -> String {
         let name = unsafe { &(*(*frame.closure).name).value };
-        let pos = unsafe { 
-            let idx = frame.return_ip.offset_from(self.chunk.code.as_ptr());
-            &self.chunk.code_pos[idx as usize]
+        let pos = unsafe {
+            let idx = ip.offset_from(self.chunk.code.as_ptr()) as usize - 1;
+            &self.chunk.code_pos[idx]
         };
         format!("\tat {} ({})", name, pos)
     }
 
     fn error(&self, message: impl Into<String>) -> Result<(), anyhow::Error> {
-        let trace = self.frames.iter().skip(1).rev()
-            .map(|frame| self.stringify_frame(&frame))
-            .collect::<Vec<String>>().join("\n");
+        // Each frame is paused on one instruction: the current `ip` for the top frame, and each
+        // caller's saved `return_ip` for the frames below it. The base frame has no closure.
+        let frames: Vec<CallFrame> = self.frames.iter().collect();
+        let mut ip = self.ip;
+        let mut lines = Vec::new();
+        for i in (1..frames.len()).rev() {
+            lines.push(self.stringify_frame(&frames[i], ip));
+            ip = frames[i].return_ip;
+        }
+        let trace = lines.join("\n");
 
         let pos = self.get_source_position();
-        bail!(format!("{}\nat {}\n{}", message.into(), pos, trace))
+        bail!("{}\n{}", Diagnostic::new(message, pos.clone()), trace)
     }
 
     fn intern(&mut self, name: impl Into<String>) -> *mut ObjString {

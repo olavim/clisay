@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use anyhow::anyhow;
 
 use crate::ast::{MatchArm, Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, Operator, Param, ReturnShape, Stmt, Symbol};
-use crate::frontend::lex::{ContextualKeyword, SourcePosition, TokenStream, TokenType};
+use crate::frontend::lex::{ContextualKeyword, Diagnostic, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
     ($self:ident, $pos:expr, $($arg:tt)*) => { return Err($self.error(format!($($arg)*), $pos)) };
@@ -93,7 +93,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn error(&self, message: impl Into<String>, pos: &SourcePosition) -> anyhow::Error {
-        anyhow!(format!("{}\nat {}\n{}", message.into(), pos, pos.render_caret()))
+        anyhow!("{}", Diagnostic::new(message, pos.clone()))
     }
 
     /// Consumes a leading `mut` modifier if present, reporting whether it was there.

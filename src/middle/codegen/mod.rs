@@ -1,6 +1,8 @@
 use anyhow::anyhow;
 use fnv::FnvHashMap;
 
+use crate::frontend::lex::Diagnostic;
+
 use crate::core::gc::Gc;
 use crate::core::objects::ObjType;
 use crate::core::objects::ObjString;
@@ -70,8 +72,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &HirId<T>) -> anyhow::Error {
-        let pos = self.hir.pos(node_id);
-        anyhow!("{}\n\tat {}", msg.into(), pos)
+        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node_id).clone()))
     }
 
     fn finish(mut self) -> Ir {

@@ -129,7 +129,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = self.tokens.peek(0).pos.clone();
         self.tokens.expect(TokenType::LeftBrace)?;
         let stmts = self.parse_stmts()?;
-        self.tokens.expect(TokenType::RightBrace)?;
+        self.tokens.expect_close(TokenType::RightBrace, &pos)?;
         Ok(self.node_expr(Expr::Block(stmts), pos))
     }
 
@@ -154,7 +154,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses statements up to (but not consuming) the closing `}`.
     pub(super) fn parse_stmts(&mut self) -> Result<Vec<AstId<Stmt>>, anyhow::Error> {
         let mut stmts: Vec<AstId<Stmt>> = Vec::new();
-        while !self.tokens.matches(TokenType::RightBrace) {
+        while !self.tokens.matches(TokenType::RightBrace) && self.tokens.has_next() {
             stmts.push(self.parse_stmt()?);
         }
         Ok(stmts)

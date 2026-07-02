@@ -34,10 +34,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let name = self.init_name();
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
-        self.tokens.expect(TokenType::LeftBrace)?;
+        let open = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
 
         let stmts = self.parse_stmts()?;
-        self.tokens.expect(TokenType::RightBrace)?;
+        self.tokens.expect_close(TokenType::RightBrace, &open)?;
 
         let body = self.node_expr(Expr::Block(stmts), pos.clone());
         // An `init` takes no return marker. It produces no value.
