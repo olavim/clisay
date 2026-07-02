@@ -1,0 +1,17 @@
+fn b()! {
+    return 1 + true;
+}
+fn a()! {
+    return b();
+}
+a();
+// error(full):
+// error: Operator '+' cannot be applied to operands number and boolean
+//  --> runtime_trace.say:2:16
+//   |
+// 1 | fn b()! {
+// 2 |     return 1 + true;
+//   |                ^^^^
+// 3 | }
+// 	at b (runtime_trace.say:2)
+// 	at a (runtime_trace.say:5)
