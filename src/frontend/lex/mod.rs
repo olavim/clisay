@@ -39,6 +39,19 @@ impl SourcePosition {
     pub fn to(&self, end: &SourcePosition) -> SourcePosition {
         return SourcePosition { source: self.source.clone(), start: self.start, end: end.end, line: self.line };
     }
+
+    pub fn render_caret(&self) -> String {
+        let content = &self.source.content;
+        let line_start = content[..self.start].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = content[self.start..].find('\n').map_or(content.len(), |i| self.start + i);
+        let line = &content[line_start..line_end];
+
+        // Keep the run on this one line. Always show at least one caret.
+        let caret_end = self.end.min(line_end);
+        let pad = " ".repeat(self.start - line_start);
+        let carets = "^".repeat(caret_end.saturating_sub(self.start).max(1));
+        return format!("{line}\n{pad}{carets}");
+    }
 }
 
 impl fmt::Display for SourcePosition {

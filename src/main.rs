@@ -12,5 +12,8 @@ fn main() {
 
     let file = args[1].as_str();
     let src = std::fs::read_to_string(file).unwrap();
-    _ = run(file, &src);
+    if let Err(err) = run(file, &src) {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
 }

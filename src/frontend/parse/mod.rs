@@ -93,7 +93,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn error(&self, message: impl Into<String>, pos: &SourcePosition) -> anyhow::Error {
-        anyhow!(format!("{}\nat {}", message.into(), pos))
+        anyhow!(format!("{}\nat {}\n{}", message.into(), pos, pos.render_caret()))
     }
 
     /// Consumes a leading `mut` modifier if present, reporting whether it was there.
