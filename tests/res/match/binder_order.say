@@ -1,0 +1,19 @@
+// Binder slots are keyed by name, not position.
+fn orMatcher(v?) {
+    match v {
+        { a, b } | { b, a } => { print(a); print(b); },
+        _ => print("no"),
+    }
+}
+orMatcher({ a: 1, b: 2 }); // expect: 1
+// expect: 2
+orMatcher({ b: 4, a: 3 }); // expect: 3
+// expect: 4
+
+fn orCondition(v?) {
+    if v ~ { x: p, y: q } || v ~ { y: q, x: p } { print(p); print(q); }
+}
+orCondition({ x: 5, y: 6 }); // expect: 5
+// expect: 6
+orCondition({ y: 6, x: 5 }); // expect: 5
+// expect: 6

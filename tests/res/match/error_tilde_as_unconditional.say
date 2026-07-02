@@ -1,0 +1,3 @@
+// An as-binding whose inner always matches also binds unconditionally.
+say x = 1;
+if x ~ whole @ _ { print(whole); } // error: `~` binding must be fallible; `whole @ _` always matches.

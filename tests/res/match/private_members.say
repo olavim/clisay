@@ -1,0 +1,14 @@
+// Matching sees only the public surface.
+type T {
+    secret;
+    pub open;
+    init(a, b) { this.secret = a; this.open = b; }
+    pub fn peek() {
+        if this ~ { secret } { print("sees-secret"); } else { print("no-secret"); }
+        if this ~ { open } { print("sees-open"); } else { print("no-open"); }
+    }
+}
+say t = T(1, 2);
+t.peek(); // expect: no-secret
+// expect: sees-open
+if t ~ { secret } { print("ext-secret"); } else { print("ext-no-secret"); } // expect: ext-no-secret

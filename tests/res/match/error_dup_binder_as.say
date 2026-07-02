@@ -1,0 +1,3 @@
+// An as-matcher that reuses its name inside its sub-matcher binds it twice.
+say d = { p: 1 };
+if d ~ p @ { p } { print("no"); } // error: binder 'p' is bound more than once in this matcher

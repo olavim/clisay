@@ -50,6 +50,8 @@ enum ValueTest {
     Equal(Scalar),
     Nominal(Symbol),
     ArrayLen { min: usize, exact: bool },
+    /// The value is a dict or instance, the only kinds a shape matches.
+    Shaped,
 }
 
 /// A single step in matching one clause: test a path, bind a path, or run a nested matcher at a path.
@@ -262,6 +264,7 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::PushConstant(idx), node);
                 self.emit(if *exact { Inst::Equal } else { Inst::GreaterThanEqual }, node);
             },
+            ValueTest::Shaped => self.emit(Inst::IsShaped, node),
         }
         Ok(())
     }
@@ -280,6 +283,7 @@ impl<'a> Compiler<'a> {
                 alts
             },
             HirMatcher::Type { nominal, name, shape } => self.lower_type(*nominal, *name, shape, path, binders, node)?,
+            HirMatcher::Shape(fields) if fields.is_empty() => vec![vec![MatchStep::Test(path.to_vec(), ValueTest::Shaped)]],
             HirMatcher::Shape(fields) => {
                 let mut groups = Vec::with_capacity(fields.len());
                 for field in fields {
@@ -410,6 +414,11 @@ impl<'a> Compiler<'a> {
                 self.compile_matcher(inner, Some(binders), node)
             },
             HirMatcher::Type { nominal, name, shape } => self.compile_type(*nominal, *name, shape, binders, node),
+            // An empty shape still requires a dict or instance, so it is not a vacuous match.
+            HirMatcher::Shape(fields) if fields.is_empty() => {
+                self.emit(Inst::IsShaped, node);
+                Ok(())
+            },
             HirMatcher::Shape(fields) => self.compile_test_and(fields.len(), node, &|c, i, n| {
                 c.compile_field(&fields[i].key, &fields[i].value, binders, n)
             }),
@@ -740,14 +749,14 @@ fn tests_conflict(selected: &ValueTest, other: &ValueTest) -> bool {
 
 /// Whether a matcher fails against null. A shape field whose value rejects null needs no separate
 /// presence test: an absent key loads as null, which the value test already rejects. Wildcards,
-/// binders, a `null` literal, and an empty shape all accept null, so those keep their presence test.
+/// binders, and a `null` literal accept null, so those keep their presence test.
 fn matcher_rejects_null(matcher: &HirMatcher) -> bool {
     match matcher {
         HirMatcher::Wildcard | HirMatcher::Binder(_) => false,
         HirMatcher::Literal(HirLiteral::Null) => false,
         HirMatcher::Literal(_) => true,
         HirMatcher::Type { .. } | HirMatcher::Array(_) => true,
-        HirMatcher::Shape(fields) => !fields.is_empty(),
+        HirMatcher::Shape(_) => true,
         HirMatcher::As(_, inner) => matcher_rejects_null(inner),
         HirMatcher::And(parts) => parts.iter().any(matcher_rejects_null),
         HirMatcher::Or(alternatives) => alternatives.iter().all(matcher_rejects_null),

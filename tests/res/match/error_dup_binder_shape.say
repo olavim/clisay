@@ -1,0 +1,3 @@
+// Two shape fields cannot bind the same name.
+say d = { a: 1, b: 2 };
+if d ~ { a: x, b: x } { print(x); } // error: binder 'x' is bound more than once in this matcher

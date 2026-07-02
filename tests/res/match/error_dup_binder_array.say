@@ -1,0 +1,3 @@
+// Each name a matcher binds must be distinct.
+say a = [1, 2];
+if a ~ [x, x] { print(x); } // error: binder 'x' is bound more than once in this matcher

@@ -73,7 +73,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Add | Subtract | Multiply | Divide | Negate | Not
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
         | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
-        | ArrayLen => {}
+        | IsShaped | ArrayLen => {}
 
         Call(b)
         | Array(b)
