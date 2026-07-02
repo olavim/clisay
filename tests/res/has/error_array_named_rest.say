@@ -1,0 +1,2 @@
+say a = [1, 2, 3];
+a has [1, ..rest]; // error: a `has` array cannot bind a rest; `..name` is only for `match`. Use a nameless `..` to skip the middle

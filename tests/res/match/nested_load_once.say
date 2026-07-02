@@ -1,0 +1,49 @@
+// A nested field value that reads itself more than once is loaded once and reused, not re-walked:
+// GET_INDEX_OR_NULL "a" appears a single time (offset 22), then DUP feeds the b and c tests.
+say v = { a: { b: 1, c: 2 } };
+match v {
+    { a: { b, c } } => 0,
+    _ => 0,
+}
+// expect asm:
+// 0: PUSH_CONSTANT "a"
+// 2: PUSH_CONSTANT "b"
+// 4: PUSH_CONSTANT 1
+// 6: PUSH_CONSTANT "c"
+// 8: PUSH_CONSTANT 2
+// 10: DICT <2>
+// 12: DICT <1>
+// 14: STORE_LOCAL L0
+// 16: LOAD_LOCAL L0
+// 18: PUSH_NULL
+// 19: PUSH_NULL
+// 20: LOAD_LOCAL L1
+// 22: GET_INDEX_OR_NULL "a"
+// 24: DUP
+// 25: DUP
+// 26: GET_INDEX_OR_NULL "b"
+// 28: STORE_LOCAL_POP L2
+// 30: HAS_MEMBER "b"
+// 32: JUMP_IF_FALSE <45>
+// 35: DUP
+// 36: GET_INDEX_OR_NULL "c"
+// 38: STORE_LOCAL_POP L3
+// 40: HAS_MEMBER "c"
+// 42: JUMP <47>
+// 45: POP
+// 46: PUSH_FALSE
+// 47: JUMP_IF_FALSE <53>
+// 50: JUMP <56>
+// 53: JUMP <62>
+// 56: PUSH_CONSTANT 0
+// 58: POP
+// 59: JUMP <68>
+// 62: PUSH_CONSTANT 0
+// 64: POP
+// 65: JUMP <68>
+// 68: POP
+// 69: POP
+// 70: POP
+// 71: POP
+// 72: PUSH_NULL
+// 73: RETURN

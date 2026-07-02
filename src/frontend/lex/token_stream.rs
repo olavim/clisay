@@ -22,7 +22,7 @@ impl<'a> TokenStream<'a> {
         return self.tokens.get(self.pos + look_ahead).unwrap();
     }
 
-    pub fn match_next(&self, token_type: TokenType) -> bool {
+    pub fn matches(&self, token_type: TokenType) -> bool {
         return self.peek(0).kind == token_type;
     }
 
@@ -37,7 +37,7 @@ impl<'a> TokenStream<'a> {
     }
 
     pub fn next_if(&mut self, token_type: TokenType) -> Option<&'a Token> {
-        if self.peek(0).kind == token_type {
+        if self.matches(token_type) {
             return Some(self.next());
         }
 
@@ -59,5 +59,11 @@ impl<'a> TokenStream<'a> {
 
     pub fn advance(&mut self, count: usize) {
         self.pos += count;
+    }
+
+    /// Steps back one token, undoing the most recent `next`. Used to hand a just-consumed
+    /// keyword back to a sub-parser that expects to read it itself.
+    pub fn back(&mut self) {
+        self.pos = self.pos.saturating_sub(1);
     }
 }

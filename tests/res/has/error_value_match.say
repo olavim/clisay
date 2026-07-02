@@ -1,2 +1,2 @@
 say x = 1;
-x has { a: x + 1 }; // error: A `has` value must be a literal, a type name, or a nested shape
+x has { a: x + 1 }; // error: Unexpected token: Expected '}' but found '+'

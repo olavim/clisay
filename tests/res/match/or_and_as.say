@@ -1,0 +1,18 @@
+// or-matcher binding a shared name, and-matcher combining tests, as-matcher keeping the whole.
+say w = { right: 99 };
+if w ~ { left: v } | { right: v } {
+    print(v); // expect: 99
+}
+
+type Point { pub x; pub y; init(a, b) { this.x = a; this.y = b; } }
+
+say q = Point(1, 2);
+if q ~ is Point & { x } {
+    print(x); // expect: 1
+}
+
+say p = { x: 7 };
+if p ~ whole @ { x } {
+    print(x); // expect: 7
+    print(whole["x"]); // expect: 7
+}

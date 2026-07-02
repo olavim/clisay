@@ -7,17 +7,45 @@ fn kinds(src: &str) -> Vec<TokenType> {
 
 #[test]
 fn lexes_question_mark() {
-    // `?` is a single-char token; the multi-char `??`/`?.`/`?[` forms are assembled
-    // in the parser from adjacent tokens, like `&&` and `==`.
+    // A bare `?` is the nullable marker; the `??`/`?.`/`?[` forms are their own tokens.
     assert_eq!(kinds("?"), vec![TokenType::Question]);
-    assert_eq!(kinds("??"), vec![TokenType::Question, TokenType::Question]);
-    assert_eq!(kinds("?."), vec![TokenType::Question, TokenType::Dot]);
-    assert_eq!(kinds("?["), vec![TokenType::Question, TokenType::LeftBracket]);
+    assert_eq!(kinds("??"), vec![TokenType::QuestionQuestion]);
+    assert_eq!(kinds("?."), vec![TokenType::QuestionDot]);
+    assert_eq!(kinds("?["), vec![TokenType::QuestionBracket]);
 }
 
 #[test]
 fn lexes_exclamation() {
     assert_eq!(kinds("!"), vec![TokenType::Exclamation]);
+}
+
+#[test]
+fn lexes_less_than_against_negation() {
+    // With no `<-` token, `a<-b` lexes as a less-than against a negated operand.
+    assert_eq!(kinds("a<-b"), vec![TokenType::Identifier, TokenType::LessThan, TokenType::Minus, TokenType::Identifier]);
+    assert_eq!(kinds("a < -b"), vec![TokenType::Identifier, TokenType::LessThan, TokenType::Minus, TokenType::Identifier]);
+}
+
+#[test]
+fn lexes_rest_and_as_and_match() {
+    assert_eq!(kinds(".."), vec![TokenType::DotDot]);
+    assert_eq!(kinds("..rest"), vec![TokenType::DotDot, TokenType::Identifier]);
+    // A lone `.` stays member access, distinct from the `..` rest token.
+    assert_eq!(kinds("a.b"), vec![TokenType::Identifier, TokenType::Dot, TokenType::Identifier]);
+    assert_eq!(kinds("@"), vec![TokenType::At]);
+    assert_eq!(kinds("match"), vec![TokenType::Match]);
+}
+
+#[test]
+fn lexes_multi_char_operators() {
+    assert_eq!(kinds("<="), vec![TokenType::LessEqual]);
+    assert_eq!(kinds("&&"), vec![TokenType::AmpAmp]);
+    assert_eq!(kinds("=>"), vec![TokenType::FatArrow]);
+    assert_eq!(kinds(">>"), vec![TokenType::GreaterGreater]);
+    // Longest match wins: `<<=` is one token, not `<<` then `=`.
+    assert_eq!(kinds("<<="), vec![TokenType::LessLessEqual]);
+    // Spacing splits them: `< =` is two tokens, not `<=`.
+    assert_eq!(kinds("< ="), vec![TokenType::LessThan, TokenType::Equal]);
 }
 
 #[test]

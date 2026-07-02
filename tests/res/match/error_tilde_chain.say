@@ -1,0 +1,3 @@
+// The `~` operator does not chain; combine matchers with `&`/`|` or join tests with `&&`/`||`.
+say x = 1;
+if x ~ 1 ~ 2 { print("no"); } // error: `~` does not chain. Combine tests with `&` and `|`, or join tests with `&&` and `||`

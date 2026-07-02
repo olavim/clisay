@@ -1,0 +1,27 @@
+// Array shapes across sizes.
+fn shape(v?) {
+    match v {
+        [] => print("empty"),
+        [_, x, _] => print(x),
+        [..] => print("some-array"),
+        _ => print("not-array"),
+    }
+}
+shape([]); // expect: empty
+shape([1, 2, 3]); // expect: 2
+shape([9]); // expect: some-array
+shape({ a: 1 }); // expect: not-array
+shape(7); // expect: not-array
+
+fn nested(v?) {
+    if v ~ [[a], [b]] { print(a); print(b); } else { print("no"); }
+}
+nested([[1], [2]]); // expect: 1
+// expect: 2
+nested([1, 2]); // expect: no
+
+fn ends(v?) {
+    if v ~ [..init, last] { print(last); print(init.length()); }
+}
+ends([1, 2, 3]); // expect: 3
+// expect: 2

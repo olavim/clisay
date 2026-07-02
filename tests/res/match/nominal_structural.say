@@ -1,0 +1,19 @@
+// Nominal and structural tests mix per level: a nominal outer with a structural inner, and a
+// structural outer with a nominal inner.
+type Move { pub from; pub to; init(a, b) { this.from = a; this.to = b; } }
+trait Logger { pub fn log() { } }
+type Console with Logger { init() { } pub fn log() { print("logged"); } }
+
+fn handle(event) {
+    match event {
+        is Move { from: { x, y }, to } => { print(x); print(y); print(to); },
+        { handler: is Logger } => print("has logger"),
+        _ => print("none"),
+    }
+}
+
+handle(Move({ x: 1, y: 2 }, 9)); // expect: 1
+// expect: 2
+// expect: 9
+handle({ handler: Console() }); // expect: has logger
+handle(0); // expect: none

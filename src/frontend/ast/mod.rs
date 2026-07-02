@@ -10,8 +10,7 @@ pub use operator::Operator;
 
 use crate::frontend::lex::SourcePosition;
 
-/// An interned identifier, a cheap `Copy` identity. Resolved back to text via
-/// [`Ast::text`]. Identifiers are interned by the parser as nodes are built.
+/// An interned identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol(u32);
 
@@ -55,22 +54,15 @@ impl fmt::Display for Literal {
 pub enum Expr {
     /// A block body (function/method/lambda/program)
     Block(Vec<AstId<Stmt>>),
-
     /// A unary expression: Unary(operator, operand)
     Unary(Operator, AstId<Expr>),
-
     /// A binary expression: Binary(operator, left, right)
     Binary(Operator, AstId<Expr>, AstId<Expr>),
-
     /// A function call: Call(callee, arguments)
     Call(AstId<Expr>, Vec<AstId<Expr>>),
-
     /// An access expression: `Index(target, index, is_dot)`. `is_dot` marks `.name`
-    /// (member access via `.`) versus `[expr]` (data access via `[]`). The two
-    /// resolve identically for instances/arrays; they diverge only at dynamic-boundary
-    /// values (`dict`), where `.` is the method surface and `[]` is keyed data.
+    /// (member access via `.`) versus `[expr]` (data access via `[]`).
     Index(AstId<Expr>, AstId<Expr>, bool),
-
     Literal(Literal),
     Identifier(Symbol),
     /// `expr is T`: a nominal capability test against a static type/trait *name*
@@ -85,14 +77,64 @@ pub enum Expr {
     SafeAccess(AstId<Expr>, AstId<Expr>, bool),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
+    /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean. The
+    /// matcher is the bindingless subset of the matcher grammar. A bare nominal `is T` uses `Is`
+    /// instead; everything richer (shapes, `&`/`|`) lands here.
+    Has(AstId<Expr>, AstId<Matcher>),
+    /// The `scrutinee ~ matcher` one-liner. Yields a boolean and, on success, publishes the
+    /// matcher's binders.
+    Match(AstId<Expr>, AstId<Matcher>),
+}
+
+/// A scalar literal in a matcher: an equality value (`v == s`) or a shape key.
+#[derive(Clone, PartialEq, Debug)]
+pub enum MatchScalar {
+    Null,
+    Boolean(bool),
+    Number(f64),
+    String(String),
+}
+
+/// A field of a shape matcher `{ key: value }`. The `{ x }` shorthand parses to key `x`
+/// with a binder value.
+pub struct MatchField {
+    pub key: MatchScalar,
+    pub value: AstId<Matcher>,
+}
+
+/// An element of an array matcher. `Rest` is `..` or `..name`, at most one per array.
+pub enum MatchElem {
+    Elem(AstId<Matcher>),
+    Rest(Option<Symbol>),
+}
+
+pub enum Matcher {
+    /// `_`: matches anything, binds nothing.
+    Wildcard,
+    /// A scalar literal compared with `==`.
+    Literal(MatchScalar),
+    /// A bare identifier that binds the whole value.
+    Binder(Symbol),
+    /// `is T shape?` (nominal) or `has T shape?` (structural).
+    Type { nominal: bool, name: Symbol, shape: Option<AstId<Matcher>> },
+    /// A structural shape `{ k: m, ... }`.
+    Shape(Vec<MatchField>),
+    /// An array shape `[ ... ]` with at most one rest element.
+    Array(Vec<MatchElem>),
+    /// `name @ m`: binds the whole value and also matches `m`.
+    As(Symbol, AstId<Matcher>),
+    /// `a | b | ...`: alternatives tried left to right.
+    Or(Vec<AstId<Matcher>>),
+    /// `a & b & ...`: all must match.
+    And(Vec<AstId<Matcher>>),
 }
 
 pub struct FieldInit {
     pub name: Symbol,
     pub value: Option<AstId<Expr>>,
-    /// Declared nullable with a `?` marker (`say x?`). Non-null otherwise.
+    /// Declared nullable with a `?` marker (`say x?`).
     pub nullable: bool,
-    /// Declared reassignable with a `mut` modifier (`say mut x`). Immutable otherwise.
+    /// Declared reassignable with a `mut` modifier (`say mut x`).
     pub mutable: bool,
 }
 
@@ -125,72 +167,68 @@ pub struct FnDecl {
     pub ret: ReturnShape,
 }
 
-/// A `catch (param) { … }` clause of a try statement.
+/// A `catch (param) { ... }` clause of a try statement.
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
-    /// Declared reassignable with a `mut` modifier (`catch (mut e)`). Immutable otherwise.
+    /// Declared reassignable with a `mut` modifier (`catch (mut e)`).
     pub mutable: bool,
     pub body: AstId<Expr>
 }
 
 pub struct TypeDecl {
     pub name: Symbol,
-    /// `true` for a `trait` declaration (a non-instantiable, mixable bundle), `false`
-    /// for a `type`. Traits are expanded into composers during lowering (`with`).
+    /// `true` for a `trait` declaration, `false` for a `type`.
     pub is_trait: bool,
     /// Traits mixed in via `with T1, T2, ...`.
     pub with_traits: Vec<Symbol>,
     /// Traits depended on via `req T1, T2, ...`.
     pub req_traits: Vec<Symbol>,
-    /// Method holes declared via `req fn f(params);`: `(name, arity, return shape)`.
+    /// Method holes declared via `req fn f(params)`.
     pub req_fns: Vec<(Symbol, usize, ReturnShape)>,
-    /// Member holes declared via `req name;`: a field/member the host must provide, allowing
-    /// usage of `this.name` in the trait's bodies.
+    /// Member holes declared via `req name`.
     pub req_members: Vec<Symbol>,
-    /// Delegation fields declared via `field gives Trait;`: `(field, trait)`. The field provides
-    /// `Trait` by forwarding, so for example `is Trait` is true.
+    /// Delegation fields declared via `field gives Trait`.
     pub gives: Vec<(Symbol, Symbol)>,
-    /// The initializer's runtime name (`"{type}.init"`), used whether the init is
-    /// declared or synthesised during lowering.
     pub init_name: Symbol,
-    /// The declared initializer (`Stmt::Fn`). When the type has none lowering
-    /// synthesises a virtual init in that case.
     pub init: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
-    /// Fields declared nullable with a `?` marker (`next?;`).
     pub nullable_fields: HashSet<Symbol>,
-    /// Fields declared reassignable with a `mut` modifier (`mut count;`).
     pub mut_fields: HashSet<Symbol>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,
-    /// Members (fields/methods) declared `pub` are externally accessible. Members not
-    /// listed are private or `inner`, reachable only through `this`.
     pub pub_members: HashSet<Symbol>,
-    /// Members declared `inner`: object-internal (host and sibling traits but not external code).
     pub inner_members: HashSet<Symbol>,
+}
+
+pub struct MatchArm {
+    pub matcher: AstId<Matcher>,
+    pub guard: Option<AstId<Expr>>,
+    pub body: AstId<Expr>,
 }
 
 pub enum Stmt {
     Expression(AstId<Expr>),
     Return(Option<AstId<Expr>>),
     Throw(AstId<Expr>),
-    /// A try statement: Try(body block, optional catch clause, optional finally block).
+    /// A try statement: Try(body, optional catch, optional finally).
     Try(AstId<Expr>, Option<CatchClause>, Option<AstId<Expr>>),
     While(AstId<Expr>, AstId<Expr>),
-    /// An if statement: If(condition, then block, else body). The bodies are
-    /// `Expr::Block`s; the else branch is a `Stmt::If` (else-if) or `Stmt::Block`.
+    /// An if statement: If(condition, then block, else body).
     If(AstId<Expr>, AstId<Expr>, Option<AstId<Stmt>>),
-    /// A bare `{ … }` statement block (wraps an `Expr::Block`).
+    /// A bare `{ ... }` statement block (wraps an `Expr::Block`).
     Block(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
-    Type(Box<TypeDecl>)
+    Type(Box<TypeDecl>),
+    /// A match statement dispatching the scrutinee over arms.
+    Match(AstId<Expr>, Vec<MatchArm>)
 }
 
 pub enum NodeKind {
     Expr(Expr),
-    Stmt(Stmt)
+    Stmt(Stmt),
+    Matcher(Matcher)
 }
 
 pub trait AstNode: Sized {
@@ -209,6 +247,13 @@ impl AstNode for Stmt {
     fn wrap(self) -> NodeKind { NodeKind::Stmt(self) }
     fn unwrap(node: &NodeKind) -> &Stmt {
         match node { NodeKind::Stmt(stmt) => stmt, _ => unreachable!() }
+    }
+}
+
+impl AstNode for Matcher {
+    fn wrap(self) -> NodeKind { NodeKind::Matcher(self) }
+    fn unwrap(node: &NodeKind) -> &Matcher {
+        match node { NodeKind::Matcher(matcher) => matcher, _ => unreachable!() }
     }
 }
 
@@ -321,6 +366,10 @@ impl Ast {
     }
 
     pub(crate) fn add_expr(&mut self, kind: Expr, pos: SourcePosition) -> AstId<Expr> {
+        self.add(kind, pos)
+    }
+
+    pub(crate) fn add_matcher(&mut self, kind: Matcher, pos: SourcePosition) -> AstId<Matcher> {
         self.add(kind, pos)
     }
 }

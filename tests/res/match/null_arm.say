@@ -1,0 +1,12 @@
+// A `null` matcher matches only null, so it dispatches null apart from any other value.
+fn classify(v?) {
+    match v {
+        null => print("null"),
+        { k } => print(k),
+        _ => print("other"),
+    }
+}
+
+classify(null); // expect: null
+classify({ k: "hi" }); // expect: hi
+classify(5); // expect: other

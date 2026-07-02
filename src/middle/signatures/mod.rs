@@ -1,5 +1,5 @@
-//! Signature collection. Builds a `Signatures` table consumed by the check pass.
-//! Records every function and type-member signature and infers each function's return tag.
+//! Builds a `Signatures` table. Records every function and type-member signature
+//! and infers each function's return tag.
 
 use std::collections::{HashMap, HashSet};
 
@@ -122,6 +122,13 @@ impl<'a> Collector<'a> {
                 if let Some(finally) = finally { self.expr(finally); }
             },
             HirStmt::Say(field) => if let Some(value) = field.value { self.expr(&value); },
+            HirStmt::Match(scrutinee, arms) => {
+                self.expr(scrutinee);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard { self.expr(guard); }
+                    self.expr(&arm.body);
+                }
+            },
         }
     }
 
@@ -136,7 +143,7 @@ impl<'a> Collector<'a> {
     fn expr(&mut self, expr: &HirId<HirExpr>) {
         match self.hir.get(expr) {
             HirExpr::Block(stmts) => for s in stmts { self.stmt(s); },
-            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) | HirExpr::Has(x, _) => self.expr(x),
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) | HirExpr::Has(x, _) | HirExpr::Match(x, _) => self.expr(x),
             HirExpr::Binary(_, l, r) | HirExpr::Assign(l, r) | HirExpr::Coalesce(l, r)
             | HirExpr::SafeAccess(l, r, _) | HirExpr::Index(l, r, _) => { self.expr(l); self.expr(r); },
             HirExpr::Call(callee, args) => {

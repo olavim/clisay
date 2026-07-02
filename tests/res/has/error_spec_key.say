@@ -1,3 +1,3 @@
 say x = 1;
 say k = "a";
-x has { [k]: 2 }; // error: A `has` key must be a literal value
+x has { [k]: 2 }; // error: Expected a shape field

@@ -106,6 +106,11 @@ pub enum Inst {
     GreaterThanEqual,
     Is(u8),
     HasMember(u8),
+    /// Replaces the top with whether it is a dict or instance, the values a shape can match.
+    IsShaped,
+    ArrayLen,
+    /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
+    ArrayMiddle(u8, u8),
 }
 
 pub struct Ir {

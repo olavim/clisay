@@ -1,0 +1,14 @@
+fn walk(v?) {
+    match v {
+        { outer } => {
+            match outer {
+                { inner } => print(inner),
+                _ => print("no-inner"),
+            }
+        },
+        _ => print("no-outer"),
+    }
+}
+walk({ outer: { inner: 42 } }); // expect: 42
+walk({ outer: 5 }); // expect: no-inner
+walk(9); // expect: no-outer

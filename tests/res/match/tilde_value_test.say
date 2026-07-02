@@ -1,0 +1,20 @@
+// A `~` operand may be a literal or an or-group of literals.
+say x = 2;
+say one = x ~ 1;
+print(one); // expect: false
+
+fn size(v?) {
+    if v ~ 1 | 2 | 3 {
+        print("small");
+    } else {
+        print("big");
+    }
+}
+size(2); // expect: small
+size(9); // expect: big
+
+// A binderless matcher that always matches is just a constant boolean, allowed like `if true`.
+say always = x ~ _;
+print(always); // expect: true
+say orAlways = x ~ 9 | _;
+print(orAlways); // expect: true

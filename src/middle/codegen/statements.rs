@@ -116,6 +116,10 @@ impl<'a> Compiler<'a> {
                 self.expression_stmt(expr)?;
             },
             HirStmt::While(cond, body) => {
+                let binders = self.hir.condition_binders(cond);
+                if !binders.is_empty() {
+                    return self.compile_binding_while(cond, body, binders.len(), stmt_id);
+                }
                 let loop_start = self.ir.new_label();
                 self.ir.bind(loop_start);
 
@@ -127,6 +131,10 @@ impl<'a> Compiler<'a> {
                 self.ir.bind(exit);
             },
             HirStmt::If(cond, then, otherwise) => {
+                let binders = self.hir.condition_binders(cond);
+                if !binders.is_empty() {
+                    return self.compile_binding_if(cond, then, otherwise, binders.len(), stmt_id);
+                }
                 let else_target = self.emit_conditional_jump(cond, stmt_id)?;
 
                 self.expression_stmt(then)?;
@@ -144,9 +152,59 @@ impl<'a> Compiler<'a> {
             HirStmt::Block(body) => {
                 self.expression_stmt(body)?;
             }
+            HirStmt::Match(scrutinee, arms) => self.compile_match(scrutinee, arms, stmt_id)?,
         };
 
         Ok(())
+    }
+
+    /// Compiles an `if` whose condition binds names.
+    fn compile_binding_if(&mut self, cond: &HirId<HirExpr>, then: &HirId<HirExpr>, otherwise: &Option<HirId<HirStmt>>, binder_count: usize, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
+        self.reserve_slots(binder_count, stmt_id);
+        self.expression(cond)?;
+        let else_target = self.ir.new_label();
+        self.emit(Inst::JumpIfFalse(else_target), stmt_id);
+        self.expression_stmt(then)?;
+        match otherwise {
+            Some(otherwise) => {
+                self.exit_scope(cond);
+                let end = self.ir.new_label();
+                self.emit(Inst::Jump(end), stmt_id);
+                self.ir.bind(else_target);
+                self.exit_scope(cond);
+                self.statement(otherwise)?;
+                self.ir.bind(end);
+            },
+            // Both paths converge before the single cleanup.
+            None => {
+                self.ir.bind(else_target);
+                self.exit_scope(cond);
+            },
+        }
+        Ok(())
+    }
+
+    /// Compiles a `while` whose condition binds names.
+    fn compile_binding_while(&mut self, cond: &HirId<HirExpr>, body: &HirId<HirExpr>, binder_count: usize, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
+        let loop_start = self.ir.new_label();
+        self.ir.bind(loop_start);
+        self.reserve_slots(binder_count, stmt_id);
+        self.expression(cond)?;
+        let exit = self.ir.new_label();
+        self.emit(Inst::JumpIfFalse(exit), stmt_id);
+        self.expression_stmt(body)?;
+        self.exit_scope(cond);
+        self.emit(Inst::Jump(loop_start), stmt_id);
+        self.ir.bind(exit);
+        self.exit_scope(cond);
+        Ok(())
+    }
+
+    /// Pushes `count` null placeholders to reserve a slot for each live binder.
+    fn reserve_slots(&mut self, count: usize, node: &HirId<HirStmt>) {
+        for _ in 0..count {
+            self.emit(Inst::PushNull, node);
+        }
     }
 
     fn statement_body(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {

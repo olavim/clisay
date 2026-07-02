@@ -1,8 +1,8 @@
 use crate::compiler_error;
 use crate::core::value::Value;
-use crate::middle::hir::{BinOp, HasMatch, HasSpec, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
+use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
 use crate::middle::ir::Inst;
-use crate::middle::bind::{FnKind, Member, Place};
+use crate::middle::bind::{FnKind, Place};
 
 use super::Compiler;
 
@@ -36,7 +36,17 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::Is(idx), expr);
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
-            HirExpr::Has(left, spec) => self.compile_has(left, spec, expr)?,
+            HirExpr::Has(left, matcher) => self.compile_has(left, matcher, expr)?,
+            HirExpr::Match(scrutinee, matcher) => {
+                self.expression(scrutinee)?;
+                match self.bindings.match_binders(expr) {
+                    Some(slots) => {
+                        let binders: Vec<(Symbol, u8)> = matcher.binders().into_iter().zip(slots.iter().copied()).collect();
+                        self.compile_binding_matcher(matcher, &binders, expr)?;
+                    },
+                    None => self.compile_matcher_test(matcher, expr)?,
+                }
+            },
             HirExpr::This => self.emit(Inst::LoadLocal(0), expr),
             HirExpr::Coalesce(left, right) => self.coalesce(left, right)?,
             HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(target, member, *is_dot)?,
@@ -194,118 +204,9 @@ impl<'a> Compiler<'a> {
         self.ir.bind(end);
         Ok(())
     }
-
-    /// Compiles `left has spec`. The left value is evaluated once and kept on the stack; the spec
-    /// is a short-circuiting AND whose tests branch to a single `fail` site.
-    fn compile_has(&mut self, left: &HirId<HirExpr>, spec: &HasSpec, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        self.expression(left)?;
-        self.compile_has_spec(spec, node)
-    }
-
-    /// Compiles a `has` spec against the receiver on top of the stack.
-    fn compile_has_spec(&mut self, spec: &HasSpec, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        match spec {
-            HasSpec::Key(key) => {
-                let idx = self.has_spec_key_constant(key)?;
-                self.emit(Inst::HasMember(idx), node);
-                Ok(())
-            },
-            HasSpec::Surface(ty) => {
-                let members = match self.bindings.surface(*ty) {
-                    Some(members) => members.to_vec(),
-                    None => compiler_error!(self, node, "'{}' is not a type or trait", self.hir.text(*ty)),
-                };
-                self.compile_has_spec_and(members.len(), node, &|c, i, n| {
-                    let idx = c.has_member_constant(members[i])?;
-                    c.emit(Inst::HasMember(idx), n);
-                    Ok(())
-                })
-            },
-            HasSpec::All(specs) => self.compile_has_spec_and(specs.len(), node, &|c, i, n| c.compile_has_spec(&specs[i], n)),
-            HasSpec::Fields(entries) => self.compile_has_spec_and(entries.len(), node, &|c, i, n| {
-                let (key, m) = &entries[i];
-                c.compile_has_spec_field(key, m, n)
-            }),
-        }
-    }
-
-    /// Compiles a short-circuiting AND of `count` has-specs.
-    fn compile_has_spec_and(&mut self, count: usize, node: &HirId<HirExpr>, compile_test: &dyn Fn(&mut Self, usize, &HirId<HirExpr>) -> Result<(), anyhow::Error>) -> Result<(), anyhow::Error> {
-        // An empty spec (`v has []`) holds for any value. Drop the receiver and yield true.
-        if count == 0 {
-            self.emit(Inst::Pop, node);
-            self.emit(Inst::PushTrue, node);
-            return Ok(());
-        }
-        if count == 1 {
-            return compile_test(self, 0, node);
-        }
-        let fail = self.ir.new_label();
-        let end = self.ir.new_label();
-        // Each test but the last runs on a duplicate so the receiver survives for the next.
-        for i in 0..count - 1 {
-            self.emit(Inst::Dup, node);
-            compile_test(self, i, node)?;
-            self.emit(Inst::JumpIfFalse(fail), node);
-        }
-        compile_test(self, count - 1, node)?;
-        self.emit(Inst::Jump(end), node);
-        self.ir.bind(fail);
-        self.emit(Inst::Pop, node); // a test failed: drop the surviving receiver, yield false
-        self.emit(Inst::PushFalse, node);
-        self.ir.bind(end);
-        Ok(())
-    }
-
-    /// Compiles one `has` dict entry. A non-null `==` match needs no membership check, since an
-    /// absent member loads as null and never equals a non-null literal. A null match must also
-    /// check presence, because an absent member loads as null too.
-    fn compile_has_spec_field(&mut self, key: &HirLiteral, m: &HasMatch, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let key_idx = self.has_spec_key_constant(key)?;
-        match m {
-            HasMatch::Eq(HirLiteral::Null) => self.compile_has_spec_and(2, node, &|c, i, n| match i {
-                0 => { c.emit(Inst::HasMember(key_idx), n); Ok(()) },
-                _ => {
-                    c.emit(Inst::GetIndexOrNull(key_idx), n);
-                    c.emit(Inst::PushNull, n);
-                    c.emit(Inst::Equal, n);
-                    Ok(())
-                },
-            }),
-            HasMatch::Eq(lit) => {
-                self.emit(Inst::GetIndexOrNull(key_idx), node);
-                self.literal(node, lit)?;
-                self.emit(Inst::Equal, node);
-                Ok(())
-            },
-            HasMatch::Spec(spec) => {
-                self.emit(Inst::GetIndexOrNull(key_idx), node);
-                self.compile_has_spec(spec, node)
-            },
-        }
-    }
-
-    /// Interns a member name (a string key) into the constant pool, returning its index.
-    fn has_member_constant(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
-        let name_ref = self.gc.intern(self.hir.text(name));
-        self.ir.add_constant(Value::from(name_ref))
-    }
-
-    /// Pools a scalar-literal `has` key as its runtime value, returning the constant index.
-    fn has_spec_key_constant(&mut self, key: &HirLiteral) -> Result<u8, anyhow::Error> {
-        let value = match key {
-            HirLiteral::String(s) => Value::from(self.gc.intern(s)),
-            HirLiteral::Number(n) => Value::from(*n),
-            HirLiteral::Boolean(b) => Value::from(*b),
-            HirLiteral::Null => Value::NULL,
-            _ => unreachable!("a `has` key is a scalar literal"),
-        };
-        self.ir.add_constant(value)
-    }
-
     fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, is_dot: bool, op: IndexOp) -> Result<(), anyhow::Error> {
         if matches!(self.hir.get(target), HirExpr::This) {
-            let Member::ById(member_id) = self.bindings.member(target);
+            let member_id = self.bindings.member(target);
             return self.index_member_by_id(target, member_id, op);
         }
 
@@ -392,7 +293,7 @@ impl<'a> Compiler<'a> {
         return Ok(());
     }
 
-    fn literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral) -> Result<(), anyhow::Error> {
+    pub (super) fn literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral) -> Result<(), anyhow::Error> {
         match literal {
             HirLiteral::Number(num) => {
                 let idx = self.ir.add_constant(Value::from(*num))?;

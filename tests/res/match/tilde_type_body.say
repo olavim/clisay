@@ -1,0 +1,13 @@
+type P { pub x; pub y; init(a, b) { this.x = a; this.y = b; } }
+say p = P(1, 2);
+
+if p ~ is P { print("body"); } // expect: body
+
+if p ~ is P { x, y } { print(x); print(y); } // expect: 1
+// expect: 2
+
+if p ~ is P { x: 1 } { print("shape-body"); } // expect: shape-body
+
+say mut n = 0;
+while n < 1 && p ~ is P { n = n + 1; }
+print(n); // expect: 1

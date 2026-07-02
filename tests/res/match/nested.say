@@ -1,0 +1,17 @@
+type Move { pub from; pub to; init(a, b) { this.from = a; this.to = b; } }
+fn h(e) {
+    match e {
+        is Move { from: { x, y }, to } => { print(x); print(y); print(to); },
+        { items: [first, ..rest] } => { print(first); print(rest.length()); },
+        { wrap: { v } } => print(v),
+        _ => print("none"),
+    }
+}
+h(Move({ x: 1, y: 2 }, 3)); // expect: 1
+// expect: 2
+// expect: 3
+h({ items: [9, 8, 7] }); // expect: 9
+// expect: 2
+h({ wrap: { v: 42 } }); // expect: 42
+h({ wrap: { } }); // expect: none
+h(0); // expect: none

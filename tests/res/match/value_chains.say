@@ -1,0 +1,20 @@
+// A binderless `~` is a plain boolean usable anywhere.
+type P { pub x; init(a) { this.x = a; } }
+say p = P(5);
+
+say a = p ~ is P;
+print(a); // expect: true
+
+say b = (p ~ is P) && (p ~ {});
+print(b); // expect: true
+
+say c = (p ~ [1, 2]) || (p ~ is P);
+print(c); // expect: true
+
+if p ~ is P && 1 < 2 { print("both"); } // expect: both
+
+fn twoStep(m?) {
+    if m ~ { a } && a ~ { b } { print(b); } else { print("no"); }
+}
+twoStep({ a: { b: 7 } }); // expect: 7
+twoStep({ a: 1 }); // expect: no
