@@ -61,9 +61,11 @@ impl<'a> TokenStream<'a> {
         self.pos += count;
     }
 
-    /// Steps back one token, undoing the most recent `next`. Used to hand a just-consumed
-    /// keyword back to a sub-parser that expects to read it itself.
     pub fn back(&mut self) {
         self.pos = self.pos.saturating_sub(1);
+    }
+
+    pub fn previous(&self) -> &'a Token {
+        return self.tokens.get(self.pos.saturating_sub(1)).unwrap();
     }
 }

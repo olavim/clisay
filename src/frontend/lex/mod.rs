@@ -35,6 +35,10 @@ impl SourcePosition {
     pub fn snippet(&self) -> &str {
         return &self.source.content[self.start..self.end];
     }
+
+    pub fn to(&self, end: &SourcePosition) -> SourcePosition {
+        return SourcePosition { source: self.source.clone(), start: self.start, end: end.end, line: self.line };
+    }
 }
 
 impl fmt::Display for SourcePosition {

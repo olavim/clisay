@@ -56,7 +56,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         })?;
 
         self.tokens.expect(TokenType::RightBrace)?;
-        Ok(self.ast.add_expr(Expr::Construct(callee, fields), pos))
+        Ok(self.node_expr(Expr::Construct(callee, fields), pos))
     }
 
     pub(super) fn parse_expr_precedence(&mut self, min_precedence: u8) -> Result<AstId<Expr>, anyhow::Error> {
@@ -112,7 +112,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let name = self.ast.intern(&name);
                 match self.parse_type_shape()? {
                     Some(shape) => {
-                        let m = self.ast.add_matcher(Matcher::Type { nominal: true, name, shape: Some(shape) }, name_token.pos);
+                        let m = self.node_matcher(Matcher::Type { nominal: true, name, shape: Some(shape) }, name_token.pos);
                         Expr::Has(expr, m)
                     },
                     None => Expr::Is(expr, name),
@@ -143,7 +143,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             }
         };
 
-        Ok(self.ast.add_expr(kind, pos.clone()))
+        Ok(self.node_expr(kind, pos))
     }
 
     pub(super) fn parse_expr_prefix(&mut self, op: Operator) -> Result<AstId<Expr>, anyhow::Error> {
@@ -175,7 +175,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     }
                 };
 
-                return Ok(self.ast.add_expr(Expr::Literal(Literal::Array(elements)), pos));
+                return Ok(self.node_expr(Expr::Literal(Literal::Array(elements)), pos));
             },
             Operator::Dict => {
                 let mut pairs: Vec<(AstId<Expr>, AstId<Expr>)> = Vec::new();
@@ -274,7 +274,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     self.tokens.expect(TokenType::RightBrace)?;
                 }
 
-                return Ok(self.ast.add_expr(Expr::Literal(Literal::Dict(pairs)), pos));
+                return Ok(self.node_expr(Expr::Literal(Literal::Dict(pairs)), pos));
             },
             _ => {
                 let right = self.parse_expr_precedence(op.prefix_precedence().unwrap())?;
@@ -284,7 +284,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 }
             }
         };
-        Ok(self.ast.add_expr(kind, pos))
+        Ok(self.node_expr(kind, pos))
     }
 
     pub(super) fn parse_expr_postfix(&mut self, op: Operator, expr: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
@@ -292,24 +292,24 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         match op {
             Operator::Call => {
                 let args = self.parse_call_arguments()?;
-                Ok(self.ast.add_expr(Expr::Call(expr, args), pos))
+                Ok(self.node_expr(Expr::Call(expr, args), pos))
             },
             Operator::Index => {
                 let index = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightBracket)?;
-                Ok(self.ast.add_expr(Expr::Index(expr, index, false), pos)) // `[expr]` data access
+                Ok(self.node_expr(Expr::Index(expr, index, false), pos)) // `[expr]` data access
             },
             Operator::SafeMemberAccess => {
                 let id = self.parse_identifier()?;
                 let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                Ok(self.ast.add_expr(Expr::SafeAccess(expr, id, true), pos)) // `?.name`
+                Ok(self.node_expr(Expr::SafeAccess(expr, id, true), pos)) // `?.name`
             },
             Operator::SafeIndex => {
                 let index = self.parse_expr()?;
                 self.tokens.expect(TokenType::RightBracket)?;
-                Ok(self.ast.add_expr(Expr::SafeAccess(expr, index, false), pos)) // `?[expr]`
+                Ok(self.node_expr(Expr::SafeAccess(expr, index, false), pos)) // `?[expr]`
             },
-            Operator::Assert => Ok(self.ast.add_expr(Expr::Assert(expr), pos)),
+            Operator::Assert => Ok(self.node_expr(Expr::Assert(expr), pos)),
             _ => unreachable!()
         }
     }
@@ -333,7 +333,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             _ => parse_error!(self, &pos, "Unexpected token {token}")
         };
 
-        Ok(self.ast.add_expr(kind, pos))
+        Ok(self.node_expr(kind, pos))
     }
 
     pub(super) fn parse_call_arguments(&mut self) -> Result<Vec<AstId<Expr>>, anyhow::Error> {

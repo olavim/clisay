@@ -134,6 +134,24 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.ast.add_expr(Expr::Identifier(name), pos))
     }
 
+    /// Builds an expr node spanning from `start` to the last-consumed token.
+    fn node_expr(&mut self, kind: Expr, start: SourcePosition) -> AstId<Expr> {
+        let pos = start.to(&self.tokens.previous().pos);
+        self.ast.add_expr(kind, pos)
+    }
+
+    /// Builds a stmt node spanning from `start` to the last-consumed token.
+    fn node_stmt(&mut self, kind: Stmt, start: SourcePosition) -> AstId<Stmt> {
+        let pos = start.to(&self.tokens.previous().pos);
+        self.ast.add_stmt(kind, pos)
+    }
+
+    /// Builds a matcher node spanning from `start` to the last-consumed token.
+    fn node_matcher(&mut self, kind: Matcher, start: SourcePosition) -> AstId<Matcher> {
+        let pos = start.to(&self.tokens.previous().pos);
+        self.ast.add_matcher(kind, pos)
+    }
+
     /// Runs `f` with the expression context replaced, restoring the previous context after.
     /// A fresh nested parse starts from whatever modes `ctx` names and nothing else.
     fn with_ctx<R>(&mut self, ctx: ExprCtx, f: impl FnOnce(&mut Self) -> R) -> R {

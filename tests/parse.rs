@@ -124,6 +124,20 @@ fn matcher(src: &str) -> (Ast, AstId<Matcher>) {
 }
 
 #[test]
+fn node_span_covers_whole_source() {
+    let (ast, m) = matcher("n @ 1 | _");
+    assert_eq!(ast.pos(&m).snippet(), "n @ 1 | _");
+
+    let (ast, m) = matcher("{ x: 1 }");
+    assert_eq!(ast.pos(&m).snippet(), "{ x: 1 }");
+
+    let ast = parse("a + b;");
+    let stmts = top_stmts(&ast);
+    let Stmt::Expression(expr) = ast.get(&stmts[0]) else { panic!("not an expression statement") };
+    assert_eq!(ast.pos(expr).snippet(), "a + b");
+}
+
+#[test]
 fn matcher_atoms() {
     let (ast, m) = matcher("_");
     assert!(matches!(ast.get(&m), Matcher::Wildcard));
