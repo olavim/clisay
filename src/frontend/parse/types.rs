@@ -192,6 +192,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         });
 
         self.current_type = prev_type;
-        Ok(self.ast.add_stmt(Stmt::Type(type_decl), pos))
+        Ok(self.node_stmt(Stmt::Type(type_decl), pos))
     }
 }

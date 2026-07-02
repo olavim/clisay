@@ -21,7 +21,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         if arms.is_empty() {
             parse_error!(self, &pos, "A `match` needs at least one arm");
         }
-        Ok(self.ast.add_stmt(Stmt::Match(scrutinee, arms), pos))
+        Ok(self.node_stmt(Stmt::Match(scrutinee, arms), pos))
     }
 
     /// arm := matcher ("if" guard)? "=>" body
@@ -44,8 +44,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = self.tokens.peek(0).pos.clone();
         let body_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
         let result = self.with_ctx(ExprCtx::default(), |p| p.parse_expr_precedence(body_precedence));
-        let stmt = self.ast.add_stmt(Stmt::Expression(result?), pos.clone());
-        Ok(self.ast.add_expr(Expr::Block(vec![stmt]), pos))
+        let stmt = self.node_stmt(Stmt::Expression(result?), pos.clone());
+        Ok(self.node_expr(Expr::Block(vec![stmt]), pos))
     }
 
     /// Parses a guard expression, stopping before the arm's `=>`.
@@ -74,7 +74,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             let name = self.ast.intern(&token.lexeme);
             self.tokens.next();
             let inner = self.parse_matcher()?;
-            return Ok(self.ast.add_matcher(Matcher::As(name, inner), pos));
+            return Ok(self.node_matcher(Matcher::As(name, inner), pos));
         }
         self.parse_or_matcher()
     }
@@ -93,7 +93,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             self.reject_combinator_binder(&alt)?;
             alternatives.push(alt);
         }
-        Ok(self.ast.add_matcher(Matcher::Or(alternatives), pos))
+        Ok(self.node_matcher(Matcher::Or(alternatives), pos))
     }
 
     /// and_matcher := primary ("&" primary)*
@@ -110,7 +110,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             self.reject_combinator_binder(&part)?;
             parts.push(part);
         }
-        Ok(self.ast.add_matcher(Matcher::And(parts), pos))
+        Ok(self.node_matcher(Matcher::And(parts), pos))
     }
 
     /// A bare name binds the whole value, so as an `&`/`|` operand it is pointless and usually a
@@ -130,12 +130,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         match token.kind {
             TokenType::Identifier if token.lexeme == "_" => {
                 self.tokens.next();
-                Ok(self.ast.add_matcher(Matcher::Wildcard, pos))
+                Ok(self.node_matcher(Matcher::Wildcard, pos))
             },
             TokenType::Identifier => {
                 self.tokens.next();
                 let name = self.ast.intern(&token.lexeme);
-                Ok(self.ast.add_matcher(Matcher::Binder(name), pos))
+                Ok(self.node_matcher(Matcher::Binder(name), pos))
             },
             TokenType::Is => self.parse_is_matcher(),
             TokenType::Has => self.parse_has_matcher(),
@@ -150,7 +150,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Minus | TokenType::NumericLiteral | TokenType::StringLiteral
             | TokenType::True | TokenType::False | TokenType::Null => {
                 let scalar = self.parse_match_scalar()?;
-                Ok(self.ast.add_matcher(Matcher::Literal(scalar), pos))
+                Ok(self.node_matcher(Matcher::Literal(scalar), pos))
             },
             _ => parse_error!(self, &pos, "Expected a matcher but found '{token}'"),
         }
@@ -200,7 +200,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         } else {
             None
         };
-        Ok(self.ast.add_matcher(Matcher::Type { nominal, name, shape }, pos))
+        Ok(self.node_matcher(Matcher::Type { nominal, name, shape }, pos))
     }
 
     /// Whether a `{` after `is T`/`has T` opens a destructuring shape rather than an `if`/`while` body.
@@ -225,7 +225,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let name = self.parse_identifier()?;
                 let name = self.ast.intern(&name);
                 let shape = self.parse_type_shape()?;
-                Ok(self.ast.add_matcher(Matcher::Type { nominal: false, name, shape }, pos))
+                Ok(self.node_matcher(Matcher::Type { nominal: false, name, shape }, pos))
             },
             TokenType::LeftBrace => self.parse_shape_matcher(),
             TokenType::LeftBracket => self.parse_array_matcher(),
@@ -268,7 +268,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
         
         self.tokens.expect(TokenType::RightBrace)?;
-        Ok(self.ast.add_matcher(Matcher::Shape(fields), pos))
+        Ok(self.node_matcher(Matcher::Shape(fields), pos))
     }
 
     /// field := IDENT ":" matcher | scalar ":" matcher | IDENT (shorthand `{ x }` binds x)
@@ -330,7 +330,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
 
         self.tokens.expect(TokenType::RightBracket)?;
-        Ok(self.ast.add_matcher(Matcher::Array(elements), pos))
+        Ok(self.node_matcher(Matcher::Array(elements), pos))
     }
 
     /// A `~` publishes its binders, so a binding that always matches is just an unconditional

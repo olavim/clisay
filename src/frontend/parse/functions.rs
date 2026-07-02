@@ -8,7 +8,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let name = self.parse_identifier()?;
         let name = self.ast.intern(&name);
         let fn_decl = self.parse_fn_decl(name)?;
-        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
+        Ok(self.node_stmt(Stmt::Fn(fn_decl), pos))
     }
 
     pub(super) fn parse_fn_decl(&mut self, name: Symbol) -> Result<FnDecl, anyhow::Error> {
@@ -39,10 +39,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let stmts = self.parse_stmts()?;
         self.tokens.expect(TokenType::RightBrace)?;
 
-        let body = self.ast.add_expr(Expr::Block(stmts), pos.clone());
+        let body = self.node_expr(Expr::Block(stmts), pos.clone());
         // An `init` takes no return marker. It produces no value.
         let fn_decl = FnDecl { name, params, body, ret: ReturnShape::Void };
-        Ok(self.ast.add_stmt(Stmt::Fn(fn_decl), pos))
+        Ok(self.node_stmt(Stmt::Fn(fn_decl), pos))
     }
 
     /// Parses a parameter list up to `end_token`. Each parameter is `[mut] name [?]`.
