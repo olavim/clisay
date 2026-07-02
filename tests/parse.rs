@@ -124,6 +124,20 @@ fn matcher(src: &str) -> (Ast, AstId<Matcher>) {
 }
 
 #[test]
+fn parse_error_renders_a_caret() {
+    let err = try_parse("if x ~ y { }").err().expect("expected a parse error");
+    // The source line then a caret run aligned under the matcher `y`.
+    assert!(err.contains("if x ~ y { }\n       ^"), "{err}");
+}
+
+#[test]
+fn unexpected_token_error_renders_a_caret() {
+    let err = try_parse("fib(1 o);").err().expect("expected a parse error");
+    // The caret sits under the unexpected token `o`.
+    assert!(err.contains("fib(1 o);\n      ^"), "{err}");
+}
+
+#[test]
 fn node_span_covers_whole_source() {
     let (ast, m) = matcher("n @ 1 | _");
     assert_eq!(ast.pos(&m).snippet(), "n @ 1 | _");
