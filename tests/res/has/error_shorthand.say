@@ -1,0 +1,2 @@
+say d = { x: 1 };
+d has { x }; // error: `has` does not bind; `{ x }` would bind x. For key presence write `{ x: _ }`

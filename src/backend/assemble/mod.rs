@@ -72,7 +72,8 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | GetProperty | SetProperty
         | Add | Subtract | Multiply | Divide | Negate | Not
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
-        | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual => {}
+        | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
+        | IsShaped | ArrayLen => {}
 
         Call(b)
         | Array(b)
@@ -104,6 +105,11 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         AddLocalConst(local, c) | SubLocalConst(local, c) => {
             chunk.write(local, pos);
             chunk.write(c, pos);
+        }
+
+        ArrayMiddle(prefix, suffix) => {
+            chunk.write(prefix, pos);
+            chunk.write(suffix, pos);
         }
 
         Invoke(name, arg_count) => {

@@ -66,14 +66,64 @@ pub enum Expr {
     SafeAccess(AstId<Expr>, AstId<Expr>, bool),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
+    /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean. The
+    /// matcher is the bindingless subset of the matcher grammar. A bare nominal `is T` uses `Is`
+    /// instead; everything richer (shapes, `&`/`|`) lands here.
+    Has(AstId<Expr>, AstId<Matcher>),
+    /// The `scrutinee ~ matcher` one-liner. Yields a boolean and, on success, publishes the
+    /// matcher's binders.
+    Match(AstId<Expr>, AstId<Matcher>),
+}
+
+/// A scalar literal in a matcher: an equality value (`v == s`) or a shape key.
+#[derive(Clone, PartialEq, Debug)]
+pub enum MatchScalar {
+    Null,
+    Boolean(bool),
+    Number(f64),
+    String(String),
+}
+
+/// A field of a shape matcher `{ key: value }`. The `{ x }` shorthand parses to key `x`
+/// with a binder value.
+pub struct MatchField {
+    pub key: MatchScalar,
+    pub value: AstId<Matcher>,
+}
+
+/// An element of an array matcher. `Rest` is `..` or `..name`, at most one per array.
+pub enum MatchElem {
+    Elem(AstId<Matcher>),
+    Rest(Option<Symbol>),
+}
+
+pub enum Matcher {
+    /// `_`: matches anything, binds nothing.
+    Wildcard,
+    /// A scalar literal compared with `==`.
+    Literal(MatchScalar),
+    /// A bare identifier that binds the whole value.
+    Binder(Symbol),
+    /// `is T shape?` (nominal) or `has T shape?` (structural).
+    Type { nominal: bool, name: Symbol, shape: Option<AstId<Matcher>> },
+    /// A structural shape `{ k: m, ... }`.
+    Shape(Vec<MatchField>),
+    /// An array shape `[ ... ]` with at most one rest element.
+    Array(Vec<MatchElem>),
+    /// `name @ m`: binds the whole value and also matches `m`.
+    As(Symbol, AstId<Matcher>),
+    /// `a | b | ...`: alternatives tried left to right.
+    Or(Vec<AstId<Matcher>>),
+    /// `a & b & ...`: all must match.
+    And(Vec<AstId<Matcher>>),
 }
 
 pub struct FieldInit {
     pub name: Symbol,
     pub value: Option<AstId<Expr>>,
-    /// Declared nullable with a `?` marker (`say x?`). Non-null otherwise.
+    /// Declared nullable with a `?` marker (`say x?`).
     pub nullable: bool,
-    /// Declared reassignable with a `mut` modifier (`say mut x`). Immutable otherwise.
+    /// Declared reassignable with a `mut` modifier (`say mut x`).
     pub mutable: bool,
 }
 
@@ -109,7 +159,7 @@ pub struct FnDecl {
 /// A `catch (param) { ... }` clause of a try statement.
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
-    /// Declared reassignable with a `mut` modifier (`catch (mut e)`). Immutable otherwise.
+    /// Declared reassignable with a `mut` modifier (`catch (mut e)`).
     pub mutable: bool,
     pub body: AstId<Expr>
 }
@@ -125,13 +175,9 @@ pub struct TypeDecl {
     pub req_members: Vec<Symbol>,
     pub gives: Vec<(Symbol, Symbol)>,
     pub init_name: Symbol,
-    /// The declared initializer (`Stmt::Fn`). When the type has none lowering
-    /// synthesises a virtual init in that case.
     pub init: Option<AstId<Stmt>>,
     pub fields: HashSet<Symbol>,
-    /// Fields declared nullable with a `?` marker (`next?;`).
     pub nullable_fields: HashSet<Symbol>,
-    /// Fields declared reassignable with a `mut` modifier (`mut count;`).
     pub mut_fields: HashSet<Symbol>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
@@ -140,11 +186,17 @@ pub struct TypeDecl {
     pub inner_members: HashSet<Symbol>,
 }
 
+pub struct MatchArm {
+    pub matcher: AstId<Matcher>,
+    pub guard: Option<AstId<Expr>>,
+    pub body: AstId<Expr>,
+}
+
 pub enum Stmt {
     Expression(AstId<Expr>),
     Return(Option<AstId<Expr>>),
     Throw(AstId<Expr>),
-    /// A try statement: Try(body block, optional catch clause, optional finally block).
+    /// A try statement: Try(body, optional catch, optional finally).
     Try(AstId<Expr>, Option<CatchClause>, Option<AstId<Expr>>),
     While(AstId<Expr>, AstId<Expr>),
     /// An if statement: If(condition, then block, else body).
@@ -153,12 +205,15 @@ pub enum Stmt {
     Block(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
-    Type(Box<TypeDecl>)
+    Type(Box<TypeDecl>),
+    /// A match statement dispatching the scrutinee over arms.
+    Match(AstId<Expr>, Vec<MatchArm>)
 }
 
 pub enum NodeKind {
     Expr(Expr),
-    Stmt(Stmt)
+    Stmt(Stmt),
+    Matcher(Matcher)
 }
 
 pub trait AstNode: Sized {
@@ -177,6 +232,13 @@ impl AstNode for Stmt {
     fn wrap(self) -> NodeKind { NodeKind::Stmt(self) }
     fn unwrap(node: &NodeKind) -> &Stmt {
         match node { NodeKind::Stmt(stmt) => stmt, _ => unreachable!() }
+    }
+}
+
+impl AstNode for Matcher {
+    fn wrap(self) -> NodeKind { NodeKind::Matcher(self) }
+    fn unwrap(node: &NodeKind) -> &Matcher {
+        match node { NodeKind::Matcher(matcher) => matcher, _ => unreachable!() }
     }
 }
 
@@ -285,6 +347,10 @@ impl Ast {
     }
 
     pub(crate) fn add_expr(&mut self, kind: Expr, pos: SourcePosition) -> AstId<Expr> {
+        self.add(kind, pos)
+    }
+
+    pub(crate) fn add_matcher(&mut self, kind: Matcher, pos: SourcePosition) -> AstId<Matcher> {
         self.add(kind, pos)
     }
 }

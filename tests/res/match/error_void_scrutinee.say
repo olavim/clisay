@@ -1,0 +1,5 @@
+// Matching the result of a void call is an error: there is no value to match.
+fn nothing() { }
+if nothing() ~ { x } { // error: This call returns no value, so its result cannot be matched here
+    print(x);
+}

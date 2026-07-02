@@ -69,28 +69,71 @@ pub enum HirExpr {
     SafeAccess(HirId<HirExpr>, HirId<HirExpr>, bool),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(HirId<HirExpr>),
-    /// `expr has spec`: a structural containment test yielding a boolean.
-    Has(HirId<HirExpr>, HasSpec),
+    Has(HirId<HirExpr>, Box<HirMatcher>),
+    Match(HirId<HirExpr>, Box<HirMatcher>),
 }
 
-/// The compile-time right-hand side of `x has spec`.
-pub enum HasSpec {
-    /// `k`: the value has member/key `k`, where `k` is any scalar literal.
-    Key(HirLiteral),
-    /// `T`: the value has every public member name the type/trait `T` declares.
-    Surface(Symbol),
-    /// `[s1, ...]`: every element spec holds (the AND-combinator).
-    All(Vec<HasSpec>),
-    /// `{k: m, ...}`: each scalar-literal key `k` is present and its member value matches `m`.
-    Fields(Vec<(HirLiteral, HasMatch)>),
-}
-
-/// The value side of a `has` spec entry.
-pub enum HasMatch {
+/// A lowered matcher: it tests a value and binds sub-values out into names.
+pub enum HirMatcher {
+    /// `_`: matches anything, binds nothing.
+    Wildcard,
     /// A scalar literal compared with `==`.
-    Eq(HirLiteral),
-    /// A nested spec applied to the member value.
-    Spec(HasSpec),
+    Literal(HirLiteral),
+    /// A bare name that binds the whole value.
+    Binder(Symbol),
+    /// `is T shape?` or `has T shape?`.
+    Type { nominal: bool, name: Symbol, shape: Option<Box<HirMatcher>> },
+    /// A structural shape `{ k: m, ... }`.
+    Shape(Vec<HirMatchField>),
+    /// An array shape `[ ... ]` with at most one rest element.
+    Array(Vec<HirMatchElem>),
+    /// `name @ m`: binds the whole value and also matches `m`.
+    As(Symbol, Box<HirMatcher>),
+    /// `a | b | ...`: alternatives tried left to right.
+    Or(Vec<HirMatcher>),
+    /// `a & b & ...`: all must match.
+    And(Vec<HirMatcher>),
+}
+
+/// A field of a shape matcher `{ key: value }`.
+pub struct HirMatchField {
+    pub key: HirLiteral,
+    pub value: HirMatcher,
+}
+
+/// An element of an array matcher. `Rest` is `..` or `..name`, at most one per array.
+pub enum HirMatchElem {
+    Elem(HirMatcher),
+    Rest(Option<Symbol>),
+}
+
+impl HirMatcher {
+    /// The names this matcher binds, in the left-to-right order codegen stores them.
+    pub fn binders(&self) -> Vec<Symbol> {
+        let mut out = Vec::new();
+        self.collect_binders(&mut out);
+        out
+    }
+
+    fn collect_binders(&self, out: &mut Vec<Symbol>) {
+        match self {
+            HirMatcher::Wildcard | HirMatcher::Literal(_) => {},
+            HirMatcher::Binder(name) => out.push(*name),
+            HirMatcher::Type { shape, .. } => if let Some(shape) = shape { shape.collect_binders(out) },
+            HirMatcher::Shape(fields) => for field in fields { field.value.collect_binders(out) },
+            HirMatcher::Array(elements) => for element in elements {
+                match element {
+                    HirMatchElem::Elem(matcher) => matcher.collect_binders(out),
+                    HirMatchElem::Rest(Some(name)) => out.push(*name),
+                    HirMatchElem::Rest(None) => {},
+                }
+            },
+            HirMatcher::As(name, inner) => { out.push(*name); inner.collect_binders(out); },
+            HirMatcher::And(parts) => for part in parts { part.collect_binders(out) },
+            // Alternatives bind the same set, so the first one's binders stand for all.
+            HirMatcher::Or(alternatives) => if let Some(first) = alternatives.first() { first.collect_binders(out) },
+        }
+    }
 }
 
 pub struct HirFieldInit {
@@ -140,6 +183,13 @@ pub struct HirTypeDecl {
     pub provides: Vec<Symbol>,
 }
 
+/// One arm of a `match`.
+pub struct HirMatchArm {
+    pub matcher: HirMatcher,
+    pub guard: Option<HirId<HirExpr>>,
+    pub body: HirId<HirExpr>,
+}
+
 pub enum HirStmt {
     Expression(HirId<HirExpr>),
     Return(Option<HirId<HirExpr>>),
@@ -152,6 +202,7 @@ pub enum HirStmt {
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
     Trait(Box<HirTypeDecl>),
+    Match(HirId<HirExpr>, Vec<HirMatchArm>),
 }
 
 pub enum HirNodeKind {
@@ -252,6 +303,26 @@ impl Hir {
 
     pub fn get_root(&self) -> HirId<HirStmt> {
         HirId { id: self.nodes.len() - 1, _marker: PhantomData }
+    }
+
+    /// The binder names a condition makes live in its true branch, in store order. `&&` unions
+    /// both sides. An `||` contributes a name only when both sides bind the identical set.
+    pub fn condition_binders(&self, cond: &HirId<HirExpr>) -> Vec<Symbol> {
+        match self.get(cond) {
+            HirExpr::Match(_, matcher) => matcher.binders(),
+            HirExpr::Binary(BinOp::And, left, right) => {
+                let mut out = self.condition_binders(left);
+                out.extend(self.condition_binders(right));
+                out
+            },
+            HirExpr::Binary(BinOp::Or, left, right) => {
+                let left = self.condition_binders(left);
+                let right = self.condition_binders(right);
+                let same = left.len() == right.len() && left.iter().all(|name| right.contains(name));
+                if same { left } else { Vec::new() }
+            },
+            _ => Vec::new(),
+        }
     }
 
     pub(crate) fn add<T: HirNode>(&mut self, kind: T, pos: SourcePosition) -> HirId<T> {

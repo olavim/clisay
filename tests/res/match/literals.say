@@ -1,0 +1,25 @@
+fn kind(v?) {
+    match v {
+        0 => print("zero"),
+        false => print("false"),
+        "0" => print("str-zero"),
+        null => print("null"),
+        true => print("true"),
+        -3 => print("neg-three"),
+        _ => print("other"),
+    }
+}
+kind(0); // expect: zero
+kind(false); // expect: false
+kind("0"); // expect: str-zero
+kind(null); // expect: null
+kind(true); // expect: true
+kind(0 - 3); // expect: neg-three
+kind(1); // expect: other
+
+say d = { 1: "num" };
+print(d has { 1: _ }); // expect: true
+print(d has { "1": _ }); // expect: false
+
+say e = { true: "t", null: "n" };
+print(e has { true: _, null: _ }); // expect: true

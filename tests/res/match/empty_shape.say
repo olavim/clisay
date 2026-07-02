@@ -1,0 +1,15 @@
+// An empty shape matches any dict or instance.
+type P { pub x; init(a) { this.x = a; } }
+fn t(v?) {
+    match v {
+        {} => print("shaped"),
+        _ => print("not"),
+    }
+}
+t({}); // expect: shaped
+t({ a: 1 }); // expect: shaped
+t(P(1)); // expect: shaped
+t(5); // expect: not
+t("s"); // expect: not
+t(null); // expect: not
+t([1, 2]); // expect: not

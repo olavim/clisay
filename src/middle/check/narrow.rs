@@ -1,6 +1,6 @@
 //! Flow-sensitive narrowing.
 
-use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, Symbol, UnOp};
+use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, HirMatcher, Symbol, UnOp};
 
 use super::{Checker, FlowSnapshot, LocalFlow, NarrowFact, NarrowKey, TypeTag};
 
@@ -45,6 +45,8 @@ impl<'a> Checker<'a> {
             // A bare truthiness test narrows in the truthy branch.
             HirExpr::Identifier(_) | HirExpr::Index(_, _, _) if positive => self.narrow_place(cond),
             HirExpr::Is(target, type_name) if positive => self.narrow_is(target, *type_name),
+            // A match against a structural/type/array shape proves the scrutinee non-null.
+            HirExpr::Match(scrutinee, matcher) if positive && matcher_implies_non_null(matcher) => self.narrow_place(scrutinee),
             // `x != null` narrows when true; `x == null` narrows when false.
             HirExpr::Binary(BinOp::NotEqual, l, r) if positive => self.narrow_null_compare(l, r),
             HirExpr::Binary(BinOp::Equal, l, r) if !positive => self.narrow_null_compare(l, r),
@@ -147,5 +149,19 @@ impl<'a> Checker<'a> {
             local.assigned = then_local.assigned && else_local.assigned;
             local.tag = if then_local.tag == else_local.tag { then_local.tag.clone() } else { TypeTag::Unknown };
         }
+    }
+}
+
+/// Whether matching this matcher proves the scrutinee non-null. A bare binder, a wildcard, and a
+/// `null` literal each admit null, so they prove nothing.
+fn matcher_implies_non_null(matcher: &HirMatcher) -> bool {
+    match matcher {
+        HirMatcher::Wildcard | HirMatcher::Binder(_) => false,
+        HirMatcher::Literal(HirLiteral::Null) => false,
+        HirMatcher::Literal(_) => true,
+        HirMatcher::Type { .. } | HirMatcher::Shape(_) | HirMatcher::Array(_) => true,
+        HirMatcher::As(_, inner) => matcher_implies_non_null(inner),
+        HirMatcher::And(parts) => parts.iter().any(matcher_implies_non_null),
+        HirMatcher::Or(alternatives) => alternatives.iter().all(matcher_implies_non_null),
     }
 }

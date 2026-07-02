@@ -43,6 +43,11 @@ fn has(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
+#[test_resources("tests/res/match")]
+fn matchers(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
 #[test_resources("tests/res/lambdas")]
 fn lambdas(file: &str) -> Result<(), Failed> {
     common::test_file(file)

@@ -1,0 +1,18 @@
+// match dispatches across arms: nominal, structural, shorthand, and a catch-all.
+type Point { pub x; pub y; init(a, b) { this.x = a; this.y = b; } }
+
+fn render(node) {
+    match node {
+        is Point { x, y } => { print(x); print(y); },
+        { kind: "line", from, to } => { print(from); print(to); },
+        { tag } => print(tag),
+        _ => print("skip"),
+    }
+}
+
+render(Point(1, 2)); // expect: 1
+// expect: 2
+render({ kind: "line", from: 3, to: 4 }); // expect: 3
+// expect: 4
+render({ tag: "hi" }); // expect: hi
+render(99); // expect: skip

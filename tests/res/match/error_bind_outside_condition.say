@@ -1,0 +1,3 @@
+// A `~` that binds names is only usable in a condition, not a plain value position.
+say d = { x: 1 };
+say b = d ~ { x }; // error: a `~` that binds names is only allowed in a condition

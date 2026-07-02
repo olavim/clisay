@@ -142,6 +142,21 @@ impl Vm {
         self.stack.push(Value::from(array));
     }
 
+    /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
+    pub(super) fn op_array_middle(&mut self) {
+        let prefix = self.read_next() as usize;
+        let suffix = self.read_next() as usize;
+        // Keep the source array on the stack as a GC root across the allocation below.
+        let target = self.stack.peek(0);
+        let values = unsafe {
+            let source = &(*target.as_object().as_array_ptr()).values;
+            source[prefix..source.len() - suffix].to_vec()
+        };
+        let slice = self.alloc(ObjArray::new(values));
+        self.stack.truncate(1);
+        self.stack.push(Value::from(slice));
+    }
+
     pub(super) fn op_dict(&mut self) {
         let count = self.read_next() as usize;
         let n = count * 2;

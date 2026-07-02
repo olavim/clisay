@@ -1,0 +1,3 @@
+// A match with no arms is a parse error.
+say x = 1;
+match x { } // error: A `match` needs at least one arm

@@ -1,0 +1,12 @@
+type T { pub f; pub g; init() { this.f = 1; this.g = 2; } }
+say x = T();
+
+print(x has T { f: 1 }); // expect: true
+print(x has T { f: 9 }); // expect: false
+print(x has T { f: 1, g: 2 }); // expect: true
+print(x has T { f: _ }); // expect: true
+print(x is T { f: 1 }); // expect: true
+print(x is T { f: 9 }); // expect: false
+
+if x has T { f: 1 } { print("shape then body"); } // expect: shape then body
+if x has T { print("plain body"); } // expect: plain body

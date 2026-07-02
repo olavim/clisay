@@ -103,23 +103,28 @@ struct Local {
     assigned: bool,
     tag: TypeTag,
     func: Option<HirId<HirStmt>>,
+    binder: bool,
 }
 
 impl Local {
     fn param(name: Symbol, declared_nullable: bool, mutable: bool) -> Local {
-        Local { name, declared_nullable, mutable, assigned: true, tag: TypeTag::Unknown, func: None }
+        Local { name, declared_nullable, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false }
     }
 
     fn catch(name: Symbol, mutable: bool) -> Local {
-        Local { name, declared_nullable: true, mutable, assigned: true, tag: TypeTag::Unknown, func: None }
+        Local { name, declared_nullable: true, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false }
+    }
+
+    fn binder(name: Symbol) -> Local {
+        Local { name, declared_nullable: false, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
-        Local { name, declared_nullable: false, mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt) }
+        Local { name, declared_nullable: false, mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false }
     }
 
     fn value(name: Symbol, declared_nullable: bool, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
-        Local { name, declared_nullable, mutable, assigned, tag, func: None }
+        Local { name, declared_nullable, mutable, assigned, tag, func: None, binder: false }
     }
 }
 
@@ -255,15 +260,20 @@ impl<'a> Checker<'a> {
             HirStmt::While(cond, body) => {
                 self.expr(cond)?;
                 let body_narrow = self.narrowings(cond, true);
+                let binders = self.hir.condition_binders(cond);
                 // Loop bodies may run zero times, so their flow facts don't survive the loop.
-                self.narrow_branch(&body_narrow, |c| c.expr(body))?;
+                self.narrow_branch(&body_narrow, |c| -> Result<(), anyhow::Error> {
+                    c.with_binders(&binders, |c| c.expr(body))?;
+                    Ok(())
+                })?;
             },
             HirStmt::If(cond, then, otherwise) => {
                 self.expr(cond)?;
                 let then_narrow = self.narrowings(cond, true);
                 let else_narrow = self.narrowings(cond, false);
+                let binders = self.hir.condition_binders(cond);
                 let then_snap = self.narrow_branch(&then_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
-                    c.expr(then)?;
+                    c.with_binders(&binders, |c| c.expr(then))?;
                     Ok(c.snapshot())
                 })?;
                 let else_snap = self.narrow_branch(&else_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
@@ -287,8 +297,36 @@ impl<'a> Checker<'a> {
                 }
                 if let Some(finally) = finally { self.expr(finally)?; }
             },
+            HirStmt::Match(scrutinee, arms) => {
+                let typed = self.expr(scrutinee)?;
+                if typed.nullness.is_void() {
+                    return Err(self.error("This call returns no value, so its result cannot be matched here".to_string(), scrutinee));
+                }
+                for arm in arms {
+                    let mut binders = arm.matcher.binders();
+                    if let Some(guard) = &arm.guard {
+                        binders.extend(self.hir.condition_binders(guard));
+                    }
+                    self.with_binders(&binders, |c| -> Result<(), anyhow::Error> {
+                        if let Some(guard) = &arm.guard { c.expr(guard)?; }
+                        c.expr(&arm.body)?;
+                        Ok(())
+                    })?;
+                }
+            },
         }
         Ok(())
+    }
+
+    /// Declares `binders` as immutable locals for the duration of `f`, then drops them.
+    fn with_binders<R>(&mut self, binders: &[Symbol], f: impl FnOnce(&mut Self) -> R) -> R {
+        let mark = self.locals.len();
+        for &name in binders {
+            self.locals.push(Local::binder(name));
+        }
+        let r = f(self);
+        self.locals.truncate(mark);
+        r
     }
 
     fn expr(&mut self, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
@@ -328,6 +366,13 @@ impl<'a> Checker<'a> {
                 let typed = self.expr(left)?;
                 if typed.nullness.is_void() {
                     return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), left));
+                }
+                Typed::nonnull()
+            },
+            HirExpr::Match(scrutinee, _) => {
+                let typed = self.expr(scrutinee)?;
+                if typed.nullness.is_void() {
+                    return Err(self.error("This call returns no value, so its result cannot be matched here".to_string(), scrutinee));
                 }
                 Typed::nonnull()
             },
