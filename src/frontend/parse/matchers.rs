@@ -334,53 +334,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     /// A `~` publishes its binders, so a binding that always matches is just an unconditional
-    /// assignment wearing a test. Reject that. A non-binding matcher that always matches is only a
-    /// constant boolean, no different from `if true`, so it is allowed.
+    /// assignment wearing a test. Reject that.
     pub(super) fn validate_match_operator_operand(&self, id: &AstId<Matcher>) -> Result<(), anyhow::Error> {
         let matcher = self.ast.get(id);
         if self.binds_any(matcher) && self.always_matches(matcher) {
             let pos = self.ast.pos(id).clone();
-            parse_error!(self, &pos, "`~` binding must be fallible; `{}` always matches.", self.matcher_source(id));
+            parse_error!(self, &pos, "`~` binding must be fallible; `{}` always matches.", pos.snippet());
         }
         Ok(())
-    }
-
-    /// Renders a matcher back to its source form for diagnostics. A `{ x }` shorthand reads back as
-    /// its `{ x: x }` desugaring.
-    fn matcher_source(&self, id: &AstId<Matcher>) -> String {
-        match self.ast.get(id) {
-            Matcher::Wildcard => "_".to_string(),
-            Matcher::Literal(scalar) => match_scalar_source(scalar),
-            Matcher::Binder(name) => self.ast.text(*name).to_string(),
-            Matcher::As(name, inner) => format!("{} @ {}", self.ast.text(*name), self.matcher_source(inner)),
-            Matcher::Type { nominal, name, shape } => {
-                let keyword = if *nominal { "is" } else { "has" };
-                match shape {
-                    Some(shape) => format!("{keyword} {} {}", self.ast.text(*name), self.matcher_source(shape)),
-                    None => format!("{keyword} {}", self.ast.text(*name)),
-                }
-            },
-            Matcher::Shape(fields) => {
-                let parts: Vec<String> = fields.iter()
-                    .map(|f| format!("{}: {}", match_scalar_source(&f.key), self.matcher_source(&f.value)))
-                    .collect();
-                format!("{{ {} }}", parts.join(", "))
-            },
-            Matcher::Array(elements) => {
-                let parts: Vec<String> = elements.iter().map(|e| match e {
-                    MatchElem::Elem(m) => self.matcher_source(m),
-                    MatchElem::Rest(Some(name)) => format!("..{}", self.ast.text(*name)),
-                    MatchElem::Rest(None) => "..".to_string(),
-                }).collect();
-                format!("[{}]", parts.join(", "))
-            },
-            Matcher::Or(alternatives) => self.join_matchers(alternatives, " | "),
-            Matcher::And(parts) => self.join_matchers(parts, " & "),
-        }
-    }
-
-    fn join_matchers(&self, ids: &[AstId<Matcher>], sep: &str) -> String {
-        ids.iter().map(|id| self.matcher_source(id)).collect::<Vec<_>>().join(sep)
     }
 
     /// Whether a matcher matches every value. A bare binder and `_` always match. An `&` does when
@@ -431,16 +392,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Null => MatchScalar::Null,
             _ => parse_error!(self, &pos, "Expected a literal"),
         })
-    }
-}
-
-/// Renders a scalar back to its source form for diagnostics.
-fn match_scalar_source(scalar: &MatchScalar) -> String {
-    match scalar {
-        MatchScalar::String(s) => format!("\"{s}\""),
-        MatchScalar::Number(n) => format!("{n}"),
-        MatchScalar::Boolean(b) => format!("{b}"),
-        MatchScalar::Null => "null".to_string(),
     }
 }
 
