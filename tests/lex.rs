@@ -49,6 +49,16 @@ fn lexes_multi_char_operators() {
 }
 
 #[test]
+fn token_snippet_is_its_byte_span() {
+    let toks = lex("say x");
+    let x = &toks[1];
+    assert_eq!(x.pos.snippet(), "x");
+    assert_eq!(x.pos.snippet(), x.lexeme);
+    assert_eq!(x.pos.start, 4);
+    assert_eq!(x.pos.end, 5);
+}
+
+#[test]
 fn mut_is_a_contextual_keyword() {
     // `mut` is a modifier in declaration position, like `pub`/`inner`, so it lexes as
     // an identifier and is recognized contextually.
