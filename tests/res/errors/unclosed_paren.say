@@ -1,0 +1,9 @@
+say x = (1 + 2;
+// error(full):
+// error: Unexpected token: Expected ')' but found ';'
+//  --> unclosed_paren.say:1:15
+//   |
+// 1 | say x = (1 + 2;
+//   |         ^     ^ expected ')'
+//   |         |
+//   |         unclosed '('
