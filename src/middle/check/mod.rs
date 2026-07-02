@@ -12,6 +12,8 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
+use crate::frontend::lex::Diagnostic;
+
 use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::signatures::{Signatures, TypeTag};
@@ -195,7 +197,7 @@ impl<'a> Checker<'a> {
     }
 
     fn error<T>(&self, msg: String, node: &HirId<T>) -> anyhow::Error {
-        anyhow!("{}\n\tat {}", msg, self.hir.pos(node))
+        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node).clone()))
     }
 
     fn ident_sym(&self, id: &HirId<HirExpr>) -> Symbol {

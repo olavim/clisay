@@ -31,3 +31,12 @@ fn ops() {
     assert_inline("say mut a = 1; a ^= 2; print(a);", Ok(["3"]));
     assert_inline("say mut a = 3; a += a += 1; print(a);", Ok(["7"]));
 }
+
+#[test]
+fn runtime_error_shows_call_stack_trace() {
+    // A runtime error lists each active call frame beneath the source frame.
+    let src = "fn b()! { return 1 + true; }\nfn a()! { return b(); }\na();";
+    let err = clisay::run("trace", src).err().expect("expected a runtime error").to_string();
+    assert!(err.contains("\tat b ("), "{err}");
+    assert!(err.contains("\tat a ("), "{err}");
+}

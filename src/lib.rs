@@ -20,6 +20,7 @@ mod backend;
 mod runtime;
 
 pub(crate) use frontend::ast;
+pub use frontend::lex::enable_color;
 pub use output::Output;
 
 /// Exposes compiler internals for unit tests under `tests/`. Hidden from docs

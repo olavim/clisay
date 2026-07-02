@@ -1,14 +1,40 @@
+mod diagnostic;
 mod token;
 mod token_stream;
 
+use std::cell::Cell;
 use std::fmt;
 use std::rc::Rc;
 use std::sync::LazyLock;
 
 use anyhow::bail;
 use regex::Regex;
+pub use diagnostic::Diagnostic;
 pub use token::{ContextualKeyword, Token, TokenType};
 pub use token_stream::TokenStream;
+
+thread_local! {
+    /// Whether rendered diagnostics include ANSI color.
+    static COLOR: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Turns ANSI color in diagnostics on or off for the current thread.
+pub fn enable_color(on: bool) {
+    COLOR.with(|c| c.set(on));
+}
+
+/// Wraps `text` in an ANSI color code when color is on, otherwise returns it unchanged.
+fn paint(text: &str, code: &str) -> String {
+    if COLOR.with(Cell::get) {
+        return format!("\x1b[{code}m{text}\x1b[0m");
+    }
+    return text.to_string();
+}
+
+/// A gutter cell: a right-aligned line number and its ` |` rail. A blank label makes an empty rail.
+fn rail(label: &str, width: usize) -> String {
+    return paint(&format!("{label:>width$} |"), COLOR_CYAN);
+}
 
 // Compile token patterns once on first use.
 static REGEX_STRING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"\\]|\\.)*""#).unwrap());
@@ -17,6 +43,9 @@ static REGEX_ALPHANUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[a-zA
 static REGEX_COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\/\/[^\n\r]*").unwrap());
 static REGEX_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\r\n|\r|\n)").unwrap());
 static REGEX_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\S\r\n]+").unwrap());
+
+static COLOR_RED: &str = "31";
+static COLOR_CYAN: &str = "36";
 
 pub struct SourceFile {
     pub name: String,
@@ -36,11 +65,23 @@ impl SourcePosition {
         return &self.source.content[self.start..self.end];
     }
 
+    pub fn column(&self) -> usize {
+        return self.start - self.line_bounds(self.start).0 + 1;
+    }
+
+    /// The byte range of the line containing offset `at`, newlines excluded.
+    fn line_bounds(&self, at: usize) -> (usize, usize) {
+        let content = &self.source.content;
+        let start = content[..at].rfind('\n').map_or(0, |i| i + 1);
+        let end = content[at..].find('\n').map_or(content.len(), |i| at + i);
+        return (start, end);
+    }
+
     pub fn to(&self, end: &SourcePosition) -> SourcePosition {
         return SourcePosition { source: self.source.clone(), start: self.start, end: end.end, line: self.line };
     }
 
-    pub fn render_caret(&self) -> String {
+    pub fn render_snippet(&self, label: Option<&str>) -> String {
         let content = &self.source.content;
         let line_start = content[..self.start].rfind('\n').map_or(0, |i| i + 1);
         let line_end = content[self.start..].find('\n').map_or(content.len(), |i| self.start + i);
@@ -49,8 +90,63 @@ impl SourcePosition {
         // Keep the run on this one line. Always show at least one caret.
         let caret_end = self.end.min(line_end);
         let pad = " ".repeat(self.start - line_start);
-        let carets = "^".repeat(caret_end.saturating_sub(self.start).max(1));
-        return format!("{line}\n{pad}{carets}");
+        let carets = paint(&"^".repeat(caret_end.saturating_sub(self.start).max(1)), COLOR_RED);
+        let note = label.map_or(String::new(), |l| format!(" {}", paint(l, COLOR_RED)));
+
+        // The lines on either side, when they exist, give the error some context.
+        let prev = (line_start > 0).then(|| {
+            let prev_start = content[..line_start - 1].rfind('\n').map_or(0, |i| i + 1);
+            (self.line - 1, &content[prev_start..line_start - 1])
+        });
+        let next = (line_end < content.len()).then(|| {
+            let next_end = content[line_end + 1..].find('\n').map_or(content.len(), |i| line_end + 1 + i);
+            (self.line + 1, &content[line_end + 1..next_end])
+        });
+
+        // One gutter width for every row, sized to the largest line number shown.
+        let width = next.map_or(self.line, |(n, _)| n).to_string().len();
+        let bar = rail("", width);
+
+        let mut out = format!("{bar}\n");
+        if let Some((n, text)) = prev {
+            out.push_str(&format!("{} {text}\n", rail(&n.to_string(), width)));
+        }
+        out.push_str(&format!("{} {line}\n{bar} {pad}{carets}{note}", rail(&self.line.to_string(), width)));
+        if let Some((n, text)) = next {
+            out.push_str(&format!("\n{} {text}", rail(&n.to_string(), width)));
+        }
+        return out;
+    }
+
+    /// Renders the failure point plus the unclosed opener it belongs to. Both markers share one
+    /// annotation row when they sit on the same line, otherwise each line carries its own.
+    pub fn render_snippet_pair(&self, label: Option<&str>, opener: &SourcePosition, opener_label: &str) -> String {
+        let content = &self.source.content;
+        let (p_start, p_end) = self.line_bounds(self.start);
+        let p_col = self.start - p_start;
+        let carets = "^".repeat(self.end.min(p_end).saturating_sub(self.start).max(1));
+        let note = label.map_or(String::new(), |l| format!(" {}", paint(l, COLOR_RED)));
+        let (o_start, o_end) = self.line_bounds(opener.start);
+        let o_col = opener.start - o_start;
+        let width = self.line.to_string().len();
+        let bar = rail("", width);
+
+        if self.line == opener.line {
+            let line = &content[p_start..p_end];
+            let lead = " ".repeat(o_col);
+            let mid = " ".repeat(p_col.saturating_sub(o_col + 1));
+            let ann = format!("{lead}{}{mid}{}", paint("^", COLOR_CYAN), paint(&carets, COLOR_RED));
+            let stack = " ".repeat(o_col);
+            return format!("{bar}\n{num} {line}\n{bar} {ann}{note}\n{bar} {stack}{pipe}\n{bar} {stack}{olabel}",
+                num = rail(&self.line.to_string(), width), pipe = paint("|", COLOR_CYAN), olabel = paint(opener_label, COLOR_CYAN));
+        }
+
+        let o_line = &content[o_start..o_end];
+        let p_line = &content[p_start..p_end];
+        return format!("{bar}\n{orail} {o_line}\n{bar} {o_pad}{ocaret} {olabel}\n{prail} {p_line}\n{bar} {p_pad}{pcarets}{note}",
+            orail = rail(&opener.line.to_string(), width), prail = rail(&self.line.to_string(), width),
+            o_pad = " ".repeat(o_col), p_pad = " ".repeat(p_col),
+            ocaret = paint("^", COLOR_CYAN), olabel = paint(opener_label, COLOR_CYAN), pcarets = paint(&carets, COLOR_RED));
     }
 }
 
@@ -106,7 +202,7 @@ fn next_token(input: &str, input_index: usize, pos: &SourcePosition) -> Result<T
     }
 
     let next = input[input_index..].chars().next().unwrap();
-    bail!("Unexpected character `{}`\n\tat {}", next, pos);
+    bail!("{}", Diagnostic::new(format!("Unexpected character `{next}`"), pos.clone()));
 }
 
 pub fn tokenize(file_name: String, input: String) -> Result<Vec<Token>, anyhow::Error> {

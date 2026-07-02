@@ -2,8 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::anyhow;
-
 use crate::ast::{AstId, Expr, Literal, ReturnShape, Stmt, Symbol, TypeDecl};
 use crate::frontend::lex::SourcePosition;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl};
@@ -157,14 +155,14 @@ impl<'a> Lowerer<'a> {
         }
         for (name, providers) in &exposed_methods {
             if !host_methods.contains(name) && providers.len() >= 2 {
-                return Err(anyhow!("Exposed method '{}' clashes between traits {}; declare '{}' in the host type to resolve it\n\tat {}",
-                    self.hir.text(*name), self.trait_list(providers), self.hir.text(*name), pos));
+                return Err(self.error_at(format!("Exposed method '{}' clashes between traits {}; declare '{}' in the host type to resolve it",
+                    self.hir.text(*name), self.trait_list(providers), self.hir.text(*name)), pos));
             }
         }
         for (name, providers) in &exposed_fields {
             if providers.len() + decl.fields.contains(name) as usize >= 2 {
-                return Err(anyhow!("Exposed field '{}' clashes between {}; rename one or make it private\n\tat {}",
-                    self.hir.text(*name), self.field_clash_sources(providers, decl.fields.contains(name)), pos));
+                return Err(self.error_at(format!("Exposed field '{}' clashes between {}; rename one or make it private",
+                    self.hir.text(*name), self.field_clash_sources(providers, decl.fields.contains(name))), pos));
             }
         }
         Ok(exposed_methods)
@@ -173,12 +171,12 @@ impl<'a> Lowerer<'a> {
     pub(super) fn check_provide_require_exclusive(&self, decl: &TypeDecl, pos: &SourcePosition) -> Result<(), anyhow::Error> {
         for trait_sym in &decl.req_traits {
             if decl.with_traits.contains(trait_sym) {
-                return Err(anyhow!("Trait '{}' appears in both `with` and `req`; keep only one\n\tat {}",
-                    self.hir.text(*trait_sym), pos));
+                return Err(self.error_at(format!("Trait '{}' appears in both `with` and `req`; keep only one",
+                    self.hir.text(*trait_sym)), pos));
             }
             if decl.gives.iter().any(|(_, t)| t == trait_sym) {
-                return Err(anyhow!("Trait '{}' appears in both `req` and `gives`; keep only one\n\tat {}",
-                    self.hir.text(*trait_sym), pos));
+                return Err(self.error_at(format!("Trait '{}' appears in both `req` and `gives`; keep only one",
+                    self.hir.text(*trait_sym)), pos));
             }
         }
         Ok(())
@@ -189,12 +187,12 @@ impl<'a> Lowerer<'a> {
         let mut given: HashSet<Symbol> = HashSet::new();
         for (_, trait_sym, _) in self.names.gives_traits(&type_id) {
             if with.contains(trait_sym) {
-                return Err(anyhow!("Trait '{}' appears in both `with` and `gives`; keep only one\n\tat {}",
-                    self.hir.text(*trait_sym), pos));
+                return Err(self.error_at(format!("Trait '{}' appears in both `with` and `gives`; keep only one",
+                    self.hir.text(*trait_sym)), pos));
             }
             if !given.insert(*trait_sym) {
-                return Err(anyhow!("Trait '{}' appears in `gives` more than once; keep only one\n\tat {}",
-                    self.hir.text(*trait_sym), pos));
+                return Err(self.error_at(format!("Trait '{}' appears in `gives` more than once; keep only one",
+                    self.hir.text(*trait_sym)), pos));
             }
         }
         Ok(())
@@ -261,8 +259,8 @@ impl<'a> Lowerer<'a> {
         for (rt, by) in req_traits {
             if !provided.contains(&rt) {
                 let by = by.map_or(String::new(), |t| format!(" (required by trait '{}')", self.hir.text(t)));
-                return Err(anyhow!("Unsatisfied requirement: trait '{}'{by} is not provided by any `with`\n\tat {}",
-                    self.hir.text(rt), pos));
+                return Err(self.error_at(format!("Unsatisfied requirement: trait '{}'{by} is not provided by any `with`",
+                    self.hir.text(rt)), pos));
             }
         }
 
@@ -289,8 +287,8 @@ impl<'a> Lowerer<'a> {
             .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_fns.iter().copied()));
         for (func_sym, arity, _) in req_fns {
             if !exposed.contains(&(func_sym, arity)) {
-                return Err(anyhow!("Unsatisfied `req fn {}` (arity {arity}): needs an `inner`/`pub` method '{}' taking {arity} argument(s)\n\tat {}",
-                    self.hir.text(func_sym), self.hir.text(func_sym), pos));
+                return Err(self.error_at(format!("Unsatisfied `req fn {}` (arity {arity}): needs an `inner`/`pub` method '{}' taking {arity} argument(s)",
+                    self.hir.text(func_sym), self.hir.text(func_sym)), pos));
             }
         }
 
@@ -298,8 +296,8 @@ impl<'a> Lowerer<'a> {
             .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_members.iter().copied()));
         for member_sym in req_members {
             if !exposed_names.contains(&member_sym) {
-                return Err(anyhow!("Unsatisfied `req {}`: needs an `inner`/`pub` member '{}'\n\tat {}",
-                    self.hir.text(member_sym), self.hir.text(member_sym), pos));
+                return Err(self.error_at(format!("Unsatisfied `req {}`: needs an `inner`/`pub` member '{}'",
+                    self.hir.text(member_sym), self.hir.text(member_sym)), pos));
             }
         }
         Ok(())

@@ -126,15 +126,66 @@ fn matcher(src: &str) -> (Ast, AstId<Matcher>) {
 #[test]
 fn parse_error_renders_a_caret() {
     let err = try_parse("if x ~ y { }").err().expect("expected a parse error");
-    // The source line then a caret run aligned under the matcher `y`.
-    assert!(err.contains("if x ~ y { }\n       ^"), "{err}");
+    // A numbered gutter row then a caret aligned under the matcher `y`.
+    assert!(err.contains("1 | if x ~ y { }\n  |        ^"), "{err}");
 }
 
 #[test]
 fn unexpected_token_error_renders_a_caret() {
-    let err = try_parse("fib(1 o);").err().expect("expected a parse error");
-    // The caret sits under the unexpected token `o`.
-    assert!(err.contains("fib(1 o);\n      ^"), "{err}");
+    let err = try_parse("1 o;").err().expect("expected a parse error");
+    // The caret sits under the unexpected token `o`, labelled with what was expected.
+    assert!(err.contains("1 | 1 o;\n  |   ^ expected ';'"), "{err}");
+}
+
+#[test]
+fn color_is_off_by_default_and_toggles_on() {
+    // Off by default so captured output stays plain.
+    let plain = try_parse("1 o;").err().expect("expected a parse error");
+    assert!(!plain.contains('\x1b'), "{plain}");
+
+    clisay::enable_color(true);
+    let colored = try_parse("1 o;").err().expect("expected a parse error");
+    clisay::enable_color(false);
+    assert!(colored.contains("\x1b["), "{colored}");
+}
+
+#[test]
+fn unclosed_block_points_at_opener() {
+    // Running off the end of a block reports the missing `}` and its opening brace.
+    let err = try_parse("fn f()! {\n    return 1;").err().expect("expected a parse error");
+    assert!(err.contains("expected '}'"), "{err}");
+    assert!(err.contains("unclosed '{'"), "{err}");
+}
+
+#[test]
+fn unclosed_delimiter_points_at_opener() {
+    let err = try_parse("say x = (1 + 2;").err().expect("expected a parse error");
+    // The failure point carries the caret; the unclosed `(` gets a marker beneath it.
+    assert!(err.contains("^ expected ')'"), "{err}");
+    assert!(err.contains("unclosed '('"), "{err}");
+}
+
+#[test]
+fn error_frame_shows_context_lines() {
+    let err = try_parse("say a = 1;\n1 o;\nsay b = 2;").err().expect("expected a parse error");
+    // The line before and after the offending line appear with their own gutter numbers.
+    assert!(err.contains("1 | say a = 1;\n2 | 1 o;\n"), "{err}");
+    assert!(err.contains("\n3 | say b = 2;"), "{err}");
+}
+
+#[test]
+fn error_header_has_severity_and_locator() {
+    let err = try_parse("1 o;").err().expect("expected a parse error");
+    assert!(err.starts_with("error: "), "{err}");
+    // The locator carries file, line, and column. The empty test filename leaves the file blank.
+    assert!(err.contains("\n --> :1:3\n"), "{err}");
+}
+
+#[test]
+fn mismatch_names_the_found_token_by_source_text() {
+    let err = try_parse("1 o;").err().expect("expected a parse error");
+    assert!(err.contains("found 'o'"), "{err}");
+    assert!(!err.contains("id("), "{err}");
 }
 
 #[test]

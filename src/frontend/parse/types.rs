@@ -66,7 +66,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let (with_traits, req_traits) = self.parse_composition_header()?;
 
-        self.tokens.expect(TokenType::LeftBrace)?;
+        let body_open = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
 
         let mut fields: HashSet<Symbol> = HashSet::default();
         let mut nullable_fields: HashSet<Symbol> = HashSet::default();
@@ -80,7 +80,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
 
-        while !self.tokens.matches(TokenType::RightBrace) {
+        while !self.tokens.matches(TokenType::RightBrace) && self.tokens.has_next() {
             let member_pos = self.tokens.peek(0).pos.clone();
             let visibility = self.parse_visibility();
 
@@ -168,7 +168,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 }
             }
         }
-        self.tokens.expect(TokenType::RightBrace)?;
+        self.tokens.expect_close(TokenType::RightBrace, &body_open)?;
 
         let init_name = self.ast.intern(&format!("{}.init", type_name));
 

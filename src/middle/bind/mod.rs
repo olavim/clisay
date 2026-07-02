@@ -5,6 +5,8 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 use anyhow::bail;
+
+use crate::frontend::lex::Diagnostic;
 use fnv::FnvHashMap;
 use nohash_hasher::IntSet;
 
@@ -47,13 +49,11 @@ pub struct TypeLayout {
     /// Member ids that are reassignable: `mut` fields.
     pub mutable: IntSet<u8>,
     pub member_count: u8,
-
     /// Member id of the initializer function.
     pub init_id: u8,
     /// The initializer's parameter count (the paren arity of a construction).
     pub init_arity: u8,
-    /// Field names the initializer assigns (defaults plus `init`-body `this.f =`). A brace
-    /// construction may not also provide these.
+    /// Field names the initializer assigns. A brace construction may not also provide these.
     pub init_assigned: HashSet<Symbol>,
 }
 
@@ -225,8 +225,7 @@ pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
 
 impl<'a> Resolver<'a> {
     fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &HirId<T>) -> anyhow::Error {
-        let pos = self.hir.pos(node_id);
-        anyhow!("{}\n\tat {}", msg.into(), pos)
+        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node_id).clone()))
     }
 
     fn enter_scope(&mut self) {
@@ -360,10 +359,6 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_place(&mut self, name: Symbol, node: &HirId<HirExpr>) -> Result<Place, anyhow::Error> {
-        // Order: a same-function local/param shadows everything, then an implicit-`this` member of
-        // the enclosing type, then a captured enclosing-scope local, then a global. The member is
-        // consulted before the upvalue so a bare name matching a field/method means that member, not
-        // a same-named outer variable (`x` and `this.x` name the same member).
         let place = if let Some(slot) = self.resolve_local(name) {
             Place::Local(slot)
         } else if let Some(id) = self.this_field_id(name) {

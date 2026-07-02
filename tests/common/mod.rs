@@ -11,7 +11,6 @@ const REGEX_SKIP: &str = r"^\s*//.*//";
 const REGEX_EXPECTED_ERROR: &str = r"//[ ]*error[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
 const REGEX_EXPECTED_OUT: &str = r"//[ ]*expect[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
 const REGEX_EXPECTED_ASM: &str = r"//[ ]*expect asm[ ]*:[ ]*(\r\n|\n|\r)(//[ ]*[^\n\r]+[ ]*(\r\n|\n|\r|$))*";
-const REGEX_ERROR_MESSAGE: &str = r"(.*)(\s*at .*:(\d+))+";
 const REGEX_SPLIT: &str = r"// @split(\r\n|\r|\n)";
 
 fn eq_or_fail<T: PartialEq + fmt::Debug>(expected: T, actual: T) -> Result<(), Failed> {
@@ -83,17 +82,14 @@ pub fn assert_inline<const COUNT: usize>(src: &str, r: Result<[&str; COUNT], Str
 }
 
 fn parse_error_message(err: Error) -> String {
-    let error_regex = Regex::new(REGEX_ERROR_MESSAGE).unwrap();
     let err_msg = err.to_string();
 
-    if !error_regex.is_match(&err_msg) {
-        return err_msg;
+    // Errors render as `error: <message>` then a `--> file:line:col` locator.
+    let error_regex = Regex::new(r"error: (.*)\n --> .*:(\d+):\d+").unwrap();
+    match error_regex.captures(&err_msg) {
+        Some(caps) => format!("[line {}] {}", caps.get(2).unwrap().as_str(), caps.get(1).unwrap().as_str()),
+        None => err_msg,
     }
-
-    let captures = error_regex.captures(&err_msg).unwrap();
-    let message = captures.get(1).unwrap().as_str();
-    let line = captures.get(3).unwrap().as_str().parse::<i8>().unwrap();
-    format!("[line {}] {}", line, message)
 }
 
 fn parse_expected_error(src: &str) -> Option<String> {
