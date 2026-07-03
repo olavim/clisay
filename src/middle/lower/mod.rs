@@ -48,6 +48,11 @@ impl<'a> Lowerer<'a> {
         anyhow!("{}", Diagnostic::new(msg, pos.clone()))
     }
 
+    /// An error carrying a `help:` note on how to fix it.
+    fn error_help_at(&self, msg: impl Into<String>, pos: &SourcePosition, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, pos.clone()).with_help(help))
+    }
+
     /// The `TypeDecl` of a `type`/`trait` declaration statement.
     fn ast_type(&self, id: &AstId<Stmt>) -> &'a TypeDecl {
         match self.ast.get(id) {

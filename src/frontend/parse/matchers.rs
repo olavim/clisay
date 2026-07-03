@@ -119,7 +119,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         if let Matcher::Binder(sym) = self.ast.get(id) {
             let name = self.ast.text(*sym).to_string();
             let pos = self.ast.pos(id).clone();
-            parse_error!(self, &pos, "a bare name cannot be an operand of `&` or `|`; write `is {name}` or `has {name}` to test its type, or `{name} @ ...` to bind it");
+            return Err(self.error_help(
+                "a bare name cannot be an operand of `&` or `|`",
+                &pos,
+                format!("write `is {name}` or `has {name}` to test its type, or `{name} @ ...` to bind it"),
+            ));
         }
         Ok(())
     }
@@ -168,14 +172,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// The error for an `is` with no type name. A literal operand reads as a value comparison; any
     /// other operand reads as a missed structural test.
     pub(super) fn is_needs_type_error(&self, pos: &SourcePosition) -> anyhow::Error {
-        let msg = if matches!(self.tokens.peek(0).kind,
+        let help = if matches!(self.tokens.peek(0).kind,
             TokenType::NumericLiteral | TokenType::StringLiteral
             | TokenType::True | TokenType::False | TokenType::Null) {
-            "`is` needs a type name. Use `==` to compare values."
+            "use `==` to compare values"
         } else {
-            "`is` needs a type name. Did you mean `is T { ... }`? For a structural test, write `{ ... }` without `is`."
+            "did you mean `is T { ... }`? for a structural test, write `{ ... }` without `is`"
         };
-        self.error(msg, pos)
+        self.error_help("`is` needs a type name", pos, help)
     }
 
     /// `has` type_ref shape?, `has` shape, or `has` array.
@@ -187,7 +191,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Identifier => self.parse_typed_matcher(false, pos),
             TokenType::NumericLiteral | TokenType::StringLiteral
             | TokenType::True | TokenType::False | TokenType::Null =>
-                parse_error!(self, &pos, "`has` needs a type name, a shape, or an array; for key presence use `{{ k: _ }}`, for equality use `==`"),
+                Err(self.error_help("`has` needs a type name, a shape, or an array", &pos, "for key presence use `{ k: _ }`, for equality use `==`")),
             _ => parse_error!(self, &pos, "`has` needs a type name, a shape, or an array"),
         }
     }
@@ -231,7 +235,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::LeftBracket => self.parse_array_matcher(),
             TokenType::NumericLiteral | TokenType::StringLiteral
             | TokenType::True | TokenType::False | TokenType::Null =>
-                parse_error!(self, &pos, "`has` needs a type name, a shape, or an array; for key presence use `{{ k: _ }}`, for equality use `==`"),
+                Err(self.error_help("`has` needs a type name, a shape, or an array", &pos, "for key presence use `{ k: _ }`, for equality use `==`")),
             _ => parse_error!(self, &pos, "`has` needs a type name, a shape, or an array"),
         }
     }

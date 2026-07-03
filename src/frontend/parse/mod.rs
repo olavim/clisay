@@ -96,6 +96,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         anyhow!("{}", Diagnostic::new(message, pos.clone()))
     }
 
+    /// An error carrying a `help:` note on how to fix it.
+    fn error_help(&self, message: impl Into<String>, pos: &SourcePosition, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(message, pos.clone()).with_help(help))
+    }
+
     /// Consumes a leading `mut` modifier if present, reporting whether it was there.
     fn parse_mut(&mut self) -> bool {
         if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {

@@ -21,9 +21,9 @@ impl<'a> Checker<'a> {
                         (self.locals[i].mutable, self.locals[i].assigned, self.locals[i].declared_nullable);
                     if !mutable && assigned {
                         if self.locals[i].binder {
-                            return Err(self.error(format!("Cannot reassign matcher binder '{}'; copy it into a `say mut` to change it", self.hir.text(name)), lhs));
+                            return Err(self.error_help(format!("Cannot reassign matcher binder '{}'", self.hir.text(name)), lhs, "copy it into a `say mut` to change it"));
                         }
-                        return Err(self.error(format!("Cannot reassign immutable binding '{}'; declare it 'mut'", self.hir.text(name)), lhs));
+                        return Err(self.error_help(format!("Cannot reassign immutable binding '{}'", self.hir.text(name)), lhs, "declare it 'mut'"));
                     }
                     self.check_into_slot(typed.nullness, declared_nullable, name, lhs)?;
                     self.locals[i].assigned = true;
@@ -75,10 +75,10 @@ impl<'a> Checker<'a> {
         }
         if !mutable {
             if !self.seal.in_init() {
-                return Err(self.error(format!("Cannot assign immutable field '{}' in a method; declare it 'mut'", self.hir.text(field)), lhs));
+                return Err(self.error_help(format!("Cannot assign immutable field '{}' in a method", self.hir.text(field)), lhs, "declare it 'mut'"));
             }
             if self.seal.is_assigned(field) {
-                return Err(self.error(format!("Immutable field '{}' is assigned more than once; declare it 'mut'", self.hir.text(field)), lhs));
+                return Err(self.error_help(format!("Immutable field '{}' is assigned more than once", self.hir.text(field)), lhs, "declare it 'mut'"));
             }
         }
         self.check_into_field(value, nullable, field, rhs)?;
@@ -101,7 +101,7 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         if !mutable {
-            return Err(self.error(format!("Cannot assign immutable field '{}' from outside its type; declare it 'mut'", self.hir.text(field)), lhs));
+            return Err(self.error_help(format!("Cannot assign immutable field '{}' from outside its type", self.hir.text(field)), lhs, "declare it 'mut'"));
         }
         self.check_into_field(value, nullable, field, rhs)
     }

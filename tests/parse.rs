@@ -166,11 +166,11 @@ fn unclosed_delimiter_points_at_opener() {
 }
 
 #[test]
-fn error_frame_shows_context_lines() {
+fn error_frame_shows_leading_context() {
     let err = try_parse("say a = 1;\n1 o;\nsay b = 2;").err().expect("expected a parse error");
-    // The line before and after the offending line appear with their own gutter numbers.
+    // The line before the offending line is shown; the line after is not.
     assert!(err.contains("1 | say a = 1;\n2 | 1 o;\n"), "{err}");
-    assert!(err.contains("\n3 | say b = 2;"), "{err}");
+    assert!(!err.contains("3 | say b = 2;"), "{err}");
 }
 
 #[test]

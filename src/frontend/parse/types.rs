@@ -13,7 +13,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let tok = self.tokens.peek(0);
         match tok.contextual() {
             Some(kw @ (ContextualKeyword::With | ContextualKeyword::Req)) =>
-                parse_error!(self, &tok.pos, "Unexpected '{kw}' clause: a type/trait header allows at most one `with` clause followed by at most one `req` clause"),
+                Err(self.error_help(format!("Unexpected '{kw}' clause"), &tok.pos, "a type/trait header allows at most one `with` clause followed by at most one `req` clause")),
             _ => Ok((with_traits, req_traits)),
         }
     }
@@ -122,14 +122,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     // takes no visibility modifier.
                     match name.as_str() {
                         "init" => {
-                            if is_trait { parse_error!(self, &member_pos, "A trait cannot declare an `init`; put initialization on the host type"); }
+                            if is_trait { return Err(self.error_help("A trait cannot declare an `init`", &member_pos, "put initialization on the host type")); }
                             if visibility != Visibility::Private { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
                             if mutable { parse_error!(self, &member_pos, "Only fields can be `mut`"); }
                             init = Some(self.parse_init()?);
                         },
                         _ => {
                             // Field declaration, optionally with a `gives Trait` delegation suffix.
-                            if is_trait { parse_error!(self, &member_pos, "A trait cannot declare fields; `req` the state it needs and let the host type hold it"); }
+                            if is_trait { return Err(self.error_help("A trait cannot declare fields", &member_pos, "`req` the state it needs and let the host type hold it")); }
                             let field = self.ast.intern(&name);
                             let nullable = self.parse_nullable();
                             let give = if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Gives) {

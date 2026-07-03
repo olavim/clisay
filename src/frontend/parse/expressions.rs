@@ -122,7 +122,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Operator::Match => {
                 let matcher = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
                 if let Some(Operator::Match) = Operator::peek_infix(self.tokens, 0) {
-                    parse_error!(self, &pos, "`~` does not chain. Combine tests with `&` and `|`, or join tests with `&&` and `||`");
+                    return Err(self.error_help("`~` does not chain", &pos, "combine tests with `&` and `|`, or join tests with `&&` and `||`"));
                 }
                 self.validate_match_operator_operand(&matcher)?;
                 Expr::Match(expr, matcher)

@@ -181,14 +181,14 @@ impl<'a> Lowerer<'a> {
         }
         for (name, providers) in &exposed_methods {
             if !host_methods.contains(name) && providers.len() >= 2 {
-                return Err(self.error_at(format!("Exposed method '{}' clashes between traits {}; declare '{}' in the host type to resolve it",
-                    self.hir.text(*name), self.trait_list(providers), self.hir.text(*name)), pos));
+                return Err(self.error_help_at(format!("Exposed method '{}' clashes between traits {}", self.hir.text(*name), self.trait_list(providers)),
+                    pos, format!("declare '{}' in the host type to resolve it", self.hir.text(*name))));
             }
         }
         for (name, providers) in &exposed_fields {
             if providers.len() + decl.fields.contains(name) as usize >= 2 {
-                return Err(self.error_at(format!("Exposed field '{}' clashes between {}; rename one or make it private",
-                    self.hir.text(*name), self.field_clash_sources(providers, decl.fields.contains(name))), pos));
+                return Err(self.error_help_at(format!("Exposed field '{}' clashes between {}", self.hir.text(*name), self.field_clash_sources(providers, decl.fields.contains(name))),
+                    pos, "rename one or make it private"));
             }
         }
         Ok(exposed_methods)
@@ -199,12 +199,12 @@ impl<'a> Lowerer<'a> {
     pub(super) fn check_provide_require_exclusive(&self, decl: &TypeDecl, pos: &SourcePosition) -> Result<(), anyhow::Error> {
         for trait_sym in &decl.req_traits {
             if decl.with_traits.contains(trait_sym) {
-                return Err(self.error_at(format!("Trait '{}' appears in both `with` and `req`; keep only one",
-                    self.hir.text(*trait_sym)), pos));
+                return Err(self.error_help_at(format!("Trait '{}' appears in both `with` and `req`", self.hir.text(*trait_sym)),
+                    pos, "keep only one"));
             }
             if decl.gives.iter().any(|(_, t)| t == trait_sym) {
-                return Err(self.error_at(format!("Trait '{}' appears in both `req` and `gives`; keep only one",
-                    self.hir.text(*trait_sym)), pos));
+                return Err(self.error_help_at(format!("Trait '{}' appears in both `req` and `gives`", self.hir.text(*trait_sym)),
+                    pos, "keep only one"));
             }
         }
         Ok(())
@@ -216,12 +216,12 @@ impl<'a> Lowerer<'a> {
         let mut given: HashSet<Symbol> = HashSet::new();
         for (_, trait_sym, _) in self.names.gives_traits(&type_id) {
             if with.contains(trait_sym) {
-                return Err(self.error_at(format!("Trait '{}' appears in both `with` and `gives`; keep only one",
-                    self.hir.text(*trait_sym)), pos));
+                return Err(self.error_help_at(format!("Trait '{}' appears in both `with` and `gives`", self.hir.text(*trait_sym)),
+                    pos, "keep only one"));
             }
             if !given.insert(*trait_sym) {
-                return Err(self.error_at(format!("Trait '{}' appears in `gives` more than once; keep only one",
-                    self.hir.text(*trait_sym)), pos));
+                return Err(self.error_help_at(format!("Trait '{}' appears in `gives` more than once", self.hir.text(*trait_sym)),
+                    pos, "keep only one"));
             }
         }
         Ok(())
