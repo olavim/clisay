@@ -1,0 +1,11 @@
+trait Logger  { pub fn log(m) { print("log"); } }
+trait Auditor { pub fn log(m) { print("audit"); } }
+type Service with Logger, Auditor { init() {} }
+// error(full):
+// error: Exposed method 'log' clashes between traits 'Logger' and 'Auditor'
+//  --> help_method_clash.say:3:1
+//   |
+// 2 | trait Auditor { pub fn log(m) { print("audit"); } }
+// 3 | type Service with Logger, Auditor { init() {} }
+//   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//   = help: declare 'log' in the host type to resolve it

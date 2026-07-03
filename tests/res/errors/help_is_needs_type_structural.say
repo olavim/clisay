@@ -1,0 +1,10 @@
+say x = 1;
+if x is { a: 1 } { print("no"); }
+// error(full):
+// error: `is` needs a type name
+//  --> help_is_needs_type_structural.say:2:4
+//   |
+// 1 | say x = 1;
+// 2 | if x is { a: 1 } { print("no"); }
+//   |    ^
+//   = help: did you mean `is T { ... }`? for a structural test, write `{ ... }` without `is`

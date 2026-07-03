@@ -1,0 +1,12 @@
+say d = { x: 1 };
+if d ~ { x } {
+    x = 5;
+}
+// error(full):
+// error: Cannot reassign matcher binder 'x'
+//  --> help_reassign_binder.say:3:5
+//   |
+// 2 | if d ~ { x } {
+// 3 |     x = 5;
+//   |     ^
+//   = help: copy it into a `say mut` to change it

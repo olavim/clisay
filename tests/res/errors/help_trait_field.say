@@ -1,0 +1,11 @@
+trait Counter {
+    count = 0;
+}
+// error(full):
+// error: A trait cannot declare fields
+//  --> help_trait_field.say:2:5
+//   |
+// 1 | trait Counter {
+// 2 |     count = 0;
+//   |     ^^^^^
+//   = help: `req` the state it needs and let the host type hold it

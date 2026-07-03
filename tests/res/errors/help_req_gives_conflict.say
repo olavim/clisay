@@ -1,0 +1,10 @@
+trait Clock { pub fn tick() { return 1; } }
+type Player req Clock { clock gives Clock; }
+// error(full):
+// error: Trait 'Clock' appears in both `req` and `gives`
+//  --> help_req_gives_conflict.say:2:1
+//   |
+// 1 | trait Clock { pub fn tick() { return 1; } }
+// 2 | type Player req Clock { clock gives Clock; }
+//   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//   = help: keep only one

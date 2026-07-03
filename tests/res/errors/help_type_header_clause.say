@@ -1,0 +1,11 @@
+trait Y { pub fn y() { return 1; } }
+trait Z { pub fn z() { return 2; } }
+type X with Y with Z { init() {} }
+// error(full):
+// error: Unexpected 'with' clause
+//  --> help_type_header_clause.say:3:15
+//   |
+// 2 | trait Z { pub fn z() { return 2; } }
+// 3 | type X with Y with Z { init() {} }
+//   |               ^^^^
+//   = help: a type/trait header allows at most one `with` clause followed by at most one `req` clause

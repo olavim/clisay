@@ -1,0 +1,10 @@
+trait Clock { pub fn tick() { return 1; } }
+type Player with Clock req Clock { init() {} }
+// error(full):
+// error: Trait 'Clock' appears in both `with` and `req`
+//  --> help_with_req_conflict.say:2:1
+//   |
+// 1 | trait Clock { pub fn tick() { return 1; } }
+// 2 | type Player with Clock req Clock { init() {} }
+//   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//   = help: keep only one

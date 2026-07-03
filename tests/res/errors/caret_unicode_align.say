@@ -1,0 +1,7 @@
+say s = "ééé"; say x = 1 + true;
+// error(full):
+// error: Operator '+' cannot be applied to operands number and boolean
+//  --> caret_unicode_align.say:1:28
+//   |
+// 1 | say s = "ééé"; say x = 1 + true;
+//   |                            ^^^^

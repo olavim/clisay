@@ -1,0 +1,15 @@
+fn f(n)! {
+  if n == 0 { return 1 + true; }
+  return f(n - 1);
+}
+f(2);
+// error(full):
+// error: Operator '+' cannot be applied to operands number and boolean
+//  --> frame_recursion.say:2:26
+//   |
+// 1 | fn f(n)! {
+// 2 |   if n == 0 { return 1 + true; }
+//   |                          ^^^^
+// 	at f (frame_recursion.say:2)
+// 	at f (frame_recursion.say:3)
+// 	at f (frame_recursion.say:3)
