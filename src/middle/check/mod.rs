@@ -12,6 +12,8 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
+use crate::frontend::lex::Diagnostic;
+
 use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::signatures::{Signatures, TypeTag};
@@ -195,7 +197,20 @@ impl<'a> Checker<'a> {
     }
 
     fn error<T>(&self, msg: String, node: &HirId<T>) -> anyhow::Error {
-        anyhow!("{}\n\tat {}", msg, self.hir.pos(node))
+        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node).clone()))
+    }
+
+    /// An error carrying a `help:` note on how to fix it.
+    fn error_help<T>(&self, msg: String, node: &HirId<T>, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node).clone()).with_help(help))
+    }
+
+    /// An error caretting two nodes, each with its own label.
+    fn error_two_spans<T, U>(&self, msg: String, primary: &HirId<T>, primary_label: &str, other: &HirId<U>, other_label: &str, help: String) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(primary).clone())
+            .with_label(primary_label)
+            .with_span(self.hir.pos(other).clone(), other_label)
+            .with_help(help))
     }
 
     fn ident_sym(&self, id: &HirId<HirExpr>) -> Symbol {

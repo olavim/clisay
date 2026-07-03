@@ -31,13 +31,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             },
             None => None
         };
-        Ok(self.ast.add_stmt(Stmt::If(condition, then, otherwise), pos))
+        Ok(self.node_stmt(Stmt::If(condition, then, otherwise), pos))
     }
 
     pub(super) fn parse_block_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let body = self.parse_block_or_stmt()?;
-        Ok(self.ast.add_stmt(Stmt::Block(body), pos))
+        Ok(self.node_stmt(Stmt::Block(body), pos))
     }
 
     pub(super) fn parse_say(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -55,14 +55,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         self.tokens.expect(TokenType::Semicolon)?;
         let field_init = FieldInit { name, value: expr, nullable, mutable };
-        Ok(self.ast.add_stmt(Stmt::Say(field_init), pos))
+        Ok(self.node_stmt(Stmt::Say(field_init), pos))
     }
 
     pub(super) fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::While)?.pos.clone();
         let condition = self.parse_condition()?;
         let body = self.parse_block_or_stmt()?;
-        Ok(self.ast.add_stmt(Stmt::While(condition, body), pos))
+        Ok(self.node_stmt(Stmt::While(condition, body), pos))
     }
 
     pub(super) fn parse_return(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -72,13 +72,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             false => Some(self.parse_expr()?)
         };
         self.tokens.expect(TokenType::Semicolon)?;
-        Ok(self.ast.add_stmt(Stmt::Return(expr), pos))
+        Ok(self.node_stmt(Stmt::Return(expr), pos))
     }
 
     pub(super) fn parse_throw(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Throw)?.pos.clone();
         let expr = self.parse_expr_semi()?;
-        Ok(self.ast.add_stmt(Stmt::Throw(expr), pos))
+        Ok(self.node_stmt(Stmt::Throw(expr), pos))
     }
 
     /// Parses an expression terminated by a required semicolon.
@@ -122,15 +122,15 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             parse_error!(self, &pos, "Expected catch or finally block")
         }
 
-        Ok(self.ast.add_stmt(Stmt::Try(try_body, catch, finally), pos))
+        Ok(self.node_stmt(Stmt::Try(try_body, catch, finally), pos))
     }
 
     pub(super) fn parse_block(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         self.tokens.expect(TokenType::LeftBrace)?;
         let stmts = self.parse_stmts()?;
-        self.tokens.expect(TokenType::RightBrace)?;
-        Ok(self.ast.add_expr(Expr::Block(stmts), pos))
+        self.tokens.expect_close(TokenType::RightBrace, &pos)?;
+        Ok(self.node_expr(Expr::Block(stmts), pos))
     }
 
     pub(super) fn parse_block_or_stmt(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
@@ -139,7 +139,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         } else {
             let pos = self.tokens.peek(0).pos.clone();
             let stmt = self.parse_stmt()?;
-            Ok(self.ast.add_expr(Expr::Block(vec![stmt]), pos))
+            Ok(self.node_expr(Expr::Block(vec![stmt]), pos))
         }
     }
 
@@ -154,7 +154,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses statements up to (but not consuming) the closing `}`.
     pub(super) fn parse_stmts(&mut self) -> Result<Vec<AstId<Stmt>>, anyhow::Error> {
         let mut stmts: Vec<AstId<Stmt>> = Vec::new();
-        while !self.tokens.matches(TokenType::RightBrace) {
+        while !self.tokens.matches(TokenType::RightBrace) && self.tokens.has_next() {
             stmts.push(self.parse_stmt()?);
         }
         Ok(stmts)
@@ -163,6 +163,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub(super) fn parse_expr_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let expr = self.parse_expr_semi()?;
-        Ok(self.ast.add_stmt(Stmt::Expression(expr), pos))
+        Ok(self.node_stmt(Stmt::Expression(expr), pos))
     }
 }

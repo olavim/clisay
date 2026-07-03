@@ -1,0 +1,15 @@
+fn apply(cb) { cb(); }
+type A {
+  pub fn run() { apply(() => 1 + true); }
+}
+A().run();
+// error(full):
+// error: Operator '+' cannot be applied to operands number and boolean
+//  --> frame_mixed_chain.say:3:34
+//   |
+// 2 | type A {
+// 3 |   pub fn run() { apply(() => 1 + true); }
+//   |                                  ^^^^
+// 	at lambda (frame_mixed_chain.say:3)
+// 	at apply (frame_mixed_chain.say:1)
+// 	at A.run (frame_mixed_chain.say:3)

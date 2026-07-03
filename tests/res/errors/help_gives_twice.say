@@ -1,0 +1,18 @@
+trait Powered { pub fn start() { return "vroom"; } }
+type Engine with Powered { init() {} }
+type Car {
+    engine gives Powered;
+    spare gives Powered;
+    init() { this.engine = Engine(); this.spare = Engine(); }
+}
+// error(full):
+// error: Trait 'Powered' appears in `gives` more than once
+//  --> help_gives_twice.say:4:18
+//   |
+// 3 | type Car {
+// 4 |     engine gives Powered;
+//   |                  ^^^^^^^ first appears here
+// 5 |     spare gives Powered;
+//   |                 ^^^^^^^ and a second time here
+//   |
+//   = help: keep only one

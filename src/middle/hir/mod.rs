@@ -178,6 +178,7 @@ pub struct HirTypeDecl {
     pub methods: Vec<HirId<HirStmt>>,
     pub method_traits: Vec<Option<Symbol>>,
     pub pub_members: HashSet<Symbol>,
+    pub inner_members: HashSet<Symbol>,
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
     pub surface: HashSet<Symbol>,
     pub provides: Vec<Symbol>,

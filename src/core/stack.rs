@@ -1,10 +1,10 @@
+use std::marker::PhantomData;
 
 pub struct Stack<T, const N: usize> {
     values: Vec<T>,
     top: *mut T,
     bottom: *mut T,
-    /// One past the last slot (`bottom + N`), precomputed so `is_full` is a bare
-    /// pointer comparison with no address arithmetic on the hot path.
+    /// One past the last slot.
     end: *mut T
 }
 
@@ -87,19 +87,17 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
 
     pub fn iter(&'a self) -> StackIter<'a, T, N> {
         StackIter {
-            stack: self,
-            curr: self.bottom
+            front: self.bottom,
+            back: self.top,
+            _marker: PhantomData
         }
     }
-    
+
     #[inline]
     pub fn len(&self) -> usize {
         (self.top as isize - self.bottom as isize) as usize / std::mem::size_of::<T>()
     }
 
-    /// Whether the backing array is full, i.e. a further `push` would write out
-    /// of bounds. A bare pointer comparison against the precomputed `end`, cheap
-    /// enough to guard the hot call path.
     #[inline]
     pub fn is_full(&self) -> bool {
         self.top >= self.end
@@ -107,38 +105,37 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
 }
 
 pub struct StackIter<'a, T: Copy, const N: usize> {
-    stack: &'a Stack<T, N>,
-    curr: *mut T,
+    front: *mut T,
+    back: *mut T,
+    _marker: PhantomData<&'a T>,
 }
 
 impl<'a, T: Copy, const N: usize> Iterator for StackIter<'a, T, N> {
     type Item = T;
-    
+
     fn next(&mut self) -> Option<Self::Item> {
-        if self.curr >= self.stack.top {
+        if self.front >= self.back {
             return None;
         }
 
-        let value = unsafe { *self.curr };
-        self.curr = unsafe { self.curr.add(1) };
+        let value = unsafe { *self.front };
+        self.front = unsafe { self.front.add(1) };
         Some(value)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let stack_len = self.stack.len();
-        let offset = unsafe { self.curr.offset_from(self.stack.bottom) as usize };
-        let len = stack_len - offset;
+        let len = (self.back as usize - self.front as usize) / std::mem::size_of::<T>();
         (len, Some(len))
     }
 }
 
 impl<'a, T: Copy, const N: usize> DoubleEndedIterator for StackIter<'a, T, N> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.curr <= self.stack.bottom {
+        if self.back <= self.front {
             return None;
         }
-        self.curr = unsafe { self.curr.sub(1) };
-        Some(unsafe { *self.curr })
+        self.back = unsafe { self.back.sub(1) };
+        Some(unsafe { *self.back })
     }
 }
 
