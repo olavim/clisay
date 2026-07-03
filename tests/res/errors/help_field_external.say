@@ -5,10 +5,10 @@ type T {
 say t = T();
 t.value = 2;
 // error(full):
-// error: Cannot assign immutable field 'value' from outside its type
+// error: Cannot assign immutable field `T.value`
 //  --> help_field_external.say:6:1
 //   |
 // 5 | say t = T();
 // 6 | t.value = 2;
 //   | ^^^^^^^
-//   = help: declare it 'mut'
+//   = help: you can make `T.value` mutable by declaring it as `pub mut value;`

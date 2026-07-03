@@ -15,15 +15,18 @@ impl<'a> Checker<'a> {
                 if let Some(i) = self.frame_index_of(name) {
                     // A function binding names a declaration, not a reassignable slot.
                     if self.locals[i].func.is_some() {
-                        return Err(self.error(format!("Cannot reassign '{}'; it names a function", self.hir.text(name)), lhs));
+                        return Err(self.error(format!("Cannot reassign `{}`; it names a function", self.hir.text(name)), lhs));
                     }
                     let (mutable, assigned, declared_nullable) =
                         (self.locals[i].mutable, self.locals[i].assigned, self.locals[i].declared_nullable);
                     if !mutable && assigned {
+                        let text = self.hir.text(name);
                         if self.locals[i].binder {
-                            return Err(self.error_help(format!("Cannot reassign matcher binder '{}'", self.hir.text(name)), lhs, "copy it into a `say mut` to change it"));
+                            return Err(self.error_help(format!("Cannot reassign matcher binder `{text}`"), lhs,
+                                format!("copy it into a `say mut {text}` first to change it")));
                         }
-                        return Err(self.error_help(format!("Cannot reassign immutable binding '{}'", self.hir.text(name)), lhs, "declare it 'mut'"));
+                        return Err(self.error_help(format!("Cannot reassign immutable binding `{text}`"), lhs,
+                            format!("you can make `{text}` mutable by declaring it as `say mut {text}`")));
                     }
                     self.check_into_slot(typed.nullness, declared_nullable, name, lhs)?;
                     self.locals[i].assigned = true;
@@ -31,7 +34,7 @@ impl<'a> Checker<'a> {
                     self.reset_narrowing(i, matches!(typed.nullness, Nullness::NonNull));
                 } else if self.sigs.types_by_name.contains_key(&name) {
                     // A type binding names a declaration, not a reassignable slot.
-                    return Err(self.error(format!("Cannot reassign '{}'; it names a type", self.hir.text(name)), lhs));
+                    return Err(self.error(format!("Cannot reassign `{}`; it names a type", self.hir.text(name)), lhs));
                 } else {
                     // `field = ...` is implicitly `this.field = ...`
                     self.assign_field_this(name, typed.nullness, lhs, rhs)?;
@@ -66,7 +69,8 @@ impl<'a> Checker<'a> {
 
     /// Checks an assignment `this.field = value`.
     fn assign_field_this(&mut self, field: Symbol, value: Nullness, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let (is_field, nullable, mutable) = match self.current_type.and_then(|t| self.layout_of(t)) {
+        let Some(type_name) = self.current_type else { return Ok(()) };
+        let (is_field, nullable, mutable) = match self.layout_of(type_name) {
             Some(layout) => (matches!(layout.members.get(&field), Some(TypeMember::Field(_))), layout.is_nullable(field), layout.is_mutable(field)),
             None => return Ok(()),
         };
@@ -75,14 +79,17 @@ impl<'a> Checker<'a> {
         }
         if !mutable {
             if !self.seal.in_init() {
-                return Err(self.error_help(format!("Cannot assign immutable field '{}' in a method", self.hir.text(field)), lhs, "declare it 'mut'"));
+                return Err(self.immutable_field_error(type_name, field, lhs));
             }
             if self.seal.is_assigned(field) {
-                return Err(self.error_help(format!("Immutable field '{}' is assigned more than once", self.hir.text(field)), lhs, "declare it 'mut'"));
+                return Err(match self.seal.first_assign(field) {
+                    Some(first) => self.double_init_error(type_name, field, first, *lhs),
+                    None => self.immutable_field_error(type_name, field, lhs),
+                });
             }
         }
         self.check_into_field(value, nullable, field, rhs)?;
-        self.seal.mark_assigned(field);
+        self.seal.mark_assigned(field, *lhs);
         Ok(())
     }
 
@@ -101,9 +108,37 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         if !mutable {
-            return Err(self.error_help(format!("Cannot assign immutable field '{}' from outside its type", self.hir.text(field)), lhs, "declare it 'mut'"));
+            return Err(self.immutable_field_error(type_name, field, lhs));
         }
         self.check_into_field(value, nullable, field, rhs)
+    }
+
+    fn immutable_field_error(&self, type_name: Symbol, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
+        let name = self.qualified_field(type_name, field);
+        self.error_help(format!("Cannot assign immutable field `{name}`"), lhs,
+            format!("you can make `{name}` mutable by declaring it as `{};`", self.mut_decl_hint(type_name, field)))
+    }
+
+    fn double_init_error(&self, type_name: Symbol, field: Symbol, first: HirId<HirExpr>, second: HirId<HirExpr>) -> anyhow::Error {
+        let name = self.qualified_field(type_name, field);
+        self.error_two_spans(
+            format!("Immutable field `{name}` is initialized more than once"),
+            &second, "and a second time here", &first, "first initialized here",
+            format!("keep only one, or make `{name}` mutable by declaring it as `{};`", self.mut_decl_hint(type_name, field)))
+    }
+
+    /// The `Type.field` name shown in field diagnostics.
+    fn qualified_field(&self, type_name: Symbol, field: Symbol) -> String {
+        format!("{}.{}", self.hir.text(type_name), self.hir.text(field))
+    }
+
+    /// The declaration a field needs to become mutable, e.g. `pub mut value` or `mut value`,
+    /// keeping the field's current visibility.
+    fn mut_decl_hint(&self, type_name: Symbol, field: Symbol) -> String {
+        let visibility = self.layout_of(type_name).map_or("", |layout| {
+            if layout.is_public(field) { "pub " } else if layout.is_inner(field) { "inner " } else { "" }
+        });
+        format!("{visibility}mut {}", self.hir.text(field))
     }
 
     /// Checks a value moving into a field per the field's nullability.

@@ -88,6 +88,7 @@ impl<'a> Lowerer<'a> {
             methods: composed.methods,
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
+            inner_members: decl.inner_members.clone(),
             trait_privates: composed.trait_privates,
             surface: HashSet::new(), // gating applies to standalone traits, not composed types
             provides,
@@ -112,6 +113,7 @@ impl<'a> Lowerer<'a> {
             methods: composed.methods,
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
+            inner_members: decl.inner_members.clone(),
             trait_privates: composed.trait_privates,
             surface,
             provides: Vec::new(), // a standalone trait emits no runtime type

@@ -44,16 +44,16 @@ pub struct TypeLayout {
     pub members: FnvHashMap<Symbol, TypeMember>,
     pub fields: Vec<u8>,
     pub non_public: IntSet<u8>,
-    /// Member ids whose declared type is nullable: `?` fields and nullable-returning methods.
+    /// Nullable fields and nullable-returning methods.
     pub nullable: IntSet<u8>,
-    /// Member ids that are reassignable: `mut` fields.
     pub mutable: IntSet<u8>,
+    pub inner: IntSet<u8>,
     pub member_count: u8,
     /// Member id of the initializer function.
     pub init_id: u8,
-    /// The initializer's parameter count (the paren arity of a construction).
+    /// The initializer's arity.
     pub init_arity: u8,
-    /// Field names the initializer assigns. A brace construction may not also provide these.
+    /// Field names the initializer assigns.
     pub init_assigned: HashSet<Symbol>,
 }
 
@@ -66,6 +66,7 @@ impl TypeLayout {
             non_public: IntSet::default(),
             nullable: IntSet::default(),
             mutable: IntSet::default(),
+            inner: IntSet::default(),
             init_id: 0,
             member_count: 0,
             init_arity: 0,
@@ -93,6 +94,10 @@ impl TypeLayout {
 
     pub fn is_public(&self, name: Symbol) -> bool {
         self.resolve_id(name).is_some_and(|id| !self.non_public.contains(&id))
+    }
+
+    pub fn is_inner(&self, name: Symbol) -> bool {
+        self.resolve_id(name).is_some_and(|id| self.inner.contains(&id))
     }
 }
 
@@ -796,6 +801,9 @@ impl<'a> Resolver<'a> {
             layout.fields.push(next_member_id);
             if !decl.pub_members.contains(field) {
                 layout.non_public.insert(next_member_id);
+            }
+            if decl.inner_members.contains(field) {
+                layout.inner.insert(next_member_id);
             }
             if decl.nullable_fields.contains(field) {
                 layout.nullable.insert(next_member_id);

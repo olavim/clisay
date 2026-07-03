@@ -2,5 +2,5 @@
 try {
     throw "boom";
 } catch (e) {
-    e = 1; // error: Cannot reassign immutable binding 'e'
+    e = 1; // error: Cannot reassign immutable binding `e`
 }
