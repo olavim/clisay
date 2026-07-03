@@ -240,6 +240,9 @@ impl Vm {
         let trace = lines.join("\n");
 
         let pos = self.get_source_position();
+        if trace.is_empty() {
+            bail!("{}", Diagnostic::new(message, pos.clone()))
+        }
         bail!("{}\n{}", Diagnostic::new(message, pos.clone()), trace)
     }
 

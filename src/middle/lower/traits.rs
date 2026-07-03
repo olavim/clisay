@@ -58,7 +58,7 @@ impl<'a> Lowerer<'a> {
         let gives_traits: Vec<Symbol> = self.names.gives_traits(&type_id).iter().map(|(_, t, _)| *t).collect();
         self.check_requirements(decl, &traits, &gives_traits, type_pos)?;
         let host_methods: HashSet<Symbol> = decl.methods.iter().map(|m| self.ast_fn(m).name).collect();
-        let exposed_methods = self.check_exposed_collisions(&traits, &host_methods, decl, type_pos)?;
+        let exposed_methods = self.check_exposed_collisions(&traits, &host_methods, type_pos)?;
 
         // Install the composer's context: which traits are provided (for qualified `T.method(...)`)
         // and which qualified aliases exist.
@@ -167,13 +167,9 @@ impl<'a> Lowerer<'a> {
 
     /// Checks exposed-member collisions across a flattened trait set, returning the exposed
     /// methods grouped by name.
-    fn check_exposed_collisions(&self, traits: &[(Symbol, &'a TypeDecl)], host_methods: &HashSet<Symbol>, decl: &TypeDecl, pos: &SourcePosition) -> Result<HashMap<Symbol, Vec<Symbol>>, anyhow::Error> {
+    fn check_exposed_collisions(&self, traits: &[(Symbol, &'a TypeDecl)], host_methods: &HashSet<Symbol>, pos: &SourcePosition) -> Result<HashMap<Symbol, Vec<Symbol>>, anyhow::Error> {
         let mut exposed_methods: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
-        let mut exposed_fields: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
         for (trait_sym, type_decl) in traits {
-            for field in &type_decl.fields {
-                if is_exposed(type_decl, field) { exposed_fields.entry(*field).or_default().push(*trait_sym); }
-            }
             for method in &type_decl.methods {
                 let name = self.ast_fn(method).name;
                 if is_exposed(type_decl, &name) { exposed_methods.entry(name).or_default().push(*trait_sym); }
@@ -183,12 +179,6 @@ impl<'a> Lowerer<'a> {
             if !host_methods.contains(name) && providers.len() >= 2 {
                 return Err(self.error_help_at(format!("Exposed method '{}' clashes between traits {}", self.hir.text(*name), self.trait_list(providers)),
                     pos, format!("declare '{}' in the host type to resolve it", self.hir.text(*name))));
-            }
-        }
-        for (name, providers) in &exposed_fields {
-            if providers.len() + decl.fields.contains(name) as usize >= 2 {
-                return Err(self.error_help_at(format!("Exposed field '{}' clashes between {}", self.hir.text(*name), self.field_clash_sources(providers, decl.fields.contains(name))),
-                    pos, "rename one or make it private"));
             }
         }
         Ok(exposed_methods)
@@ -437,11 +427,5 @@ impl<'a> Lowerer<'a> {
 
     fn trait_list(&self, traits: &[Symbol]) -> String {
         traits.iter().map(|t| format!("'{}'", self.hir.text(*t))).collect::<Vec<_>>().join(" and ")
-    }
-
-    fn field_clash_sources(&self, traits: &[Symbol], host: bool) -> String {
-        let mut parts: Vec<String> = traits.iter().map(|t| format!("trait '{}'", self.hir.text(*t))).collect();
-        if host { parts.push("the host type".to_string()); }
-        parts.join(" and ")
     }
 }

@@ -1,0 +1,9 @@
+say x = 1
+print(x);
+// error(full):
+// error: Unexpected token: Expected ';' but found 'print'
+//  --> expected_token_label.say:2:1
+//   |
+// 1 | say x = 1
+// 2 | print(x);
+//   | ^^^^^ expected ';'

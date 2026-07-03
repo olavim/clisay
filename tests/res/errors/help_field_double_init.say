@@ -1,0 +1,16 @@
+type T {
+    pub value;
+    init() {
+        this.value = 1;
+        this.value = 2;
+    }
+}
+T();
+// error(full):
+// error: Immutable field 'value' is assigned more than once
+//  --> help_field_double_init.say:5:9
+//   |
+// 4 |         this.value = 1;
+// 5 |         this.value = 2;
+//   |         ^^^^^^^^^^
+//   = help: declare it 'mut'

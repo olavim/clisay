@@ -1,0 +1,11 @@
+trait Counter {
+    init() {}
+}
+// error(full):
+// error: A trait cannot declare an `init`
+//  --> help_trait_init.say:2:5
+//   |
+// 1 | trait Counter {
+// 2 |     init() {}
+//   |     ^^^^
+//   = help: put initialization on the host type

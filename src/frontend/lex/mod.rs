@@ -36,6 +36,18 @@ fn rail(label: &str, width: usize) -> String {
     return paint(&format!("{label:>width$} |"), COLOR_CYAN);
 }
 
+const TAB_WIDTH: usize = 4;
+
+/// Renders a source line for a frame, expanding tabs so carets can line up under it.
+fn expand_tabs(line: &str) -> String {
+    return line.replace('\t', &" ".repeat(TAB_WIDTH));
+}
+
+/// Display columns `text` occupies once tabs are expanded. Uses char counting
+fn display_width(text: &str) -> usize {
+    return text.chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum();
+}
+
 /// The `help:` notes shown under a frame, each on its own gutter-aligned line.
 fn render_help(width: usize, help: &[String]) -> String {
     let prefix = format!("{} = help:", " ".repeat(width));
@@ -76,7 +88,8 @@ impl SourcePosition {
     }
 
     pub fn column(&self) -> usize {
-        return self.start - self.line_bounds(self.start).0 + 1;
+        let (line_start, _) = self.line_bounds(self.start);
+        return display_width(&self.source.content[line_start..self.start]) + 1;
     }
 
     /// The byte range of the line containing offset `at`, newlines excluded.
@@ -95,18 +108,18 @@ impl SourcePosition {
         let content = &self.source.content;
         let line_start = content[..self.start].rfind('\n').map_or(0, |i| i + 1);
         let line_end = content[self.start..].find('\n').map_or(content.len(), |i| self.start + i);
-        let line = &content[line_start..line_end];
+        let line = expand_tabs(&content[line_start..line_end]);
 
         // Keep the run on this one line. Always show at least one caret.
         let caret_end = self.end.min(line_end);
-        let pad = " ".repeat(self.start - line_start);
-        let carets = paint(&"^".repeat(caret_end.saturating_sub(self.start).max(1)), COLOR_RED);
+        let pad = " ".repeat(display_width(&content[line_start..self.start]));
+        let carets = paint(&"^".repeat(display_width(&content[self.start..caret_end]).max(1)), COLOR_RED);
         let note = label.map_or(String::new(), |l| format!(" {}", paint(l, COLOR_RED)));
 
         // Show the line before for context, but a blank one is just noise, so skip it.
         let prev = (line_start > 0).then(|| {
             let prev_start = content[..line_start - 1].rfind('\n').map_or(0, |i| i + 1);
-            (self.line - 1, &content[prev_start..line_start - 1])
+            (self.line - 1, expand_tabs(&content[prev_start..line_start - 1]))
         }).filter(|(_, text)| !text.trim().is_empty());
 
         let width = self.line.to_string().len();
@@ -125,16 +138,16 @@ impl SourcePosition {
     pub fn render_snippet_pair(&self, label: Option<&str>, opener: &SourcePosition, opener_label: &str, help: &[String]) -> String {
         let content = &self.source.content;
         let (p_start, p_end) = self.line_bounds(self.start);
-        let p_col = self.start - p_start;
-        let carets = "^".repeat(self.end.min(p_end).saturating_sub(self.start).max(1));
+        let p_col = display_width(&content[p_start..self.start]);
+        let carets = "^".repeat(display_width(&content[self.start..self.end.min(p_end)]).max(1));
         let note = label.map_or(String::new(), |l| format!(" {}", paint(l, COLOR_RED)));
         let (o_start, o_end) = self.line_bounds(opener.start);
-        let o_col = opener.start - o_start;
+        let o_col = display_width(&content[o_start..opener.start]);
         let width = self.line.to_string().len();
         let bar = rail("", width);
 
         if self.line == opener.line {
-            let line = &content[p_start..p_end];
+            let line = expand_tabs(&content[p_start..p_end]);
             let lead = " ".repeat(o_col);
             let mid = " ".repeat(p_col.saturating_sub(o_col + 1));
             let ann = format!("{lead}{}{mid}{}", paint("^", COLOR_CYAN), paint(&carets, COLOR_RED));
@@ -144,8 +157,8 @@ impl SourcePosition {
             return frame + &render_help(width, help);
         }
 
-        let o_line = &content[o_start..o_end];
-        let p_line = &content[p_start..p_end];
+        let o_line = expand_tabs(&content[o_start..o_end]);
+        let p_line = expand_tabs(&content[p_start..p_end]);
         let frame = format!("{bar}\n{orail} {o_line}\n{bar} {o_pad}{ocaret} {olabel}\n{prail} {p_line}\n{bar} {p_pad}{pcarets}{note}",
             orail = rail(&opener.line.to_string(), width), prail = rail(&self.line.to_string(), width),
             o_pad = " ".repeat(o_col), p_pad = " ".repeat(p_col),

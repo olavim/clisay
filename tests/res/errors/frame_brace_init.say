@@ -1,0 +1,13 @@
+type A {
+  pub x;
+  init() { say y = 1 + true; }
+}
+A() { x: 5 };
+// error(full):
+// error: Operator '+' cannot be applied to operands number and boolean
+//  --> frame_brace_init.say:3:24
+//   |
+// 2 |   pub x;
+// 3 |   init() { say y = 1 + true; }
+//   |                        ^^^^
+// 	at A.init (frame_brace_init.say:3)

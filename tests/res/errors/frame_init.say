@@ -1,0 +1,12 @@
+type A {
+  init() { say x = 1 + true; }
+}
+A();
+// error(full):
+// error: Operator '+' cannot be applied to operands number and boolean
+//  --> frame_init.say:2:24
+//   |
+// 1 | type A {
+// 2 |   init() { say x = 1 + true; }
+//   |                        ^^^^
+// 	at A.init (frame_init.say:2)

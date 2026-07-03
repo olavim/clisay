@@ -1,0 +1,10 @@
+say x = 1;
+if x is 1 { print("no"); }
+// error(full):
+// error: `is` needs a type name
+//  --> help_is_needs_type_value.say:2:4
+//   |
+// 1 | say x = 1;
+// 2 | if x is 1 { print("no"); }
+//   |    ^
+//   = help: use `==` to compare values

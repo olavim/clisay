@@ -1,0 +1,12 @@
+fn a()! {
+	return 1 + true;
+}
+a();
+// error(full):
+// error: Operator '+' cannot be applied to operands number and boolean
+//  --> caret_tab_align.say:2:16
+//   |
+// 1 | fn a()! {
+// 2 |     return 1 + true;
+//   |                ^^^^
+// 	at a (caret_tab_align.say:2)
