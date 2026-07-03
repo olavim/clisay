@@ -1,6 +1,6 @@
 //! Construction checks: the init-body seal and non-null field completeness.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::core::objects::TypeMember;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt, Symbol};
@@ -11,9 +11,9 @@ use super::{Checker, FieldInfo, TypeTag};
 /// and read its own fields. It may not otherwise escape.
 #[derive(Default)]
 pub(super) struct Seal {
-    assigned: Option<HashSet<Symbol>>,
-    /// Whether `this` was used since the flag was last reset. Catches a closure in `init`
-    /// capturing the partially-built `this`.
+    /// Fields assigned so far, mapped to the node of its first assignment.
+    assigned: Option<HashMap<Symbol, Option<HirId<HirExpr>>>>,
+    /// Whether `this` was used since the flag was last reset.
     this_seen: bool,
 }
 
@@ -25,33 +25,39 @@ impl Seal {
 
     /// Enters an init body seeded with the fields already provided. Returns the previous state
     /// to hand back to `restore` on exit.
-    pub(super) fn enter(&mut self, seed: HashSet<Symbol>) -> Option<HashSet<Symbol>> {
-        self.assigned.replace(seed)
+    pub(super) fn enter(&mut self, seed: HashSet<Symbol>) -> Option<HashMap<Symbol, Option<HirId<HirExpr>>>> {
+        self.assigned.replace(seed.into_iter().map(|s| (s, None)).collect())
     }
 
     /// Suspends the seal for a nested function body so it is not seen as inside the init.
-    pub(super) fn suspend(&mut self) -> Option<HashSet<Symbol>> {
+    pub(super) fn suspend(&mut self) -> Option<HashMap<Symbol, Option<HirId<HirExpr>>>> {
         self.assigned.take()
     }
 
     /// Restores the assigned-set state saved by `enter` or `suspend`.
-    pub(super) fn restore(&mut self, saved: Option<HashSet<Symbol>>) {
+    pub(super) fn restore(&mut self, saved: Option<HashMap<Symbol, Option<HirId<HirExpr>>>>) {
         self.assigned = saved;
     }
 
-    pub(super) fn mark_assigned(&mut self, field: Symbol) {
+    /// Records an assignment to `field` at `node`, keeping the first if already assigned.
+    pub(super) fn mark_assigned(&mut self, field: Symbol, node: HirId<HirExpr>) {
         if let Some(assigned) = self.assigned.as_mut() {
-            assigned.insert(field);
+            assigned.entry(field).or_insert(Some(node));
         }
     }
 
     pub(super) fn is_assigned(&self, field: Symbol) -> bool {
-        self.assigned.as_ref().is_some_and(|a| a.contains(&field))
+        self.assigned.as_ref().is_some_and(|a| a.contains_key(&field))
+    }
+
+    /// The node of `field`'s first assignment in this init, if it has one.
+    pub(super) fn first_assign(&self, field: Symbol) -> Option<HirId<HirExpr>> {
+        self.assigned.as_ref().and_then(|a| a.get(&field).copied()).flatten()
     }
 
     /// Whether `field` is read in the current init before it is assigned.
     pub(super) fn reads_before_assign(&self, field: Symbol) -> bool {
-        self.assigned.as_ref().is_some_and(|a| !a.contains(&field))
+        self.assigned.as_ref().is_some_and(|a| !a.contains_key(&field))
     }
 
     /// Resets the `this`-seen flag for a nested body, returning the previous value.

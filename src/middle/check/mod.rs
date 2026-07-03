@@ -205,6 +205,14 @@ impl<'a> Checker<'a> {
         anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node).clone()).with_help(help))
     }
 
+    /// An error caretting two nodes, each with its own label.
+    fn error_two_spans<T, U>(&self, msg: String, primary: &HirId<T>, primary_label: &str, other: &HirId<U>, other_label: &str, help: String) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(primary).clone())
+            .with_label(primary_label)
+            .with_span(self.hir.pos(other).clone(), other_label)
+            .with_help(help))
+    }
+
     fn ident_sym(&self, id: &HirId<HirExpr>) -> Symbol {
         match self.hir.get(id) {
             HirExpr::Identifier(sym) => *sym,

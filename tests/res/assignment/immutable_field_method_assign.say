@@ -5,6 +5,6 @@ type T {
         this.value = 1;
     }
     fn reset() {
-        this.value = 2; // error: Cannot assign immutable field 'value' in a method
+        this.value = 2; // error: Cannot assign immutable field `T.value`
     }
 }
