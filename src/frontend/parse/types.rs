@@ -5,28 +5,31 @@ use super::*;
 impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses the composition header: an optional `with T1, T2, ...` clause then an optional
     /// `req T1, T2, ...` clause (each at most once, in that order).
-    pub(super) fn parse_composition_header(&mut self) -> Result<(Vec<Symbol>, Vec<Symbol>), anyhow::Error> {
-        let with_traits = self.parse_trait_clause(ContextualKeyword::With)?;
-        let req_traits = self.parse_trait_clause(ContextualKeyword::Req)?;
+    pub(super) fn parse_composition_header(&mut self, refs: &mut Vec<TraitRef>) -> Result<(Vec<Symbol>, Vec<Symbol>), anyhow::Error> {
+        let with_traits = self.parse_trait_clause(ContextualKeyword::With, TraitClause::With, refs)?;
+        let req_traits = self.parse_trait_clause(ContextualKeyword::Req, TraitClause::Req, refs)?;
 
         // A header is `with ... req ...`; any further `with`/`req` here is a duplicate or misordered clause.
         let tok = self.tokens.peek(0);
         match tok.contextual() {
             Some(kw @ (ContextualKeyword::With | ContextualKeyword::Req)) =>
-                parse_error!(self, &tok.pos, "Unexpected '{kw}' clause: a type/trait header allows at most one `with` clause followed by at most one `req` clause"),
+                Err(self.error_help(format!("Unexpected '{kw}' clause"), &tok.pos, "a type/trait header allows at most one `with` clause followed by at most one `req` clause")),
             _ => Ok((with_traits, req_traits)),
         }
     }
 
-    /// Parses a single `<keyword> T1, T2, ...` trait-list clause.
-    pub(super) fn parse_trait_clause(&mut self, keyword: ContextualKeyword) -> Result<Vec<Symbol>, anyhow::Error> {
+    /// Parses a single `<keyword> T1, T2, ...` trait-list clause, recording each trait's span.
+    pub(super) fn parse_trait_clause(&mut self, keyword: ContextualKeyword, clause: TraitClause, refs: &mut Vec<TraitRef>) -> Result<Vec<Symbol>, anyhow::Error> {
         let present = self.tokens.peek(0).contextual() == Some(keyword);
         let mut traits = Vec::new();
         if present {
             self.tokens.next();
             loop {
+                let pos = self.tokens.peek(0).pos.clone();
                 let name = self.parse_identifier()?;
-                traits.push(self.ast.intern(&name));
+                let trait_sym = self.ast.intern(&name);
+                traits.push(trait_sym);
+                refs.push(TraitRef { clause, trait_sym, pos });
                 if self.tokens.next_if(TokenType::Comma).is_none() { break; }
             }
         }
@@ -64,9 +67,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let prev_type = std::mem::replace(&mut self.current_type, Some(type_name.clone()));
 
-        let (with_traits, req_traits) = self.parse_composition_header()?;
+        let mut trait_refs: Vec<TraitRef> = Vec::new();
+        let (with_traits, req_traits) = self.parse_composition_header(&mut trait_refs)?;
 
-        self.tokens.expect(TokenType::LeftBrace)?;
+        let body_open = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
 
         let mut fields: HashSet<Symbol> = HashSet::default();
         let mut nullable_fields: HashSet<Symbol> = HashSet::default();
@@ -80,7 +84,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
 
-        while !self.tokens.matches(TokenType::RightBrace) {
+        while !self.tokens.matches(TokenType::RightBrace) && self.tokens.has_next() {
             let member_pos = self.tokens.peek(0).pos.clone();
             let visibility = self.parse_visibility();
 
@@ -122,20 +126,23 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     // takes no visibility modifier.
                     match name.as_str() {
                         "init" => {
-                            if is_trait { parse_error!(self, &member_pos, "A trait cannot declare an `init`; put initialization on the host type"); }
+                            if is_trait { return Err(self.error_help("A trait cannot declare an `init`", &member_pos, "put initialization on the host type")); }
                             if visibility != Visibility::Private { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
                             if mutable { parse_error!(self, &member_pos, "Only fields can be `mut`"); }
                             init = Some(self.parse_init()?);
                         },
                         _ => {
                             // Field declaration, optionally with a `gives Trait` delegation suffix.
-                            if is_trait { parse_error!(self, &member_pos, "A trait cannot declare fields; `req` the state it needs and let the host type hold it"); }
+                            if is_trait { return Err(self.error_help("A trait cannot declare fields", &member_pos, "`req` the state it needs and let the host type hold it")); }
                             let field = self.ast.intern(&name);
                             let nullable = self.parse_nullable();
                             let give = if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Gives) {
                                 self.tokens.next();
+                                let give_pos = self.tokens.peek(0).pos.clone();
                                 let trait_name = self.parse_identifier()?;
-                                Some(self.ast.intern(&trait_name))
+                                let trait_sym = self.ast.intern(&trait_name);
+                                trait_refs.push(TraitRef { clause: TraitClause::Gives, trait_sym, pos: give_pos });
+                                Some(trait_sym)
                             } else {
                                 None
                             };
@@ -168,7 +175,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 }
             }
         }
-        self.tokens.expect(TokenType::RightBrace)?;
+        self.tokens.expect_close(TokenType::RightBrace, &body_open)?;
 
         let init_name = self.ast.intern(&format!("{}.init", type_name));
 
@@ -176,6 +183,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             name: type_sym,
             is_trait,
             with_traits,
+            trait_refs,
             req_traits,
             req_fns,
             req_members,
@@ -192,6 +200,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         });
 
         self.current_type = prev_type;
-        Ok(self.ast.add_stmt(Stmt::Type(type_decl), pos))
+        Ok(self.node_stmt(Stmt::Type(type_decl), pos))
     }
 }

@@ -1,0 +1,10 @@
+say x = 1;
+x = 2;
+// error(full):
+// error: Cannot reassign immutable binding `x`
+//  --> help_reassign_immutable.say:2:1
+//   |
+// 1 | say x = 1;
+// 2 | x = 2;
+//   | ^
+//   = help: you can make `x` mutable by declaring it as `say mut x`

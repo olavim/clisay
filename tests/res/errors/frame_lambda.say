@@ -1,0 +1,11 @@
+fn run(cb) { cb(); }
+run(() => 1 + true);
+// error(full):
+// error: Operator '+' cannot be applied to operands number and boolean
+//  --> frame_lambda.say:2:15
+//   |
+// 1 | fn run(cb) { cb(); }
+// 2 | run(() => 1 + true);
+//   |               ^^^^
+// 	at lambda (frame_lambda.say:2)
+// 	at run (frame_lambda.say:1)

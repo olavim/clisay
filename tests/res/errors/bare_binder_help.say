@@ -1,0 +1,12 @@
+type A {}
+say v = A();
+if v ~ has A & other { print("no"); }
+say done = 1;
+// error(full):
+// error: a bare name cannot be an operand of `&` or `|`
+//  --> bare_binder_help.say:3:16
+//   |
+// 2 | say v = A();
+// 3 | if v ~ has A & other { print("no"); }
+//   |                ^^^^^
+//   = help: write `is other` or `has other` to test its type, or `other @ ...` to bind it

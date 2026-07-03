@@ -1,12 +1,10 @@
 use std::fmt;
 use std::rc::Rc;
 
-use super::SourcePosition;
+use super::{SourceFile, SourcePosition};
 
 thread_local! {
-    /// Placeholder filename for the position `Token::new` sets before `tokenize`
-    /// overwrites it with the real one.
-    static EMPTY_FILE: Rc<str> = Rc::from("");
+    static EMPTY_FILE: Rc<SourceFile> = Rc::new(SourceFile { name: String::new(), content: Rc::from("") });
 }
 
 macro_rules! tokens {
@@ -100,7 +98,7 @@ pub struct Token {
 
 impl Token {
     pub fn new(token_type: TokenType, lexeme: &str) -> Self {
-        let pos = SourcePosition { file: EMPTY_FILE.with(Rc::clone), line: 0 };
+        let pos = SourcePosition { source: EMPTY_FILE.with(Rc::clone), start: 0, end: 0, line: 0 };
         return Token { kind: token_type, lexeme: String::from(lexeme), pos };
     }
 

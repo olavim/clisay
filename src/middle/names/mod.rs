@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
+use crate::frontend::lex::Diagnostic;
+
 use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchElem, Matcher, Operator, Stmt, Symbol, TypeDecl};
 
 /// What an identifier reference binds to.
@@ -97,7 +99,7 @@ struct Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     fn error<T>(&self, msg: impl Into<String>, at: &AstId<T>) -> anyhow::Error {
-        anyhow!("{}\n\tat {}", msg.into(), self.ast.pos(at))
+        anyhow!("{}", Diagnostic::new(msg, self.ast.pos(at).clone()))
     }
 
     fn push_scope(&mut self) {

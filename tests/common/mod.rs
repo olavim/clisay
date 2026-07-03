@@ -11,7 +11,7 @@ const REGEX_SKIP: &str = r"^\s*//.*//";
 const REGEX_EXPECTED_ERROR: &str = r"//[ ]*error[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
 const REGEX_EXPECTED_OUT: &str = r"//[ ]*expect[ ]*:[ ]*([^\n\r]+)[ ]*(\r\n|\n|\r)?";
 const REGEX_EXPECTED_ASM: &str = r"//[ ]*expect asm[ ]*:[ ]*(\r\n|\n|\r)(//[ ]*[^\n\r]+[ ]*(\r\n|\n|\r|$))*";
-const REGEX_ERROR_MESSAGE: &str = r"(.*)(\s*at .*:(\d+))+";
+const REGEX_EXPECTED_ERROR_FULL: &str = r"//[ ]*error\(full\)[ ]*:[ ]*(\r\n|\n|\r)(//[^\n\r]*(\r\n|\n|\r|$))*";
 const REGEX_SPLIT: &str = r"// @split(\r\n|\r|\n)";
 
 fn eq_or_fail<T: PartialEq + fmt::Debug>(expected: T, actual: T) -> Result<(), Failed> {
@@ -33,8 +33,10 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
     let split_regex = Regex::new(REGEX_SPLIT).unwrap();
     let sections = split_regex.split(&src).collect::<Vec<&str>>();
 
+    let name = std::path::Path::new(file).file_name().and_then(|n| n.to_str()).unwrap_or(file);
+
     for section in sections {
-        let result = run(file, section);
+        let result = run(name, section);
         let out = Output::get_output();
         let asm_end_pos = if out.len() > 0 && out[0] == "=== Bytecode ===" {
             Some(out.iter().position(|s| s == "================").unwrap() + 1)
@@ -49,7 +51,12 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
              None => out
         };
 
-        if let Some(expected_error) = parse_expected_error(section) {
+        if let Some(expected_full) = parse_expected_error_full(section) {
+            match result {
+                Ok(_) => return Err("Expected an error, but the program ran".into()),
+                Err(err) => eq_or_fail(expected_full, err.to_string())?
+            }
+        } else if let Some(expected_error) = parse_expected_error(section) {
             match result {
                 Ok(_) => return Err(format!("Expected error: {expected_error}").into()),
                 Err(err) => eq_or_fail(expected_error, parse_error_message(err))?
@@ -83,17 +90,14 @@ pub fn assert_inline<const COUNT: usize>(src: &str, r: Result<[&str; COUNT], Str
 }
 
 fn parse_error_message(err: Error) -> String {
-    let error_regex = Regex::new(REGEX_ERROR_MESSAGE).unwrap();
     let err_msg = err.to_string();
 
-    if !error_regex.is_match(&err_msg) {
-        return err_msg;
+    // Errors render as `error: <message>` then a `--> file:line:col` locator.
+    let error_regex = Regex::new(r"error: (.*)\n --> .*:(\d+):\d+").unwrap();
+    match error_regex.captures(&err_msg) {
+        Some(caps) => format!("[line {}] {}", caps.get(2).unwrap().as_str(), caps.get(1).unwrap().as_str()),
+        None => err_msg,
     }
-
-    let captures = error_regex.captures(&err_msg).unwrap();
-    let message = captures.get(1).unwrap().as_str();
-    let line = captures.get(3).unwrap().as_str().parse::<i8>().unwrap();
-    format!("[line {}] {}", line, message)
 }
 
 fn parse_expected_error(src: &str) -> Option<String> {
@@ -113,6 +117,19 @@ fn parse_expected_error(src: &str) -> Option<String> {
         Some((line, msg)) => Some(format!("[line {}] {}", line + 1, msg)),
         None => None
     }
+}
+
+fn parse_expected_error_full(src: &str) -> Option<String> {
+    let regex = Regex::new(REGEX_EXPECTED_ERROR_FULL).unwrap();
+    return regex.captures(src).map(|c| c.get(0).unwrap().as_str()
+        .lines()
+        .skip(1)
+        .map(|l| {
+            let l = l.strip_prefix("//").unwrap_or(l);
+            l.strip_prefix(' ').unwrap_or(l)
+        })
+        .collect::<Vec<&str>>()
+        .join("\n"));
 }
 
 fn parse_expected_output(src: &str) -> Vec<&str> {

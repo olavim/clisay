@@ -4,8 +4,8 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
-use crate::ast::{MatchArm, Ast, AstId, CatchClause, TypeDecl, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, Operator, Param, ReturnShape, Stmt, Symbol};
-use crate::frontend::lex::{ContextualKeyword, SourcePosition, TokenStream, TokenType};
+use crate::ast::{MatchArm, Ast, AstId, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, Operator, Param, ReturnShape, Stmt, Symbol};
+use crate::frontend::lex::{ContextualKeyword, Diagnostic, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
     ($self:ident, $pos:expr, $($arg:tt)*) => { return Err($self.error(format!($($arg)*), $pos)) };
@@ -93,7 +93,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn error(&self, message: impl Into<String>, pos: &SourcePosition) -> anyhow::Error {
-        anyhow!(format!("{}\nat {}", message.into(), pos))
+        anyhow!("{}", Diagnostic::new(message, pos.clone()))
+    }
+
+    /// An error carrying a `help:` note on how to fix it.
+    fn error_help(&self, message: impl Into<String>, pos: &SourcePosition, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(message, pos.clone()).with_help(help))
     }
 
     /// Consumes a leading `mut` modifier if present, reporting whether it was there.
@@ -132,6 +137,24 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = token.pos.clone();
         let name = self.ast.intern(&token.lexeme);
         Ok(self.ast.add_expr(Expr::Identifier(name), pos))
+    }
+
+    /// Builds an expr node spanning from `start` to the last-consumed token.
+    fn node_expr(&mut self, kind: Expr, start: SourcePosition) -> AstId<Expr> {
+        let pos = start.to(&self.tokens.previous().pos);
+        self.ast.add_expr(kind, pos)
+    }
+
+    /// Builds a stmt node spanning from `start` to the last-consumed token.
+    fn node_stmt(&mut self, kind: Stmt, start: SourcePosition) -> AstId<Stmt> {
+        let pos = start.to(&self.tokens.previous().pos);
+        self.ast.add_stmt(kind, pos)
+    }
+
+    /// Builds a matcher node spanning from `start` to the last-consumed token.
+    fn node_matcher(&mut self, kind: Matcher, start: SourcePosition) -> AstId<Matcher> {
+        let pos = start.to(&self.tokens.previous().pos);
+        self.ast.add_matcher(kind, pos)
     }
 
     /// Runs `f` with the expression context replaced, restoring the previous context after.

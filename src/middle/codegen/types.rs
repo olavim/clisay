@@ -34,9 +34,14 @@ impl<'a> Compiler<'a> {
         let init_ptr = self.compile_fn(&decl.init, FnKind::Initializer)?;
         ty.methods.insert(ty.init_id.unwrap(), init_ptr.into());
 
+        // Methods carry a `Type.method` display name so stack traces and arity errors
+        // can name the owning type,.
+        let type_text = self.hir.text(layout.name).to_string();
         for stmt_id in &decl.methods {
-            let name = self.gc.intern(self.hir.text(self.fn_decl(stmt_id).name));
-            self.install_method(&mut ty, stmt_id, name)?;
+            let method_text = self.hir.text(self.fn_decl(stmt_id).name);
+            let name = self.gc.intern(method_text);
+            let display = self.gc.intern(format!("{type_text}.{method_text}"));
+            self.install_method(&mut ty, stmt_id, name, display)?;
         }
 
         // Drop non-public members (private/`inner`, and the per-trait renamed `"<Trait>.<name>"`
@@ -68,9 +73,9 @@ impl<'a> Compiler<'a> {
         Ok(func_const.as_object().as_function_ptr())
     }
 
-    /// Compiles a method and installs its `ObjFn` at the member id.
-    fn install_method(&mut self, ty: &mut ObjType, stmt: &HirId<HirStmt>, name: *mut ObjString) -> Result<(), anyhow::Error> {
+    fn install_method(&mut self, ty: &mut ObjType, stmt: &HirId<HirStmt>, name: *mut ObjString, display: *mut ObjString) -> Result<(), anyhow::Error> {
         let function_ptr = self.compile_fn(stmt, FnKind::Method)?;
+        unsafe { (*function_ptr).name = display; }
         let TypeMember::Method(id) = ty.resolve(name).unwrap() else { unreachable!() };
         ty.methods.insert(id, function_ptr.into());
         Ok(())

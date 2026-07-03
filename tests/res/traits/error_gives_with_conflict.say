@@ -2,7 +2,7 @@
 trait Powered { pub fn start() { return "vroom"; } }
 type Engine with Powered { init() {} }
 
-type Car with Powered { // error: Trait 'Powered' appears in both `with` and `gives`; keep only one
+type Car with Powered { // error: Trait 'Powered' appears in both `with` and `gives`
     engine gives Powered;
     init() { this.engine = Engine(); }
 }

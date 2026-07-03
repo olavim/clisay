@@ -7,6 +7,8 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
+use crate::frontend::lex::{Diagnostic, SourcePosition};
+
 use crate::ast::{MatchArm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
     BinOp, Hir, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
@@ -39,7 +41,16 @@ struct Lowerer<'a> {
 
 impl<'a> Lowerer<'a> {
     fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &AstId<T>) -> anyhow::Error {
-        anyhow!("{}\n\tat {}", msg.into(), self.ast.pos(node_id))
+        self.error_at(msg, self.ast.pos(node_id))
+    }
+
+    fn error_at(&self, msg: impl Into<String>, pos: &SourcePosition) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, pos.clone()))
+    }
+
+    /// An error carrying a `help:` note on how to fix it.
+    fn error_help_at(&self, msg: impl Into<String>, pos: &SourcePosition, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, pos.clone()).with_help(help))
     }
 
     /// The `TypeDecl` of a `type`/`trait` declaration statement.

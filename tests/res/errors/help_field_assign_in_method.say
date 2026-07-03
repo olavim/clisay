@@ -1,0 +1,14 @@
+type T {
+    pub value;
+    init() { this.value = 1; }
+    fn reset() { this.value = 2; }
+}
+T();
+// error(full):
+// error: Cannot assign immutable field `T.value`
+//  --> help_field_assign_in_method.say:4:18
+//   |
+// 3 |     init() { this.value = 1; }
+// 4 |     fn reset() { this.value = 2; }
+//   |                  ^^^^^^^^^^
+//   = help: you can make `T.value` mutable by declaring it as `pub mut value;`

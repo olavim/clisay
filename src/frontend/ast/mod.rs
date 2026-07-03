@@ -175,12 +175,26 @@ pub struct CatchClause {
     pub body: AstId<Expr>
 }
 
+/// The header clause a trait reference appeared in, for conflict diagnostics.
+#[derive(Clone, Copy, PartialEq)]
+pub enum TraitClause { With, Req, Gives }
+
+/// One textual mention of a trait in a `with`/`req`/`gives` clause, kept so a
+/// conflict can point a caret at each occurrence.
+pub struct TraitRef {
+    pub clause: TraitClause,
+    pub trait_sym: Symbol,
+    pub pos: SourcePosition,
+}
+
 pub struct TypeDecl {
     pub name: Symbol,
     /// `true` for a `trait` declaration, `false` for a `type`.
     pub is_trait: bool,
     /// Traits mixed in via `with T1, T2, ...`.
     pub with_traits: Vec<Symbol>,
+    /// Source spans of every `with`/`req`/`gives` trait mention, for conflict diagnostics.
+    pub trait_refs: Vec<TraitRef>,
     /// Traits depended on via `req T1, T2, ...`.
     pub req_traits: Vec<Symbol>,
     /// Method holes declared via `req fn f(params)`.

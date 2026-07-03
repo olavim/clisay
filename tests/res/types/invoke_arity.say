@@ -5,4 +5,4 @@ type Math {
 }
 
 say m = Math();
-m.add(1); // error: add expects 2 arguments, but was called with 1
+m.add(1); // error: Math.add expects 2 arguments, but was called with 1

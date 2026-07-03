@@ -30,7 +30,7 @@ impl<'a> Checker<'a> {
     pub(super) fn trait_member(&self, name: &str, node: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let in_surface = self.current_trait_surface.as_ref().is_some_and(|surface| surface.iter().any(|m| self.hir.text(*m) == name));
         if !in_surface {
-            return Err(self.error(format!("'{}' is not declared or required by this trait; declare it or add a 'req'", name), node));
+            return Err(self.error_help(format!("'{}' is not declared or required by this trait", name), node, "declare it or add a 'req'"));
         }
         Ok(Typed::unknown())
     }

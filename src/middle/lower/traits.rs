@@ -1,16 +1,11 @@
-//! Trait composition: lexical trait scoping, `with`-expansion (member folding), exposed-member
-//! collision detection, and qualified `T.method(...)` calls.
-//!
-//! Traits are compile-time splice-templates. A `type`/`trait` that mixes traits via `with` has
-//! every trait's members folded into it here, so the resolver and codegen downstream see a
-//! self-contained type.
+//! Trait composition.
 
 use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{AstId, Expr, Literal, ReturnShape, Stmt, Symbol, TypeDecl};
-use crate::frontend::lex::SourcePosition;
+use crate::ast::{AstId, Expr, Literal, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
+use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl};
 
 use super::Lowerer;
@@ -56,9 +51,6 @@ fn is_exposed(type_decl: &TypeDecl, name: &Symbol) -> bool {
 }
 
 impl<'a> Lowerer<'a> {
-    /// Lowers a `type` declaration: flatten the `with`-set, check exposed-member collisions,
-    /// fold every trait's members in (renaming private members per trait), then lower the
-    /// composer's own init, accessors, methods, and each `with`-trait's init method.
     pub(super) fn lower_type(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, type_pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
         // The flattened `with`-set, resolved by the `names` pre-pass.
         let traits = self.flattened_with(type_id);
@@ -68,7 +60,7 @@ impl<'a> Lowerer<'a> {
         let gives_traits: Vec<Symbol> = self.names.gives_traits(&type_id).iter().map(|(_, t, _)| *t).collect();
         self.check_requirements(decl, &traits, &gives_traits, type_pos)?;
         let host_methods: HashSet<Symbol> = decl.methods.iter().map(|m| self.ast_fn(m).name).collect();
-        let exposed_methods = self.check_exposed_collisions(&traits, &host_methods, decl, type_pos)?;
+        let exposed_methods = self.check_exposed_collisions(&traits, &host_methods, type_pos)?;
 
         // Install the composer's context: which traits are provided (for qualified `T.method(...)`)
         // and which qualified aliases exist.
@@ -113,6 +105,7 @@ impl<'a> Lowerer<'a> {
             methods: composed.methods,
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
+            inner_members: decl.inner_members.clone(),
             trait_privates: composed.trait_privates,
             surface: HashSet::new(), // gating applies to standalone traits, not composed types
             provides,
@@ -140,15 +133,14 @@ impl<'a> Lowerer<'a> {
             methods: composed.methods,
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
+            inner_members: decl.inner_members.clone(),
             trait_privates: composed.trait_privates,
             surface,
             provides: Vec::new(), // a standalone trait emits no runtime type
         })
     }
 
-    /// The set of member names a trait's body may reach through `this`: its own members, the
-    /// exposed (`inner`/`pub`) members of every trait it `with`-flattens or `req`-depends on
-    /// (and *their* `with`-provided members), and its own `req fn` / `req <member>` holes.
+    /// The set of member names a trait's body may reach through `this`.
     fn trait_surface(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl) -> Result<HashSet<Symbol>, anyhow::Error> {
         let mut surface: HashSet<Symbol> = HashSet::new();
         for field in &decl.fields { surface.insert(*field); }
@@ -178,15 +170,10 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Checks exposed-member collisions across a flattened trait set, returning the exposed
-    /// methods grouped by name. A method clash is resolvable by a host override, but field
-    /// clashes and unresolved method clashes are errors.
-    fn check_exposed_collisions(&self, traits: &[(Symbol, &'a TypeDecl)], host_methods: &HashSet<Symbol>, decl: &TypeDecl, pos: &SourcePosition) -> Result<HashMap<Symbol, Vec<Symbol>>, anyhow::Error> {
+    /// methods grouped by name.
+    fn check_exposed_collisions(&self, traits: &[(Symbol, &'a TypeDecl)], host_methods: &HashSet<Symbol>, pos: &SourcePosition) -> Result<HashMap<Symbol, Vec<Symbol>>, anyhow::Error> {
         let mut exposed_methods: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
-        let mut exposed_fields: HashMap<Symbol, Vec<Symbol>> = HashMap::new();
         for (trait_sym, type_decl) in traits {
-            for field in &type_decl.fields {
-                if is_exposed(type_decl, field) { exposed_fields.entry(*field).or_default().push(*trait_sym); }
-            }
             for method in &type_decl.methods {
                 let name = self.ast_fn(method).name;
                 if is_exposed(type_decl, &name) { exposed_methods.entry(name).or_default().push(*trait_sym); }
@@ -194,14 +181,8 @@ impl<'a> Lowerer<'a> {
         }
         for (name, providers) in &exposed_methods {
             if !host_methods.contains(name) && providers.len() >= 2 {
-                return Err(anyhow!("Exposed method '{}' clashes between traits {}; declare '{}' in the host type to resolve it\n\tat {}",
-                    self.hir.text(*name), self.trait_list(providers), self.hir.text(*name), pos));
-            }
-        }
-        for (name, providers) in &exposed_fields {
-            if providers.len() + decl.fields.contains(name) as usize >= 2 {
-                return Err(anyhow!("Exposed field '{}' clashes between {}; rename one or make it private\n\tat {}",
-                    self.hir.text(*name), self.field_clash_sources(providers, decl.fields.contains(name)), pos));
+                return Err(self.error_help_at(format!("Exposed method '{}' clashes between traits {}", self.hir.text(*name), self.trait_list(providers)),
+                    pos, format!("declare '{}' in the host type to resolve it", self.hir.text(*name))));
             }
         }
         Ok(exposed_methods)
@@ -212,12 +193,12 @@ impl<'a> Lowerer<'a> {
     pub(super) fn check_provide_require_exclusive(&self, decl: &TypeDecl, pos: &SourcePosition) -> Result<(), anyhow::Error> {
         for trait_sym in &decl.req_traits {
             if decl.with_traits.contains(trait_sym) {
-                return Err(anyhow!("Trait '{}' appears in both `with` and `req`; keep only one\n\tat {}",
-                    self.hir.text(*trait_sym), pos));
+                return Err(self.dup_trait_error(decl, *trait_sym, &[TraitClause::With, TraitClause::Req],
+                    format!("Trait '{}' appears in both `with` and `req`", self.hir.text(*trait_sym)), pos));
             }
             if decl.gives.iter().any(|(_, t)| t == trait_sym) {
-                return Err(anyhow!("Trait '{}' appears in both `req` and `gives`; keep only one\n\tat {}",
-                    self.hir.text(*trait_sym), pos));
+                return Err(self.dup_trait_error(decl, *trait_sym, &[TraitClause::Req, TraitClause::Gives],
+                    format!("Trait '{}' appears in both `req` and `gives`", self.hir.text(*trait_sym)), pos));
             }
         }
         Ok(())
@@ -229,21 +210,35 @@ impl<'a> Lowerer<'a> {
         let mut given: HashSet<Symbol> = HashSet::new();
         for (_, trait_sym, _) in self.names.gives_traits(&type_id) {
             if with.contains(trait_sym) {
-                return Err(anyhow!("Trait '{}' appears in both `with` and `gives`; keep only one\n\tat {}",
-                    self.hir.text(*trait_sym), pos));
+                return Err(self.dup_trait_error(decl, *trait_sym, &[TraitClause::With, TraitClause::Gives],
+                    format!("Trait '{}' appears in both `with` and `gives`", self.hir.text(*trait_sym)), pos));
             }
             if !given.insert(*trait_sym) {
-                return Err(anyhow!("Trait '{}' appears in `gives` more than once; keep only one\n\tat {}",
-                    self.hir.text(*trait_sym), pos));
+                return Err(self.dup_trait_error(decl, *trait_sym, &[TraitClause::Gives],
+                    format!("Trait '{}' appears in `gives` more than once", self.hir.text(*trait_sym)), pos));
             }
         }
         Ok(())
     }
 
-    /// Synthesizes a forwarding method for each exposed method of every `gives` trait's surface
-    /// (the trait's own methods plus its `with`-flattened set). Each forwarder calls
-    /// `this.<field>.<method>(args)` and carries the trait method's visibility. A method the host
-    /// already declares is an override.
+    /// A "trait named twice" error that carets each occurrence in the given clauses. Falls back to
+    /// a single span at `fallback` if two textual mentions cannot be found.
+    fn dup_trait_error(&self, decl: &TypeDecl, trait_sym: Symbol, clauses: &[TraitClause], msg: String, fallback: &SourcePosition) -> anyhow::Error {
+        let mut refs: Vec<&SourcePosition> = decl.trait_refs.iter()
+            .filter(|r| r.trait_sym == trait_sym && clauses.contains(&r.clause))
+            .map(|r| &r.pos)
+            .collect();
+        refs.sort_by_key(|p| p.start);
+        if refs.len() >= 2 {
+            return anyhow!("{}", Diagnostic::new(msg, refs[0].clone())
+                .with_label("first appears here")
+                .with_span(refs[1].clone(), "and a second time here")
+                .with_help("keep only one"));
+        }
+        anyhow!("{}", Diagnostic::new(msg, fallback.clone()).with_help("keep only one"))
+    }
+
+    /// Synthesizes a forwarding method for each exposed method of every `gives` trait's surface.
     fn lower_gives(&mut self, type_id: AstId<Stmt>, host_methods: &HashSet<Symbol>, pos: &SourcePosition, composed: &mut Composed) -> Result<(), anyhow::Error> {
         let mut forwarded: HashSet<Symbol> = HashSet::new();
         for (field, _, trait_id) in self.names.gives_traits(&type_id).to_vec() {
@@ -309,8 +304,8 @@ impl<'a> Lowerer<'a> {
         for (rt, by) in req_traits {
             if !provided.contains(&rt) {
                 let by = by.map_or(String::new(), |t| format!(" (required by trait '{}')", self.hir.text(t)));
-                return Err(anyhow!("Unsatisfied requirement: trait '{}'{by} is not provided by any `with`\n\tat {}",
-                    self.hir.text(rt), pos));
+                return Err(self.error_at(format!("Unsatisfied requirement: trait '{}'{by} is not provided by any `with`",
+                    self.hir.text(rt)), pos));
             }
         }
 
@@ -340,8 +335,8 @@ impl<'a> Lowerer<'a> {
             .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_fns.iter().copied()));
         for (func_sym, arity, _) in req_fns {
             if !exposed.contains(&(func_sym, arity)) {
-                return Err(anyhow!("Unsatisfied `req fn {}` (arity {arity}): needs an `inner`/`pub` method '{}' taking {arity} argument(s)\n\tat {}",
-                    self.hir.text(func_sym), self.hir.text(func_sym), pos));
+                return Err(self.error_at(format!("Unsatisfied `req fn {}` (arity {arity}): needs an `inner`/`pub` method '{}' taking {arity} argument(s)",
+                    self.hir.text(func_sym), self.hir.text(func_sym)), pos));
             }
         }
 
@@ -350,8 +345,8 @@ impl<'a> Lowerer<'a> {
             .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_members.iter().copied()));
         for member_sym in req_members {
             if !exposed_names.contains(&member_sym) {
-                return Err(anyhow!("Unsatisfied `req {}`: needs an `inner`/`pub` member '{}'\n\tat {}",
-                    self.hir.text(member_sym), self.hir.text(member_sym), pos));
+                return Err(self.error_at(format!("Unsatisfied `req {}`: needs an `inner`/`pub` member '{}'",
+                    self.hir.text(member_sym), self.hir.text(member_sym)), pos));
             }
         }
         Ok(())
@@ -370,11 +365,10 @@ impl<'a> Lowerer<'a> {
         aliases
     }
 
-    /// Folds one trait's **methods** into `composed`, recording its private-method slots under
+    /// Folds one trait's methods into `composed`, recording its private-method slots under
     /// `trait_sym`. Exposed methods take their plain name (or a `"<Trait>.<method>"` alias when a
     /// host override in `host_methods` shadows them); private methods take a per-trait slot name so
-    /// two traits' same-named privates never collide. Traits are stateless, so there are no fields
-    /// to fold.
+    /// two traits' same-named privates never collide.
     fn fold_trait(&mut self, trait_sym: Symbol, type_decl: &TypeDecl, host_methods: &HashSet<Symbol>, composed: &mut Composed) -> Result<(), anyhow::Error> {
         let renames = self.trait_renames(type_decl);
         let mut private_map: HashMap<Symbol, Symbol> = HashMap::new();
@@ -403,8 +397,6 @@ impl<'a> Lowerer<'a> {
     }
 
     /// The flattened `with`-set of a `type`/`trait`, resolved to the live `TypeDecl`s lowering folds.
-    /// The `names` pre-pass computed the post-ordered, deduped, cycle-checked set; here it's mapped
-    /// from declaration handles to declarations.
     fn flattened_with(&self, type_id: AstId<Stmt>) -> Vec<(Symbol, &'a TypeDecl)> {
         self.names.flattened_with(&type_id).iter().map(|(sym, id)| (*sym, self.ast_type(id))).collect()
     }
@@ -443,9 +435,7 @@ impl<'a> Lowerer<'a> {
         Some((*t, m.clone()))
     }
 
-    /// Builds the HIR for `Trait.method(args)`: runs `Trait`'s version of `method` with the
-    /// current `this` implicit. Valid only for a trait the enclosing type provides. Resolves to
-    /// the qualified alias when a host override shadowed the plain name, else to the plain method.
+    /// Builds the HIR for `Trait.method(args)`.
     pub(super) fn qualified_method_call(&mut self, trait_sym: Symbol, method: &str, args: Vec<HirId<HirExpr>>, callee: &AstId<Expr>, pos: &SourcePosition) -> Result<HirExpr, anyhow::Error> {
         if !self.provided_traits.contains(&trait_sym) {
             return Err(self.error(format!("'{}.{}(...)': '{}' is not a trait provided by this type",
@@ -458,11 +448,5 @@ impl<'a> Lowerer<'a> {
 
     fn trait_list(&self, traits: &[Symbol]) -> String {
         traits.iter().map(|t| format!("'{}'", self.hir.text(*t))).collect::<Vec<_>>().join(" and ")
-    }
-
-    fn field_clash_sources(&self, traits: &[Symbol], host: bool) -> String {
-        let mut parts: Vec<String> = traits.iter().map(|t| format!("trait '{}'", self.hir.text(*t))).collect();
-        if host { parts.push("the host type".to_string()); }
-        parts.join(" and ")
     }
 }

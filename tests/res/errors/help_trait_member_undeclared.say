@@ -1,0 +1,14 @@
+trait Greeter {
+    pub fn greet() {
+        say self = this;
+        self.untracked;
+    }
+}
+// error(full):
+// error: 'untracked' is not declared or required by this trait
+//  --> help_trait_member_undeclared.say:4:9
+//   |
+// 3 |         say self = this;
+// 4 |         self.untracked;
+//   |         ^^^^
+//   = help: declare it or add a 'req'

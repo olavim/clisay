@@ -184,6 +184,8 @@ pub struct HirTypeDecl {
     pub method_traits: Vec<Option<Symbol>>,
     /// Members declared `pub` (externally accessible). See `ast::TypeDecl`.
     pub pub_members: HashSet<Symbol>,
+    /// Members declared `inner` (visible to composing types, not external code).
+    pub inner_members: HashSet<Symbol>,
     /// Per trait, that trait's **private** members mapped from their plain name to the
     /// per-trait renamed slot name (`"<Trait>.<name>"`).
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,

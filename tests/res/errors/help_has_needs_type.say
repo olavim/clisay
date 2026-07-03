@@ -1,0 +1,10 @@
+say d = { x: 1 };
+d has "x";
+// error(full):
+// error: `has` needs a type name, a shape, or an array
+//  --> help_has_needs_type.say:2:7
+//   |
+// 1 | say d = { x: 1 };
+// 2 | d has "x";
+//   |       ^^^
+//   = help: for key presence use `{ k: _ }`, for equality use `==`

@@ -1,0 +1,10 @@
+say x = 1;
+if x ~ 1 ~ 2 { print("no"); }
+// error(full):
+// error: `~` does not chain
+//  --> help_tilde_no_chain.say:2:4
+//   |
+// 1 | say x = 1;
+// 2 | if x ~ 1 ~ 2 { print("no"); }
+//   |    ^
+//   = help: combine tests with `&` and `|`, or join tests with `&&` and `||`

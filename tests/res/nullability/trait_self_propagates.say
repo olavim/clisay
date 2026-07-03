@@ -2,6 +2,6 @@
 trait Greeter {
     pub fn greet() {
         say self = this;
-        self.untracked.foo; // error: 'untracked' is not declared or required by this trait; declare it or add a 'req'
+        self.untracked.foo; // error: 'untracked' is not declared or required by this trait
     }
 }

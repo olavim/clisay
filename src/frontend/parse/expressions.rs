@@ -33,7 +33,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses `{ field: value, ... }` after a constructible callee into an `Expr::Construct`.
     pub(super) fn parse_construction(&mut self, callee: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
         let pos = self.ast.pos(&callee).clone();
-        self.tokens.expect(TokenType::LeftBrace)?;
+        let open = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
 
         // Allow nested braces to construct inside this body, but keep the other modes as they are.
         let value_precedence = Operator::Comma.infix_precedence().unwrap() + 1;
@@ -55,8 +55,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Ok(fields)
         })?;
 
-        self.tokens.expect(TokenType::RightBrace)?;
-        Ok(self.ast.add_expr(Expr::Construct(callee, fields), pos))
+        self.tokens.expect_close(TokenType::RightBrace, &open)?;
+        Ok(self.node_expr(Expr::Construct(callee, fields), pos))
     }
 
     pub(super) fn parse_expr_precedence(&mut self, min_precedence: u8) -> Result<AstId<Expr>, anyhow::Error> {
@@ -112,7 +112,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let name = self.ast.intern(&name);
                 match self.parse_type_shape()? {
                     Some(shape) => {
-                        let m = self.ast.add_matcher(Matcher::Type { nominal: true, name, shape: Some(shape) }, name_token.pos);
+                        let m = self.node_matcher(Matcher::Type { nominal: true, name, shape: Some(shape) }, name_token.pos);
                         Expr::Has(expr, m)
                     },
                     None => Expr::Is(expr, name),
@@ -122,7 +122,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Operator::Match => {
                 let matcher = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
                 if let Some(Operator::Match) = Operator::peek_infix(self.tokens, 0) {
-                    parse_error!(self, &pos, "`~` does not chain. Combine tests with `&` and `|`, or join tests with `&&` and `||`");
+                    return Err(self.error_help("`~` does not chain", &pos, "combine tests with `&` and `|`, or join tests with `&&` and `||`"));
                 }
                 self.validate_match_operator_operand(&matcher)?;
                 Expr::Match(expr, matcher)
@@ -143,10 +143,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             }
         };
 
-        Ok(self.ast.add_expr(kind, pos.clone()))
+        Ok(self.node_expr(kind, pos))
     }
 
     pub(super) fn parse_expr_prefix(&mut self, op: Operator) -> Result<AstId<Expr>, anyhow::Error> {
+        // The prefix token was just consumed, so it is the opener a bracketed form must close.
+        let open = self.tokens.previous().pos.clone();
         let pos = self.tokens.peek(0).pos.clone();
         let kind = match &op {
             Operator::Group => {
@@ -160,7 +162,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     },
                     None => {
                         let expr = self.parse_expr()?;
-                        self.tokens.expect(TokenType::RightParen)?;
+                        self.tokens.expect_close(TokenType::RightParen, &open)?;
                         return Ok(expr);
                     }
                 }
@@ -170,12 +172,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     Some(_) => Vec::new(),
                     None => {
                         let expr = self.parse_expr()?;
-                        self.tokens.expect(TokenType::RightBracket)?;
+                        self.tokens.expect_close(TokenType::RightBracket, &open)?;
                         expr.as_comma_separated(self.ast)
                     }
                 };
 
-                return Ok(self.ast.add_expr(Expr::Literal(Literal::Array(elements)), pos));
+                return Ok(self.node_expr(Expr::Literal(Literal::Array(elements)), pos));
             },
             Operator::Dict => {
                 let mut pairs: Vec<(AstId<Expr>, AstId<Expr>)> = Vec::new();
@@ -271,10 +273,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             break;
                         }
                     }
-                    self.tokens.expect(TokenType::RightBrace)?;
+                    self.tokens.expect_close(TokenType::RightBrace, &open)?;
                 }
 
-                return Ok(self.ast.add_expr(Expr::Literal(Literal::Dict(pairs)), pos));
+                return Ok(self.node_expr(Expr::Literal(Literal::Dict(pairs)), pos));
             },
             _ => {
                 let right = self.parse_expr_precedence(op.prefix_precedence().unwrap())?;
@@ -284,32 +286,34 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 }
             }
         };
-        Ok(self.ast.add_expr(kind, pos))
+        Ok(self.node_expr(kind, pos))
     }
 
     pub(super) fn parse_expr_postfix(&mut self, op: Operator, expr: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
         let pos = self.ast.pos(&expr).clone();
+        // The postfix operator was just consumed, so it opens the bracketed form to close.
+        let open = self.tokens.previous().pos.clone();
         match op {
             Operator::Call => {
-                let args = self.parse_call_arguments()?;
-                Ok(self.ast.add_expr(Expr::Call(expr, args), pos))
+                let args = self.parse_call_arguments(&open)?;
+                Ok(self.node_expr(Expr::Call(expr, args), pos))
             },
             Operator::Index => {
                 let index = self.parse_expr()?;
-                self.tokens.expect(TokenType::RightBracket)?;
-                Ok(self.ast.add_expr(Expr::Index(expr, index, false), pos)) // `[expr]` data access
+                self.tokens.expect_close(TokenType::RightBracket, &open)?;
+                Ok(self.node_expr(Expr::Index(expr, index, false), pos)) // `[expr]` data access
             },
             Operator::SafeMemberAccess => {
                 let id = self.parse_identifier()?;
                 let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                Ok(self.ast.add_expr(Expr::SafeAccess(expr, id, true), pos)) // `?.name`
+                Ok(self.node_expr(Expr::SafeAccess(expr, id, true), pos)) // `?.name`
             },
             Operator::SafeIndex => {
                 let index = self.parse_expr()?;
-                self.tokens.expect(TokenType::RightBracket)?;
-                Ok(self.ast.add_expr(Expr::SafeAccess(expr, index, false), pos)) // `?[expr]`
+                self.tokens.expect_close(TokenType::RightBracket, &open)?;
+                Ok(self.node_expr(Expr::SafeAccess(expr, index, false), pos)) // `?[expr]`
             },
-            Operator::Assert => Ok(self.ast.add_expr(Expr::Assert(expr), pos)),
+            Operator::Assert => Ok(self.node_expr(Expr::Assert(expr), pos)),
             _ => unreachable!()
         }
     }
@@ -333,15 +337,15 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             _ => parse_error!(self, &pos, "Unexpected token {token}")
         };
 
-        Ok(self.ast.add_expr(kind, pos))
+        Ok(self.node_expr(kind, pos))
     }
 
-    pub(super) fn parse_call_arguments(&mut self) -> Result<Vec<AstId<Expr>>, anyhow::Error> {
+    pub(super) fn parse_call_arguments(&mut self, open: &SourcePosition) -> Result<Vec<AstId<Expr>>, anyhow::Error> {
         match self.tokens.next_if(TokenType::RightParen) {
             Some(_) => Ok(Vec::new()),
             None => {
                 let args = self.parse_expr()?;
-                self.tokens.expect(TokenType::RightParen)?;
+                self.tokens.expect_close(TokenType::RightParen, open)?;
                 Ok(args.as_comma_separated(self.ast))
             }
         }
