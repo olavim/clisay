@@ -6,9 +6,12 @@ type Car with Powered {
 }
 // error(full):
 // error: Trait 'Powered' appears in both `with` and `gives`
-//  --> help_with_gives_conflict.say:3:1
+//  --> help_with_gives_conflict.say:3:15
 //   |
 // 2 | type Engine with Powered { init() {} }
 // 3 | type Car with Powered {
-//   | ^^^^^^^^^^^^^^^^^^^^^^^
+//   |               ^^^^^^^ first appears here
+// 4 |     engine gives Powered;
+//   |                  ^^^^^^^ and a second time here
+//   |
 //   = help: keep only one

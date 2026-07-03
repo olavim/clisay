@@ -48,6 +48,88 @@ fn display_width(text: &str) -> usize {
     return text.chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum();
 }
 
+/// Renders several labeled spans in one frame, in source order. Spans are assumed sorted by
+/// position and to share one source. Spans on different lines each get their own caret row;
+/// spans on the same line share a caret row and stack their labels below it.
+fn render_spans(spans: &[(SourcePosition, String)], help: &[String]) -> String {
+    let content = &spans[0].0.source.content;
+    let width = spans.iter().map(|(p, _)| p.line).max().unwrap().to_string().len();
+    let bar = rail("", width);
+    let mut lines = vec![bar.clone()];
+
+    // Show the line before the first span for context, but skip a blank one.
+    let first = &spans[0].0;
+    let (first_start, _) = first.line_bounds(first.start);
+    if first_start > 0 {
+        let prev_start = content[..first_start - 1].rfind('\n').map_or(0, |i| i + 1);
+        let prev = expand_tabs(&content[prev_start..first_start - 1]);
+        if !prev.trim().is_empty() {
+            lines.push(format!("{} {prev}", rail(&(first.line - 1).to_string(), width)));
+        }
+    }
+
+    // Draw one source line at a time, gathering all the spans that fall on it.
+    let mut i = 0;
+    while i < spans.len() {
+        let line = spans[i].0.line;
+        let end = spans[i..].iter().position(|(p, _)| p.line != line).map_or(spans.len(), |o| i + o);
+        render_span_line(&mut lines, &bar, width, &spans[i..end]);
+        i = end;
+    }
+
+    // The frame ends on a labeled caret rail. Separate it from the help with a blank rail.
+    if !help.is_empty() {
+        lines.push(bar.clone());
+    }
+
+    return lines.join("\n") + &render_help(width, help);
+}
+
+/// Renders one source line, then the carets for every span on it. The last span's label sits
+/// inline after its carets; earlier labels stack below, each joined to its carets by a `|`.
+fn render_span_line(lines: &mut Vec<String>, bar: &str, width: usize, group: &[(SourcePosition, String)]) {
+    let content = &group[0].0.source.content;
+    let (start, end) = group[0].0.line_bounds(group[0].0.start);
+    lines.push(format!("{} {}", rail(&group[0].0.line.to_string(), width), expand_tabs(&content[start..end])));
+
+    let cols: Vec<usize> = group.iter().map(|(p, _)| display_width(&content[start..p.start])).collect();
+
+    // The caret row: every span's carets, then the last span's label inline.
+    let mut row = String::new();
+    let mut col = 0;
+    for (k, (pos, _)) in group.iter().enumerate() {
+        let carets = display_width(&content[pos.start..pos.end.min(end)]).max(1);
+        row.push_str(&" ".repeat(cols[k] - col));
+        row.push_str(&paint(&"^".repeat(carets), COLOR_RED));
+        col = cols[k] + carets;
+    }
+    lines.push(format!("{bar} {row} {}", paint(&group.last().unwrap().1, COLOR_RED)));
+
+    // Earlier labels stack under their carets, joined to the caret row by `|` connectors.
+    if group.len() > 1 {
+        lines.push(format!("{bar} {}", connector_row(&cols[..group.len() - 1], None)));
+        for k in (0..group.len() - 1).rev() {
+            lines.push(format!("{bar} {}", connector_row(&cols[..k], Some((cols[k], &group[k].1)))));
+        }
+    }
+}
+
+/// A row with a `|` at each column in `bars`, then `label` placed at its column, if given.
+fn connector_row(bars: &[usize], label: Option<(usize, &str)>) -> String {
+    let mut row = String::new();
+    let mut col = 0;
+    for &at in bars {
+        row.push_str(&" ".repeat(at - col));
+        row.push_str(&paint("|", COLOR_RED));
+        col = at + 1;
+    }
+    if let Some((at, text)) = label {
+        row.push_str(&" ".repeat(at - col));
+        row.push_str(&paint(text, COLOR_RED));
+    }
+    return row;
+}
+
 /// The `help:` notes shown under a frame, each on its own gutter-aligned line.
 fn render_help(width: usize, help: &[String]) -> String {
     let prefix = format!("{} = help:", " ".repeat(width));

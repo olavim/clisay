@@ -2,8 +2,8 @@
 trait Powered { pub fn start() { return "vroom"; } }
 type Engine with Powered { init() {} }
 
-type Car { // error: Trait 'Powered' appears in `gives` more than once
-    engine gives Powered;
+type Car {
+    engine gives Powered; // error: Trait 'Powered' appears in `gives` more than once
     spare gives Powered;
     init() { this.engine = Engine(); this.spare = Engine(); }
 }

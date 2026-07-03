@@ -2,8 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{AstId, Expr, Literal, ReturnShape, Stmt, Symbol, TypeDecl};
-use crate::frontend::lex::SourcePosition;
+use anyhow::anyhow;
+
+use crate::ast::{AstId, Expr, Literal, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
+use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl};
 
 use super::Lowerer;
@@ -189,12 +191,12 @@ impl<'a> Lowerer<'a> {
     pub(super) fn check_provide_require_exclusive(&self, decl: &TypeDecl, pos: &SourcePosition) -> Result<(), anyhow::Error> {
         for trait_sym in &decl.req_traits {
             if decl.with_traits.contains(trait_sym) {
-                return Err(self.error_help_at(format!("Trait '{}' appears in both `with` and `req`", self.hir.text(*trait_sym)),
-                    pos, "keep only one"));
+                return Err(self.dup_trait_error(decl, *trait_sym, &[TraitClause::With, TraitClause::Req],
+                    format!("Trait '{}' appears in both `with` and `req`", self.hir.text(*trait_sym)), pos));
             }
             if decl.gives.iter().any(|(_, t)| t == trait_sym) {
-                return Err(self.error_help_at(format!("Trait '{}' appears in both `req` and `gives`", self.hir.text(*trait_sym)),
-                    pos, "keep only one"));
+                return Err(self.dup_trait_error(decl, *trait_sym, &[TraitClause::Req, TraitClause::Gives],
+                    format!("Trait '{}' appears in both `req` and `gives`", self.hir.text(*trait_sym)), pos));
             }
         }
         Ok(())
@@ -206,15 +208,32 @@ impl<'a> Lowerer<'a> {
         let mut given: HashSet<Symbol> = HashSet::new();
         for (_, trait_sym, _) in self.names.gives_traits(&type_id) {
             if with.contains(trait_sym) {
-                return Err(self.error_help_at(format!("Trait '{}' appears in both `with` and `gives`", self.hir.text(*trait_sym)),
-                    pos, "keep only one"));
+                return Err(self.dup_trait_error(decl, *trait_sym, &[TraitClause::With, TraitClause::Gives],
+                    format!("Trait '{}' appears in both `with` and `gives`", self.hir.text(*trait_sym)), pos));
             }
             if !given.insert(*trait_sym) {
-                return Err(self.error_help_at(format!("Trait '{}' appears in `gives` more than once", self.hir.text(*trait_sym)),
-                    pos, "keep only one"));
+                return Err(self.dup_trait_error(decl, *trait_sym, &[TraitClause::Gives],
+                    format!("Trait '{}' appears in `gives` more than once", self.hir.text(*trait_sym)), pos));
             }
         }
         Ok(())
+    }
+
+    /// A "trait named twice" error that carets each occurrence in the given clauses. Falls back to
+    /// a single span at `fallback` if two textual mentions cannot be found.
+    fn dup_trait_error(&self, decl: &TypeDecl, trait_sym: Symbol, clauses: &[TraitClause], msg: String, fallback: &SourcePosition) -> anyhow::Error {
+        let mut refs: Vec<&SourcePosition> = decl.trait_refs.iter()
+            .filter(|r| r.trait_sym == trait_sym && clauses.contains(&r.clause))
+            .map(|r| &r.pos)
+            .collect();
+        refs.sort_by_key(|p| p.start);
+        if refs.len() >= 2 {
+            return anyhow!("{}", Diagnostic::new(msg, refs[0].clone())
+                .with_label("first appears here")
+                .with_span(refs[1].clone(), "and a second time here")
+                .with_help("keep only one"));
+        }
+        anyhow!("{}", Diagnostic::new(msg, fallback.clone()).with_help("keep only one"))
     }
 
     /// Synthesizes a forwarding method for each exposed method of every `gives` trait's surface.

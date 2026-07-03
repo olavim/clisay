@@ -7,9 +7,12 @@ type Car {
 }
 // error(full):
 // error: Trait 'Powered' appears in `gives` more than once
-//  --> help_gives_twice.say:3:1
+//  --> help_gives_twice.say:4:18
 //   |
-// 2 | type Engine with Powered { init() {} }
 // 3 | type Car {
-//   | ^^^^^^^^^^
+// 4 |     engine gives Powered;
+//   |                  ^^^^^^^ first appears here
+// 5 |     spare gives Powered;
+//   |                 ^^^^^^^ and a second time here
+//   |
 //   = help: keep only one
