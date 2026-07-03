@@ -36,6 +36,16 @@ fn rail(label: &str, width: usize) -> String {
     return paint(&format!("{label:>width$} |"), COLOR_CYAN);
 }
 
+/// The `help:` notes shown under a frame, each on its own gutter-aligned line.
+fn render_help(width: usize, help: &[String]) -> String {
+    let prefix = format!("{} = help:", " ".repeat(width));
+    let mut out = String::new();
+    for note in help {
+        out.push_str(&format!("\n{} {note}", paint(&prefix, COLOR_CYAN)));
+    }
+    return out;
+}
+
 // Compile token patterns once on first use.
 static REGEX_STRING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"\\]|\\.)*""#).unwrap());
 static REGEX_NUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?").unwrap());
@@ -81,7 +91,7 @@ impl SourcePosition {
         return SourcePosition { source: self.source.clone(), start: self.start, end: end.end, line: self.line };
     }
 
-    pub fn render_snippet(&self, label: Option<&str>) -> String {
+    pub fn render_snippet(&self, label: Option<&str>, help: &[String]) -> String {
         let content = &self.source.content;
         let line_start = content[..self.start].rfind('\n').map_or(0, |i| i + 1);
         let line_end = content[self.start..].find('\n').map_or(content.len(), |i| self.start + i);
@@ -93,18 +103,13 @@ impl SourcePosition {
         let carets = paint(&"^".repeat(caret_end.saturating_sub(self.start).max(1)), COLOR_RED);
         let note = label.map_or(String::new(), |l| format!(" {}", paint(l, COLOR_RED)));
 
-        // The lines on either side, when they exist, give the error some context.
+        // Show the line before for context, but a blank one is just noise, so skip it.
         let prev = (line_start > 0).then(|| {
             let prev_start = content[..line_start - 1].rfind('\n').map_or(0, |i| i + 1);
             (self.line - 1, &content[prev_start..line_start - 1])
-        });
-        let next = (line_end < content.len()).then(|| {
-            let next_end = content[line_end + 1..].find('\n').map_or(content.len(), |i| line_end + 1 + i);
-            (self.line + 1, &content[line_end + 1..next_end])
-        });
+        }).filter(|(_, text)| !text.trim().is_empty());
 
-        // One gutter width for every row, sized to the largest line number shown.
-        let width = next.map_or(self.line, |(n, _)| n).to_string().len();
+        let width = self.line.to_string().len();
         let bar = rail("", width);
 
         let mut out = format!("{bar}\n");
@@ -112,15 +117,12 @@ impl SourcePosition {
             out.push_str(&format!("{} {text}\n", rail(&n.to_string(), width)));
         }
         out.push_str(&format!("{} {line}\n{bar} {pad}{carets}{note}", rail(&self.line.to_string(), width)));
-        if let Some((n, text)) = next {
-            out.push_str(&format!("\n{} {text}", rail(&n.to_string(), width)));
-        }
+        out.push_str(&render_help(width, help));
         return out;
     }
 
-    /// Renders the failure point plus the unclosed opener it belongs to. Both markers share one
-    /// annotation row when they sit on the same line, otherwise each line carries its own.
-    pub fn render_snippet_pair(&self, label: Option<&str>, opener: &SourcePosition, opener_label: &str) -> String {
+    /// Renders the failure point plus the unclosed opener it belongs to.
+    pub fn render_snippet_pair(&self, label: Option<&str>, opener: &SourcePosition, opener_label: &str, help: &[String]) -> String {
         let content = &self.source.content;
         let (p_start, p_end) = self.line_bounds(self.start);
         let p_col = self.start - p_start;
@@ -137,16 +139,18 @@ impl SourcePosition {
             let mid = " ".repeat(p_col.saturating_sub(o_col + 1));
             let ann = format!("{lead}{}{mid}{}", paint("^", COLOR_CYAN), paint(&carets, COLOR_RED));
             let stack = " ".repeat(o_col);
-            return format!("{bar}\n{num} {line}\n{bar} {ann}{note}\n{bar} {stack}{pipe}\n{bar} {stack}{olabel}",
+            let frame = format!("{bar}\n{num} {line}\n{bar} {ann}{note}\n{bar} {stack}{pipe}\n{bar} {stack}{olabel}",
                 num = rail(&self.line.to_string(), width), pipe = paint("|", COLOR_CYAN), olabel = paint(opener_label, COLOR_CYAN));
+            return frame + &render_help(width, help);
         }
 
         let o_line = &content[o_start..o_end];
         let p_line = &content[p_start..p_end];
-        return format!("{bar}\n{orail} {o_line}\n{bar} {o_pad}{ocaret} {olabel}\n{prail} {p_line}\n{bar} {p_pad}{pcarets}{note}",
+        let frame = format!("{bar}\n{orail} {o_line}\n{bar} {o_pad}{ocaret} {olabel}\n{prail} {p_line}\n{bar} {p_pad}{pcarets}{note}",
             orail = rail(&opener.line.to_string(), width), prail = rail(&self.line.to_string(), width),
             o_pad = " ".repeat(o_col), p_pad = " ".repeat(p_col),
             ocaret = paint("^", COLOR_CYAN), olabel = paint(opener_label, COLOR_CYAN), pcarets = paint(&carets, COLOR_RED));
+        return frame + &render_help(width, help);
     }
 }
 

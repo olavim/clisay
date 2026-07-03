@@ -47,6 +47,10 @@ impl<'a> Lowerer<'a> {
         anyhow!("{}", Diagnostic::new(msg, pos.clone()))
     }
 
+    fn error_help_at(&self, msg: impl Into<String>, pos: &SourcePosition, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, pos.clone()).with_help(help))
+    }
+
     fn ast_type(&self, id: &AstId<Stmt>) -> &'a TypeDecl {
         match self.ast.get(id) {
             Stmt::Type(decl) => decl,

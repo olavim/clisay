@@ -4,4 +4,4 @@ type T {
     init() { this.value = 1; }
 }
 say t = T();
-t.value = 2; // error: Cannot assign immutable field 'value' from outside its type; declare it 'mut'
+t.value = 2; // error: Cannot assign immutable field 'value' from outside its type

@@ -200,6 +200,11 @@ impl<'a> Checker<'a> {
         anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node).clone()))
     }
 
+    /// An error carrying a `help:` note on how to fix it.
+    fn error_help<T>(&self, msg: String, node: &HirId<T>, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node).clone()).with_help(help))
+    }
+
     fn ident_sym(&self, id: &HirId<HirExpr>) -> Symbol {
         match self.hir.get(id) {
             HirExpr::Identifier(sym) => *sym,
