@@ -45,6 +45,7 @@ impl Vm {
         self.invoke_member_slow(name, arg_count)
     }
 
+    /// Pushes a frame for an instance method without allocating a bound method.
     fn invoke_method(&mut self, method: Object, arg_count: usize) -> Result<(), anyhow::Error> {
         let func_ptr = method.as_function_ptr();
         let func = unsafe { &*func_ptr };
@@ -62,37 +63,18 @@ impl Vm {
         for i in (0..arg_count).rev() {
             args.push(self.stack.peek(i));
         }
-        self.stack.truncate(arg_count);     // leaves [receiver]
-        self.stack.push(Value::from(name)); // [receiver, name]
 
-        let depth = self.frames.len();
+        self.stack.truncate(arg_count);
+        self.stack.push(Value::from(name));
+
+        // INVOKE is always a `recv.name(args)`.
         self.op_get_property()?;
 
-        if self.frames.len() == depth {
-            self.finish_invoke(args)
-        } else {
-            // A getter frame was pushed; complete the call when it returns.
-            self.pending_invokes.push(PendingInvoke { args, depth });
-            Ok(())
-        }
-    }
-
-    fn finish_invoke(&mut self, args: SmallVec<[Value; 4]>) -> Result<(), anyhow::Error> {
-        let arg_count = args.len();
         let callable = self.stack.peek(0);
         for arg in args {
             self.stack.push(arg);
         }
         self.call(arg_count, callable)
-    }
-
-    /// Fires any deferred invoke whose getter frame has now returned.
-    pub(super) fn complete_pending_invokes(&mut self) -> Result<(), anyhow::Error> {
-        while self.pending_invokes.last().is_some_and(|p| p.depth == self.frames.len()) {
-            let pending = self.pending_invokes.pop().unwrap();
-            self.finish_invoke(pending.args)?;
-        }
-        Ok(())
     }
 
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {

@@ -49,11 +49,6 @@ impl Vm {
         let value = self.stack.pop();
         self.stack.set_top(frame.stack_start);
         self.stack.push(value);
-
-        // A returned getter value may complete a deferred INVOKE.
-        if !self.pending_invokes.is_empty() {
-            self.complete_pending_invokes()?;
-        }
         Ok(true)
     }
     
@@ -190,11 +185,6 @@ impl Vm {
         Ok(())
     }
 
-    /// Pushes a copy of the top of the stack.
-    pub(super) fn op_dup(&mut self) {
-        self.stack.push(self.stack.peek(0));
-    }
-
     pub(super) fn op_is(&mut self) {
         let const_idx = self.read_next() as usize;
         let name = self.chunk.constants[const_idx].as_object().as_string_ptr();
@@ -252,12 +242,6 @@ impl Vm {
     unary_op_methods! {
         op_negate  => |v| is_number => -v.as_number();
         op_bit_not => |v| is_number => !(v.as_number() as i64) as f64;
-    }
-
-    /// Logical not. The only falsy values are `null` and `false`.
-    pub(super) fn op_not(&mut self) {
-        let v = self.stack.pop();
-        self.stack.push(Value::from(v.is_falsy()));
     }
 
     fn binary_op_number<F: Fn(f64, f64) -> Value>(&mut self, func: F, token: impl Into<String>) -> Result<(), anyhow::Error> {

@@ -9,4 +9,4 @@ say w = n!;
 // 8: POP
 // 9: POP
 // 10: PUSH_NULL
-// 11: RETURN
+// 11: HALT
