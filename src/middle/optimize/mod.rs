@@ -20,6 +20,18 @@ fn fuse(code: &[Inst], i: usize) -> Option<(Inst, usize)> {
         return Some((StoreLocalAddLocalLocal(dst, a, b), 4));
     }
 
+    // `local = local +/- const` (same local)
+    if let (LoadLocal(l), Some(PushConstant(c)), Some(Add), Some(StoreLocalPop(dst))) = (a0, a1, a2, a3) {
+        if l == dst {
+            return Some((IncLocal(l, c), 4));
+        }
+    }
+    if let (LoadLocal(l), Some(PushConstant(c)), Some(Subtract), Some(StoreLocalPop(dst))) = (a0, a1, a2, a3) {
+        if l == dst {
+            return Some((DecLocal(l, c), 4));
+        }
+    }
+
     // branch if `local <cmp> const`
     if let (LoadLocal(l), Some(PushConstant(c)), Some(cmp), Some(JumpIfFalse(t))) = (a0, a1, a2, a3) {
         if let Some(make) = local_const_branch(cmp) {

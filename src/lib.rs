@@ -1,3 +1,7 @@
+// Tail-call dispatch (`become`) in the VM needs this. Nightly-only until it stabilizes.
+#![feature(explicit_tail_calls)]
+#![allow(incomplete_features)]
+
 #[cfg(debug_assertions)]
 #[cfg_attr(debug_assertions, path = "debug_output.rs")]
 mod output;

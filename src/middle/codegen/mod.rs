@@ -77,7 +77,7 @@ impl<'a> Compiler<'a> {
 
     fn finish(mut self) -> Ir {
         self.emit(Inst::PushNull, &self.hir.get_root());
-        self.emit(Inst::Return, &self.hir.get_root());
+        self.emit(Inst::Halt, &self.hir.get_root());
         self.ir
     }
 

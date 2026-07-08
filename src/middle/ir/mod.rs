@@ -38,6 +38,7 @@ pub enum Inst {
     JumpIfLeLocalConst(Label, u8, u8),
     JumpIfLtLocalConst(Label, u8, u8),
     Return,
+    Halt,
     Throw,
     PushTry(Label),
     PopTry,
@@ -86,6 +87,8 @@ pub enum Inst {
     Subtract,
     SubLocalConst(u8, u8), // local - const
     SubConstLocal(u8, u8), // const - local
+    IncLocal(u8, u8),      // local = local + const
+    DecLocal(u8, u8),      // local = local - const
     Multiply,
     Divide,
     Negate,

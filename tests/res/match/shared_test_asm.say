@@ -64,4 +64,4 @@ match obj {
 // 111: POP
 // 112: POP
 // 113: PUSH_NULL
-// 114: RETURN
+// 114: HALT

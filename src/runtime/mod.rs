@@ -25,12 +25,23 @@ use crate::backend::bytecode::opcode::{self, OpCode};
 const MAX_STACK: usize = 16384;
 const MAX_FRAMES: usize = 256;
 const INDEX_CACHE_SIZE: usize = 2048;
+const CALL_CACHE_SIZE: usize = 1024;
 
 #[derive(Clone, Copy)]
 struct IndexCache {
     site: usize,
     ty: *mut ObjType,
     member: TypeMember
+}
+
+/// On a hit (same site, same callee value) the CALL path skips the callable/tag/arity
+/// checks and jumps straight to the cached entry.
+#[derive(Clone, Copy)]
+struct CallCache {
+    site: usize,
+    callee: Value,
+    closure: *mut ObjClosure,
+    ip_start: usize
 }
 
 struct NativeTypes {
@@ -67,14 +78,6 @@ pub struct TryFrame {
     stack_start: *mut Value
 }
 
-/// A method invoke whose member resolved through a getter. The arguments
-/// are parked here until the getter frame returns its value, at which point
-/// the value is called.
-struct PendingInvoke {
-    args: SmallVec<[Value; 4]>,
-    depth: usize
-}
-
 pub struct Vm {
     pub(crate) gc: Gc,
     ip: *const OpCode,
@@ -86,7 +89,7 @@ pub struct Vm {
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     index_cache: Box<[IndexCache]>,
-    pending_invokes: Vec<PendingInvoke>,
+    call_cache: Box<[CallCache]>,
     out: Vec<String>
 }
 
@@ -98,6 +101,7 @@ mod calls;
 mod closures;
 mod properties;
 mod ops;
+mod threaded;
 
 #[cfg(debug_assertions)]
 fn disassemble(chunk: &BytecodeChunk) {
@@ -157,7 +161,7 @@ impl Vm {
             open_upvalues: Vec::new(),
             native_types,
             index_cache: vec![IndexCache { site: 0, ty: std::ptr::null_mut(), member: TypeMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
-            pending_invokes: Vec::new(),
+            call_cache: vec![CallCache { site: usize::MAX, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0 }; CALL_CACHE_SIZE].into_boxed_slice(),
             out: Vec::new()
         };
 
@@ -215,7 +219,10 @@ impl Vm {
         debug_assert!(crate::core::builtins::NAMES.iter().all(|n| vm.globals.contains_key(&vm.gc.intern(*n))),
             "a name in core::builtins::NAMES was not registered as a native");
 
-        Ok(vm.interpret()?)
+        let ip = vm.ip;
+        let top = vm.stack.top();
+        let base = unsafe { (*vm.frames.top()).stack_start };
+        Ok(threaded::dispatch(&mut vm, ip, top, base)?)
     }
 
     fn stringify_frame(&self, frame: &CallFrame, ip: *const OpCode) -> String {
@@ -284,14 +291,12 @@ impl Vm {
             self.gc.mark_object(upvalue);
         }
 
-        for pending in &self.pending_invokes {
-            for value in &pending.args {
-                value.mark(&mut self.gc);
-            }
-        }
-
         for value in self.stack.iter() {
             value.mark(&mut self.gc);
+        }
+
+        for entry in self.call_cache.iter_mut() {
+            entry.callee = Value::NULL;
         }
 
         self.gc.collect();
@@ -311,317 +316,4 @@ impl Vm {
         }
     }
 
-    fn interpret(mut self) -> Result<Vec<String>, anyhow::Error> {
-        let code_base = self.chunk.code.as_ptr();
-        let mut ip = self.ip;
-
-        macro_rules! read_byte {
-            () => {{ let b = unsafe { *ip }; ip = unsafe { ip.add(1) }; b }}
-        }
-        macro_rules! read_short {
-            () => {{ let lo = read_byte!(); let hi = read_byte!(); as_short!(lo, hi) }}
-        }
-        macro_rules! peek_short {
-            () => {{ let lo = unsafe { *ip }; let hi = unsafe { *ip.add(1) }; as_short!(lo, hi) }}
-        }
-
-        // Run a handler that relies on `self.ip` (operand reads, jumps, errors,
-        // GC source positions): publish the local cursor, run, then reload it.
-        macro_rules! delegate {
-            ($call:expr) => {{ self.ip = ip; $call; ip = self.ip; }}
-        }
-
-        // Numeric binary op with the slow path (strings / type error) delegated.
-        macro_rules! num_binop {
-            ($op:tt, $slow:ident) => {{
-                let b = self.stack.peek(0);
-                let a = self.stack.peek(1);
-                if a.is_number() && b.is_number() {
-                    self.stack.truncate(2);
-                    self.stack.push(Value::from(a.as_number() $op b.as_number()));
-                } else {
-                    delegate!(self.$slow()?);
-                }
-            }}
-        }
-
-        // Fused numeric compare-and-branch; branches when `cmp(a, b)` holds.
-        macro_rules! cmp_jump {
-            ($op:tt, $token:literal) => {{
-                let offset = read_short!() as usize;
-                let b = self.stack.pop();
-                let a = self.stack.pop();
-                if !a.is_number() || !b.is_number() {
-                    self.ip = ip;
-                    self.error(format!("Operator '{}' cannot be applied to operands {} and {}", $token, a, b))?;
-                } else if a.as_number() $op b.as_number() {
-                    ip = unsafe { code_base.add(offset) };
-                }
-            }}
-        }
-
-        // Fused `local <cmp> const` compare-and-branch.
-        macro_rules! cmp_jump_local_const {
-            ($op:tt, $token:literal) => {{
-                let offset = read_short!() as usize;
-                let a_idx = read_byte!() as usize;
-                let b_idx = read_byte!() as usize;
-                let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
-                let b = self.chunk.constants[b_idx];
-                if !a.is_number() {
-                    self.ip = ip;
-                    self.error(format!("Operator '{}' cannot be applied to operands {} and {}", $token, a, b))?;
-                } else if a.as_number() $op b.as_number() {
-                    ip = unsafe { code_base.add(offset) };
-                }
-            }}
-        }
-
-        loop {
-            let op = read_byte!();
-            match op {
-                opcode::LOAD_LOCAL => {
-                    let idx = read_byte!() as usize;
-                    let value = unsafe { *(*self.frames.top()).stack_start.add(idx) };
-                    self.stack.push(value);
-                },
-                opcode::STORE_LOCAL => {
-                    let idx = read_byte!() as usize;
-                    unsafe { *(*self.frames.top()).stack_start.add(idx) = self.stack.peek(0) };
-                },
-                opcode::STORE_LOCAL_POP => {
-                    let idx = read_byte!() as usize;
-                    let value = self.stack.pop();
-                    unsafe { *(*self.frames.top()).stack_start.add(idx) = value };
-                },
-                opcode::LOAD_UPVALUE => {
-                    let idx = read_byte!() as usize;
-                    let upvalue = self.get_upvalue(idx);
-                    self.stack.push(unsafe { *(*upvalue).location });
-                },
-                opcode::STORE_UPVALUE => {
-                    let idx = read_byte!() as usize;
-                    let upvalue = self.get_upvalue(idx);
-                    unsafe { *(*upvalue).location = self.stack.peek(0) };
-                },
-                opcode::STORE_UPVALUE_POP => {
-                    let idx = read_byte!() as usize;
-                    let upvalue = self.get_upvalue(idx);
-                    let value = self.stack.pop();
-                    unsafe { *(*upvalue).location = value };
-                },
-                opcode::PUSH_CONSTANT => {
-                    let idx = read_byte!() as usize;
-                    self.stack.push(self.chunk.constants[idx]);
-                },
-                opcode::PUSH_NULL => self.stack.push(Value::NULL),
-                opcode::PUSH_TRUE => self.stack.push(Value::TRUE),
-                opcode::PUSH_FALSE => self.stack.push(Value::FALSE),
-                opcode::POP => self.stack.truncate(1),
-                opcode::JUMP => {
-                    let offset = peek_short!() as usize;
-                    ip = unsafe { code_base.add(offset) };
-                },
-                opcode::JUMP_IF_FALSE => {
-                    let offset = read_short!() as usize;
-                    let value = self.stack.pop();
-                    if value.is_falsy() {
-                        ip = unsafe { code_base.add(offset) };
-                    }
-                },
-                opcode::JUMP_IF_GE => cmp_jump!(>=, "<"),
-                opcode::JUMP_IF_GT => cmp_jump!(>, "<="),
-                opcode::JUMP_IF_LE => cmp_jump!(<=, ">"),
-                opcode::JUMP_IF_LT => cmp_jump!(<, ">="),
-                opcode::JUMP_IF_GE_LOCAL_CONST => cmp_jump_local_const!(>=, "<"),
-                opcode::JUMP_IF_GT_LOCAL_CONST => cmp_jump_local_const!(>, "<="),
-                opcode::JUMP_IF_LE_LOCAL_CONST => cmp_jump_local_const!(<=, ">"),
-                opcode::JUMP_IF_LT_LOCAL_CONST => cmp_jump_local_const!(<, ">="),
-                opcode::JUMP_IF_EQ => {
-                    let offset = read_short!() as usize;
-                    let b = self.stack.pop();
-                    let a = self.stack.pop();
-                    if a.value_eq(b) { ip = unsafe { code_base.add(offset) }; }
-                },
-                opcode::JUMP_IF_NEQ => {
-                    let offset = read_short!() as usize;
-                    let b = self.stack.pop();
-                    let a = self.stack.pop();
-                    if !a.value_eq(b) { ip = unsafe { code_base.add(offset) }; }
-                },
-                opcode::STORE_LOCAL_ADD_LOCAL_LOCAL => {
-                    let dst = read_byte!() as usize;
-                    let a_idx = read_byte!() as usize;
-                    let b_idx = read_byte!() as usize;
-                    let frame = unsafe { (*self.frames.top()).stack_start };
-                    let a = unsafe { *frame.add(a_idx) };
-                    let b = unsafe { *frame.add(b_idx) };
-                    if a.is_number() && b.is_number() {
-                        unsafe { *frame.add(dst) = Value::from(a.as_number() + b.as_number()) };
-                    } else {
-                        self.stack.push(a);
-                        self.stack.push(b);
-                        self.ip = ip;
-                        self.op_add()?;
-                        ip = self.ip;
-                        let result = self.stack.pop();
-                        unsafe { *frame.add(dst) = result };
-                    }
-                },
-                opcode::ADD_LOCAL_CONST => {
-                    let a_idx = read_byte!() as usize;
-                    let b_idx = read_byte!() as usize;
-                    let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
-                    let b = self.chunk.constants[b_idx];
-                    if a.is_number() && b.is_number() {
-                        self.stack.push(Value::from(a.as_number() + b.as_number()));
-                    } else {
-                        self.stack.push(a);
-                        self.stack.push(b);
-                        self.ip = ip;
-                        self.op_add()?;
-                        ip = self.ip;
-                    }
-                },
-                // Fused value-producing `const + local`. `+` does not commute for string concat,
-                // so the const operand stays first (unlike the numeric case it would be equivalent).
-                opcode::ADD_CONST_LOCAL => {
-                    let a_idx = read_byte!() as usize;
-                    let b_idx = read_byte!() as usize;
-                    let a = self.chunk.constants[a_idx];
-                    let b = unsafe { *(*self.frames.top()).stack_start.add(b_idx) };
-                    if a.is_number() && b.is_number() {
-                        self.stack.push(Value::from(a.as_number() + b.as_number()));
-                    } else {
-                        self.stack.push(a);
-                        self.stack.push(b);
-                        self.ip = ip;
-                        self.op_add()?;
-                        ip = self.ip;
-                    }
-                },
-                opcode::ADD => num_binop!(+, op_add),
-                opcode::SUB_LOCAL_CONST => {
-                    let a_idx = read_byte!() as usize;
-                    let b_idx = read_byte!() as usize;
-                    let a = unsafe { *(*self.frames.top()).stack_start.add(a_idx) };
-                    let b = self.chunk.constants[b_idx];
-                    if a.is_number() && b.is_number() {
-                        self.stack.push(Value::from(a.as_number() - b.as_number()));
-                    } else {
-                        self.stack.push(a);
-                        self.stack.push(b);
-                        self.ip = ip;
-                        self.op_subtract()?;
-                        ip = self.ip;
-                    }
-                },
-                opcode::SUB_CONST_LOCAL => {
-                    let a_idx = read_byte!() as usize;
-                    let b_idx = read_byte!() as usize;
-                    let a = self.chunk.constants[a_idx];
-                    let b = unsafe { *(*self.frames.top()).stack_start.add(b_idx) };
-                    if a.is_number() && b.is_number() {
-                        self.stack.push(Value::from(a.as_number() - b.as_number()));
-                    } else {
-                        self.stack.push(a);
-                        self.stack.push(b);
-                        self.ip = ip;
-                        self.op_subtract()?;
-                        ip = self.ip;
-                    }
-                },
-                opcode::SUBTRACT => num_binop!(-, op_subtract),
-                opcode::MULTIPLY => num_binop!(*, op_multiply),
-                opcode::DIVIDE => num_binop!(/, op_divide),
-
-                opcode::CALL => {
-                    let arg_count = read_byte!() as usize;
-                    let value = self.stack.peek(arg_count);
-                    // Fast path: monomorphic closure call with exact arity, inlined
-                    // so the common case never leaves the dispatch loop.
-                    if value.is_callable() {
-                        let object = value.as_object();
-                        if object.tag() == objects::TAG_CLOSURE {
-                            let closure_ptr = object.as_closure_ptr();
-                            let closure = unsafe { &*closure_ptr };
-                            if arg_count == closure.arity as usize {
-                                if self.frames.is_full() {
-                                    self.ip = ip;
-                                    return Err(self.stack_overflow());
-                                }
-                                let stack_start = self.stack.offset(arg_count);
-                                self.frames.push(CallFrame {
-                                    closure: closure_ptr,
-                                    return_ip: ip,
-                                    stack_start
-                                });
-                                ip = unsafe { code_base.add(closure.ip_start) };
-                                continue;
-                            }
-                        }
-                    }
-                    
-                    self.ip = ip;
-                    self.call(arg_count, value)?;
-                    ip = self.ip;
-                },
-                opcode::RETURN => {
-                    self.ip = ip;
-                    if !self.op_return()? {
-                        return Ok(self.out);
-                    }
-                    ip = self.ip;
-                },
-                opcode::CONSTRUCT => delegate!(self.op_construct()?),
-                opcode::THROW => delegate!(self.op_throw()?),
-                opcode::PUSH_TRY => delegate!(self.op_push_try()),
-                opcode::POP_TRY => self.op_pop_try(),
-                // `&&`/`||` short-circuit. Cold (no loop runs them), so kept out of
-                // the inlined hot block to keep the dispatch loop body small.
-                opcode::JUMP_IF_FALSE_OR_POP => delegate!(self.op_jump_if_false_or_pop()),
-                opcode::JUMP_IF_TRUE_OR_POP => delegate!(self.op_jump_if_true_or_pop()),
-                // `??`/`?.` short-circuit and the null-barrier are cold, so they stay delegated.
-                opcode::JUMP_IF_NOT_NULL_OR_POP => delegate!(self.op_jump_if_not_null_or_pop()),
-                opcode::JUMP_IF_NULL => delegate!(self.op_jump_if_null()),
-                opcode::ASSERT_NON_NULL => delegate!(self.op_assert_non_null()?),
-                opcode::CLOSE_UPVALUE => delegate!(self.op_close_upvalue()),
-                opcode::ARRAY => delegate!(self.op_array()),
-                opcode::DICT => delegate!(self.op_dict()),
-                opcode::PUSH_CLOSURE => delegate!(self.op_push_closure()?),
-                opcode::PUSH_TYPE => delegate!(self.op_push_type()),
-                opcode::LOAD_GLOBAL => delegate!(self.op_load_global()?),
-                opcode::INVOKE => delegate!(self.op_invoke()?),
-                opcode::GET_INDEX => delegate!(self.op_get_index()?),
-                opcode::SET_INDEX => delegate!(self.op_set_index()?),
-                opcode::GET_INDEX_OR_NULL => delegate!(self.op_get_index_or_null()),
-                opcode::GET_PROPERTY => delegate!(self.op_get_property()?),
-                opcode::SET_PROPERTY => delegate!(self.op_set_property()?),
-                opcode::GET_FIELD => delegate!(self.op_get_field()?),
-                opcode::SET_FIELD => delegate!(self.op_set_field()?),
-                opcode::SET_FIELD_POP => delegate!(self.op_set_field_pop()?),
-                opcode::NEGATE => delegate!(self.op_negate()?),
-                opcode::NOT => self.op_not(),
-                opcode::LEFT_SHIFT => delegate!(self.op_left_shift()?),
-                opcode::RIGHT_SHIFT => delegate!(self.op_right_shift()?),
-                opcode::BIT_AND => delegate!(self.op_bit_and()?),
-                opcode::BIT_OR => delegate!(self.op_bit_or()?),
-                opcode::BIT_XOR => delegate!(self.op_bit_xor()?),
-                opcode::BIT_NOT => delegate!(self.op_bit_not()?),
-                opcode::EQUAL => delegate!(self.op_equal()?),
-                opcode::NOT_EQUAL => delegate!(self.op_not_equal()?),
-                opcode::LESS_THAN => delegate!(self.op_less_than()?),
-                opcode::LESS_THAN_EQUAL => delegate!(self.op_less_than_equal()?),
-                opcode::GREATER_THAN => delegate!(self.op_greater_than()?),
-                opcode::GREATER_THAN_EQUAL => delegate!(self.op_greater_than_equal()?),
-                opcode::IS => delegate!(self.op_is()),
-                opcode::HAS_MEMBER => delegate!(self.op_has_member()),
-                opcode::IS_SHAPED => delegate!(self.op_is_shaped()),
-                opcode::ARRAY_LEN => delegate!(self.op_array_len()),
-                opcode::ARRAY_MIDDLE => delegate!(self.op_array_middle()),
-                opcode::DUP => self.op_dup(),
-                _ => unsafe { std::hint::unreachable_unchecked() }
-            }
-        }
-    }
 }

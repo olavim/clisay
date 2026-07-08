@@ -8,7 +8,7 @@ say b = a + 1;
 // 9: POP
 // 10: POP
 // 11: PUSH_NULL
-// 12: RETURN
+// 12: HALT
 
 // @split
 
@@ -22,7 +22,7 @@ say b = 1 + a;
 // 9: POP
 // 10: POP
 // 11: PUSH_NULL
-// 12: RETURN
+// 12: HALT
 
 // @split
 
@@ -36,7 +36,7 @@ say b = a - 1;
 // 9: POP
 // 10: POP
 // 11: PUSH_NULL
-// 12: RETURN
+// 12: HALT
 
 // @split
 
@@ -50,4 +50,4 @@ say b = 1 - a;
 // 9: POP
 // 10: POP
 // 11: PUSH_NULL
-// 12: RETURN
+// 12: HALT

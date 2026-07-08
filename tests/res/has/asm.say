@@ -6,7 +6,7 @@
 // 6: EQUAL
 // 7: POP
 // 8: PUSH_NULL
-// 9: RETURN
+// 9: HALT
 
 // @split
 
@@ -25,7 +25,7 @@
 // 19: PUSH_FALSE
 // 20: POP
 // 21: PUSH_NULL
-// 22: RETURN
+// 22: HALT
 
 // @split
 
@@ -48,4 +48,4 @@
 // 27: PUSH_FALSE
 // 28: POP
 // 29: PUSH_NULL
-// 30: RETURN
+// 30: HALT

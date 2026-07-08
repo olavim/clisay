@@ -26,4 +26,4 @@ match v {
 // 37: POP
 // 38: POP
 // 39: PUSH_NULL
-// 40: RETURN
+// 40: HALT

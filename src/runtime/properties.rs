@@ -47,8 +47,6 @@ impl Vm {
     }
 
     /// Pushes a frame for an instance method without allocating a bound method.
-    /// The receiver already sits at the base of the call window, so it becomes
-    /// slot 0 (`this`).
     fn invoke_method(&mut self, method: Object, arg_count: usize) -> Result<(), anyhow::Error> {
         let func_ptr = method.as_function_ptr();
         let func = unsafe { &*func_ptr };
@@ -61,54 +59,23 @@ impl Vm {
         self.push_frame(closure.as_closure_ptr(), self.stack.offset(arg_count), ip_start)
     }
 
-    /// Fallback for non-fast-path receivers/members: fetch `receiver.name` exactly
-    /// as `GET_INDEX` would (handling fields, getters, native types, and errors),
-    /// then call the resulting value with the original arguments.
-    ///
-    /// When the member resolves through a getter, fetching it pushes a frame and
-    /// the value isn't available until that frame returns, so the call is deferred
-    /// (see [`Vm::complete_pending_invokes`]); otherwise it completes immediately.
     fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize) -> Result<(), anyhow::Error> {
         let mut args: SmallVec<[Value; 4]> = SmallVec::with_capacity(arg_count);
         for i in (0..arg_count).rev() {
             args.push(self.stack.peek(i));
         }
-        self.stack.truncate(arg_count);     // leaves [receiver]
-        self.stack.push(Value::from(name)); // [receiver, name]
 
-        let depth = self.frames.len();
-        // INVOKE is always a `recv.name(args)` (`.`-call), so resolve via property
-        // access. This routes a `dict` to its method surface, not its keyed data.
+        self.stack.truncate(arg_count);
+        self.stack.push(Value::from(name));
+
+        // INVOKE is always a `recv.name(args)`.
         self.op_get_property()?;
 
-        if self.frames.len() == depth {
-            // Synchronous (field value / native): the member value is on the stack.
-            self.finish_invoke(args)
-        } else {
-            // A getter frame was pushed; complete the call when it returns.
-            self.pending_invokes.push(PendingInvoke { args, depth });
-            Ok(())
-        }
-    }
-
-    /// Calls the just-resolved member value (on the stack top) with `args`.
-    fn finish_invoke(&mut self, args: SmallVec<[Value; 4]>) -> Result<(), anyhow::Error> {
-        let arg_count = args.len();
         let callable = self.stack.peek(0);
         for arg in args {
             self.stack.push(arg);
         }
         self.call(arg_count, callable)
-    }
-
-    /// Fires any deferred invoke whose getter frame has now returned (its value is
-    /// on the stack top). Called after a `RETURN` when invokes are pending.
-    pub(super) fn complete_pending_invokes(&mut self) -> Result<(), anyhow::Error> {
-        while self.pending_invokes.last().is_some_and(|p| p.depth == self.frames.len()) {
-            let pending = self.pending_invokes.pop().unwrap();
-            self.finish_invoke(pending.args)?;
-        }
-        Ok(())
     }
 
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {

@@ -63,6 +63,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
 
     match *inst {
         Return
+        | Halt
         | Throw
         | PopTry
         | AssertNonNull
@@ -102,7 +103,8 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(c, pos);
         }
 
-        AddLocalConst(local, c) | SubLocalConst(local, c) => {
+        AddLocalConst(local, c) | SubLocalConst(local, c)
+        | IncLocal(local, c) | DecLocal(local, c) => {
             chunk.write(local, pos);
             chunk.write(c, pos);
         }

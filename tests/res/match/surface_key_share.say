@@ -42,4 +42,4 @@ match t {
 // 62: POP
 // 63: POP
 // 64: PUSH_NULL
-// 65: RETURN
+// 65: HALT

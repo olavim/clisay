@@ -49,12 +49,6 @@ impl Vm {
         let value = self.stack.pop();
         self.stack.set_top(frame.stack_start);
         self.stack.push(value);
-
-        // A returned getter value may complete a deferred INVOKE. Kept here, off
-        // the inlined dispatch arm, so the hot loop body stays small.
-        if !self.pending_invokes.is_empty() {
-            self.complete_pending_invokes()?;
-        }
         Ok(true)
     }
     
@@ -199,11 +193,6 @@ impl Vm {
         Ok(())
     }
 
-    /// Pushes a copy of the top of the stack.
-    pub(super) fn op_dup(&mut self) {
-        self.stack.push(self.stack.peek(0));
-    }
-
     /// `x is T`: pushes whether the receiver's type provides the trait/type named by the constant
     /// operand. Never errors: a non-instance receiver (null/number/dict/…) yields `false`.
     pub(super) fn op_is(&mut self) {
@@ -263,12 +252,6 @@ impl Vm {
     unary_op_methods! {
         op_negate  => |v| is_number => -v.as_number();
         op_bit_not => |v| is_number => !(v.as_number() as i64) as f64;
-    }
-
-    /// Logical not. The only falsy values are `null` and `false`.
-    pub(super) fn op_not(&mut self) {
-        let v = self.stack.pop();
-        self.stack.push(Value::from(v.is_falsy()));
     }
 
     fn binary_op_number<F: Fn(f64, f64) -> Value>(&mut self, func: F, token: impl Into<String>) -> Result<(), anyhow::Error> {
