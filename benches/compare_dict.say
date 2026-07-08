@@ -1,0 +1,11 @@
+say d = { k: 0 };
+say s = "x";
+say mut i = 0;
+say mut sum = 0;
+while i < 1000000 {
+    d["k"] = i;
+    say v = d["k"];
+    if (s == "y") { sum = sum + 1; }
+    sum = sum + v;
+    i = i + 1;
+}

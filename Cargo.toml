@@ -22,6 +22,10 @@ criterion = "0.5.1"
 libtest-mimic = "0.8.1"
 test-generator = "0.3.1"
 
+# iai-callgrind needs valgrind, so it is only pulled in on Unix (WSL).
+[target.'cfg(unix)'.dev-dependencies]
+iai-callgrind = "0.16.1"
+
 [features]
 default = []
 capture_output = []
@@ -71,4 +75,9 @@ harness = false
 
 [[bench]]
 name = "arrays"
+harness = false
+
+# Deterministic instruction-count benchmarks (Linux/WSL only; see the bench file).
+[[bench]]
+name = "iai"
 harness = false
