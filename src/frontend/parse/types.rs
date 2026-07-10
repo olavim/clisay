@@ -75,6 +75,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut fields: HashSet<Symbol> = HashSet::default();
         let mut nullable_fields: HashSet<Symbol> = HashSet::default();
         let mut mut_fields: HashSet<Symbol> = HashSet::default();
+        let mut field_clauses: Vec<(Symbol, SlotClause)> = Vec::new();
         let mut field_inits: Vec<(Symbol, AstId<Expr>)> = Vec::new();
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
         let mut pub_members: HashSet<Symbol> = HashSet::default();
@@ -136,6 +137,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             if is_trait { return Err(self.error_help("A trait cannot declare fields", &member_pos, "`req` the state it needs and let the host type hold it")); }
                             let field = self.ast.intern(&name);
                             let nullable = self.parse_nullable();
+                            let clause = self.parse_slot_clause(SlotKind::Field)?;
                             let give = if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Gives) {
                                 self.tokens.next();
                                 let give_pos = self.tokens.peek(0).pos.clone();
@@ -153,8 +155,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
                             self.tokens.expect(TokenType::Semicolon)?;
                             fields.insert(field);
+
                             if nullable { nullable_fields.insert(field); }
                             if mutable { mut_fields.insert(field); }
+
+                            if !clause.names.is_empty() || clause.void {
+                                field_clauses.push((field, clause));
+                            }
+
                             match visibility {
                                 Visibility::Pub => { pub_members.insert(field); },
                                 Visibility::Inner => { inner_members.insert(field); },
@@ -164,6 +172,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             if let Some(trait_sym) = give {
                                 gives.push((field, trait_sym));
                             }
+
                             if let Some(value) = value {
                                 field_inits.push((field, value));
                             }
@@ -193,6 +202,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             fields,
             nullable_fields,
             mut_fields,
+            field_clauses,
             field_inits,
             methods: method_stmts,
             pub_members,

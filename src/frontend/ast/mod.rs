@@ -66,9 +66,7 @@ pub enum Expr {
     SafeAccess(AstId<Expr>, AstId<Expr>, bool),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
-    /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean. The
-    /// matcher is the bindingless subset of the matcher grammar. A bare nominal `is T` uses `Is`
-    /// instead; everything richer (shapes, `&`/`|`) lands here.
+    /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean.
     Has(AstId<Expr>, AstId<Matcher>),
     /// The `scrutinee ~ matcher` one-liner. Yields a boolean and, on success, publishes the
     /// matcher's binders.
@@ -118,6 +116,14 @@ pub enum Matcher {
     And(Vec<AstId<Matcher>>),
 }
 
+/// A parsed `:` clause on a slot (a variable, parameter, field, or return).
+#[derive(Default)]
+pub struct SlotClause {
+    pub names: Vec<Symbol>,
+    pub container: bool,
+    pub void: bool,
+}
+
 pub struct FieldInit {
     pub name: Symbol,
     pub value: Option<AstId<Expr>>,
@@ -125,6 +131,8 @@ pub struct FieldInit {
     pub nullable: bool,
     /// Declared reassignable with a `mut` modifier (`say mut x`).
     pub mutable: bool,
+    /// The `:` slot clause
+    pub clause: SlotClause,
 }
 
 /// A function/method/lambda parameter: the bound identifier plus its declared
@@ -133,6 +141,7 @@ pub struct Param {
     pub name: AstId<Expr>,
     pub nullable: bool,
     pub mutable: bool,
+    pub clause: SlotClause,
 }
 
 /// A function/method/lambda's declared return shape, the postfix marker after the
@@ -154,6 +163,7 @@ pub struct FnDecl {
     pub params: Vec<Param>,
     pub body: AstId<Expr>,
     pub ret: ReturnShape,
+    pub clause: SlotClause,
 }
 
 /// A `catch (param) { ... }` clause of a try statement.
@@ -193,6 +203,7 @@ pub struct TypeDecl {
     pub fields: HashSet<Symbol>,
     pub nullable_fields: HashSet<Symbol>,
     pub mut_fields: HashSet<Symbol>,
+    pub field_clauses: Vec<(Symbol, SlotClause)>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,

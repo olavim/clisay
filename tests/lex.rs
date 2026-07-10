@@ -66,3 +66,19 @@ fn mut_is_a_contextual_keyword() {
     assert_eq!(toks[0].kind, TokenType::Identifier);
     assert_eq!(toks[0].contextual(), Some(ContextualKeyword::Mut));
 }
+
+#[test]
+fn obligation_is_a_hard_keyword() {
+    assert_eq!(kinds("obligation"), vec![TokenType::Obligation]);
+}
+
+#[test]
+fn no_and_void_are_contextual_keywords() {
+    let no = lex("no");
+    assert_eq!(no[0].kind, TokenType::Identifier);
+    assert_eq!(no[0].contextual(), Some(ContextualKeyword::No));
+
+    let void = lex("void");
+    assert_eq!(void[0].kind, TokenType::Identifier);
+    assert_eq!(void[0].contextual(), Some(ContextualKeyword::Void));
+}
