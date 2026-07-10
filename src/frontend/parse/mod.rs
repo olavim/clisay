@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
-use crate::ast::{MatchArm, Ast, AstId, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, Operator, Param, ReturnShape, Stmt, Symbol};
+use crate::ast::{MatchArm, Ast, AstId, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
 use crate::frontend::lex::{ContextualKeyword, Diagnostic, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -14,6 +14,24 @@ macro_rules! parse_error {
 /// A member's declared visibility (from a `pub`/`inner` modifier, or private by default).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Visibility { Pub, Inner, Private }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SlotKind { Local, Param, Field, Return }
+
+impl SlotKind {
+    fn allows_void_clause(self) -> bool {
+        self == SlotKind::Return
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            SlotKind::Local => "local",
+            SlotKind::Param => "parameter",
+            SlotKind::Field => "field",
+            SlotKind::Return => "return",
+        }
+    }
+}
 
 /// The modes that decide how the current expression position is parsed.
 #[derive(Clone, Copy, Default)]
@@ -69,6 +87,7 @@ mod functions;
 mod types;
 mod expressions;
 mod matchers;
+mod slot_clause;
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub fn parse(tokens: &'vm mut TokenStream<'vm>) -> Result<Ast, anyhow::Error> {

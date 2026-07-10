@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 fn top_stmts(ast: &Ast) -> Vec<AstId<Stmt>> {
@@ -76,6 +76,76 @@ fn req_fn_return_shape() {
     let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a trait") };
     let shapes: Vec<ReturnShape> = decl.req_fns.iter().map(|(_, _, ret)| *ret).collect();
     assert_eq!(shapes, vec![ReturnShape::Nullable, ReturnShape::NonNull, ReturnShape::Void]);
+}
+
+#[test]
+fn say_slot_clause() {
+    let ast = parse("say v: opt; say w: opt fails;");
+    let stmts = top_stmts(&ast);
+    let names = |init: &FieldInit| -> Vec<String> {
+        init.clause.names.iter().map(|n| ast.text(*n).to_string()).collect()
+    };
+    let Stmt::Say(v) = ast.get(&stmts[0]) else { panic!("not a say") };
+    assert_eq!(names(v), vec!["opt"]);
+    assert!(!v.clause.container && !v.clause.void);
+    let Stmt::Say(w) = ast.get(&stmts[1]) else { panic!("not a say") };
+    assert_eq!(names(w), vec!["opt", "fails"]);
+}
+
+#[test]
+fn field_slot_clause_container() {
+    let ast = parse("type T { x: [taint]; }");
+    let stmts = top_stmts(&ast);
+    let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a type") };
+    let (_, clause) = &decl.field_clauses[0];
+    assert!(clause.container);
+    assert_eq!(ast.text(clause.names[0]), "taint");
+}
+
+#[test]
+fn fn_return_slot_clause_void() {
+    let ast = parse("fn f(): void {}");
+    let stmts = top_stmts(&ast);
+    let decl = nth_fn(&ast, &stmts, 0);
+    assert!(decl.clause.void);
+    assert!(decl.clause.names.is_empty());
+}
+
+#[test]
+fn slot_clause_void_position_is_free() {
+    // `void` is an atom, so it composes with obligations in any order.
+    for src in ["fn f(): opt void {}", "fn f(): void opt {}", "fn f(): fails opt void {}"] {
+        let ast = parse(src);
+        let stmts = top_stmts(&ast);
+        let decl = nth_fn(&ast, &stmts, 0);
+        assert!(decl.clause.void, "{src}");
+        assert!(!decl.clause.names.is_empty(), "{src}");
+    }
+}
+
+#[test]
+fn slot_clause_rejections() {
+    assert!(try_parse("say a: opt opt;").is_err());
+    assert!(try_parse("say b: [[taint]];").is_err());
+    assert!(try_parse("say c: [void];").is_err());
+    assert!(try_parse("fn f(): void void {}").is_err());
+    assert!(try_parse("say d: void;").is_err());
+    assert!(try_parse("fn g(x: void) {}").is_err());
+    assert!(try_parse("type T { a: void; }").is_err());
+    assert!(try_parse("say e: ;").is_err());
+    assert!(try_parse("say f: = 1;").is_err());
+}
+
+#[test]
+fn container_malformed_insides_get_targeted_errors() {
+    let void = try_parse("say a: [taint void];").err().expect("expected a parse error");
+    assert!(void.contains("'void' is not a valid container obligation"), "{void}");
+
+    let nested = try_parse("say b: [opt [fails]];").err().expect("expected a parse error");
+    assert!(nested.contains("cannot nest"), "{nested}");
+
+    let comma = try_parse("say c: [opt, [fails]];").err().expect("expected a parse error");
+    assert!(comma.contains("separated by spaces"), "{comma}");
 }
 
 #[test]

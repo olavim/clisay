@@ -1,4 +1,4 @@
-//! Statement parsing: control flow, bindings, blocks.
+//! Statement parsing.
 
 use super::*;
 
@@ -46,6 +46,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let name = self.parse_identifier()?;
         let name = self.ast.intern(&name);
         let nullable = self.parse_nullable();
+        let clause = self.parse_slot_clause(SlotKind::Local)?;
 
         let expr = if let Some(_) = self.tokens.next_if(TokenType::Equal) {
             Some(self.parse_expr()?)
@@ -54,7 +55,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         self.tokens.expect(TokenType::Semicolon)?;
-        let field_init = FieldInit { name, value: expr, nullable, mutable };
+        let field_init = FieldInit { name, value: expr, nullable, mutable, clause };
         Ok(self.node_stmt(Stmt::Say(field_init), pos))
     }
 
