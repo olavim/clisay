@@ -1,0 +1,3 @@
+fn f(x: opt)! { return "ok"; }
+say y? = null;
+print(f(y)); // expect: ok

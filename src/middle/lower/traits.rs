@@ -6,7 +6,7 @@ use anyhow::anyhow;
 
 use crate::ast::{AstId, Expr, Literal, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl};
 
 use super::Lowerer;
 
@@ -275,6 +275,7 @@ impl<'a> Lowerer<'a> {
                 name: self.hir.add(HirExpr::Identifier(psym), pos.clone()),
                 nullable: false,
                 mutable: false,
+                clause: HirSlotClause::default(),
             });
             args.push(self.hir.add(HirExpr::Identifier(psym), pos.clone()));
         }
@@ -287,7 +288,7 @@ impl<'a> Lowerer<'a> {
         let call = self.hir.add(HirExpr::Call(method_access, args), pos.clone());
         let ret_stmt = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
         let body = self.hir.add(HirExpr::Block(vec![ret_stmt]), pos.clone());
-        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, params, body, ret }), pos.clone())
+        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, params, body, ret, clause: HirSlotClause::default() }), pos.clone())
     }
 
     /// At an instantiable type, every `req T`, `req fn`, and `req <member>` of the flattened trait
@@ -362,10 +363,7 @@ impl<'a> Lowerer<'a> {
         aliases
     }
 
-    /// Folds one trait's methods into `composed`, recording its private-method slots under
-    /// `trait_sym`. Exposed methods take their plain name (or a `"<Trait>.<method>"` alias when a
-    /// host override in `host_methods` shadows them); private methods take a per-trait slot name so
-    /// two traits' same-named privates never collide.
+    /// Folds one trait's methods into `composed`.
     fn fold_trait(&mut self, trait_sym: Symbol, type_decl: &TypeDecl, host_methods: &HashSet<Symbol>, composed: &mut Composed) -> Result<(), anyhow::Error> {
         let renames = self.trait_renames(type_decl);
         let mut private_map: HashMap<Symbol, Symbol> = HashMap::new();
@@ -418,9 +416,9 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
         let params = self.params(&decl.params)?;
-        let ret = decl.ret;
+        let (ret, clause) = self.return_clause(decl);
         let body = self.expr(&decl.body)?;
-        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, params, body, ret }), pos))
+        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, params, body, ret, clause }), pos))
     }
 
     pub(super) fn as_qualified_method_call(&self, callee: &AstId<Expr>) -> Option<(Symbol, String)> {

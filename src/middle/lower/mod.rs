@@ -9,19 +9,22 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
-use crate::ast::{MatchArm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, Stmt, Symbol, TypeDecl};
+use crate::ast::{MatchArm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
+    BinOp, Hir, HirSlotClause, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
 };
 use crate::middle::names::NameBindings;
 
 pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
     let root = ast.get_root();
     let (ident_ids, ident_texts) = ast.take_idents();
+    let mut hir = Hir::new(ident_ids, ident_texts);
+    let opt = hir.intern("opt");
     let mut lowerer = Lowerer {
         ast: &ast,
         names,
-        hir: Hir::new(ident_ids, ident_texts),
+        hir,
+        opt,
         provided_traits: HashSet::new(),
         emitted_aliases: HashSet::new(),
     };
@@ -33,6 +36,8 @@ struct Lowerer<'a> {
     ast: &'a Ast,
     names: &'a NameBindings,
     hir: Hir,
+    /// The interned `opt` symbol, the obligation the `?` nullability marker desugars to.
+    opt: Symbol,
     /// The traits the composer currently being lowered provides (its flattened `with`-set).
     provided_traits: HashSet<Symbol>,
     /// Qualified-call alias method names (`"<Trait>.<method>"`) emitted for the current composer.
@@ -342,30 +347,60 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Lowers a parameter list, carrying each param's nullability and mutability markers.
+    fn slot_clause(&self, marker_nullable: bool, clause: &SlotClause) -> HirSlotClause {
+        let mut names = clause.names.clone();
+        if marker_nullable && !names.contains(&self.opt) {
+            names.push(self.opt);
+        }
+        HirSlotClause { names, container: clause.container, void: clause.void }
+    }
+
+    pub(super) fn return_clause(&self, decl: &FnDecl) -> (ReturnShape, HirSlotClause) {
+        let clause = self.slot_clause(decl.ret == ReturnShape::Nullable, &decl.clause);
+        let ret = if decl.clause.void {
+            ReturnShape::Void
+        } else if clause.names.contains(&self.opt) {
+            ReturnShape::Nullable
+        } else if !decl.clause.names.is_empty() {
+            ReturnShape::Inferred
+        } else {
+            decl.ret
+        };
+        (ret, clause)
+    }
+
+    /// Lowers a parameter list, desugaring each param's `?` marker and `:` clause into one clause.
     pub(super) fn params(&mut self, params: &[Param]) -> Result<Vec<HirParam>, anyhow::Error> {
-        params.iter().map(|p| Ok(HirParam {
-            name: self.expr(&p.name)?,
-            nullable: p.nullable,
-            mutable: p.mutable,
-        })).collect()
+        params.iter().map(|p| {
+            let clause = self.slot_clause(p.nullable, &p.clause);
+            Ok(HirParam {
+                name: self.expr(&p.name)?,
+                nullable: clause.names.contains(&self.opt),
+                mutable: p.mutable,
+                clause,
+            })
+        }).collect()
     }
 
     fn fn_decl(&mut self, decl: &FnDecl) -> Result<HirFnDecl, anyhow::Error> {
+        let (ret, clause) = self.return_clause(decl);
         Ok(HirFnDecl {
             name: decl.name,
             params: self.params(&decl.params)?,
             body: self.expr(&decl.body)?,
-            ret: decl.ret,
+            ret,
+            clause,
         })
     }
 
     fn field_init(&mut self, field: &FieldInit) -> Result<HirFieldInit, anyhow::Error> {
+        let clause = self.slot_clause(field.nullable, &field.clause);
         Ok(HirFieldInit {
             name: field.name,
             value: self.opt_expr(&field.value)?,
-            nullable: field.nullable,
+            nullable: clause.names.contains(&self.opt),
             mutable: field.mutable,
+            clause,
         })
     }
 

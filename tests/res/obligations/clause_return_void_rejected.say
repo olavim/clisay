@@ -1,0 +1,2 @@
+fn log(m): void { print(m); }
+say x = log("hi"); // error: Cannot assign a void result to 'x'; the call returns no value

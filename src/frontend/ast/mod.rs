@@ -160,8 +160,7 @@ pub struct Param {
     pub clause: SlotClause,
 }
 
-/// A function/method/lambda's declared return shape, the postfix marker after the
-/// parameter list. Lambdas carry `Inferred` since their shape comes from the body.
+// TODO: fold into SlotClause
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReturnShape {
     /// `fn f()!` returns a non-null value.
