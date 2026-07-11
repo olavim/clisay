@@ -1,0 +1,10 @@
+// A function returning Err is inferred to fail, so `!` on its result aborts and is catchable.
+fn load()! {
+    return Err("boom");
+}
+try {
+    load()!;
+    print("unreachable");
+} catch (e) {
+    print("caught"); // expect: caught
+}

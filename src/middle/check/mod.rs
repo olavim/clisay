@@ -257,6 +257,11 @@ impl<'a> Checker<'a> {
         Flow::Bad { obligations: HashSet::from([self.sigs.opt]), definite }
     }
 
+    /// A value owing `fails`: an `Err` witness.
+    fn fails_flow(&self) -> Flow {
+        Flow::Bad { obligations: HashSet::from([self.sigs.fails]), definite: false }
+    }
+
     fn stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
         match self.hir.get(stmt) {
             HirStmt::Nop => {},

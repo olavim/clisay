@@ -36,6 +36,7 @@ impl TypeTag {
 
 pub struct Signatures {
     pub(crate) opt: Symbol,
+    pub(crate) fails: Symbol,
 
     // Per-function facts, keyed by the function's statement.
     pub(crate) fns: HashMap<HirId<HirStmt>, FnSig>,
@@ -54,9 +55,10 @@ pub struct Signatures {
 }
 
 impl Signatures {
-    fn new(opt: Symbol) -> Signatures {
+    fn new(opt: Symbol, fails: Symbol) -> Signatures {
         Signatures {
             opt,
+            fails,
             fns: HashMap::new(),
             ret_tags: HashMap::new(),
             types_by_name: HashMap::new(),
@@ -84,7 +86,9 @@ impl Signatures {
 /// Collects the program's signatures and inferred return type tags.
 pub fn collect(hir: &Hir) -> Signatures {
     let opt = hir.symbol_of("opt").expect("lowering interns the opt obligation");
-    let mut collector = Collector { hir, opt, sigs: Signatures::new(opt) };
+    let fails = hir.symbol_of("fails").expect("lowering interns the fails obligation");
+    let err = hir.symbol_of("Err");
+    let mut collector = Collector { hir, opt, fails, err, sigs: Signatures::new(opt, fails) };
     collector.stmt(&hir.get_root());
     collector.infer_ret_tags();
     collector.sigs
@@ -93,6 +97,8 @@ pub fn collect(hir: &Hir) -> Signatures {
 struct Collector<'a> {
     hir: &'a Hir,
     opt: Symbol,
+    fails: Symbol,
+    err: Option<Symbol>,
     sigs: Signatures,
 }
 
@@ -155,10 +161,25 @@ impl<'a> Collector<'a> {
     }
 
     fn fn_sig(&self, decl: &HirFnDecl) -> FnSig {
+        let mut ret = self.ret_sig(decl.ret);
+        if self.body_fails(&decl.body) {
+            ret.obligations.insert(self.fails);
+        }
         FnSig {
             params: decl.params.iter().map(|p| self.obligation_set(p.nullable)).collect(),
-            ret: self.ret_sig(decl.ret),
+            ret,
         }
+    }
+
+    fn body_fails(&self, body: &HirId<HirExpr>) -> bool {
+        let mut returns = Vec::new();
+        self.collect_returns(body, &mut returns);
+        returns.iter().any(|r| self.is_err_call(r))
+    }
+
+    fn is_err_call(&self, expr: &HirId<HirExpr>) -> bool {
+        let HirExpr::Call(callee, _) = self.hir.get(expr) else { return false };
+        matches!(self.hir.get(callee), HirExpr::Identifier(name) if Some(*name) == self.err)
     }
 
     fn obligation_set(&self, nullable: bool) -> HashSet<Symbol> {

@@ -1,0 +1,2 @@
+// A failed `!` off the top of the program is an uncaught exception.
+Err("boom")!; // error: Uncaught exception: <instance <type Err>>

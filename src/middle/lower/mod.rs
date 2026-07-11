@@ -20,6 +20,7 @@ pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
     let (ident_ids, ident_texts) = ast.take_idents();
     let mut hir = Hir::new(ident_ids, ident_texts);
     let opt = hir.intern("opt");
+    hir.intern("fails");
     let mut lowerer = Lowerer {
         ast: &ast,
         names,
