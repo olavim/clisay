@@ -136,6 +136,14 @@ impl HirMatcher {
     }
 }
 
+/// A slot's lowered `:` clause.
+#[derive(Default, Clone)]
+pub struct HirSlotClause {
+    pub names: Vec<Symbol>,
+    pub container: bool,
+    pub void: bool,
+}
+
 pub struct HirFieldInit {
     pub name: Symbol,
     pub value: Option<HirId<HirExpr>>,
@@ -143,6 +151,7 @@ pub struct HirFieldInit {
     pub nullable: bool,
     /// Declared reassignable with a `mut` modifier (`say mut x`). Immutable otherwise.
     pub mutable: bool,
+    pub clause: HirSlotClause,
 }
 
 /// A function/method/lambda parameter: its bound identifier plus the declared
@@ -151,6 +160,7 @@ pub struct HirParam {
     pub name: HirId<HirExpr>,
     pub nullable: bool,
     pub mutable: bool,
+    pub clause: HirSlotClause,
 }
 
 pub struct HirFnDecl {
@@ -159,6 +169,7 @@ pub struct HirFnDecl {
     pub body: HirId<HirExpr>,
     /// The declared return shape (the postfix marker after the parameter list).
     pub ret: ReturnShape,
+    pub clause: HirSlotClause,
 }
 
 pub struct HirCatchClause {
