@@ -7,11 +7,11 @@ fn kinds(src: &str) -> Vec<TokenType> {
 
 #[test]
 fn lexes_question_mark() {
-    // A bare `?` is the nullable marker; the `??`/`?.`/`?[` forms are their own tokens.
     assert_eq!(kinds("?"), vec![TokenType::Question]);
+    assert_eq!(kinds("?!"), vec![TokenType::QuestionBang]);
     assert_eq!(kinds("??"), vec![TokenType::QuestionQuestion]);
-    assert_eq!(kinds("?."), vec![TokenType::QuestionDot]);
-    assert_eq!(kinds("?["), vec![TokenType::QuestionBracket]);
+    assert_eq!(kinds("?."), vec![TokenType::Question, TokenType::Dot]);
+    assert_eq!(kinds("?["), vec![TokenType::Question, TokenType::LeftBracket]);
 }
 
 #[test]

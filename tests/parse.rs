@@ -187,12 +187,46 @@ fn coalesce_operator() {
 }
 
 #[test]
-fn safe_navigation_operators() {
-    let dot = parse("say x = a?.b;");
-    assert!(matches!(dot.get(&say_value(&dot)), Expr::SafeAccess(_, _, true)));
+fn access_guard_operator() {
+    let member = parse("say x = user?.name;");
+    assert!(matches!(member.get(&say_value(&member)), Expr::SafeAccess(_, _, true)));
 
-    let index = parse("say x = a?[b];");
+    let index = parse("say x = arr?[i];");
     assert!(matches!(index.get(&say_value(&index)), Expr::SafeAccess(_, _, false)));
+
+    let call = parse("say x = cb?();");
+    assert!(matches!(call.get(&say_value(&call)), Expr::SafeCall(_, _)));
+}
+
+#[test]
+fn access_guard_ignores_space_after_question() {
+    // `?` binds left, so whitespace before the accessor is irrelevant.
+    let tight = parse("say x = x?.y;");
+    let spaced = parse("say x = x? .y;");
+    assert!(matches!(tight.get(&say_value(&tight)), Expr::SafeAccess(_, _, true)));
+    assert!(matches!(spaced.get(&say_value(&spaced)), Expr::SafeAccess(_, _, true)));
+}
+
+#[test]
+fn propagate_operator() {
+    let ast = parse("say x = readFile(p)?!;");
+    assert!(matches!(ast.get(&say_value(&ast)), Expr::Propagate(_)));
+}
+
+#[test]
+fn coalesce_handler_form() {
+    let ast = parse("say x = parse(s) ?? e => log(e);");
+    let Expr::Handle(_, binder, _) = ast.get(&say_value(&ast)) else { panic!("not a handler") };
+    assert_eq!(ast.text(*binder), "e");
+    let lambda = parse("say x = a ?? (y => y);");
+    assert!(matches!(lambda.get(&say_value(&lambda)), Expr::Binary(Operator::Coalesce, _, _)));
+}
+
+#[test]
+fn access_guard_rejections() {
+    assert!(try_parse("say x = foo?;").is_err());
+    assert!(try_parse("say x = foo ?.bar;").is_err());
+    assert!(try_parse("say x = foo ?!;").is_err());
 }
 
 #[test]

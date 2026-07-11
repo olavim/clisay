@@ -184,6 +184,9 @@ impl<'a> Lowerer<'a> {
             },
             Expr::This => HirExpr::This,
             Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
+            Expr::SafeCall(..) => return Err(self.error("guarded calls (`?(`) are not implemented", expr_id)),
+            Expr::Propagate(..) => return Err(self.error("`?!` propagation is not implemented", expr_id)),
+            Expr::Handle(..) => return Err(self.error("`??` handlers are not implemented", expr_id)),
             Expr::Assert(operand) => HirExpr::Assert(self.expr(operand)?),
             Expr::Has(left, matcher) => {
                 let left = self.expr(left)?;

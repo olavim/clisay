@@ -72,9 +72,14 @@ pub enum Expr {
     /// constructed callee (`C` or `C(args)`); the list is the brace field initializers.
     Construct(AstId<Expr>, Vec<(Symbol, AstId<Expr>)>),
     This,
-    /// Safe navigation `a?.b` / `a?[i]`: short-circuits to null when the target is null.
-    /// `SafeAccess(target, index, is_dot)`.
+    /// The `?` access-guard on a member or index: `a?.b` / `a?[i]`.
     SafeAccess(AstId<Expr>, AstId<Expr>, bool),
+    /// The `?` access-guard on a call: `cb?(args)`.
+    SafeCall(AstId<Expr>, Vec<AstId<Expr>>),
+    /// The propagate operator `a?!`: exits the enclosing function carrying the bad value.
+    Propagate(AstId<Expr>),
+    /// The handler form `e ?? p => h`: binds the bad value to `p` and yields `h`.
+    Handle(AstId<Expr>, Symbol, AstId<Expr>),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
     /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean.
@@ -380,9 +385,12 @@ impl Ast {
         &self.nodes[id.id].pos
     }
 
-    /// The interned text of a symbol. Valid until [`Ast::take_idents`] moves the table out.
     pub fn text(&self, sym: Symbol) -> &str {
         &self.ident_texts[sym.index()]
+    }
+
+    pub fn symbol(&self, text: &str) -> Option<Symbol> {
+        self.ident_ids.get(text).copied().map(Symbol::from_raw)
     }
 
     pub fn get_root(&self) -> AstId<Stmt> {

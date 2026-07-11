@@ -217,6 +217,5 @@ tokens! {
     AmpAmpEqual => "&&=",
     PipePipeEqual => "||=",
     QuestionQuestion => "??",
-    QuestionDot => "?.",
-    QuestionBracket => "?["
+    QuestionBang => "?!"
 }
