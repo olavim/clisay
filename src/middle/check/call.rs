@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 
 use crate::middle::hir::{HirExpr, HirId, HirStmt};
+use crate::middle::signatures::RetSig;
 
 use super::native;
 use super::nullness_of;
@@ -67,7 +68,7 @@ impl<'a> Checker<'a> {
 
     /// The nullability and type of a call result, given the callee and receiver tag.
     fn call_result(&self, stmt: HirId<HirStmt>, receiver_tag: &TypeTag) -> Typed {
-        let nullness = self.sigs.fns.get(&stmt).map_or(Nullness::Unknown, |s| nullness_of(s.ret));
+        let nullness = self.sigs.fns.get(&stmt).map_or(Nullness::Unknown, |s| self.ret_nullness(&s.ret));
         let tag = self.sigs.ret_tags.get(&stmt).map_or(TypeTag::Unknown, |t| t.resolve(receiver_tag));
         Typed::of(nullness, tag)
     }
@@ -77,7 +78,8 @@ impl<'a> Checker<'a> {
         // Read the params through the shared signatures borrow so the later check can take &mut self.
         let sigs = self.sigs;
         let Some(sig) = sigs.fns.get(&stmt) else { return Ok(()) };
-        self.check_args(&sig.params, arg_types, args)
+        let nullable: Vec<bool> = sig.params.iter().map(|p| p.contains(&sigs.opt)).collect();
+        self.check_args(&nullable, arg_types, args)
     }
 
     /// Checks each argument against a callee's per-parameter nullability.
@@ -100,6 +102,16 @@ impl<'a> Checker<'a> {
             Some(Violation::Void) => Err(self.error(format!("Argument {n} is a void result; the call returns no value"), node)),
             Some(Violation::Null) => Err(self.error(format!("Cannot pass null as argument {n}; the parameter is non-null"), node)),
             Some(Violation::Nullable) => Err(self.error(format!("Argument {n} may be null but the parameter is non-null; narrow it before the call"), node)),
+        }
+    }
+
+    fn ret_nullness(&self, ret: &RetSig) -> Nullness {
+        if ret.void {
+            Nullness::Void
+        } else if ret.obligations.contains(&self.sigs.opt) {
+            Nullness::Nullable
+        } else {
+            Nullness::NonNull
         }
     }
 }
