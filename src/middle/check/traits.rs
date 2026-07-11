@@ -1,6 +1,7 @@
 //! Trait-contract checks: surface use and override return conformance.
 
-use crate::middle::hir::{HirExpr, HirId, HirStmt, HirTypeDecl, ReturnShape};
+use crate::middle::hir::{HirExpr, HirId, HirStmt, HirTypeDecl};
+use crate::middle::signatures::RetSig;
 
 use super::{Checker, Typed};
 
@@ -18,9 +19,9 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let host = decl.methods.iter().copied().find(|s| matches!(self.hir.get(s), HirStmt::Fn(h) if h.name == base_sym));
-            let (Some(host), Some(trait_ret)) = (host, self.sigs.fns.get(method).map(|f| f.ret)) else { continue };
-            let Some(host_ret) = self.sigs.fns.get(&host).map(|f| f.ret) else { continue };
-            if !ret_conforms(host_ret, trait_ret) {
+            let (Some(host), Some(trait_ret)) = (host, self.sigs.fns.get(method).map(|f| &f.ret)) else { continue };
+            let Some(host_ret) = self.sigs.fns.get(&host).map(|f| &f.ret) else { continue };
+            if !self.ret_conforms(host_ret, trait_ret) {
                 return Err(self.error(format!("Method '{}' overrides trait '{}' but its return is more nullable than the trait declares", base, trait_name), &host));
             }
         }
@@ -34,21 +35,23 @@ impl<'a> Checker<'a> {
         }
         Ok(Typed::unknown())
     }
+
+    /// Whether a member's return conforms to a trait method's.
+    fn ret_conforms(&self, host: &RetSig, trait_ret: &RetSig) -> bool {
+        if trait_ret.void {
+            return true;
+        }
+        if trait_ret.obligations.contains(&self.sigs.opt) {
+            // The trait is nullable: the host may be non-null or nullable, but must return a value.
+            return !host.void;
+        }
+        // The trait is non-null: the host must return a non-null value.
+        !host.void && !host.obligations.contains(&self.sigs.opt)
+    }
 }
 
 /// Splits a folded `"Trait.method"` alias into its trait and base method names. Lowering folds
 /// an overridden trait method under this dotted name.
 fn split_trait_alias(name: &str) -> Option<(&str, &str)> {
     name.split_once('.')
-}
-
-/// Whether a member's return shape conforms to a trait method's. An override may be non-null
-/// where the trait is nullable, but not the reverse. A void trait method accepts any return,
-/// since its result is ignored.
-fn ret_conforms(host_ret: ReturnShape, trait_ret: ReturnShape) -> bool {
-    match trait_ret {
-        ReturnShape::Void | ReturnShape::Inferred => true,
-        ReturnShape::NonNull => host_ret == ReturnShape::NonNull,
-        ReturnShape::Nullable => matches!(host_ret, ReturnShape::NonNull | ReturnShape::Nullable),
-    }
 }

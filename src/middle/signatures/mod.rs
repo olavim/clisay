@@ -5,16 +5,17 @@ use std::collections::{HashMap, HashSet};
 
 use crate::middle::hir::{Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ReturnShape, Symbol};
 
-/// A function's per-parameter nullability and return shape.
-pub struct FnSig {
-    pub params: Vec<bool>,
-    pub ret: ReturnShape,
+/// A function's return: the obligations its result carries and whether any path returns a value.
+#[derive(Clone, Default)]
+pub struct RetSig {
+    pub obligations: HashSet<Symbol>,
+    pub void: bool,
 }
 
-impl FnSig {
-    fn of(decl: &HirFnDecl) -> FnSig {
-        FnSig { params: decl.params.iter().map(|p| p.nullable).collect(), ret: decl.ret }
-    }
+/// A function's per-parameter obligation set and its return signature.
+pub struct FnSig {
+    pub params: Vec<HashSet<Symbol>>,
+    pub ret: RetSig,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -33,8 +34,9 @@ impl TypeTag {
     }
 }
 
-#[derive(Default)]
 pub struct Signatures {
+    pub(crate) opt: Symbol,
+
     // Per-function facts, keyed by the function's statement.
     pub(crate) fns: HashMap<HirId<HirStmt>, FnSig>,
     pub(crate) ret_tags: HashMap<HirId<HirStmt>, TypeTag>,
@@ -52,6 +54,19 @@ pub struct Signatures {
 }
 
 impl Signatures {
+    fn new(opt: Symbol) -> Signatures {
+        Signatures {
+            opt,
+            fns: HashMap::new(),
+            ret_tags: HashMap::new(),
+            types_by_name: HashMap::new(),
+            fns_by_name: HashMap::new(),
+            methods_by_type: HashMap::new(),
+            init_fields: HashMap::new(),
+            method_field_assigns: HashMap::new(),
+        }
+    }
+
     /// Whether `name` names a declared type.
     pub(crate) fn is_type(&self, name: Symbol) -> bool {
         self.types_by_name.contains_key(&name)
@@ -68,7 +83,8 @@ impl Signatures {
 
 /// Collects the program's signatures and inferred return type tags.
 pub fn collect(hir: &Hir) -> Signatures {
-    let mut collector = Collector { hir, sigs: Signatures::default() };
+    let opt = hir.symbol_of("opt").expect("lowering interns the opt obligation");
+    let mut collector = Collector { hir, opt, sigs: Signatures::new(opt) };
     collector.stmt(&hir.get_root());
     collector.infer_ret_tags();
     collector.sigs
@@ -76,6 +92,7 @@ pub fn collect(hir: &Hir) -> Signatures {
 
 struct Collector<'a> {
     hir: &'a Hir,
+    opt: Symbol,
     sigs: Signatures,
 }
 
@@ -83,7 +100,8 @@ impl<'a> Collector<'a> {
     fn stmt(&mut self, stmt: &HirId<HirStmt>) {
         match self.hir.get(stmt) {
             HirStmt::Fn(decl) => {
-                self.sigs.fns.insert(*stmt, FnSig::of(decl));
+                let sig = self.fn_sig(decl);
+                self.sigs.fns.insert(*stmt, sig);
                 self.sigs.fns_by_name.insert(decl.name, *stmt);
                 self.expr(&decl.body);
             },
@@ -130,8 +148,33 @@ impl<'a> Collector<'a> {
     /// Records a method's or initializer's signature and recurses into its body.
     fn collect_sig(&mut self, stmt: &HirId<HirStmt>) {
         if let HirStmt::Fn(decl) = self.hir.get(stmt) {
-            self.sigs.fns.insert(*stmt, FnSig::of(decl));
+            let sig = self.fn_sig(decl);
+            self.sigs.fns.insert(*stmt, sig);
             self.expr(&decl.body);
+        }
+    }
+
+    fn fn_sig(&self, decl: &HirFnDecl) -> FnSig {
+        FnSig {
+            params: decl.params.iter().map(|p| self.obligation_set(p.nullable)).collect(),
+            ret: self.ret_sig(decl.ret),
+        }
+    }
+
+    fn obligation_set(&self, nullable: bool) -> HashSet<Symbol> {
+        let mut set = HashSet::new();
+        if nullable {
+            set.insert(self.opt);
+        }
+        set
+    }
+
+    /// Maps a declared return shape onto its obligation set and value presence.
+    fn ret_sig(&self, ret: ReturnShape) -> RetSig {
+        match ret {
+            ReturnShape::Void => RetSig { obligations: HashSet::new(), void: true },
+            ReturnShape::Nullable => RetSig { obligations: self.obligation_set(true), void: false },
+            ReturnShape::NonNull | ReturnShape::Inferred => RetSig::default(),
         }
     }
 
