@@ -127,6 +127,22 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 self.validate_match_operator_operand(&matcher)?;
                 Expr::Match(expr, matcher)
             },
+            Operator::Coalesce => {
+                // `e ?? p => h` binds the witness; a bare `e ?? d` is an ordinary fallback.
+                if !self.ctx.stops_at_arrow()
+                    && self.tokens.matches(TokenType::Identifier)
+                    && self.tokens.peek(1).kind == TokenType::FatArrow
+                {
+                    let binder = self.tokens.next().lexeme.clone();
+                    let binder = self.ast.intern(&binder);
+                    self.tokens.next();
+                    let handler = self.parse_expr_precedence(op.infix_precedence().unwrap())?;
+                    Expr::Handle(expr, binder, handler)
+                } else {
+                    let right = self.parse_expr_precedence(op.infix_precedence().unwrap())?;
+                    Expr::Binary(op, expr, right)
+                }
+            },
             Operator::Arrow => {
                 let right = self.parse_block_or_expr(op.infix_precedence().unwrap())?;
                 let params = expr.as_comma_separated(self.ast).iter()
@@ -303,15 +319,38 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 self.tokens.expect_close(TokenType::RightBracket, &open)?;
                 Ok(self.node_expr(Expr::Index(expr, index, false), pos)) // `[expr]` data access
             },
-            Operator::SafeMemberAccess => {
-                let id = self.parse_identifier()?;
-                let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                Ok(self.node_expr(Expr::SafeAccess(expr, id, true), pos)) // `?.name`
+            Operator::Guard => {
+                // `?` binds tight to its operand, then must guard an access.
+                if self.ast.pos(&expr).end != open.start {
+                    return Err(self.error_help("`?` must attach to the value it guards", &open, "remove the space, as in `foo?.bar`"));
+                }
+                match self.tokens.peek(0).kind {
+                    TokenType::Dot => {
+                        self.tokens.next();
+                        let id = self.parse_identifier()?;
+                        let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
+                        Ok(self.node_expr(Expr::SafeAccess(expr, id, true), pos)) // `?.name`
+                    },
+                    TokenType::LeftBracket => {
+                        let bracket = self.tokens.next().pos.clone();
+                        let index = self.parse_expr()?;
+                        self.tokens.expect_close(TokenType::RightBracket, &bracket)?;
+                        Ok(self.node_expr(Expr::SafeAccess(expr, index, false), pos)) // `?[expr]`
+                    },
+                    TokenType::LeftParen => {
+                        let paren = self.tokens.next().pos.clone();
+                        let args = self.parse_call_arguments(&paren)?;
+                        Ok(self.node_expr(Expr::SafeCall(expr, args), pos)) // `?(args)`
+                    },
+                    _ => Err(self.error_help("`?` must be followed by an access to guard", &open, "to exit the function on a bad value, use `?!`")),
+                }
             },
-            Operator::SafeIndex => {
-                let index = self.parse_expr()?;
-                self.tokens.expect_close(TokenType::RightBracket, &open)?;
-                Ok(self.node_expr(Expr::SafeAccess(expr, index, false), pos)) // `?[expr]`
+            Operator::Propagate => {
+                // `?!` binds tight to its operand and exits the function on a bad value.
+                if self.ast.pos(&expr).end != open.start {
+                    return Err(self.error_help("`?!` must attach to the value it propagates", &open, "remove the space before `?!`"));
+                }
+                Ok(self.node_expr(Expr::Propagate(expr), pos))
             },
             Operator::Assert => Ok(self.node_expr(Expr::Assert(expr), pos)),
             _ => unreachable!()

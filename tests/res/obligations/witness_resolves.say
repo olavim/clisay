@@ -1,0 +1,4 @@
+type Token { init() {} }
+obligation parsed: discharge to use Token;
+obligation tainted;
+print("ok"); // expect: ok

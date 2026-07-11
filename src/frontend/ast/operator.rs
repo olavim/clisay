@@ -164,8 +164,8 @@ operators! {
     postfix: {
         Call => LeftParen, 16;
         Index => LeftBracket, 16;
-        SafeMemberAccess => QuestionDot, 16;
-        SafeIndex => QuestionBracket, 16;
+        Guard => Question, 16;
+        Propagate => QuestionBang, 16;
         Assert => Exclamation, 16;
     }
 }

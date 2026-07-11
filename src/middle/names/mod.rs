@@ -58,7 +58,10 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
         in_condition: false,
         out: NameBindings { type_traits: HashMap::new(), name_refs: HashMap::new(), types: HashSet::new() },
     };
+    resolver.push_scope();
+    resolver.predeclare_intrinsics();
     resolver.visit_stmt(&ast.get_root())?;
+    resolver.pop_scope();
     Ok(resolver.out)
 }
 
@@ -91,6 +94,20 @@ impl<'a> Resolver<'a> {
 
     fn push_scope(&mut self) {
         self.scopes.push(Scope { declared: HashMap::new(), traits: HashMap::new(), types: HashSet::new() });
+    }
+
+    fn predeclare_intrinsics(&mut self) {
+        for name in ["opt", "fails", "void"] {
+            if let Some(sym) = self.ast.symbol(name) {
+                self.scopes.last_mut().unwrap().declared.insert(sym, DeclKind::Item);
+            }
+        }
+        if let Some(sym) = self.ast.symbol("Err") {
+            let scope = self.scopes.last_mut().unwrap();
+            scope.declared.insert(sym, DeclKind::Item);
+            scope.types.insert(sym);
+            self.out.types.insert(sym);
+        }
     }
 
     fn is_type_or_trait(&self, name: Symbol) -> bool {
@@ -135,6 +152,7 @@ impl<'a> Resolver<'a> {
         match self.ast.get(stmt) {
             Stmt::Type(decl) => Some((decl.name, DeclKind::Item)),
             Stmt::Fn(decl) => Some((decl.name, DeclKind::Item)),
+            Stmt::Obligation { name, .. } => Some((*name, DeclKind::Item)),
             Stmt::Say(field) => Some((field.name, DeclKind::Say)),
             _ => None,
         }
@@ -171,7 +189,13 @@ impl<'a> Resolver<'a> {
             },
             Stmt::Block(body) => self.visit_expr(body)?,
             Stmt::Say(field) => if let Some(value) = &field.value { self.visit_expr(value)?; },
-            Stmt::Obligation { .. } => {},
+            Stmt::Obligation { witness, .. } => {
+                if let Some(witness) = witness {
+                    if !self.is_type_or_trait(*witness) {
+                        return Err(self.error(format!("'{}' is not a type or trait", self.ast.text(*witness)), stmt));
+                    }
+                }
+            },
             Stmt::Fn(decl) => self.visit_fn(decl)?,
             Stmt::Type(decl) => self.visit_type(stmt, decl)?,
             Stmt::Match(scrutinee, arms) => {
@@ -273,6 +297,12 @@ impl<'a> Resolver<'a> {
             },
             Expr::This => {},
             Expr::SafeAccess(target, member, _) => { self.visit_expr(target)?; self.visit_expr(member)?; },
+            Expr::SafeCall(target, args) => { 
+                self.visit_expr(target)?;
+                for arg in args { self.visit_expr(arg)?; }
+            },
+            Expr::Propagate(operand) => self.visit_expr(operand)?,
+            Expr::Handle(scrutinee, _, handler) => { self.visit_expr(scrutinee)?; self.visit_expr(handler)?; },
             Expr::Assert(operand) => self.visit_expr(operand)?,
             Expr::Has(left, _) => self.visit_expr(left)?,
             Expr::Match(scrutinee, matcher) => {
