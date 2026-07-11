@@ -48,22 +48,27 @@ pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barrie
     Ok(Barriers { crossings: checker.barriers })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Nullness {
-    NonNull,
-    Nullable,
-    Null,
-    Unknown,
+/// The obligation state of a value as it flows.
+#[derive(Clone)]
+enum Flow {
+    /// A present value owing no obligations.
+    Clean,
+    /// A void result: no value at all.
     Void,
+    /// A dynamic-boundary value whose obligations are unknown.
+    Unknown,
+    /// A value owing obligations. `definite` marks a value known to be in the bad state, as
+    /// opposed to one that only may be.
+    Bad { obligations: HashSet<Symbol>, definite: bool },
 }
 
-impl Nullness {
-    fn is_void(self) -> bool {
-        self == Nullness::Void
+impl Flow {
+    fn is_void(&self) -> bool {
+        matches!(self, Flow::Void)
     }
 
-    fn is_null_or_nullable(self) -> bool {
-        matches!(self, Nullness::Null | Nullness::Nullable)
+    fn is_bad(&self) -> bool {
+        matches!(self, Flow::Bad { .. })
     }
 }
 
@@ -76,15 +81,14 @@ enum Violation {
 
 #[derive(Clone)]
 struct Typed {
-    nullness: Nullness,
+    flow: Flow,
     tag: TypeTag,
 }
 
 impl Typed {
-    fn unknown() -> Typed { Typed { nullness: Nullness::Unknown, tag: TypeTag::Unknown } }
-    fn nonnull() -> Typed { Typed { nullness: Nullness::NonNull, tag: TypeTag::Unknown } }
-    fn null() -> Typed { Typed { nullness: Nullness::Null, tag: TypeTag::Unknown } }
-    fn of(nullness: Nullness, tag: TypeTag) -> Typed { Typed { nullness, tag } }
+    fn unknown() -> Typed { Typed { flow: Flow::Unknown, tag: TypeTag::Unknown } }
+    fn nonnull() -> Typed { Typed { flow: Flow::Clean, tag: TypeTag::Unknown } }
+    fn of(flow: Flow, tag: TypeTag) -> Typed { Typed { flow, tag } }
 }
 
 /// A type's field with the facts the definition and construction checks need.
@@ -245,7 +249,12 @@ impl<'a> Checker<'a> {
     }
 
     fn this_typed(&self) -> Typed {
-        Typed::of(Nullness::NonNull, self.this_tag())
+        Typed::of(Flow::Clean, self.this_tag())
+    }
+
+    /// A value owing `opt`. `definite` marks a known-null value versus a possibly-null one.
+    fn opt_flow(&self, definite: bool) -> Flow {
+        Flow::Bad { obligations: HashSet::from([self.sigs.opt]), definite }
     }
 
     fn stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
@@ -263,7 +272,7 @@ impl<'a> Checker<'a> {
             HirStmt::Return(opt) => match (opt, self.current_return) {
                 (Some(e), Some(shape)) => {
                     let typed = self.expr(e)?;
-                    self.check_return(typed.nullness, shape, e)?;
+                    self.check_return(&typed.flow, shape, e)?;
                 },
                 // A `!` function falls back to null on a bare return, which it may not.
                 (None, Some(ReturnShape::NonNull)) => {
@@ -315,7 +324,7 @@ impl<'a> Checker<'a> {
             },
             HirStmt::Match(scrutinee, arms) => {
                 let typed = self.expr(scrutinee)?;
-                if typed.nullness.is_void() {
+                if typed.flow.is_void() {
                     return Err(self.error("This call returns no value, so its result cannot be matched here".to_string(), scrutinee));
                 }
                 for arm in arms {
@@ -347,7 +356,7 @@ impl<'a> Checker<'a> {
 
     fn expr(&mut self, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         Ok(match self.hir.get(expr) {
-            HirExpr::Literal(HirLiteral::Null) => Typed::null(),
+            HirExpr::Literal(HirLiteral::Null) => Typed::of(self.opt_flow(true), TypeTag::Unknown),
             HirExpr::Literal(lit) => { self.literal_children(lit, expr)?; Typed::nonnull() },
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
             HirExpr::This => {
@@ -365,14 +374,14 @@ impl<'a> Checker<'a> {
                 for (name, v) in brace {
                     let typed = self.expr(v)?;
                     if let TypeTag::Concrete(type_name) = &tag {
-                        self.check_brace_field(*type_name, *name, typed.nullness, v)?;
+                        self.check_brace_field(*type_name, *name, &typed.flow, v)?;
                     }
                 }
                 if let TypeTag::Concrete(type_name) = &tag {
                     let braced: HashSet<Symbol> = brace.iter().map(|(name, _)| *name).collect();
                     self.check_construction(*type_name, &braced, callee)?;
                 }
-                Typed::of(Nullness::NonNull, tag)
+                Typed::of(Flow::Clean, tag)
             },
             HirExpr::Index(target, member, _) => self.member_access(target, member)?,
             HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
@@ -380,14 +389,14 @@ impl<'a> Checker<'a> {
             HirExpr::Is(x, _) => { self.expr(x)?; Typed::nonnull() },
             HirExpr::Has(left, _) => {
                 let typed = self.expr(left)?;
-                if typed.nullness.is_void() {
+                if typed.flow.is_void() {
                     return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), left));
                 }
                 Typed::nonnull()
             },
             HirExpr::Match(scrutinee, _) => {
                 let typed = self.expr(scrutinee)?;
-                if typed.nullness.is_void() {
+                if typed.flow.is_void() {
                     return Err(self.error("This call returns no value, so its result cannot be matched here".to_string(), scrutinee));
                 }
                 Typed::nonnull()
@@ -403,20 +412,24 @@ impl<'a> Checker<'a> {
             HirExpr::Coalesce(l, r) => {
                 let left = self.expr(l)?;
                 let right = self.expr(r)?;
-                let nullness = if left.nullness == Nullness::NonNull { Nullness::NonNull } else { right.nullness };
-                let tag = if left.tag == right.tag { left.tag } else { TypeTag::Unknown };
-                Typed::of(nullness, tag)
+                let tag = if left.tag == right.tag { left.tag.clone() } else { TypeTag::Unknown };
+                let flow = if matches!(left.flow, Flow::Clean) { Flow::Clean } else { right.flow };
+                Typed::of(flow, tag)
             },
             // `a?.b` / `a?[i]` short-circuits to null, so the result is nullable.
-            HirExpr::SafeAccess(target, member, _) => { self.expr(target)?; self.expr(member)?; Typed::of(Nullness::Nullable, TypeTag::Unknown) },
+            HirExpr::SafeAccess(target, member, _) => {
+                self.expr(target)?;
+                self.expr(member)?;
+                Typed::of(self.opt_flow(false), TypeTag::Unknown)
+            },
             // `a!` asserts non-null, keeping the operand's type tag. A barrier guards it unless
             // the operand is already proven non-null.
             HirExpr::Assert(x) => {
                 let typed = self.expr(x)?;
-                if typed.nullness != Nullness::NonNull {
+                if !matches!(typed.flow, Flow::Clean) {
                     self.add_barrier(expr);
                 }
-                Typed::of(Nullness::NonNull, typed.tag)
+                Typed::of(Flow::Clean, typed.tag)
             },
         })
     }
@@ -425,7 +438,7 @@ impl<'a> Checker<'a> {
         let (assigned, tag) = if let Some(value) = value {
             self.reject_this_store(value)?;
             let typed = self.expr(value)?;
-            self.check_into_slot(typed.nullness, declared_nullable, name, value)?;
+            self.check_into_slot(&typed.flow, declared_nullable, name, value)?;
             (true, typed.tag)
         } else {
             (false, TypeTag::Unknown)
@@ -518,8 +531,8 @@ impl<'a> Checker<'a> {
             return Err(self.error(format!("'{}' is used before it is assigned", self.hir.text(name)), expr));
         }
         let narrowed = self.is_narrowed(&NarrowKey::Local(i));
-        let nullness = if self.locals[i].declared_nullable && !narrowed { Nullness::Nullable } else { Nullness::NonNull };
-        Ok(Typed::of(nullness, self.locals[i].tag.clone()))
+        let flow = if self.locals[i].declared_nullable && !narrowed { self.opt_flow(false) } else { Flow::Clean };
+        Ok(Typed::of(flow, self.locals[i].tag.clone()))
     }
 
     /// Marks a node whose `unknown` value crosses into a non-null slot, so codegen guards it
@@ -528,27 +541,30 @@ impl<'a> Checker<'a> {
         self.barriers.insert(*node);
     }
 
-    /// Classifies a value entering a non-null target.
-    fn non_null_violation(&mut self, value_nullness: Nullness, target: &HirId<HirExpr>) -> Option<Violation> {
-        match value_nullness {
-            Nullness::NonNull => None,
-            Nullness::Unknown => { self.add_barrier(target); None },
-            Nullness::Void => Some(Violation::Void),
-            Nullness::Null => Some(Violation::Null),
-            Nullness::Nullable => Some(Violation::Nullable),
+    /// Classifies a value entering a non-null target. A non-null slot forbids `opt`, so only a
+    /// value owing `opt` violates it.
+    fn non_null_violation(&mut self, value: &Flow, target: &HirId<HirExpr>) -> Option<Violation> {
+        match value {
+            Flow::Clean => None,
+            Flow::Unknown => { self.add_barrier(target); None },
+            Flow::Void => Some(Violation::Void),
+            Flow::Bad { obligations, definite } if obligations.contains(&self.sigs.opt) => {
+                Some(if *definite { Violation::Null } else { Violation::Nullable })
+            },
+            Flow::Bad { .. } => None,
         }
     }
 
     /// Checks if moving a value into a slot is allowed per its nullability. A nullable or null value into a
     /// non-null slot is an error. `Unknown` is always allowed and gets a runtime barrier.
-    fn check_into_slot(&mut self, nullness: Nullness, slot_nullable: bool, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn check_into_slot(&mut self, flow: &Flow, slot_nullable: bool, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let text = self.hir.text(name);
         let void = || format!("Cannot assign a void result to '{text}'; the call returns no value");
         if slot_nullable {
             // A nullable slot still rejects a void result, which is not a value.
-            return if nullness.is_void() { Err(self.error(void(), node)) } else { Ok(()) };
+            return if flow.is_void() { Err(self.error(void(), node)) } else { Ok(()) };
         }
-        match self.non_null_violation(nullness, node) {
+        match self.non_null_violation(flow, node) {
             None => Ok(()),
             Some(Violation::Void) => Err(self.error(void(), node)),
             Some(Violation::Null) => Err(self.error(format!("Cannot assign null to non-null binding '{text}'"), node)),
@@ -575,19 +591,19 @@ impl<'a> Checker<'a> {
         if let TypeTag::Concrete(type_name) = &receiver.tag {
             if let Some(layout) = self.layout_of(*type_name) {
                 if let Some(member_kind) = layout.members.get(&field).copied() {
-                    let nullness = match member_kind {
+                    let flow = match member_kind {
                         TypeMember::Field(_) => {
                             // Inside init, a non-null field read before its assignment is unsound.
                             if on_this && !layout.is_nullable(field) && self.seal.reads_before_assign(field) {
                                 return Err(self.error(format!("Field '{}' is read before it is assigned in init", self.hir.text(field)), member));
                             }
                             let narrowed = key.is_some_and(|k| self.is_narrowed(&k));
-                            if layout.is_nullable(field) && !narrowed { Nullness::Nullable } else { Nullness::NonNull }
+                            if layout.is_nullable(field) && !narrowed { self.opt_flow(false) } else { Flow::Clean }
                         },
                         // A method reference is a non-null value.
-                        TypeMember::Method(_) => Nullness::NonNull,
+                        TypeMember::Method(_) => Flow::Clean,
                     };
-                    return Ok(Typed::of(nullness, TypeTag::Unknown));
+                    return Ok(Typed::of(flow, TypeTag::Unknown));
                 }
             }
         }
@@ -601,7 +617,7 @@ impl<'a> Checker<'a> {
             return Ok(self.this_typed());
         }
         let typed = self.expr(receiver)?;
-        self.require_value(typed.nullness, receiver)?;
+        self.require_value(&typed.flow, receiver)?;
         Ok(typed)
     }
 
@@ -623,9 +639,9 @@ impl<'a> Checker<'a> {
             },
             _ => {
                 let ln = self.expr(l)?;
-                self.require_value(ln.nullness, l)?;
+                self.require_value(&ln.flow, l)?;
                 let rn = self.expr(r)?;
-                self.require_value(rn.nullness, r)?;
+                self.require_value(&rn.flow, r)?;
                 Ok(Typed::nonnull())
             },
         }
@@ -635,17 +651,17 @@ impl<'a> Checker<'a> {
         let typed = self.expr(x)?;
         // `!` is a boolean context; negation and bitwise-not require a value.
         if matches!(op, UnOp::Negate | UnOp::BitNot) {
-            self.require_value(typed.nullness, x)?;
+            self.require_value(&typed.flow, x)?;
         }
         Ok(Typed::nonnull())
     }
 
     /// Rejects an operation that requires a value when the operand may be null or is void.
-    fn require_value(&self, nullness: Nullness, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if nullness.is_void() {
+    fn require_value(&self, flow: &Flow, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if flow.is_void() {
             return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), operand));
         }
-        if !nullness.is_null_or_nullable() {
+        if !flow.is_bad() {
             return Ok(());
         }
         let msg = match self.hir.get(operand) {
@@ -668,12 +684,3 @@ impl<'a> Checker<'a> {
 
 }
 
-/// The nullness a return shape yields at a call site.
-fn nullness_of(ret: ReturnShape) -> Nullness {
-    match ret {
-        ReturnShape::NonNull => Nullness::NonNull,
-        ReturnShape::Nullable => Nullness::Nullable,
-        ReturnShape::Void => Nullness::Void,
-        ReturnShape::Inferred => Nullness::Unknown,
-    }
-}
