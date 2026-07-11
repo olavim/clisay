@@ -2,12 +2,11 @@
 
 use std::collections::HashSet;
 
-use crate::middle::hir::{HirExpr, HirId, HirStmt};
+use crate::middle::hir::{HirExpr, HirId, HirStmt, ReturnShape};
 use crate::middle::signatures::RetSig;
 
 use super::native;
-use super::nullness_of;
-use super::{Checker, Nullness, TypeTag, Typed, Violation};
+use super::{Checker, Flow, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
     pub(super) fn call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<Typed, anyhow::Error> {
@@ -17,7 +16,7 @@ impl<'a> Checker<'a> {
                 let name = *name;
                 if self.sigs.is_type(name) {
                     self.check_construction(name, &HashSet::new(), callee)?;
-                    return Ok(Typed::of(Nullness::NonNull, TypeTag::Concrete(name)));
+                    return Ok(Typed::of(Flow::Clean, TypeTag::Concrete(name)));
                 }
                 if let Some(stmt) = self.func_of(name) {
                     self.check_call_args(stmt, &arg_types, args)?;
@@ -27,7 +26,7 @@ impl<'a> Checker<'a> {
                 if self.frame_index_of(name).is_none() {
                     if let Some(sig) = native::builtin(self.hir.text(name)) {
                         self.check_args(sig.params, &arg_types, args)?;
-                        return Ok(Typed::of(nullness_of(sig.ret), TypeTag::Unknown));
+                        return Ok(Typed::of(self.native_ret_flow(sig.ret), TypeTag::Unknown));
                     }
                 }
                 self.indirect_call(callee)
@@ -54,7 +53,7 @@ impl<'a> Checker<'a> {
         // A native-type method resolves by name when no user method matches the receiver.
         if let Some(sig) = native::native_method(name) {
             self.check_args(sig.params, arg_types, args)?;
-            return Ok(Typed::of(nullness_of(sig.ret), TypeTag::Unknown));
+            return Ok(Typed::of(self.native_ret_flow(sig.ret), TypeTag::Unknown));
         }
         Ok(Typed::unknown())
     }
@@ -62,15 +61,15 @@ impl<'a> Checker<'a> {
     /// A call through a value: the callee must be non-null and its result is a dynamic boundary.
     fn indirect_call(&mut self, callee: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let callee_typed = self.expr(callee)?;
-        self.require_value(callee_typed.nullness, callee)?;
+        self.require_value(&callee_typed.flow, callee)?;
         Ok(Typed::unknown())
     }
 
     /// The nullability and type of a call result, given the callee and receiver tag.
     fn call_result(&self, stmt: HirId<HirStmt>, receiver_tag: &TypeTag) -> Typed {
-        let nullness = self.sigs.fns.get(&stmt).map_or(Nullness::Unknown, |s| self.ret_nullness(&s.ret));
+        let flow = self.sigs.fns.get(&stmt).map_or(Flow::Unknown, |s| self.ret_flow(&s.ret));
         let tag = self.sigs.ret_tags.get(&stmt).map_or(TypeTag::Unknown, |t| t.resolve(receiver_tag));
-        Typed::of(nullness, tag)
+        Typed::of(flow, tag)
     }
 
     /// Checks a user call's arguments against the resolved function's declared parameters.
@@ -89,15 +88,15 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let Some(typed) = arg_types.get(i) else { break };
-            self.check_arg(typed.nullness, i, &args[i])?;
+            self.check_arg(&typed.flow, i, &args[i])?;
         }
         Ok(())
     }
 
     /// Checks a single argument value against a non-null parameter slot.
-    fn check_arg(&mut self, nullness: Nullness, position: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn check_arg(&mut self, flow: &Flow, position: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let n = position + 1;
-        match self.non_null_violation(nullness, node) {
+        match self.non_null_violation(flow, node) {
             None => Ok(()),
             Some(Violation::Void) => Err(self.error(format!("Argument {n} is a void result; the call returns no value"), node)),
             Some(Violation::Null) => Err(self.error(format!("Cannot pass null as argument {n}; the parameter is non-null"), node)),
@@ -105,13 +104,23 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn ret_nullness(&self, ret: &RetSig) -> Nullness {
+    fn ret_flow(&self, ret: &RetSig) -> Flow {
         if ret.void {
-            Nullness::Void
+            Flow::Void
         } else if ret.obligations.contains(&self.sigs.opt) {
-            Nullness::Nullable
+            self.opt_flow(false)
         } else {
-            Nullness::NonNull
+            Flow::Clean
+        }
+    }
+
+    /// The obligations a native call result carries, from its fixed return shape.
+    fn native_ret_flow(&self, ret: ReturnShape) -> Flow {
+        match ret {
+            ReturnShape::NonNull => Flow::Clean,
+            ReturnShape::Nullable => self.opt_flow(false),
+            ReturnShape::Void => Flow::Void,
+            ReturnShape::Inferred => Flow::Unknown,
         }
     }
 }

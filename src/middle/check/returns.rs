@@ -2,7 +2,7 @@
 
 use crate::middle::hir::{HirExpr, HirId, HirStmt, ReturnShape};
 
-use super::{Checker, Nullness, Violation};
+use super::{Checker, Flow, Violation};
 
 impl<'a> Checker<'a> {
     /// Whether every path through a function body ends in a `return` or `throw`.
@@ -32,17 +32,18 @@ impl<'a> Checker<'a> {
 
     /// Checks a `return <value>` against the declared return shape: a `!` rejects a possibly-null
     /// or void value, a `?` accepts any value, and a void function may not return a value at all.
-    pub(super) fn check_return(&mut self, nullness: Nullness, shape: ReturnShape, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    pub(super) fn check_return(&mut self, flow: &Flow, shape: ReturnShape, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match shape {
             ReturnShape::Void => Err(self.error("A void function cannot return a value".to_string(), node)),
-            ReturnShape::NonNull => match self.non_null_violation(nullness, node) {
+            ReturnShape::NonNull => match self.non_null_violation(flow, node) {
                 None => Ok(()),
                 Some(Violation::Void) => Err(self.error("Cannot return a void result from a '!' function".to_string(), node)),
                 Some(Violation::Null | Violation::Nullable) => Err(self.error("A '!' function must return a non-null value".to_string(), node)),
             },
-            ReturnShape::Nullable => match nullness {
-                Nullness::Void => Err(self.error("Cannot return a void result".to_string(), node)),
-                _ => Ok(()),
+            ReturnShape::Nullable => if flow.is_void() {
+                Err(self.error("Cannot return a void result".to_string(), node))
+            } else {
+                Ok(())
             },
             ReturnShape::Inferred => Ok(()),
         }
