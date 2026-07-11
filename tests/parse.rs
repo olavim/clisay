@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, ObligationRule, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 fn top_stmts(ast: &Ast) -> Vec<AstId<Stmt>> {
@@ -146,6 +146,38 @@ fn container_malformed_insides_get_targeted_errors() {
 
     let comma = try_parse("say c: [opt, [fails]];").err().expect("expected a parse error");
     assert!(comma.contains("separated by spaces"), "{comma}");
+}
+
+#[test]
+fn obligation_declaration() {
+    let ast = parse("obligation tainted; obligation parsed: discharge to use Unparsed; obligation borrowed: discharge to escape; obligation held: discharge before drop;");
+    let stmts = top_stmts(&ast);
+
+    let Stmt::Obligation { name, witness, rule } = ast.get(&stmts[0]) else { panic!("not an obligation") };
+    assert_eq!(ast.text(*name), "tainted");
+    assert!(witness.is_none());
+    assert_eq!(*rule, ObligationRule::ToUse);
+
+    let Stmt::Obligation { witness, rule, .. } = ast.get(&stmts[1]) else { panic!("not an obligation") };
+    let Some(w) = *witness else { panic!("witness form has no witness") };
+    assert_eq!(ast.text(w), "Unparsed");
+    assert_eq!(*rule, ObligationRule::ToUse);
+
+    let Stmt::Obligation { witness, rule, .. } = ast.get(&stmts[2]) else { panic!("not an obligation") };
+    assert!(witness.is_none());
+    assert_eq!(*rule, ObligationRule::ToEscape);
+
+    let Stmt::Obligation { rule, .. } = ast.get(&stmts[3]) else { panic!("not an obligation") };
+    assert_eq!(*rule, ObligationRule::BeforeDrop);
+}
+
+#[test]
+fn obligation_declaration_rejections() {
+    assert!(try_parse("obligation bad: discharge to escape Row;").is_err());
+    assert!(try_parse("obligation bad: discharge before drop Row;").is_err());
+    assert!(try_parse("obligation bad: discharge to use 0;").is_err());
+    assert!(try_parse("obligation bad: discharge to sink;").is_err());
+    assert!(try_parse("obligation bad: no use;").is_err());
 }
 
 #[test]

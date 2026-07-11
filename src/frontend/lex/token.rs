@@ -59,7 +59,7 @@ pub enum ContextualKeyword {
     Pub,
     Inner,
     Mut,
-    No,
+    Discharge,
     Void,
 }
 
@@ -72,7 +72,7 @@ impl ContextualKeyword {
             "pub" => ContextualKeyword::Pub,
             "inner" => ContextualKeyword::Inner,
             "mut" => ContextualKeyword::Mut,
-            "no" => ContextualKeyword::No,
+            "discharge" => ContextualKeyword::Discharge,
             "void" => ContextualKeyword::Void,
             _ => return None,
         })
@@ -88,7 +88,7 @@ impl fmt::Display for ContextualKeyword {
             ContextualKeyword::Pub => "pub",
             ContextualKeyword::Inner => "inner",
             ContextualKeyword::Mut => "mut",
-            ContextualKeyword::No => "no",
+            ContextualKeyword::Discharge => "discharge",
             ContextualKeyword::Void => "void",
         })
     }

@@ -100,9 +100,7 @@ impl<'a> Lowerer<'a> {
 
         let mut composed = Composed::empty();
         self.fold_trait(decl.name, decl, &HashSet::new(), &mut composed)?;
-
-        let empty = self.hir.add(HirExpr::Block(Vec::new()), pos.clone());
-        let init = self.hir.add(HirStmt::Fn(HirFnDecl { name: decl.init_name, params: Vec::new(), body: empty, ret: ReturnShape::NonNull }), pos.clone());
+        let init = self.hir.add(HirStmt::Nop, pos.clone());
 
         Ok(HirTypeDecl {
             name: decl.name,
@@ -324,7 +322,10 @@ impl<'a> Lowerer<'a> {
         aliases
     }
 
-    /// Folds one trait's members into `composed`.
+    /// Folds one trait's methods into `composed`, recording its private-method slots under
+    /// `trait_sym`. Exposed methods take their plain name (or a `"<Trait>.<method>"` alias when a
+    /// host override in `host_methods` shadows them); private methods take a per-trait slot name so
+    /// two traits' same-named privates never collide.
     fn fold_trait(&mut self, trait_sym: Symbol, type_decl: &TypeDecl, host_methods: &HashSet<Symbol>, composed: &mut Composed) -> Result<(), anyhow::Error> {
         let renames = self.trait_renames(type_decl);
         let mut private_map: HashMap<Symbol, Symbol> = HashMap::new();

@@ -217,6 +217,13 @@ pub struct MatchArm {
     pub body: AstId<Expr>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ObligationRule {
+    ToUse,
+    ToEscape,
+    BeforeDrop,
+}
+
 pub enum Stmt {
     Expression(AstId<Expr>),
     Return(Option<AstId<Expr>>),
@@ -231,6 +238,7 @@ pub enum Stmt {
     Say(FieldInit),
     Fn(FnDecl),
     Type(Box<TypeDecl>),
+    Obligation { name: Symbol, witness: Option<Symbol>, rule: ObligationRule },
     /// A match statement dispatching the scrutinee over arms.
     Match(AstId<Expr>, Vec<MatchArm>)
 }

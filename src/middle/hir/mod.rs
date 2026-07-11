@@ -204,6 +204,7 @@ pub enum HirStmt {
     Type(Box<HirTypeDecl>),
     Trait(Box<HirTypeDecl>),
     Match(HirId<HirExpr>, Vec<HirMatchArm>),
+    Nop,
 }
 
 pub enum HirNodeKind {

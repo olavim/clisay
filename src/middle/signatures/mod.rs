@@ -101,13 +101,7 @@ impl<'a> Collector<'a> {
                     self.collect_sig(method);
                 }
             },
-            // A trait emits no runtime type, so its methods are not callable on a concrete receiver.
-            HirStmt::Trait(decl) => {
-                self.collect_sig(&decl.init);
-                for method in &decl.methods {
-                    self.collect_sig(method);
-                }
-            },
+            HirStmt::Trait(_) => {},
             HirStmt::Expression(e) | HirStmt::Throw(e) | HirStmt::Block(e) => self.expr(e),
             HirStmt::Return(opt) => if let Some(e) = opt { self.expr(e); },
             HirStmt::While(cond, body) => { self.expr(cond); self.expr(body); },
@@ -129,6 +123,7 @@ impl<'a> Collector<'a> {
                     self.expr(&arm.body);
                 }
             },
+            HirStmt::Nop => {},
         }
     }
 
