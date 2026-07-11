@@ -18,6 +18,9 @@ impl<'a> Checker<'a> {
                     self.check_construction(name, &HashSet::new(), callee)?;
                     return Ok(Typed::of(Flow::Clean, TypeTag::Concrete(name)));
                 }
+                if self.hir.text(name) == "Err" && self.frame_index_of(name).is_none() {
+                    return Ok(Typed::of(self.fails_flow(), TypeTag::Unknown));
+                }
                 if let Some(stmt) = self.func_of(name) {
                     self.check_call_args(stmt, &arg_types, args)?;
                     return Ok(self.call_result(stmt, &TypeTag::Unknown));
@@ -107,10 +110,10 @@ impl<'a> Checker<'a> {
     fn ret_flow(&self, ret: &RetSig) -> Flow {
         if ret.void {
             Flow::Void
-        } else if ret.obligations.contains(&self.sigs.opt) {
-            self.opt_flow(false)
-        } else {
+        } else if ret.obligations.is_empty() {
             Flow::Clean
+        } else {
+            Flow::Bad { obligations: ret.obligations.clone(), definite: false }
         }
     }
 

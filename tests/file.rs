@@ -177,3 +177,8 @@ fn nullability(resource: &str) -> Result<(), Failed> {
 fn obligations(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
+
+#[test_resources("tests/res/discharge")]
+fn discharge(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}

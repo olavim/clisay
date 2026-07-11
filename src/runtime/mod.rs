@@ -46,13 +46,15 @@ struct CallCache {
 
 struct NativeTypes {
     array: *mut ObjType,
-    dict: *mut ObjType
+    dict: *mut ObjType,
+    err: *mut ObjType
 }
 
 impl GcTraceable for NativeTypes {
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.array);
         gc.mark_object(self.dict);
+        gc.mark_object(self.err);
     }
     
     fn fmt(&self) -> String {
@@ -115,6 +117,24 @@ fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjType 
     gc.alloc(ty)
 }
 
+fn build_err_type(gc: &mut Gc) -> *mut ObjType {
+    let mut ty = ObjType::new(gc.intern("Err"));
+    ty.members.insert(gc.intern("value"), TypeMember::Field(0));
+    ty.fields.insert(0);
+    let init = ObjNativeFn::new(gc.intern("Err"), 1, |vm, target, args| {
+        let instance = target.as_object().as_instance_ptr();
+        unsafe { (*instance).set(0, args[0]) };
+        vm.push(target);
+        Ok(())
+    });
+    ty.methods.insert(1, gc.alloc(init).into());
+    ty.init_id = Some(1);
+    ty.member_count = 2;
+    ty.provided.insert(gc.intern("Err"));
+    ty.build_template();
+    gc.alloc(ty)
+}
+
 /// Executes a compiled `chunk`, returning captured output.
 pub fn execute(chunk: BytecodeChunk, gc: Gc) -> Result<Vec<String>, anyhow::Error> {
     Vm::execute(chunk, gc)
@@ -147,7 +167,8 @@ impl Vm {
 
         let native_types = NativeTypes {
             array: build_native_type(&mut gc, NativeArray),
-            dict: build_native_type(&mut gc, NativeDict)
+            dict: build_native_type(&mut gc, NativeDict),
+            err: build_err_type(&mut gc)
         };
 
         let mut vm = Vm {
@@ -212,6 +233,9 @@ impl Vm {
             vm.push(Value::NULL);
             Ok(())
         });
+
+        let err_name = vm.gc.intern("Err");
+        vm.globals.insert(err_name, Value::from(vm.native_types.err));
 
         // The registered built-ins must match the list `middle::bind` checks references against,
         // or a valid call to a native would be rejected as an undefined variable (or vice versa).

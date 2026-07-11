@@ -54,7 +54,10 @@ impl Vm {
     
     pub(super) fn op_throw(&mut self) -> Result<(), anyhow::Error> {
         let value = self.stack.pop();
+        self.throw_value(value)
+    }
 
+    pub(super) fn throw_value(&mut self, value: Value) -> Result<(), anyhow::Error> {
         if self.try_frames.len() == 0 {
             return self.error(format!("Uncaught exception: {}", value.fmt()));
         }
@@ -122,10 +125,19 @@ impl Vm {
         }
     }
 
-    /// The null-barrier: throw when the top of the stack is null, else leave it for the consumer.
+    fn is_err(&self, value: Value) -> bool {
+        matches!(value.kind(), ValueKind::Object(ObjectKind::Instance))
+            && unsafe { (*value.as_object().as_instance_ptr()).ty == self.native_types.err }
+    }
+
     pub(super) fn op_assert_non_null(&mut self) -> Result<(), anyhow::Error> {
-        if self.stack.peek(0).is_null() {
+        let value = self.stack.peek(0);
+        if value.is_null() {
             return self.error("unexpected null");
+        }
+        if self.is_err(value) {
+            let err = self.stack.pop();
+            return self.throw_value(err);
         }
         Ok(())
     }
