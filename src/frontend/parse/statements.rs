@@ -10,6 +10,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Fn => self.parse_fn(),
             TokenType::Type => self.parse_type_decl(false),
             TokenType::Trait => self.parse_type_decl(true),
+            TokenType::Obligation => self.parse_obligation(),
             TokenType::Return => self.parse_return(),
             TokenType::Throw => self.parse_throw(),
             TokenType::Try => self.parse_trycatch(),
@@ -57,6 +58,48 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.tokens.expect(TokenType::Semicolon)?;
         let field_init = FieldInit { name, value: expr, nullable, mutable, clause };
         Ok(self.node_stmt(Stmt::Say(field_init), pos))
+    }
+
+    pub(super) fn parse_obligation(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::Obligation)?.pos.clone();
+        let name = self.parse_identifier()?;
+        let name = self.ast.intern(&name);
+
+        let (rule, witness) = self.parse_obligation_rule()?;
+        self.tokens.expect(TokenType::Semicolon)?;
+        Ok(self.node_stmt(Stmt::Obligation { name, witness, rule }, pos))
+    }
+
+    fn parse_obligation_rule(&mut self) -> Result<(ObligationRule, Option<Symbol>), anyhow::Error> {
+        if self.tokens.next_if(TokenType::Colon).is_none() {
+            return Ok((ObligationRule::ToUse, None));
+        }
+
+        let pos = self.tokens.peek(0).pos.clone();
+        if self.tokens.peek(0).contextual() != Some(ContextualKeyword::Discharge) {
+            return Err(self.obligation_rule_error(&pos));
+        }
+        self.tokens.next();
+
+        match self.parse_identifier()?.as_str() {
+            "to" => match self.parse_identifier()?.as_str() {
+                "use" => {
+                    let witness = self.tokens.next_if(TokenType::Identifier).map(|tok| self.ast.intern(&tok.lexeme));
+                    Ok((ObligationRule::ToUse, witness))
+                },
+                "escape" => Ok((ObligationRule::ToEscape, None)),
+                _ => Err(self.obligation_rule_error(&pos)),
+            },
+            "before" => match self.parse_identifier()?.as_str() {
+                "drop" => Ok((ObligationRule::BeforeDrop, None)),
+                _ => Err(self.obligation_rule_error(&pos)),
+            },
+            _ => Err(self.obligation_rule_error(&pos)),
+        }
+    }
+
+    fn obligation_rule_error(&self, pos: &SourcePosition) -> anyhow::Error {
+        self.error_help("Invalid obligation rule", pos, "a rule is `discharge to use`, `discharge to escape`, or `discharge before drop`")
     }
 
     pub(super) fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {

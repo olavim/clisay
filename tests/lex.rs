@@ -73,10 +73,10 @@ fn obligation_is_a_hard_keyword() {
 }
 
 #[test]
-fn no_and_void_are_contextual_keywords() {
-    let no = lex("no");
-    assert_eq!(no[0].kind, TokenType::Identifier);
-    assert_eq!(no[0].contextual(), Some(ContextualKeyword::No));
+fn discharge_and_void_are_contextual_keywords() {
+    let discharge = lex("discharge");
+    assert_eq!(discharge[0].kind, TokenType::Identifier);
+    assert_eq!(discharge[0].contextual(), Some(ContextualKeyword::Discharge));
 
     let void = lex("void");
     assert_eq!(void[0].kind, TokenType::Identifier);

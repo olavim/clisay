@@ -109,6 +109,7 @@ impl<'a> Lowerer<'a> {
                 HirStmt::Match(scrutinee, arms)
             },
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
+            Stmt::Obligation { .. } => HirStmt::Nop,
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),
             Stmt::Type(decl) => {
                 if decl.is_trait {

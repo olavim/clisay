@@ -193,6 +193,7 @@ impl<'a> Resolver<'a> {
             },
             Stmt::Block(body) => self.visit_expr(body)?,
             Stmt::Say(field) => if let Some(value) = &field.value { self.visit_expr(value)?; },
+            Stmt::Obligation { .. } => {},
             Stmt::Fn(decl) => self.visit_fn(decl)?,
             Stmt::Type(decl) => self.visit_type(stmt, decl)?,
             Stmt::Match(scrutinee, arms) => {

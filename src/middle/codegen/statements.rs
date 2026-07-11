@@ -9,6 +9,7 @@ use super::{Compiler, TryCatchPosition, TryFrame};
 impl<'a> Compiler<'a> {
     pub (super) fn statement(&mut self, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
         match self.hir.get(stmt_id) {
+            HirStmt::Nop => {},
             HirStmt::Return(expr) => {
                 // If returning from a try or catch block with a finally block, inline the finally block before returning.
                 if let Some(TryFrame {

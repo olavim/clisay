@@ -250,6 +250,7 @@ impl<'a> Checker<'a> {
 
     fn stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
         match self.hir.get(stmt) {
+            HirStmt::Nop => {},
             HirStmt::Fn(decl) => {
                 // Register the name first so the body may call itself.
                 self.locals.push(Local::func(decl.name, *stmt));

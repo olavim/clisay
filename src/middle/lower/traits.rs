@@ -112,17 +112,14 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Lowers a `trait` declaration into a standalone `HirTypeDecl` for **self-containment validation**.
+    /// Lowers a `trait` declaration into a standalone `HirTypeDecl` for self-containment validation.
     /// The resolver validates the body against the trait's surface independently of any composing type.
     pub(super) fn lower_trait(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
         let surface = self.trait_surface(type_id, decl)?;
 
         let mut composed = Composed::empty();
         self.fold_trait(decl.name, decl, &HashSet::new(), &mut composed)?;
-
-        // A placeholder empty init: a trait's init body is validated at the composing type.
-        let empty = self.hir.add(HirExpr::Block(Vec::new()), pos.clone());
-        let init = self.hir.add(HirStmt::Fn(HirFnDecl { name: decl.init_name, params: Vec::new(), body: empty, ret: ReturnShape::NonNull }), pos.clone());
+        let init = self.hir.add(HirStmt::Nop, pos.clone());
 
         Ok(HirTypeDecl {
             name: decl.name,

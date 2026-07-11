@@ -451,6 +451,7 @@ impl<'a> Resolver<'a> {
                 }
             },
             HirStmt::Block(body) => self.expression(body)?,
+            HirStmt::Nop => {},
             HirStmt::Match(scrutinee, arms) => {
                 self.expression(scrutinee)?;
                 self.enter_scope();
@@ -939,7 +940,7 @@ impl<'a> Resolver<'a> {
                 }
             },
             // Nested functions/types do not establish init assignment in this body.
-            HirStmt::Fn(_) | HirStmt::Type(_) | HirStmt::Trait(_) => {},
+            HirStmt::Fn(_) | HirStmt::Type(_) | HirStmt::Trait(_) | HirStmt::Nop => {},
         }
     }
 
