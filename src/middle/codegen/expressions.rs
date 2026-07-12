@@ -1,7 +1,7 @@
 use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
-use crate::middle::ir::Inst;
+use crate::middle::ir::{Inst, Label};
 use crate::middle::bind::{FnKind, Place};
 
 use super::Compiler;
@@ -48,8 +48,11 @@ impl<'a> Compiler<'a> {
                 }
             },
             HirExpr::This => self.emit(Inst::LoadLocal(0), expr),
-            HirExpr::Coalesce(left, right) => self.coalesce(left, right)?,
-            HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(target, member, *is_dot)?,
+            HirExpr::Coalesce(left, right) => self.coalesce(expr, left, right)?,
+            HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(expr, target, member, *is_dot)?,
+            HirExpr::SafeCall(callee, args) => self.safe_call(expr, callee, args)?,
+            HirExpr::Propagate(operand) => self.propagate(operand)?,
+            HirExpr::Handle(left, _, handler) => self.handle(expr, left, handler)?,
             // `!` leaves its operand's value; the barrier below guards it when the check pass flagged it.
             HirExpr::Assert(operand) => self.expression(operand)?,
         };
@@ -61,27 +64,70 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `a ?? b`: yield `a` when it is non-null, else `b`. The fallback is evaluated only
-    /// when `a` is null.
-    fn coalesce(&mut self, left: &HirId<HirExpr>, right: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    /// Compiles `a ?? b`: yield `a` when it is clean, else `b`.
+    fn coalesce(&mut self, node: &HirId<HirExpr>, left: &HirId<HirExpr>, right: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(left)?;
-        self.emit(Inst::JumpIfNotNullOrPop(end), left);
+        if self.barriers.tests_object_witness(node) {
+            self.emit(Inst::JumpIfClean(end), left);
+            self.emit(Inst::Pop, left);
+        } else {
+            self.emit(Inst::JumpIfNotNullOrPop(end), left);
+        }
         self.expression(right)?;
         self.ir.bind(end);
         Ok(())
     }
 
-    /// Compiles `a?.b` / `a?[i]`: yield null when `a` is null, else the member access. The access
-    /// runs only when `a` is non-null.
-    fn safe_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_dot: bool) -> Result<(), anyhow::Error> {
+    /// Compiles `cb?(args)`: yield the callee when it is bad, else the call.
+    fn safe_call(&mut self, node: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+        let end = self.ir.new_label();
+        self.expression(callee)?;
+        self.emit(self.chain_guard(node, end), callee);
+        for arg in args {
+            self.expression(arg)?;
+        }
+        self.emit(Inst::Call(args.len() as u8), callee);
+        self.ir.bind(end);
+        Ok(())
+    }
+
+    /// Compiles `a?!`: on a bad value the enclosing function returns it.
+    fn propagate(&mut self, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let cont = self.ir.new_label();
+        self.expression(operand)?;
+        self.emit(Inst::JumpIfClean(cont), operand);
+        self.emit(Inst::Return, operand);
+        self.ir.bind(cont);
+        Ok(())
+    }
+
+    /// Compiles `a ?? p => h`: yield `a` when clean, else bind the bad value to `p` and yield `h`.
+    fn handle(&mut self, node: &HirId<HirExpr>, left: &HirId<HirExpr>, handler: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let slot = self.bindings.handle_binder(node);
+        let end = self.ir.new_label();
+        self.expression(left)?;
+        self.emit(Inst::JumpIfClean(end), left);
+        self.expression(handler)?;
+        self.emit(Inst::StoreLocalPop(slot), node);
+        self.ir.bind(end);
+        Ok(())
+    }
+
+    /// Compiles `a?.b` / `a?[i]`: yield the operand when it is bad, else the member access.
+    fn safe_access(&mut self, node: &HirId<HirExpr>, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_dot: bool) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(target)?;
-        self.emit(Inst::JumpIfNull(end), target);
+        self.emit(self.chain_guard(node, end), target);
         self.expression(member)?;
         self.emit(if is_dot { Inst::GetProperty } else { Inst::GetIndex }, target);
         self.ir.bind(end);
         Ok(())
+    }
+
+    /// The short-circuit op for a `?` chain.
+    fn chain_guard(&self, node: &HirId<HirExpr>, end: Label) -> Inst {
+        if self.barriers.tests_object_witness(node) { Inst::JumpIfBad(end) } else { Inst::JumpIfNull(end) }
     }
 
     /// Compiles an expression in statement position, where its value is discarded.

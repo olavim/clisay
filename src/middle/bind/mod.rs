@@ -132,6 +132,8 @@ pub struct Bindings {
     match_binders: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
     /// `match` statements => their scrutinee temp and per-arm binder slots.
     match_info: FnvHashMap<HirId<HirStmt>, MatchInfo>,
+    /// `e ?? p => h` handler nodes => the local slot binding the bad value.
+    handle_binders: FnvHashMap<HirId<HirExpr>, u8>,
 }
 
 /// The slot layout codegen needs for a `match` statement. The scrutinee lives in `scrut_slot`
@@ -183,6 +185,10 @@ impl Bindings {
 
     pub fn match_info(&self, id: &HirId<HirStmt>) -> &MatchInfo {
         &self.match_info[id]
+    }
+
+    pub fn handle_binder(&self, id: &HirId<HirExpr>) -> u8 {
+        self.handle_binders[id]
     }
 }
 
@@ -620,6 +626,18 @@ impl<'a> Resolver<'a> {
                 self.expression(right)?;
             },
             HirExpr::SafeAccess(target, member, _) => self.index(target, member)?,
+            HirExpr::SafeCall(callee, args) => self.call_expression(callee, args)?,
+            HirExpr::Propagate(operand) => self.expression(operand)?,
+            HirExpr::Handle(left, binder, handler) => {
+                self.expression(left)?;
+                // The binder is live only while resolving the handler. Its slot is where the bad
+                // value already sits, so it is dropped without a cleanup. Slot reused for the result.
+                let mark = self.locals.len();
+                let slot = self.declare_local(*binder)?;
+                self.bindings.handle_binders.insert(*expr, slot);
+                self.expression(handler)?;
+                self.locals.truncate(mark);
+            },
             HirExpr::Assert(operand) => self.expression(operand)?,
         };
         Ok(())
@@ -900,7 +918,7 @@ impl<'a> Resolver<'a> {
             HirExpr::Block(stmts) => for s in stmts { self.collect_assigned_fields_stmt(s, out); },
             HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Has(x, _) | HirExpr::Match(x, _) => self.collect_assigned_fields(x, out),
             HirExpr::Binary(_, l, r) => { self.collect_assigned_fields(l, out); self.collect_assigned_fields(r, out); },
-            HirExpr::Call(c, args) => {
+            HirExpr::Call(c, args) | HirExpr::SafeCall(c, args) => {
                 self.collect_assigned_fields(c, out);
                 for a in args { self.collect_assigned_fields(a, out); }
             },
@@ -910,8 +928,11 @@ impl<'a> Resolver<'a> {
                 for a in args { self.collect_assigned_fields(a, out); }
                 for (_, v) in brace { self.collect_assigned_fields(v, out); }
             },
-            HirExpr::Coalesce(l, r) | HirExpr::SafeAccess(l, r, _) => { self.collect_assigned_fields(l, out); self.collect_assigned_fields(r, out); },
-            HirExpr::Assert(x) => self.collect_assigned_fields(x, out),
+            HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r) | HirExpr::SafeAccess(l, r, _) => {
+                self.collect_assigned_fields(l, out);
+                self.collect_assigned_fields(r, out);
+            },
+            HirExpr::Assert(x) | HirExpr::Propagate(x) => self.collect_assigned_fields(x, out),
             _ => {},
         }
     }

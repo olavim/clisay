@@ -130,6 +130,24 @@ impl Vm {
             && unsafe { (*value.as_object().as_instance_ptr()).ty == self.native_types.err }
     }
 
+    /// A discharge test: keep the top value and jump when it is clean.
+    pub(super) fn op_jump_if_clean(&mut self) {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        let value = self.stack.peek(0);
+        if !value.is_null() && !self.is_err(value) {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        }
+    }
+
+    /// Keep the top value and jump when it is bad (an obligation witness).
+    pub(super) fn op_jump_if_bad(&mut self) {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        let value = self.stack.peek(0);
+        if value.is_null() || self.is_err(value) {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        }
+    }
+
     pub(super) fn op_assert_non_null(&mut self) -> Result<(), anyhow::Error> {
         let value = self.stack.peek(0);
         if value.is_null() {

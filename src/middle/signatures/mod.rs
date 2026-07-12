@@ -91,6 +91,7 @@ pub fn collect(hir: &Hir) -> Signatures {
     let mut collector = Collector { hir, opt, fails, err, sigs: Signatures::new(opt, fails) };
     collector.stmt(&hir.get_root());
     collector.infer_ret_tags();
+    collector.infer_propagated();
     collector.sigs
 }
 
@@ -202,10 +203,11 @@ impl<'a> Collector<'a> {
     fn expr(&mut self, expr: &HirId<HirExpr>) {
         match self.hir.get(expr) {
             HirExpr::Block(stmts) => for s in stmts { self.stmt(s); },
-            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) | HirExpr::Has(x, _) | HirExpr::Match(x, _) => self.expr(x),
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) | HirExpr::Propagate(x)
+            | HirExpr::Has(x, _) | HirExpr::Match(x, _) => self.expr(x),
             HirExpr::Binary(_, l, r) | HirExpr::Assign(l, r) | HirExpr::Coalesce(l, r)
-            | HirExpr::SafeAccess(l, r, _) | HirExpr::Index(l, r, _) => { self.expr(l); self.expr(r); },
-            HirExpr::Call(callee, args) => {
+            | HirExpr::Handle(l, _, r) | HirExpr::SafeAccess(l, r, _) | HirExpr::Index(l, r, _) => { self.expr(l); self.expr(r); },
+            HirExpr::Call(callee, args) | HirExpr::SafeCall(callee, args) => {
                 self.expr(callee);
                 for a in args { self.expr(a); }
             },
@@ -311,6 +313,125 @@ impl<'a> Collector<'a> {
         }
     }
 
+    /// Adds each `?!` operand's obligations to the enclosing function's return set.
+    fn infer_propagated(&mut self) {
+        let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
+        loop {
+            let mut changed = false;
+            for stmt in &stmts {
+                let HirStmt::Fn(decl) = self.hir.get(stmt) else { continue };
+                let mut operands = Vec::new();
+                self.collect_propagates(&decl.body, &mut operands);
+                let mut add = HashSet::new();
+                for operand in operands {
+                    add.extend(self.operand_obligations(&operand, decl));
+                }
+                let sig = self.sigs.fns.get_mut(stmt).unwrap();
+                for ob in add {
+                    if sig.ret.obligations.insert(ob) { changed = true; }
+                }
+            }
+            if !changed { break; }
+        }
+    }
+
+    /// The obligations a `?!` operand carries. This mirrors the check pass's `chain_result`, so a
+    /// chain does not launder an object witness out of the propagated set.
+    fn operand_obligations(&self, operand: &HirId<HirExpr>, decl: &HirFnDecl) -> HashSet<Symbol> {
+        match self.hir.get(operand) {
+            HirExpr::Call(callee, _) => {
+                if self.is_err_call(operand) {
+                    return HashSet::from([self.fails]);
+                }
+                match self.hir.get(callee) {
+                    HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
+                        .map(|s| self.sigs.fns[s].ret.obligations.clone())
+                        .unwrap_or_default(),
+                    _ => HashSet::new(),
+                }
+            },
+            // A `?` chain carries its operand's obligations from the guarded access.
+            HirExpr::SafeAccess(target, _, _) | HirExpr::SafeCall(target, _) => {
+                let mut set = self.operand_obligations(target, decl);
+                set.insert(self.opt);
+                set
+            },
+            HirExpr::Literal(HirLiteral::Null) => HashSet::from([self.opt]),
+            HirExpr::Identifier(name) => self.param_obligations(*name, decl),
+            _ => HashSet::new(),
+        }
+    }
+
+    /// The declared obligation set of `name` when it is a parameter of `decl`.
+    fn param_obligations(&self, name: Symbol, decl: &HirFnDecl) -> HashSet<Symbol> {
+        for p in &decl.params {
+            if matches!(self.hir.get(&p.name), HirExpr::Identifier(pname) if *pname == name) {
+                return p.clause.names.iter().copied().collect();
+            }
+        }
+        HashSet::new()
+    }
+
+    /// Collects each `?!` operand in a body, skipping nested function and lambda bodies.
+    fn collect_propagates(&self, expr: &HirId<HirExpr>, out: &mut Vec<HirId<HirExpr>>) {
+        match self.hir.get(expr) {
+            HirExpr::Propagate(operand) => { out.push(*operand); self.collect_propagates(operand, out); },
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) | HirExpr::Has(x, _) | HirExpr::Match(x, _) => self.collect_propagates(x, out),
+            HirExpr::Binary(_, l, r) | HirExpr::Assign(l, r) | HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r)
+            | HirExpr::SafeAccess(l, r, _) | HirExpr::Index(l, r, _) => { 
+                self.collect_propagates(l, out); 
+                self.collect_propagates(r, out); 
+            },
+            HirExpr::Call(callee, args) | HirExpr::SafeCall(callee, args) => {
+                self.collect_propagates(callee, out);
+                for a in args { self.collect_propagates(a, out); }
+            },
+            HirExpr::Construct(callee, args, brace) => {
+                self.collect_propagates(callee, out);
+                for a in args { self.collect_propagates(a, out); }
+                for (_, v) in brace { self.collect_propagates(v, out); }
+            },
+            HirExpr::Block(stmts) => for s in stmts { self.collect_propagates_stmt(s, out); },
+            HirExpr::Literal(HirLiteral::Array(elems)) => for e in elems { self.collect_propagates(e, out); },
+            HirExpr::Literal(HirLiteral::Dict(pairs)) => for (k, v) in pairs { 
+                self.collect_propagates(k, out); 
+                self.collect_propagates(v, out); 
+            },
+            HirExpr::Literal(_) | HirExpr::Identifier(_) | HirExpr::This => {},
+        }
+    }
+
+    fn collect_propagates_stmt(&self, stmt: &HirId<HirStmt>, out: &mut Vec<HirId<HirExpr>>) {
+        match self.hir.get(stmt) {
+            HirStmt::Expression(e) | HirStmt::Throw(e) | HirStmt::Block(e) => self.collect_propagates(e, out),
+            HirStmt::Return(opt) => if let Some(e) = opt { self.collect_propagates(e, out); },
+            HirStmt::While(cond, body) => { 
+                self.collect_propagates(cond, out); 
+                self.collect_propagates(body, out); 
+            },
+            HirStmt::If(cond, then, otherwise) => {
+                self.collect_propagates(cond, out);
+                self.collect_propagates(then, out);
+                if let Some(otherwise) = otherwise { self.collect_propagates_stmt(otherwise, out); }
+            },
+            HirStmt::Try(body, catch, finally) => {
+                self.collect_propagates(body, out);
+                if let Some(catch) = catch { self.collect_propagates(&catch.body, out); }
+                if let Some(finally) = finally { self.collect_propagates(finally, out); }
+            },
+            HirStmt::Say(field) => if let Some(value) = field.value { self.collect_propagates(&value, out); },
+            HirStmt::Match(scrutinee, arms) => {
+                self.collect_propagates(scrutinee, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard { self.collect_propagates(guard, out); }
+                    self.collect_propagates(&arm.body, out);
+                }
+            },
+            // Nested declarations are separate functions.
+            _ => {},
+        }
+    }
+
     /// The fields a type's `init` assigns directly: defaults, `this.f =`, and bare `f =`.
     /// Assignments inside a called helper do not count, since the helper is opaque to init.
     fn init_fields(&self, decl: &HirTypeDecl) -> HashSet<Symbol> {
@@ -353,10 +474,13 @@ impl<'a> Collector<'a> {
                 self.scan_field_assigns(value, fields, out);
             },
             HirExpr::Block(stmts) => for s in stmts { self.scan_field_assigns_stmt(s, fields, out); },
-            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) => self.scan_field_assigns(x, fields, out),
-            HirExpr::Binary(_, l, r) | HirExpr::Coalesce(l, r) | HirExpr::SafeAccess(l, r, _)
-            | HirExpr::Index(l, r, _) => { self.scan_field_assigns(l, fields, out); self.scan_field_assigns(r, fields, out); },
-            HirExpr::Call(callee, args) => {
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) | HirExpr::Propagate(x) => self.scan_field_assigns(x, fields, out),
+            HirExpr::Binary(_, l, r) | HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r)
+            | HirExpr::SafeAccess(l, r, _) | HirExpr::Index(l, r, _) => { 
+                self.scan_field_assigns(l, fields, out); 
+                self.scan_field_assigns(r, fields, out); 
+            },
+            HirExpr::Call(callee, args) | HirExpr::SafeCall(callee, args) => {
                 self.scan_field_assigns(callee, fields, out);
                 for a in args { self.scan_field_assigns(a, fields, out); }
             },

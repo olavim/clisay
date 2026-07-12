@@ -27,6 +27,8 @@ pub enum Inst {
     JumpIfTrueOrPop(Label),
     JumpIfNotNullOrPop(Label),
     JumpIfNull(Label),
+    JumpIfClean(Label),
+    JumpIfBad(Label),
     JumpIfGe(Label),
     JumpIfGt(Label),
     JumpIfLe(Label),

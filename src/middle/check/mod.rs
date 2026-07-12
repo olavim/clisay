@@ -20,32 +20,40 @@ use crate::middle::signatures::{Signatures, TypeTag};
 use self::construct::Seal;
 use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
-/// The expression nodes where an `unknown` value crosses into a non-null slot and needs a
-/// runtime barrier.
+/// The runtime checks codegen emits: null-barriers where an `unknown` value crosses into an
+/// unobligated slot, and object-witness tests at discharge nodes.
 #[derive(Default)]
 pub struct Barriers {
-    crossings: HashSet<HirId<HirExpr>>,
+    /// Nodes where an `unknown` value crosses into a clean slot and needs a null-barrier.
+    null_barriers: HashSet<HirId<HirExpr>>,
+    /// Discharge nodes (`??`, `?`) whose operand owes an object witness.
+    witness_tests: HashSet<HirId<HirExpr>>,
 }
 
 impl Barriers {
-    /// Whether a barrier must guard the value produced at this node.
+    /// Whether a null-barrier must guard the value produced at this node.
     pub fn has(&self, node: &HirId<HirExpr>) -> bool {
-        self.crossings.contains(node)
+        self.null_barriers.contains(node)
+    }
+
+    /// Whether a discharge node must run the general object-witness test, not just the null fast-path.
+    pub fn tests_object_witness(&self, node: &HirId<HirExpr>) -> bool {
+        self.witness_tests.contains(node)
     }
 
     pub fn len(&self) -> usize {
-        self.crossings.len()
+        self.null_barriers.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.crossings.is_empty()
+        self.null_barriers.is_empty()
     }
 }
 
 pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barriers, anyhow::Error> {
     let mut checker = Checker::new(hir, bindings, sigs);
     checker.stmt(&hir.get_root())?;
-    Ok(Barriers { crossings: checker.barriers })
+    Ok(Barriers { null_barriers: checker.barriers, witness_tests: checker.witness_tests })
 }
 
 /// The obligation state of a value as it flows.
@@ -125,6 +133,12 @@ impl Local {
         Local { name, declared_nullable: false, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true }
     }
 
+    /// A `??` handler binder. It stays nullable when the discharged set held `opt`, since the
+    /// caught value may be null and null is never usable; an object witness caught here is clean.
+    fn binder_nullable(name: Symbol, nullable: bool) -> Local {
+        Local { name, declared_nullable: nullable, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true }
+    }
+
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
         Local { name, declared_nullable: false, mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false }
     }
@@ -181,6 +195,8 @@ struct Checker<'a> {
     current_return: Option<ReturnShape>,
     /// Nodes where an `unknown` value enters a non-null slot and needs a runtime barrier.
     barriers: HashSet<HirId<HirExpr>>,
+    /// Discharge nodes whose operand owes an object witness.
+    witness_tests: HashSet<HirId<HirExpr>>,
 }
 
 impl<'a> Checker<'a> {
@@ -197,6 +213,7 @@ impl<'a> Checker<'a> {
             current_trait_surface: None,
             current_return: None,
             barriers: HashSet::new(),
+            witness_tests: HashSet::new(),
         }
     }
 
@@ -260,6 +277,26 @@ impl<'a> Checker<'a> {
     /// A value owing `fails`: an `Err` witness.
     fn fails_flow(&self) -> Flow {
         Flow::Bad { obligations: HashSet::from([self.sigs.fails]), definite: false }
+    }
+
+    fn owes_object_witness(&self, flow: &Flow) -> bool {
+        matches!(flow, Flow::Bad { obligations, .. } if obligations.contains(&self.sigs.fails))
+    }
+
+    /// The result of a `?` chain. It carries the operand's obligations, since a bad operand
+    /// short-circuits to that value. `opt` is always added because the chain can also yield null on
+    /// the clean path: a null short-circuit when the operand owes `opt`, or a nullable/dynamic
+    /// access. The exact member flow is discarded, so this is conservative but never unsound.
+    fn chain_result(&mut self, operand: &Flow, node: &HirId<HirExpr>) -> Typed {
+        if self.owes_object_witness(operand) {
+            self.witness_tests.insert(*node);
+        }
+        let mut obligations = match operand {
+            Flow::Bad { obligations, .. } => obligations.clone(),
+            _ => HashSet::new(),
+        };
+        obligations.insert(self.sigs.opt);
+        Typed::of(Flow::Bad { obligations, definite: false }, TypeTag::Unknown)
     }
 
     fn stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
@@ -412,23 +449,51 @@ impl<'a> Checker<'a> {
                 self.locals.truncate(mark);
                 Typed::unknown()
             },
-            // `a ?? b` is itself the null check, so it consumes a possibly-null left with no
-            // barrier. The result is `a` when non-null, else `b`.
+            // `a ?? b` discharges the whole obligation set: the fallback runs on any bad value, so
+            // a possibly-bad left crosses with no barrier. The result is `a` when clean, else `b`.
             HirExpr::Coalesce(l, r) => {
                 let left = self.expr(l)?;
+                if self.owes_object_witness(&left.flow) { self.witness_tests.insert(*expr); }
                 let right = self.expr(r)?;
                 let tag = if left.tag == right.tag { left.tag.clone() } else { TypeTag::Unknown };
                 let flow = if matches!(left.flow, Flow::Clean) { Flow::Clean } else { right.flow };
                 Typed::of(flow, tag)
             },
-            // `a?.b` / `a?[i]` short-circuits to null, so the result is nullable.
+            // `a?.b` / `a?[i]` short-circuits on a bad operand, so the result carries the operand's
+            // obligations.
             HirExpr::SafeAccess(target, member, _) => {
-                self.expr(target)?;
+                let target = self.expr(target)?;
                 self.expr(member)?;
-                Typed::of(self.opt_flow(false), TypeTag::Unknown)
+                self.chain_result(&target.flow, expr)
             },
-            // `a!` asserts non-null, keeping the operand's type tag. A barrier guards it unless
-            // the operand is already proven non-null.
+            // `cb?(args)` short-circuits on a bad callee, carrying its obligations.
+            HirExpr::SafeCall(callee, args) => {
+                let callee = self.expr(callee)?;
+                for a in args { self.expr(a)?; }
+                self.chain_result(&callee.flow, expr)
+            },
+            // `a?!` discharges the operand on its fall-through path. The enclosing function carries
+            // the obligation instead, recorded in signatures. The yielded value is clean.
+            HirExpr::Propagate(operand) => {
+                let typed = self.expr(operand)?;
+                Typed::of(Flow::Clean, typed.tag)
+            },
+            // `a ?? p => h` binds the caught bad value to `p` and discharges the object witnesses;
+            // a caught null stays use-blocked, so `p` keeps `opt` when the set held it. The result
+            // is the handler's value on the bad path, `a` (now clean) on the good one.
+            HirExpr::Handle(left, binder, handler) => {
+                let left = self.expr(left)?;
+                let nullable = matches!(&left.flow, Flow::Bad { obligations, .. } if obligations.contains(&self.sigs.opt));
+                let mark = self.locals.len();
+                self.locals.push(Local::binder_nullable(*binder, nullable));
+                let h = self.expr(handler)?;
+                self.locals.truncate(mark);
+                let tag = if left.tag == h.tag { left.tag.clone() } else { TypeTag::Unknown };
+                let flow = if matches!(left.flow, Flow::Clean) { Flow::Clean } else { h.flow };
+                Typed::of(flow, tag)
+            },
+            // `a!` asserts the value is clean, keeping its type tag. A barrier guards it unless
+            // the operand is already proven clean.
             HirExpr::Assert(x) => {
                 let typed = self.expr(x)?;
                 if !matches!(typed.flow, Flow::Clean) {

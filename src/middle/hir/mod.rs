@@ -63,12 +63,20 @@ pub enum HirExpr {
     /// `init` args, then the brace field initializers.
     Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
     This,
-    /// Null-coalescing `a ?? b`: yields `a` when non-null, else `b`. Short-circuit
-    /// lowering is deferred to codegen.
+    /// Coalesce `a ?? b`: discharges `a`'s obligation set, yielding `a` when it is clean, else `b`.
+    /// Short-circuit lowering is deferred to codegen.
     Coalesce(HirId<HirExpr>, HirId<HirExpr>),
-    /// Safe navigation `a?.b` / `a?[i]`: yields null when the target is null. `is_dot`
-    /// distinguishes `.name` from `[expr]`. See `HirExpr::Index`.
+    /// The `?` access-guard `a?.b` / `a?[i]`: on a bad operand the chain short-circuits to it,
+    /// carrying its obligation; otherwise the access runs. `is_dot` distinguishes `.name` from
+    /// `[expr]` (see `HirExpr::Index`).
     SafeAccess(HirId<HirExpr>, HirId<HirExpr>, bool),
+    /// The `?` access-guard on a call `cb?(args)`: short-circuits to the callee on a bad operand,
+    /// carrying its obligation; otherwise the call runs.
+    SafeCall(HirId<HirExpr>, Vec<HirId<HirExpr>>),
+    /// The propagate operator `a?!`: on a bad value the enclosing function returns it.
+    Propagate(HirId<HirExpr>),
+    /// The handler `e ?? p => h`: on a bad value binds it to `p` and yields `h`, else yields `e`.
+    Handle(HirId<HirExpr>, Symbol, HirId<HirExpr>),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(HirId<HirExpr>),
     Has(HirId<HirExpr>, Box<HirMatcher>),
