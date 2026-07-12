@@ -88,7 +88,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         Jump(l)
         | JumpIfFalse(l)
         | JumpIfFalseOrPop(l) | JumpIfTrueOrPop(l)
-        | JumpIfNotNullOrPop(l) | JumpIfNull(l)
+        | JumpIfNotNullOrPop(l) | JumpIfNull(l) | JumpIfClean(l) | JumpIfBad(l)
         | JumpIfGe(l) | JumpIfGt(l)
         | JumpIfLe(l) | JumpIfLt(l)
         | JumpIfEq(l) | JumpIfNeq(l)

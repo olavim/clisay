@@ -1,0 +1,4 @@
+// A caught null stays use-blocked: the handler binder cannot launder it into a clean slot.
+fn trick()! {
+    return null ?? n => n; // error: A '!' function must return a non-null value
+}
