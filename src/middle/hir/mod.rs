@@ -3,10 +3,11 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt;
 use std::marker::PhantomData;
 
 pub use crate::frontend::ast::{ReturnShape, Symbol};
-use crate::frontend::lex::SourcePosition;
+use crate::frontend::lex::{SourcePosition, TokenType};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
@@ -35,6 +36,42 @@ pub enum UnOp {
     Negate,
     Not,
     BitNot,
+}
+
+/// The source glyph of each operator lives in `TokenType`, so both `Display` impls route through
+/// it rather than repeating the strings.
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            BinOp::Add => TokenType::Plus,
+            BinOp::Subtract => TokenType::Minus,
+            BinOp::Multiply => TokenType::Multiply,
+            BinOp::Divide => TokenType::Divide,
+            BinOp::LeftShift => TokenType::LessLess,
+            BinOp::RightShift => TokenType::GreaterGreater,
+            BinOp::LessThan => TokenType::LessThan,
+            BinOp::LessThanEqual => TokenType::LessEqual,
+            BinOp::GreaterThan => TokenType::GreaterThan,
+            BinOp::GreaterThanEqual => TokenType::GreaterEqual,
+            BinOp::Equal => TokenType::EqualEqual,
+            BinOp::NotEqual => TokenType::NotEqual,
+            BinOp::And => TokenType::AmpAmp,
+            BinOp::Or => TokenType::PipePipe,
+            BinOp::BitAnd => TokenType::Amp,
+            BinOp::BitOr => TokenType::Pipe,
+            BinOp::BitXor => TokenType::Hat,
+        })
+    }
+}
+
+impl fmt::Display for UnOp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            UnOp::Negate => TokenType::Minus,
+            UnOp::Not => TokenType::Exclamation,
+            UnOp::BitNot => TokenType::Tilde,
+        })
+    }
 }
 
 pub enum HirLiteral {

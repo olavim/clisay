@@ -93,6 +93,18 @@ impl Signatures {
         self.witnesses.get(&obligation)
     }
 
+    pub(crate) fn obligation_for_witness(&self, name: Symbol) -> Option<Symbol> {
+        self.witnesses.iter().find_map(|(ob, w)| match w {
+            Witness::Type(t) | Witness::Trait(t) if *t == name => Some(*ob),
+            _ => None,
+        })
+    }
+
+    /// Whether `name` is the type witness of some obligation.
+    pub(crate) fn is_witness_type(&self, name: Symbol) -> bool {
+        self.witnesses.values().any(|w| matches!(w, Witness::Type(t) if *t == name))
+    }
+
     /// The type a callee names, when it is an identifier naming a declared type.
     pub(crate) fn type_named(&self, hir: &Hir, callee: &HirId<HirExpr>) -> Option<Symbol> {
         match hir.get(callee) {
