@@ -3,7 +3,7 @@ type Node {
     pub mut prev?;
     pub fn check() {
         if (this.prev != null) {
-            this.prev.x; // error: Value may be null; narrow it before use
+            this.prev.x; // error: unchecked value owes 'opt'
         }
     }
 }

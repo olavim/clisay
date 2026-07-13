@@ -64,7 +64,7 @@ impl<'a> Checker<'a> {
     /// A call through a value: the callee must be non-null and its result is a dynamic boundary.
     fn indirect_call(&mut self, callee: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let callee_typed = self.expr(callee)?;
-        self.require_value(&callee_typed.flow, callee)?;
+        self.err_require_value(&callee_typed.flow, callee)?;
         Ok(Typed::unknown())
     }
 

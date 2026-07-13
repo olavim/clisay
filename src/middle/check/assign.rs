@@ -17,8 +17,8 @@ impl<'a> Checker<'a> {
                     if self.locals[i].func.is_some() {
                         return Err(self.error(format!("Cannot reassign `{}`; it names a function", self.hir.text(name)), lhs));
                     }
-                    let (mutable, assigned, declared_nullable) =
-                        (self.locals[i].mutable, self.locals[i].assigned, self.locals[i].declared_nullable);
+                    let (mutable, assigned) = (self.locals[i].mutable, self.locals[i].assigned);
+                    let slot_nullable = self.locals[i].owed.contains(&self.sigs.opt);
                     if !mutable && assigned {
                         let text = self.hir.text(name);
                         if self.locals[i].binder {
@@ -28,7 +28,7 @@ impl<'a> Checker<'a> {
                         return Err(self.error_help(format!("Cannot reassign immutable binding `{text}`"), lhs,
                             format!("you can make `{text}` mutable by declaring it as `say mut {text}`")));
                     }
-                    self.check_into_slot(&typed.flow, declared_nullable, name, lhs)?;
+                    self.check_into_slot(&typed.flow, slot_nullable, name, lhs)?;
                     self.locals[i].assigned = true;
                     self.locals[i].tag = typed.tag.clone();
                     self.reset_narrowing(i, matches!(typed.flow, Flow::Clean));

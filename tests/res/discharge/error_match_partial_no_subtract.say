@@ -1,0 +1,13 @@
+// A partial destructure rules out nothing: a literal field test can fail on a real Err. The null
+// arm rules out opt, so the binder is left owing only fails; if this arm wrongly subtracted fails
+// the binder would be clean instead.
+fn get(flag)? {
+    if (flag == 1) { return null; }
+    if (flag == 2) { return Err("boom"); }
+    return 10;
+}
+match get(3) {
+    null => print("null"),
+    is Err { value: 5 } => print("five"),
+    v => print(v + 5), // error: unchecked value owes 'fails'
+}

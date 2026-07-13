@@ -1,0 +1,15 @@
+// A guarded arm rules out nothing, since a false guard falls through with the witness still live.
+// Guard truthiness is not analyzed: only the literal `true` counts as provably true.
+fn get(flag)? {
+    if (flag == 1) { return null; }
+    if (flag == 2) { return Err("boom"); }
+    return 10;
+}
+fn run(cond) {
+    match get(3) {
+        null if cond => print("null"),
+        is Err { value: e } => print(e),
+        v => print(v + 5), // error: unchecked value owes 'opt'
+    }
+}
+run(false);
