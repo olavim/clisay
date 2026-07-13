@@ -8,7 +8,7 @@ mod native;
 mod returns;
 mod traits;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
@@ -153,8 +153,8 @@ enum NarrowKey {
 
 /// A flow fact a check establishes for a branch.
 enum NarrowFact {
-    /// The place is non-null.
-    NonNull(NarrowKey),
+    /// The place no longer owes this obligation on the branch.
+    Discharge(NarrowKey, Symbol),
     /// The local has the given concrete type.
     Tag(usize, TypeTag),
 }
@@ -169,7 +169,7 @@ struct LocalFlow {
 /// A snapshot of flow facts that branches widen back at a join.
 struct FlowSnapshot {
     locals: Vec<LocalFlow>,
-    narrowed: HashSet<NarrowKey>,
+    narrowed: HashMap<NarrowKey, HashSet<Symbol>>,
 }
 
 struct Checker<'a> {
@@ -182,8 +182,8 @@ struct Checker<'a> {
     frame_start: usize,
     /// The enclosing type's name while checking its methods, for `this` typing and field layout.
     current_type: Option<Symbol>,
-    /// Places narrowed to non-null on the current path.
-    narrowed: HashSet<NarrowKey>,
+    /// The obligations discharged per place on the current path.
+    narrowed: HashMap<NarrowKey, HashSet<Symbol>>,
     /// The construction seal while checking a type's `init`.
     seal: Seal,
     current_trait_surface: Option<HashSet<Symbol>>,
@@ -203,7 +203,7 @@ impl<'a> Checker<'a> {
             locals: Vec::new(),
             frame_start: 0,
             current_type: None,
-            narrowed: HashSet::new(),
+            narrowed: HashMap::new(),
             seal: Seal::default(),
             current_trait_surface: None,
             current_return: None,
@@ -280,6 +280,37 @@ impl<'a> Checker<'a> {
 
     fn owes_object_witness(&self, flow: &Flow) -> bool {
         matches!(flow, Flow::Bad { obligations, .. } if obligations.contains(&self.sigs.fails))
+    }
+
+    /// The witness type name when the value is confirmed to be a witness it owes.
+    fn confirmed_witness_name(&self, typed: &Typed) -> Option<&'a str> {
+        let TypeTag::Concrete(tag) = &typed.tag else { return None };
+        let Flow::Bad { obligations, .. } = &typed.flow else { return None };
+        if !obligations.iter().all(|o| matches!(self.sigs.witness(*o), Some(Witness::Type(_) | Witness::Trait(_)))) {
+            return None;
+        }
+        obligations.iter().find_map(|o| match self.sigs.witness(*o) {
+            Some(Witness::Type(w)) if w == tag => Some(self.hir.text(*w)),
+            _ => None,
+        })
+    }
+
+    /// Whether the value is confirmed to be one of the witnesses it owes.
+    fn confirmed_witness(&self, typed: &Typed) -> bool {
+        self.confirmed_witness_name(typed).is_some()
+    }
+
+    /// The tag a caught value narrows to. A single type witness confirms the value's type. A set,
+    /// a trait witness, or `opt` leaves it unknown.
+    fn single_object_witness_tag(&self, caught: &HashSet<Symbol>) -> TypeTag {
+        let mut it = caught.iter();
+        match (it.next(), it.next()) {
+            (Some(o), None) => match self.sigs.witness(*o) {
+                Some(Witness::Type(name)) => TypeTag::Concrete(*name),
+                _ => TypeTag::Unknown,
+            },
+            _ => TypeTag::Unknown,
+        }
     }
 
     /// The result of a `?` chain. It carries the operand's obligations, since a bad operand
@@ -498,12 +529,19 @@ impl<'a> Checker<'a> {
                 let typed = self.expr(operand)?;
                 Typed::of(Flow::Clean, typed.tag)
             },
-            // `a ?? p => h` binds the caught bad value to `p` and discharges the object witnesses.
+            // `a ?? p => h` binds the caught bad value to `p`, which still owes what `a` owed. A
+            // single type witness narrows `p`'s tag, so a caught `Err` is usable as one.
             HirExpr::Handle(left, binder, handler) => {
                 let left = self.expr(left)?;
-                let nullable = matches!(&left.flow, Flow::Bad { obligations, .. } if obligations.contains(&self.sigs.opt));
+                let caught: HashSet<Symbol> = match &left.flow {
+                    Flow::Bad { obligations, .. } => obligations.clone(),
+                    _ => HashSet::new(),
+                };
+                let tag = self.single_object_witness_tag(&caught);
+                let mut binder_local = Local::binder_owing(*binder, caught);
+                binder_local.tag = tag;
                 let mark = self.locals.len();
-                self.locals.push(Local::binder_owing(*binder, self.opt_set(nullable)));
+                self.locals.push(binder_local);
                 let h = self.expr(handler)?;
                 self.locals.truncate(mark);
                 let tag = if left.tag == h.tag { left.tag.clone() } else { TypeTag::Unknown };
@@ -621,11 +659,14 @@ impl<'a> Checker<'a> {
             return Err(self.error(format!("'{}' is used before it is assigned", self.hir.text(name)), expr));
         }
 
-        let narrowed = self.is_narrowed(&NarrowKey::Local(i));
-        let flow = if self.locals[i].owed.is_empty() || narrowed {
+        let owed: HashSet<Symbol> = match self.narrowed.get(&NarrowKey::Local(i)) {
+            Some(discharged) => self.locals[i].owed.difference(discharged).copied().collect(),
+            None => self.locals[i].owed.clone(),
+        };
+        let flow = if owed.is_empty() {
             Flow::Clean
         } else {
-            Flow::Bad { obligations: self.locals[i].owed.clone(), definite: false }
+            Flow::Bad { obligations: owed, definite: false }
         };
 
         Ok(Typed::of(flow, self.locals[i].tag.clone()))
@@ -691,7 +732,7 @@ impl<'a> Checker<'a> {
                             if on_this && !layout.is_nullable(field) && self.seal.reads_before_assign(field) {
                                 return Err(self.error(format!("Field '{}' is read before it is assigned in init", self.hir.text(field)), member));
                             }
-                            let narrowed = key.is_some_and(|k| self.is_narrowed(&k));
+                            let narrowed = key.is_some_and(|k| self.discharged(&k, self.sigs.opt));
                             if layout.is_nullable(field) && !narrowed { self.opt_flow(false) } else { Flow::Clean }
                         },
                         // A method reference is a non-null value.
@@ -711,7 +752,11 @@ impl<'a> Checker<'a> {
             return Ok(self.this_typed());
         }
         let typed = self.expr(receiver)?;
-        self.err_require_value(&typed.flow, receiver)?;
+        // A value confirmed to be a witness it owes is usable by that type, even while it owes.
+        if self.confirmed_witness(&typed) {
+            return Ok(typed);
+        }
+        self.require_usable_value(&typed, receiver)?;
         Ok(typed)
     }
 
@@ -733,9 +778,14 @@ impl<'a> Checker<'a> {
             },
             _ => {
                 let ln = self.expr(l)?;
-                self.err_require_value(&ln.flow, l)?;
                 let rn = self.expr(r)?;
-                self.err_require_value(&rn.flow, r)?;
+                // A confirmed-witness operand makes the operation invalid whatever the other side
+                // is, so name both operand types like the runtime's operand error does.
+                if self.confirmed_witness(&ln) || self.confirmed_witness(&rn) {
+                    return Err(self.invalid_operands(op, l, &ln, r, &rn));
+                }
+                self.require_usable_value(&ln, l)?;
+                self.require_usable_value(&rn, r)?;
                 Ok(Typed::nonnull())
             },
         }
@@ -745,18 +795,30 @@ impl<'a> Checker<'a> {
         let typed = self.expr(x)?;
         // `!` is a boolean context; negation and bitwise-not require a value.
         if matches!(op, UnOp::Negate | UnOp::BitNot) {
-            self.err_require_value(&typed.flow, x)?;
+            if let Some(witness) = self.confirmed_witness_name(&typed) {
+                return Err(self.confirmed_use_error(format!("invalid operand of `{op}`: {witness}"), x, witness));
+            }
+            self.require_usable_value(&typed, x)?;
         }
         Ok(Typed::nonnull())
     }
 
-    /// Rejects an operation that requires a value when the operand still owes an obligation or is void.
-    fn err_require_value(&self, flow: &Flow, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if flow.is_void() {
+    /// A single-caret error for a confirmed witness used where its type is not allowed. Each
+    /// operation site names itself, since a confirmed witness is not fixed by narrowing.
+    fn confirmed_use_error(&self, header: String, operand: &HirId<HirExpr>, witness: &str) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(header, self.hir.pos(operand).clone()).with_label(witness.to_string()))
+    }
+
+    /// Rejects an operand that cannot be used as a value here: a void result, or one still owing an
+    /// obligation. A confirmed witness is caught by its operation site first, so this only advises
+    /// narrowing a value that merely may be a witness.
+    fn require_usable_value(&self, typed: &Typed, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        debug_assert!(!self.confirmed_witness(typed), "a confirmed witness must be handled at its operation site, not advised to narrow");
+        if typed.flow.is_void() {
             return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), operand));
         }
 
-        let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
+        let Flow::Bad { obligations, .. } = &typed.flow else { return Ok(()) };
 
         let name = match self.hir.get(operand) {
             HirExpr::Identifier(name) => Some(self.hir.text(*name)),
@@ -787,6 +849,36 @@ impl<'a> Checker<'a> {
         }
 
         Err(anyhow!("{}", diagnostic))
+    }
+
+    fn invalid_operands(&self, op: BinOp, l: &HirId<HirExpr>, ln: &Typed, r: &HirId<HirExpr>, rn: &Typed) -> anyhow::Error {
+        let (lt, rt) = (self.operand_type_name(ln, l), self.operand_type_name(rn, r));
+        let header = format!("invalid operands of `{op}`: {lt} and {rt}");
+        // Point the primary caret at the confirmed operand; the other side is a labeled span.
+        let (primary, primary_ty, other, other_ty) = if self.confirmed_witness(ln) {
+            (l, &lt, r, &rt)
+        } else {
+            (r, &rt, l, &lt)
+        };
+        anyhow!("{}", Diagnostic::new(header, self.hir.pos(primary).clone())
+            .with_label(primary_ty.to_string())
+            .with_span(self.hir.pos(other).clone(), other_ty.to_string()))
+    }
+
+    fn operand_type_name(&self, typed: &Typed, node: &HirId<HirExpr>) -> String {
+        if let Some(witness) = self.confirmed_witness_name(typed) {
+            return witness.to_string();
+        }
+        match self.hir.get(node) {
+            HirExpr::Literal(HirLiteral::Number(_)) => "number".to_string(),
+            HirExpr::Literal(HirLiteral::String(_)) => "string".to_string(),
+            HirExpr::Literal(HirLiteral::Boolean(_)) => "boolean".to_string(),
+            HirExpr::Literal(HirLiteral::Null) => "null".to_string(),
+            _ => match &typed.tag {
+                TypeTag::Concrete(name) => self.hir.text(*name).to_string(),
+                _ => "value".to_string(),
+            },
+        }
     }
 
     /// The type or trait that witnesses an obligation at runtime, if it has one. A pure-static

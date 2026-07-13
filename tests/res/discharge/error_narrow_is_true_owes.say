@@ -1,0 +1,12 @@
+// The true branch of `v is Err` confirms the type but keeps the obligation, so a use still fails.
+fn get(flag)! {
+    if (flag) { return Err("boom"); }
+    return 42;
+}
+match get(true) {
+    v => {
+        if (v is Err) {
+            print(v + 1); // error: invalid operands of `+`: Err and number
+        }
+    }
+}

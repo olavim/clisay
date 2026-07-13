@@ -1,0 +1,3 @@
+// Catching an Err confirms its type but does not discharge fails, so arithmetic on it stays blocked.
+fn load()! { return Err("boom"); }
+say bad = load() ?? e => e + 1; // error: invalid operands of `+`: Err and number

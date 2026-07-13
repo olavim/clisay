@@ -64,7 +64,14 @@ impl<'a> Checker<'a> {
     /// A call through a value: the callee must be non-null and its result is a dynamic boundary.
     fn indirect_call(&mut self, callee: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let callee_typed = self.expr(callee)?;
-        self.err_require_value(&callee_typed.flow, callee)?;
+        if let Some(witness) = self.confirmed_witness_name(&callee_typed) {
+            let subject = match self.hir.get(callee) {
+                HirExpr::Identifier(name) => format!("`{}`", self.hir.text(*name)),
+                _ => "this value".to_string(),
+            };
+            return Err(self.confirmed_use_error(format!("{subject} is not callable"), callee, witness));
+        }
+        self.require_usable_value(&callee_typed, callee)?;
         Ok(Typed::unknown())
     }
 

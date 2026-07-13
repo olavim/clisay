@@ -1,0 +1,11 @@
+fn load()! { return Err("boom"); }
+say bad = load() ?? e => e + 1;
+// error(full):
+// error: invalid operands of `+`: Err and number
+//  --> help_confirmed_witness.say:2:26
+//   |
+// 1 | fn load()! { return Err("boom"); }
+// 2 | say bad = load() ?? e => e + 1;
+//   |                          ^   ^ number
+//   |                          |
+//   |                          Err

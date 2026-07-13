@@ -1,0 +1,18 @@
+// `v is Err` discharges `fails` on its false branch and confirms the type on its true branch.
+fn get(flag)! {
+    if (flag) { return Err("boom"); }
+    return 42;
+}
+fn run(flag) {
+    match get(flag) {
+        v => {
+            if (v is Err) {
+                print(v.value); // true branch: v is usable as an Err
+            } else {
+                print(v); // false branch: fails is discharged, v is clean
+            }
+        }
+    }
+}
+run(true); // expect: boom
+run(false); // expect: 42
