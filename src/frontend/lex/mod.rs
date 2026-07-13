@@ -77,8 +77,11 @@ fn render_spans(spans: &[(SourcePosition, String)], help: &[String]) -> String {
         i = end;
     }
 
-    // The frame ends on a labeled caret rail. Separate it from the help with a blank rail.
-    if !help.is_empty() {
+    // A label on the final line runs into the help text, so part them with a blank rail. The line
+    // lacks a label only when a lone span lands there with no label of its own.
+    let last = spans.last().unwrap();
+    let alone = spans.iter().filter(|(p, _)| p.line == last.0.line).count() == 1;
+    if !help.is_empty() && !(alone && last.1.is_empty()) {
         lines.push(bar.clone());
     }
 
@@ -212,6 +215,10 @@ impl SourcePosition {
             out.push_str(&format!("{} {text}\n", rail(&n.to_string(), width)));
         }
         out.push_str(&format!("{} {line}\n{bar} {pad}{carets}{note}", rail(&self.line.to_string(), width)));
+        // A labeled caret runs into the help text, so part them with a blank rail.
+        if !note.is_empty() && !help.is_empty() {
+            out.push_str(&format!("\n{bar}"));
+        }
         out.push_str(&render_help(width, help));
         return out;
     }
@@ -245,7 +252,9 @@ impl SourcePosition {
             orail = rail(&opener.line.to_string(), width), prail = rail(&self.line.to_string(), width),
             o_pad = " ".repeat(o_col), p_pad = " ".repeat(p_col),
             ocaret = paint("^", COLOR_CYAN), olabel = paint(opener_label, COLOR_CYAN), pcarets = paint(&carets, COLOR_RED));
-        return frame + &render_help(width, help);
+        // A labeled caret runs into the help text, so part them with a blank rail.
+        let sep = if !note.is_empty() && !help.is_empty() { format!("\n{bar}") } else { String::new() };
+        return frame + &sep + &render_help(width, help);
     }
 }
 

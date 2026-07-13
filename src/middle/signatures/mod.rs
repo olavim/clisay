@@ -34,9 +34,22 @@ impl TypeTag {
     }
 }
 
+/// How a running program tells that a slot still owes an obligation. `null` is the built-in value
+/// witness; a type witness is tested by tag, a trait witness by trait-set membership.
+#[derive(Clone)]
+pub enum Witness {
+    Null,
+    Type(Symbol),
+    // Constructed once user obligations declare a trait witness.
+    #[allow(dead_code)]
+    Trait(Symbol),
+}
+
 pub struct Signatures {
     pub(crate) opt: Symbol,
     pub(crate) fails: Symbol,
+    /// Each obligation's witness. Built-ins are seeded here; user obligations extend it.
+    pub(crate) witnesses: HashMap<Symbol, Witness>,
 
     // Per-function facts, keyed by the function's statement.
     pub(crate) fns: HashMap<HirId<HirStmt>, FnSig>,
@@ -59,6 +72,7 @@ impl Signatures {
         Signatures {
             opt,
             fails,
+            witnesses: HashMap::from([(opt, Witness::Null)]),
             fns: HashMap::new(),
             ret_tags: HashMap::new(),
             types_by_name: HashMap::new(),
@@ -72,6 +86,11 @@ impl Signatures {
     /// Whether `name` names a declared type.
     pub(crate) fn is_type(&self, name: Symbol) -> bool {
         self.types_by_name.contains_key(&name)
+    }
+
+    /// The witness of an obligation, when one is known.
+    pub(crate) fn witness(&self, obligation: Symbol) -> Option<&Witness> {
+        self.witnesses.get(&obligation)
     }
 
     /// The type a callee names, when it is an identifier naming a declared type.
@@ -88,7 +107,11 @@ pub fn collect(hir: &Hir) -> Signatures {
     let opt = hir.symbol_of("opt").expect("lowering interns the opt obligation");
     let fails = hir.symbol_of("fails").expect("lowering interns the fails obligation");
     let err = hir.symbol_of("Err");
-    let mut collector = Collector { hir, opt, fails, err, sigs: Signatures::new(opt, fails) };
+    let mut sigs = Signatures::new(opt, fails);
+    if let Some(err) = err {
+        sigs.witnesses.insert(fails, Witness::Type(err));
+    }
+    let mut collector = Collector { hir, opt, fails, err, sigs };
     collector.stmt(&hir.get_root());
     collector.infer_ret_tags();
     collector.infer_propagated();

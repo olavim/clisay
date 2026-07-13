@@ -5,5 +5,5 @@ fn find()? {
 say mut h?;
 if (h != null) {
     h = find();
-    h.x; // error: 'h' may be null; narrow it before use
+    h.x; // error: unchecked value owes 'opt'
 }

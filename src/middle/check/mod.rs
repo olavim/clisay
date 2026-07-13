@@ -16,9 +16,9 @@ use crate::frontend::lex::Diagnostic;
 
 use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
-use crate::middle::signatures::{Signatures, TypeTag};
+use crate::middle::signatures::{Signatures, TypeTag, Witness};
 use self::construct::Seal;
-use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatcher, HirParam, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
 /// The runtime checks codegen emits: null-barriers where an `unknown` value crosses into an
 /// unobligated slot, and object-witness tests at discharge nodes.
@@ -74,10 +74,6 @@ impl Flow {
     fn is_void(&self) -> bool {
         matches!(self, Flow::Void)
     }
-
-    fn is_bad(&self) -> bool {
-        matches!(self, Flow::Bad { .. })
-    }
 }
 
 /// Why a value fails to satisfy a non-null target.
@@ -111,7 +107,8 @@ struct FieldInfo {
 /// A tracked binding in the current function frame.
 struct Local {
     name: Symbol,
-    declared_nullable: bool,
+    /// The obligations this binding owes. Reading it yields those obligations until it is narrowed.
+    owed: HashSet<Symbol>,
     mutable: bool,
     /// Whether the binding is provably assigned on the current path.
     assigned: bool,
@@ -121,30 +118,28 @@ struct Local {
 }
 
 impl Local {
-    fn param(name: Symbol, declared_nullable: bool, mutable: bool) -> Local {
-        Local { name, declared_nullable, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false }
+    fn param(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
+        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false }
     }
 
-    fn catch(name: Symbol, mutable: bool) -> Local {
-        Local { name, declared_nullable: true, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false }
+    fn catch(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
+        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false }
     }
 
     fn binder(name: Symbol) -> Local {
-        Local { name, declared_nullable: false, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true }
     }
 
-    /// A `??` handler binder. It stays nullable when the discharged set held `opt`, since the
-    /// caught value may be null and null is never usable; an object witness caught here is clean.
-    fn binder_nullable(name: Symbol, nullable: bool) -> Local {
-        Local { name, declared_nullable: nullable, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true }
+    fn binder_owing(name: Symbol, owed: HashSet<Symbol>) -> Local {
+        Local { name, owed, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
-        Local { name, declared_nullable: false, mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false }
     }
 
-    fn value(name: Symbol, declared_nullable: bool, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
-        Local { name, declared_nullable, mutable, assigned, tag, func: None, binder: false }
+    fn value(name: Symbol, owed: HashSet<Symbol>, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
+        Local { name, owed, mutable, assigned, tag, func: None, binder: false }
     }
 }
 
@@ -274,6 +269,10 @@ impl<'a> Checker<'a> {
         Flow::Bad { obligations: HashSet::from([self.sigs.opt]), definite }
     }
 
+    fn opt_set(&self, nullable: bool) -> HashSet<Symbol> {
+        if nullable { HashSet::from([self.sigs.opt]) } else { HashSet::new() }
+    }
+
     /// A value owing `fails`: an `Err` witness.
     fn fails_flow(&self) -> Flow {
         Flow::Bad { obligations: HashSet::from([self.sigs.fails]), definite: false }
@@ -357,7 +356,7 @@ impl<'a> Checker<'a> {
                     let mark = self.locals.len();
                     if let Some(param) = catch.param {
                         let name = self.ident_sym(&param);
-                        self.locals.push(Local::catch(name, catch.mutable));
+                        self.locals.push(Local::catch(name, self.opt_set(true), catch.mutable));
                     }
                     self.expr(&catch.body)?;
                     self.locals.truncate(mark);
@@ -369,16 +368,25 @@ impl<'a> Checker<'a> {
                 if typed.flow.is_void() {
                     return Err(self.error("This call returns no value, so its result cannot be matched here".to_string(), scrutinee));
                 }
+                // A match discharges by ruling out witnesses. A guard-free arm total over a witness
+                // clears it for the arms below.
+                let mut remaining = match &typed.flow {
+                    Flow::Bad { obligations, .. } => obligations.clone(),
+                    _ => HashSet::new(),
+                };
                 for arm in arms {
+                    let whole_binders = whole_value_binders(&arm.matcher);
                     let mut binders = arm.matcher.binders();
                     if let Some(guard) = &arm.guard {
                         binders.extend(self.hir.condition_binders(guard));
                     }
-                    self.with_binders(&binders, |c| -> Result<(), anyhow::Error> {
+                    self.with_arm_binders(&binders, &whole_binders, &remaining, |c| -> Result<(), anyhow::Error> {
                         if let Some(guard) = &arm.guard { c.expr(guard)?; }
                         c.expr(&arm.body)?;
                         Ok(())
                     })?;
+                    let ruled = self.arm_rules_out(arm, &remaining);
+                    remaining.retain(|w| !ruled.contains(w));
                 }
             },
         }
@@ -390,6 +398,18 @@ impl<'a> Checker<'a> {
         let mark = self.locals.len();
         for &name in binders {
             self.locals.push(Local::binder(name));
+        }
+        let r = f(self);
+        self.locals.truncate(mark);
+        r
+    }
+
+    /// Declares a match arm's binders for the duration of `f`.
+    fn with_arm_binders<R>(&mut self, binders: &[Symbol], whole_binders: &[Symbol], remaining_obligations: &HashSet<Symbol>, f: impl FnOnce(&mut Self) -> R) -> R {
+        let mark = self.locals.len();
+        for &name in binders {
+            let owed = if whole_binders.contains(&name) { remaining_obligations.clone() } else { HashSet::new() };
+            self.locals.push(Local::binder_owing(name, owed));
         }
         let r = f(self);
         self.locals.truncate(mark);
@@ -478,14 +498,12 @@ impl<'a> Checker<'a> {
                 let typed = self.expr(operand)?;
                 Typed::of(Flow::Clean, typed.tag)
             },
-            // `a ?? p => h` binds the caught bad value to `p` and discharges the object witnesses;
-            // a caught null stays use-blocked, so `p` keeps `opt` when the set held it. The result
-            // is the handler's value on the bad path, `a` (now clean) on the good one.
+            // `a ?? p => h` binds the caught bad value to `p` and discharges the object witnesses.
             HirExpr::Handle(left, binder, handler) => {
                 let left = self.expr(left)?;
                 let nullable = matches!(&left.flow, Flow::Bad { obligations, .. } if obligations.contains(&self.sigs.opt));
                 let mark = self.locals.len();
-                self.locals.push(Local::binder_nullable(*binder, nullable));
+                self.locals.push(Local::binder_owing(*binder, self.opt_set(nullable)));
                 let h = self.expr(handler)?;
                 self.locals.truncate(mark);
                 let tag = if left.tag == h.tag { left.tag.clone() } else { TypeTag::Unknown };
@@ -513,7 +531,7 @@ impl<'a> Checker<'a> {
         } else {
             (false, TypeTag::Unknown)
         };
-        self.locals.push(Local::value(name, declared_nullable, mutable, assigned, tag));
+        self.locals.push(Local::value(name, self.opt_set(declared_nullable), mutable, assigned, tag));
         Ok(())
     }
 
@@ -525,7 +543,7 @@ impl<'a> Checker<'a> {
         self.frame_start = mark;
         for param in params {
             let name = self.ident_sym(&param.name);
-            self.locals.push(Local::param(name, param.nullable, param.mutable));
+            self.locals.push(Local::param(name, self.opt_set(param.nullable), param.mutable));
         }
         let result = body(self);
         self.locals.truncate(mark);
@@ -594,14 +612,22 @@ impl<'a> Checker<'a> {
         let Some(i) = self.frame_index_of(name) else {
             return Ok(Typed::unknown());
         };
+
         if self.locals[i].func.is_some() {
             return Ok(Typed::unknown());
         }
-        if !self.locals[i].assigned && !self.locals[i].declared_nullable {
+
+        if !self.locals[i].assigned && !self.locals[i].owed.contains(&self.sigs.opt) {
             return Err(self.error(format!("'{}' is used before it is assigned", self.hir.text(name)), expr));
         }
+
         let narrowed = self.is_narrowed(&NarrowKey::Local(i));
-        let flow = if self.locals[i].declared_nullable && !narrowed { self.opt_flow(false) } else { Flow::Clean };
+        let flow = if self.locals[i].owed.is_empty() || narrowed {
+            Flow::Clean
+        } else {
+            Flow::Bad { obligations: self.locals[i].owed.clone(), definite: false }
+        };
+
         Ok(Typed::of(flow, self.locals[i].tag.clone()))
     }
 
@@ -625,13 +651,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Checks if moving a value into a slot is allowed per its nullability. A nullable or null value into a
-    /// non-null slot is an error. `Unknown` is always allowed and gets a runtime barrier.
+    /// Checks if moving a value into a slot is allowed per its nullability.
     fn check_into_slot(&mut self, flow: &Flow, slot_nullable: bool, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let text = self.hir.text(name);
         let void = || format!("Cannot assign a void result to '{text}'; the call returns no value");
         if slot_nullable {
-            // A nullable slot still rejects a void result, which is not a value.
             return if flow.is_void() { Err(self.error(void(), node)) } else { Ok(()) };
         }
         match self.non_null_violation(flow, node) {
@@ -687,7 +711,7 @@ impl<'a> Checker<'a> {
             return Ok(self.this_typed());
         }
         let typed = self.expr(receiver)?;
-        self.require_value(&typed.flow, receiver)?;
+        self.err_require_value(&typed.flow, receiver)?;
         Ok(typed)
     }
 
@@ -709,9 +733,9 @@ impl<'a> Checker<'a> {
             },
             _ => {
                 let ln = self.expr(l)?;
-                self.require_value(&ln.flow, l)?;
+                self.err_require_value(&ln.flow, l)?;
                 let rn = self.expr(r)?;
-                self.require_value(&rn.flow, r)?;
+                self.err_require_value(&rn.flow, r)?;
                 Ok(Typed::nonnull())
             },
         }
@@ -721,24 +745,121 @@ impl<'a> Checker<'a> {
         let typed = self.expr(x)?;
         // `!` is a boolean context; negation and bitwise-not require a value.
         if matches!(op, UnOp::Negate | UnOp::BitNot) {
-            self.require_value(&typed.flow, x)?;
+            self.err_require_value(&typed.flow, x)?;
         }
         Ok(Typed::nonnull())
     }
 
-    /// Rejects an operation that requires a value when the operand may be null or is void.
-    fn require_value(&self, flow: &Flow, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    /// Rejects an operation that requires a value when the operand still owes an obligation or is void.
+    fn err_require_value(&self, flow: &Flow, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if flow.is_void() {
             return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), operand));
         }
-        if !flow.is_bad() {
-            return Ok(());
-        }
-        let msg = match self.hir.get(operand) {
-            HirExpr::Identifier(name) => format!("'{}' may be null; narrow it before use", self.hir.text(*name)),
-            _ => "Value may be null; narrow it before use".to_string(),
+
+        let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
+
+        let name = match self.hir.get(operand) {
+            HirExpr::Identifier(name) => Some(self.hir.text(*name)),
+            _ => None,
         };
-        Err(self.error(msg, operand))
+
+        let mut owed: Vec<&str> = obligations.iter().map(|o| self.hir.text(*o)).collect();
+        owed.sort();
+        let owed = owed.iter().map(|o| format!("'{o}'")).collect::<Vec<_>>().join(", ");
+
+        // The header stays generic so it is easy to search for. The caret and help carry the name.
+        let mut diagnostic = Diagnostic::new(format!("unchecked value owes {owed}"), self.hir.pos(operand).clone());
+
+        // Name the witness so the reader knows what to rule out, and how.
+        let mut witnesses: Vec<&str> = obligations.iter().filter_map(|o| self.witness_name(*o)).collect();
+        witnesses.sort();
+        witnesses.dedup();
+
+        if witnesses.is_empty() {
+            diagnostic = diagnostic.with_help("discharge it before use");
+        } else {
+            let witness = witnesses.join(" or ");
+            diagnostic = diagnostic.with_label(format!("might be {witness}"));
+            diagnostic = match name {
+                Some(name) => diagnostic.with_help(format!("make sure `{name}` is not {witness} before using it")),
+                None => diagnostic.with_help(format!("make sure the value is not {witness} before using it")),
+            };
+        }
+
+        Err(anyhow!("{}", diagnostic))
+    }
+
+    /// The type or trait that witnesses an obligation at runtime, if it has one. A pure-static
+    /// obligation has no object witness to name.
+    fn witness_name(&self, obligation: Symbol) -> Option<&'a str> {
+        match self.sigs.witness(obligation)? {
+            Witness::Type(name) | Witness::Trait(name) => Some(self.hir.text(*name)),
+            Witness::Null => Some("null"),
+        }
+    }
+
+    /// The witnesses a match arm rules out for the arms below it.
+    fn arm_rules_out(&self, arm: &HirMatchArm, remaining: &HashSet<Symbol>) -> HashSet<Symbol> {
+        if let Some(guard) = &arm.guard {
+            // For now just require a literal `true` guard to rule out witnesses. A more general analysis could
+            // evaluate the guard's flow facts and see if it is total over a witness.
+            if !self.is_literal_true(guard) {
+                return HashSet::new();
+            }
+        }
+        remaining.iter().copied().filter(|w| self.matcher_total_over(&arm.matcher, *w)).collect()
+    }
+
+    /// Whether a matcher matches every value in a witness's bad state.
+    fn matcher_total_over(&self, matcher: &HirMatcher, witness: Symbol) -> bool {
+        self.sigs.witness(witness).is_some_and(|w| self.total_over(matcher, w))
+    }
+
+    /// Whether a matcher matches every value the witness names. The `|`/`&`/`as` combinators recurse
+    /// the same way for any witness; only the leaf test differs. A bare `is W` is always total. A
+    /// destructure is total only for a type witness, and only when every named field is public and
+    /// binds irrefutably. A trait destructure tests a provider's public surface, which a real
+    /// witness can lack, so it is never total.
+    fn total_over(&self, matcher: &HirMatcher, witness: &Witness) -> bool {
+        match matcher {
+            HirMatcher::As(_, inner) => self.total_over(inner, witness),
+            HirMatcher::Or(alternatives) => alternatives.iter().any(|m| self.total_over(m, witness)),
+            HirMatcher::And(parts) => parts.iter().all(|m| self.total_over(m, witness)),
+            HirMatcher::Literal(HirLiteral::Null) => matches!(witness, Witness::Null),
+            HirMatcher::Type { name: tested, shape, .. } => match witness {
+                Witness::Type(name) if tested == name => shape.as_ref().is_none_or(|s| self.destructure_total(*name, s)),
+                Witness::Trait(name) => tested == name && shape.is_none(),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Whether an `is Type { ... }` destructure matches every value of the type: every named field
+    /// is public and binds irrefutably.
+    fn destructure_total(&self, type_name: Symbol, shape: &HirMatcher) -> bool {
+        let HirMatcher::Shape(fields) = shape else { return false };
+        fields.iter().all(|field| {
+            self.is_public_field(type_name, &field.key)
+                && matches!(field.value, HirMatcher::Binder(_) | HirMatcher::Wildcard)
+        })
+    }
+
+    /// Whether `key` names a public field of the type. A built-in witness type carries no layout,
+    /// so its public surface is answered directly.
+    fn is_public_field(&self, type_name: Symbol, key: &HirLiteral) -> bool {
+        let HirLiteral::String(field) = key else { return false };
+        match self.layout_of(type_name) {
+            Some(layout) => match self.hir.symbol_of(field) {
+                Some(field) => matches!(layout.members.get(&field), Some(TypeMember::Field(_))) && layout.is_public(field),
+                None => false,
+            },
+            None => builtin_public_field(self.hir.text(type_name), field),
+        }
+    }
+
+    fn is_literal_true(&self, guard: &HirId<HirExpr>) -> bool {
+        matches!(self.hir.get(guard), HirExpr::Literal(HirLiteral::Boolean(true)))
     }
 
     fn member_text(&self, member: &HirId<HirExpr>) -> Option<&'a str> {
@@ -752,5 +873,29 @@ impl<'a> Checker<'a> {
         self.member_text(member).and_then(|name| self.hir.symbol_of(name))
     }
 
+}
+
+/// The public fields of a built-in witness type, which carries no layout. `Err` exposes `value`.
+fn builtin_public_field(type_name: &str, field: &str) -> bool {
+    matches!((type_name, field), ("Err", "value"))
+}
+
+/// The names a matcher binds to the whole matched value: a top-level binder or an `as` name. A
+/// shape, array, or type destructure binds sub-values, which are clean payloads.
+fn whole_value_binders(matcher: &HirMatcher) -> Vec<Symbol> {
+    let mut out = Vec::new();
+    collect_whole_value_binders(matcher, &mut out);
+    out
+}
+
+fn collect_whole_value_binders(matcher: &HirMatcher, out: &mut Vec<Symbol>) {
+    match matcher {
+        HirMatcher::Binder(name) => out.push(*name),
+        HirMatcher::As(name, inner) => { out.push(*name); collect_whole_value_binders(inner, out); },
+        HirMatcher::And(parts) => for part in parts { collect_whole_value_binders(part, out); },
+        // Alternatives bind the same names, so the first one stands for all.
+        HirMatcher::Or(alternatives) => if let Some(first) = alternatives.first() { collect_whole_value_binders(first, out); },
+        _ => {},
+    }
 }
 

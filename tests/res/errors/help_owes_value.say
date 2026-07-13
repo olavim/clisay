@@ -1,0 +1,17 @@
+type Node {
+    pub mut prev?;
+    pub fn check() {
+        if (this.prev != null) {
+            this.prev.x;
+        }
+    }
+}
+// error(full):
+// error: unchecked value owes 'opt'
+//  --> help_owes_value.say:5:13
+//   |
+// 4 |         if (this.prev != null) {
+// 5 |             this.prev.x;
+//   |             ^^^^^^^^^ might be null
+//   |
+//   = help: make sure the value is not null before using it
