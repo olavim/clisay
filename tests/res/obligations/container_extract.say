@@ -1,0 +1,6 @@
+// A read stays pending at any depth, so a nested element is extracted per level with `!`.
+obligation taint;
+say a: [taint] = [];
+a.push([42]);
+say v = a[0][0]!;
+print(v); // expect: 42

@@ -1,0 +1,4 @@
+// The single `[obl]` clause covers dicts as well as arrays.
+obligation taint;
+say d: [taint] = {};
+print(d.size()); // expect: 0

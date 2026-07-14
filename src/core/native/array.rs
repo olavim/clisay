@@ -11,8 +11,7 @@ pub struct NativeArray;
 
 impl NativeArray {
     /// Validates an array index against `len`: it must be a non-negative integer
-    /// number in bounds. Shared by `get` and `set` so reads and writes reject the
-    /// same inputs identically.
+    /// number in bounds.
     fn checked_index(index: Value, len: usize) -> Result<usize, anyhow::Error> {
         if !matches!(index.kind(), ValueKind::Number) {
             bail!("Invalid array index: {}", index.fmt());
@@ -50,6 +49,13 @@ impl NativeArray {
         host.push(Value::from(target.values.len() as f64));
         Ok(())
     }
+
+    fn push(host: &mut dyn Host, target: Value, value: Value) -> Result<(), anyhow::Error> {
+        let array = unsafe { &mut *target.as_object().as_array_ptr() };
+        array.values.push(value);
+        host.push(Value::NULL);
+        Ok(())
+    }
 }
 
 impl NativeType for NativeArray {
@@ -59,7 +65,11 @@ impl NativeType for NativeArray {
 
     fn methods(&self, gc: &mut Gc) -> Vec<(*mut ObjString, ObjNativeFn)> {
         let length = gc.intern("length");
-        vec![(length, ObjNativeFn::new(length, 0, (|host, target, _args| Self::length(host, target)) as NativeFn))]
+        let push = gc.intern("push");
+        vec![
+            (length, ObjNativeFn::new(length, 0, (|host, target, _args| Self::length(host, target)) as NativeFn)),
+            (push, ObjNativeFn::new(push, 1, (|host, target, args| Self::push(host, target, args[0])) as NativeFn)),
+        ]
     }
 
     fn getter(&self, gc: &mut Gc) -> Option<ObjNativeFn> {

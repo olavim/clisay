@@ -18,7 +18,7 @@ use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::signatures::{Signatures, TypeTag, Witness};
 use self::construct::Seal;
-use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatcher, HirParam, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatcher, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
 /// The runtime checks codegen emits: null-barriers where an `unknown` value crosses into an
 /// unobligated slot, and object-witness tests at discharge nodes.
@@ -66,8 +66,9 @@ enum Flow {
     /// A dynamic-boundary value whose obligations are unknown.
     Unknown,
     /// A value owing obligations. `definite` marks a value known to be in the bad state, as
-    /// opposed to one that only may be.
-    Bad { obligations: HashSet<Symbol>, definite: bool },
+    /// opposed to one that only may be. `container` marks an array or dict whose elements owe
+    /// the obligations, so a read of it yields a pending element.
+    Bad { obligations: HashSet<Symbol>, definite: bool, container: bool },
 }
 
 impl Flow {
@@ -115,31 +116,33 @@ struct Local {
     tag: TypeTag,
     func: Option<HirId<HirStmt>>,
     binder: bool,
+    /// Whether the binding holds a container whose elements owe `owed`.
+    container: bool,
 }
 
 impl Local {
     fn param(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
-        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false }
+        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false }
     }
 
     fn catch(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
-        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false }
+        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false }
     }
 
     fn binder(name: Symbol) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false }
     }
 
     fn binder_owing(name: Symbol, owed: HashSet<Symbol>) -> Local {
-        Local { name, owed, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true }
+        Local { name, owed, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false, container: false }
     }
 
     fn value(name: Symbol, owed: HashSet<Symbol>, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
-        Local { name, owed, mutable, assigned, tag, func: None, binder: false }
+        Local { name, owed, mutable, assigned, tag, func: None, binder: false, container: false }
     }
 }
 
@@ -266,20 +269,30 @@ impl<'a> Checker<'a> {
 
     /// A value owing `opt`. `definite` marks a known-null value versus a possibly-null one.
     fn opt_flow(&self, definite: bool) -> Flow {
-        Flow::Bad { obligations: HashSet::from([self.sigs.opt]), definite }
+        Flow::Bad { obligations: HashSet::from([self.sigs.opt]), definite, container: false }
     }
 
     fn opt_set(&self, nullable: bool) -> HashSet<Symbol> {
         if nullable { HashSet::from([self.sigs.opt]) } else { HashSet::new() }
     }
 
+    /// The obligations a slot's `:` clause declares.
+    fn clause_owed(&self, clause: &HirSlotClause) -> HashSet<Symbol> {
+        clause.names.iter().copied().collect()
+    }
+
     /// A value owing `fails`: an `Err` witness.
     fn fails_flow(&self) -> Flow {
-        Flow::Bad { obligations: HashSet::from([self.sigs.fails]), definite: false }
+        Flow::Bad { obligations: HashSet::from([self.sigs.fails]), definite: false, container: false }
     }
 
     fn owes_object_witness(&self, flow: &Flow) -> bool {
         matches!(flow, Flow::Bad { obligations, .. } if obligations.contains(&self.sigs.fails))
+    }
+
+    /// Whether a value is a container carrying element obligations.
+    fn is_container(flow: &Flow) -> bool {
+        matches!(flow, Flow::Bad { container: true, .. })
     }
 
     /// The witness type name when the value is confirmed to be a witness it owes.
@@ -326,7 +339,7 @@ impl<'a> Checker<'a> {
             _ => HashSet::new(),
         };
         obligations.insert(self.sigs.opt);
-        Typed::of(Flow::Bad { obligations, definite: false }, TypeTag::Unknown)
+        Typed::of(Flow::Bad { obligations, definite: false, container: false }, TypeTag::Unknown)
     }
 
     fn stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
@@ -339,7 +352,7 @@ impl<'a> Checker<'a> {
             },
             HirStmt::Type(decl) => self.type_decl(stmt, Some(decl.name), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
-            HirStmt::Say(field) => self.say(field.name, field.nullable, field.mutable, &field.value)?,
+            HirStmt::Say(field) => self.say(field.name, &field.clause, field.mutable, &field.value)?,
             HirStmt::Expression(e) | HirStmt::Block(e) => { self.expr(e)?; },
             HirStmt::Return(opt) => match (opt, self.current_return) {
                 (Some(e), Some(shape)) => {
@@ -560,16 +573,20 @@ impl<'a> Checker<'a> {
         })
     }
 
-    fn say(&mut self, name: Symbol, declared_nullable: bool, mutable: bool, value: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
+    fn say(&mut self, name: Symbol, clause: &HirSlotClause, mutable: bool, value: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
+        let owed = self.clause_owed(clause);
+        let slot_nullable = owed.contains(&self.sigs.opt);
         let (assigned, tag) = if let Some(value) = value {
             self.reject_this_store(value)?;
             let typed = self.expr(value)?;
-            self.check_into_slot(&typed.flow, declared_nullable, name, value)?;
+            self.check_into_slot(&typed.flow, slot_nullable, name, value)?;
             (true, typed.tag)
         } else {
             (false, TypeTag::Unknown)
         };
-        self.locals.push(Local::value(name, self.opt_set(declared_nullable), mutable, assigned, tag));
+        let mut local = Local::value(name, owed, mutable, assigned, tag);
+        local.container = clause.container;
+        self.locals.push(local);
         Ok(())
     }
 
@@ -581,7 +598,9 @@ impl<'a> Checker<'a> {
         self.frame_start = mark;
         for param in params {
             let name = self.ident_sym(&param.name);
-            self.locals.push(Local::param(name, self.opt_set(param.nullable), param.mutable));
+            let mut local = Local::param(name, self.clause_owed(&param.clause), param.mutable);
+            local.container = param.clause.container;
+            self.locals.push(local);
         }
         let result = body(self);
         self.locals.truncate(mark);
@@ -666,7 +685,7 @@ impl<'a> Checker<'a> {
         let flow = if owed.is_empty() {
             Flow::Clean
         } else {
-            Flow::Bad { obligations: owed, definite: false }
+            Flow::Bad { obligations: owed, definite: false, container: self.locals[i].container }
         };
 
         Ok(Typed::of(flow, self.locals[i].tag.clone()))
@@ -685,7 +704,7 @@ impl<'a> Checker<'a> {
             Flow::Clean => None,
             Flow::Unknown => { self.add_barrier(target); None },
             Flow::Void => Some(Violation::Void),
-            Flow::Bad { obligations, definite } if obligations.contains(&self.sigs.opt) => {
+            Flow::Bad { obligations, definite, .. } if obligations.contains(&self.sigs.opt) => {
                 Some(if *definite { Violation::Null } else { Violation::Nullable })
             },
             Flow::Bad { .. } => None,
@@ -712,8 +731,12 @@ impl<'a> Checker<'a> {
     fn member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let receiver = self.receiver(target)?;
         let Some(name) = self.member_text(member) else {
-            // A computed `[expr]` access is a dynamic-boundary read.
             self.expr(member)?;
+            // Reading a container yields a pending element. Presence is tracked, not depth, so the
+            // read stays a container.
+            if let Flow::Bad { obligations, container: true, .. } = &receiver.flow {
+                return Ok(Typed::of(Flow::Bad { obligations: obligations.clone(), definite: false, container: true }, TypeTag::Unknown));
+            }
             return Ok(Typed::unknown());
         };
         if matches!(receiver.tag, TypeTag::SelfType) {
@@ -754,6 +777,10 @@ impl<'a> Checker<'a> {
         let typed = self.expr(receiver)?;
         // A value confirmed to be a witness it owes is usable by that type, even while it owes.
         if self.confirmed_witness(&typed) {
+            return Ok(typed);
+        }
+        // A container is indexable and its methods callable even while it owes element obligations.
+        if Self::is_container(&typed.flow) {
             return Ok(typed);
         }
         self.require_usable_value(&typed, receiver)?;

@@ -1,0 +1,5 @@
+obligation taint;
+say t: taint = "x";
+say mut a = [];
+a.push(t);
+print(a[0] + 1); // error: unchecked value owes 'taint'
