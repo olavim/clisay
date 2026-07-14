@@ -1,0 +1,2 @@
+obligation taint;
+say a: [[taint]] = []; // error: A container obligation cannot nest

@@ -2,10 +2,10 @@
 
 use std::collections::HashSet;
 
-use crate::middle::hir::{HirExpr, HirId, HirStmt, ReturnShape};
+use crate::middle::hir::{HirExpr, HirId, HirStmt};
 use crate::middle::signatures::RetSig;
 
-use super::native;
+use super::native::{self, Container, NativeSig};
 use super::{Checker, Flow, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
@@ -28,7 +28,7 @@ impl<'a> Checker<'a> {
                 // A built-in global resolves by name when no local or function shadows it.
                 if self.frame_index_of(name).is_none() {
                     if let Some(sig) = native::builtin(self.hir.text(name)) {
-                        self.check_args(sig.params, &arg_types, args)?;
+                        self.check_native_args(&sig, &arg_types, args)?;
                         return Ok(Typed::of(self.native_ret_flow(sig.ret), TypeTag::Unknown));
                     }
                 }
@@ -55,7 +55,10 @@ impl<'a> Checker<'a> {
         }
         // A native-type method resolves by name when no user method matches the receiver.
         if let Some(sig) = native::native_method(name) {
-            self.check_args(sig.params, arg_types, args)?;
+            self.check_native_args(&sig, arg_types, args)?;
+            if sig.container == Container::Preserves {
+                self.preserve_into_receiver(receiver, arg_types);
+            }
             return Ok(Typed::of(self.native_ret_flow(sig.ret), TypeTag::Unknown));
         }
         Ok(Typed::unknown())
@@ -103,6 +106,30 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// Checks each argument against a native's per-parameter accepted obligation set.
+    fn check_native_args(&mut self, sig: &NativeSig, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+        let nullable: Vec<bool> = sig.params.iter().map(|p| p.opt).collect();
+        self.check_args(&nullable, arg_types, args)
+    }
+
+    /// Flows a stored argument's obligations onto the receiver container, so pushing a pending
+    /// value makes the array carry that obligation.
+    fn preserve_into_receiver(&mut self, receiver: &HirId<HirExpr>, arg_types: &[Typed]) {
+        let mut obligations = HashSet::new();
+        for typed in arg_types {
+            if let Flow::Bad { obligations: o, .. } = &typed.flow {
+                obligations.extend(o.iter().copied());
+            }
+        }
+        if obligations.is_empty() {
+            return;
+        }
+        let HirExpr::Identifier(name) = self.hir.get(receiver) else { return };
+        let Some(i) = self.frame_index_of(*name) else { return };
+        self.locals[i].owed.extend(obligations);
+        self.locals[i].container = true;
+    }
+
     /// Checks a single argument value against a non-null parameter slot.
     fn check_arg(&mut self, flow: &Flow, position: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let n = position + 1;
@@ -120,17 +147,22 @@ impl<'a> Checker<'a> {
         } else if ret.obligations.is_empty() {
             Flow::Clean
         } else {
-            Flow::Bad { obligations: ret.obligations.clone(), definite: false }
+            Flow::Bad { obligations: ret.obligations.clone(), definite: false, container: false }
         }
     }
 
-    /// The obligations a native call result carries, from its fixed return shape.
-    fn native_ret_flow(&self, ret: ReturnShape) -> Flow {
-        match ret {
-            ReturnShape::NonNull => Flow::Clean,
-            ReturnShape::Nullable => self.opt_flow(false),
-            ReturnShape::Void => Flow::Void,
-            ReturnShape::Inferred => Flow::Unknown,
+    /// The obligations a native call result carries, from its fixed return signature.
+    fn native_ret_flow(&self, ret: native::RetSig) -> Flow {
+        if ret.void {
+            return Flow::Void;
+        }
+        let mut obligations = HashSet::new();
+        if ret.set.opt { obligations.insert(self.sigs.opt); }
+        if ret.set.fails { obligations.insert(self.sigs.fails); }
+        if obligations.is_empty() {
+            Flow::Clean
+        } else {
+            Flow::Bad { obligations, definite: false, container: false }
         }
     }
 }

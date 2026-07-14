@@ -1,0 +1,6 @@
+// Pushing a pending value onto a native array makes the array carry the obligation.
+obligation taint;
+say t: taint = "x";
+say a: [taint] = [];
+a.push(t);
+print(a.length()); // expect: 1
