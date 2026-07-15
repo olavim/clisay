@@ -1,0 +1,9 @@
+// `void` composes with any obligation set: a void function may still propagate a helper's bad value.
+fn maybe(k): opt { if (k) { return null; } return 1; }
+fn readIt(k): fails { if (k) { return Err("x"); } return 1; }
+fn logOpt(m): void opt { maybe(false)?!; print(m); }
+fn logFails(m): void fails { readIt(false)?!; print(m); }
+fn logBoth(m): void opt fails { maybe(false)?!; readIt(false)?!; print(m); }
+logOpt("a"); // expect: a
+logFails("b"); // expect: b
+logBoth("c"); // expect: c

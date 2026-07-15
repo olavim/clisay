@@ -1,0 +1,4 @@
+// A bare function that returns an `Err` infers `: fails`.
+fn readIt() { return Err("boom"); }
+say r = readIt() ?? "default";
+print(r); // expect: default
