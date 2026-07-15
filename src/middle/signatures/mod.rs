@@ -197,7 +197,7 @@ impl<'a> Collector<'a> {
     }
 
     fn fn_sig(&self, decl: &HirFnDecl) -> FnSig {
-        let mut ret = self.ret_sig(decl.ret);
+        let mut ret = self.ret_sig(decl);
         if self.body_fails(&decl.body) {
             ret.obligations.insert(self.fails);
         }
@@ -226,12 +226,48 @@ impl<'a> Collector<'a> {
         set
     }
 
-    /// Maps a declared return shape onto its obligation set and value presence.
-    fn ret_sig(&self, ret: ReturnShape) -> RetSig {
-        match ret {
-            ReturnShape::Void => RetSig { obligations: HashSet::new(), void: true },
+    /// Maps a function's return marker onto its obligation set and value presence. An unmarked
+    /// function infers its presence from the body. Its obligations are filled by the propagation fixpoint.
+    fn ret_sig(&self, decl: &HirFnDecl) -> RetSig {
+        if decl.is_unmarked() {
+            return RetSig { obligations: HashSet::new(), void: self.has_void_path(&decl.body) };
+        }
+        match decl.ret {
+            ReturnShape::Void => RetSig { obligations: decl.clause.names.iter().copied().collect(), void: true },
             ReturnShape::Nullable => RetSig { obligations: self.obligation_set(true), void: false },
             ReturnShape::NonNull | ReturnShape::Inferred => RetSig::default(),
+        }
+    }
+
+    /// Whether a function body can finish without returning a value: it falls off the end, or it
+    /// has a bare `return;`.
+    fn has_void_path(&self, body: &HirId<HirExpr>) -> bool {
+        !self.hir.definitely_returns(body) || self.has_bare_return(body)
+    }
+
+    /// Whether a body contains a bare `return;` outside any nested function.
+    fn has_bare_return(&self, body: &HirId<HirExpr>) -> bool {
+        match self.hir.get(body) {
+            HirExpr::Block(stmts) => stmts.iter().any(|s| self.stmt_has_bare_return(s)),
+            _ => false,
+        }
+    }
+
+    fn stmt_has_bare_return(&self, stmt: &HirId<HirStmt>) -> bool {
+        match self.hir.get(stmt) {
+            HirStmt::Return(None) => true,
+            HirStmt::Block(e) => self.has_bare_return(e),
+            HirStmt::While(_, body) => self.has_bare_return(body),
+            HirStmt::If(_, then, otherwise) => {
+                self.has_bare_return(then) || otherwise.as_ref().is_some_and(|o| self.stmt_has_bare_return(o))
+            },
+            HirStmt::Try(body, catch, finally) => {
+                self.has_bare_return(body)
+                    || catch.as_ref().is_some_and(|c| self.has_bare_return(&c.body))
+                    || finally.as_ref().is_some_and(|f| self.has_bare_return(f))
+            },
+            HirStmt::Match(_, arms) => arms.iter().any(|a| self.has_bare_return(&a.body)),
+            _ => false,
         }
     }
 
@@ -360,6 +396,14 @@ impl<'a> Collector<'a> {
                 let mut add = HashSet::new();
                 for operand in operands {
                     add.extend(self.operand_obligations(&operand, decl));
+                }
+                // An unmarked function also carries the obligations of each value it returns.
+                if decl.is_unmarked() {
+                    let mut returns = Vec::new();
+                    self.collect_returns(&decl.body, &mut returns);
+                    for ret in returns {
+                        add.extend(self.operand_obligations(&ret, decl));
+                    }
                 }
                 let sig = self.sigs.fns.get_mut(stmt).unwrap();
                 for ob in add {

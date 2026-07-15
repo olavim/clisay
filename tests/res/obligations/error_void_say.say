@@ -1,0 +1,1 @@
+say x: void = 5; // error: A local cannot be void

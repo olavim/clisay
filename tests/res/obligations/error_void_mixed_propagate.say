@@ -1,0 +1,3 @@
+fn helper() { return Err("x"); }
+fn doIt() { helper()?!; } // error: 'doIt' returns a value owing 'fails' on some paths and no value on others
+doIt();

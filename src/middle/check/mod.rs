@@ -191,6 +191,10 @@ struct Checker<'a> {
     seal: Seal,
     current_trait_surface: Option<HashSet<Symbol>>,
     current_return: Option<ReturnShape>,
+    /// Whether the current function's return declares any obligation.
+    current_return_owes: bool,
+    /// Whether the current function has no return marker.
+    current_return_unmarked: bool,
     /// Nodes where an `unknown` value enters a non-null slot and needs a runtime barrier.
     barriers: HashSet<HirId<HirExpr>>,
     /// Discharge nodes whose operand owes an object witness.
@@ -210,6 +214,8 @@ impl<'a> Checker<'a> {
             seal: Seal::default(),
             current_trait_surface: None,
             current_return: None,
+            current_return_owes: false,
+            current_return_unmarked: false,
             barriers: HashSet::new(),
             witness_tests: HashSet::new(),
         }
@@ -348,7 +354,7 @@ impl<'a> Checker<'a> {
             HirStmt::Fn(decl) => {
                 // Register the name first so the body may call itself.
                 self.locals.push(Local::func(decl.name, *stmt));
-                self.function(decl)?;
+                self.function(Some(*stmt), decl)?;
             },
             HirStmt::Type(decl) => self.type_decl(stmt, Some(decl.name), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
@@ -608,24 +614,61 @@ impl<'a> Checker<'a> {
         result
     }
 
-    fn function(&mut self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
+    fn function(&mut self, stmt: Option<HirId<HirStmt>>, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
+        // An unmarked return is inferred whole from the body. When it can both finish with no value
+        // and return a bad value, the mixed shape must be named, not inferred.
+        let unmarked = decl.is_unmarked();
+        if unmarked {
+            if let Some(ret) = stmt.and_then(|s| self.sigs.fns.get(&s))
+                .map(|s| &s.ret).filter(|r| r.void && !r.obligations.is_empty())
+            {
+                return Err(self.mixed_void_error(decl, &ret.obligations));
+            }
+        }
         let saved_seal = self.seal.suspend();
         // A lambda's shape is inferred, so it is not checked against a declaration.
         let saved_return = std::mem::replace(&mut self.current_return, match decl.ret {
             ReturnShape::Inferred => None,
             ret => Some(ret),
         });
+        let prev_owes = std::mem::replace(&mut self.current_return_owes, !decl.clause.names.is_empty());
+        let prev_unmarked = std::mem::replace(&mut self.current_return_unmarked, unmarked);
         let result = self.with_frame(&decl.params, |c| {
             c.expr(&decl.body)?;
             // A non-null return must be produced on every path.
-            if c.current_return == Some(ReturnShape::NonNull) && !c.definitely_returns(&decl.body) {
+            if c.current_return == Some(ReturnShape::NonNull) && !c.hir.definitely_returns(&decl.body) {
                 return Err(c.error("This function can finish without returning a value; a '!' return must produce one on every path".to_string(), &decl.body));
             }
             Ok(())
         });
         self.current_return = saved_return;
+        self.current_return_owes = prev_owes;
+        self.current_return_unmarked = prev_unmarked;
         self.seal.restore(saved_seal);
         result
+    }
+
+    /// An unmarked function that returns a bad value on one path and nothing on another owes a shape
+    /// the compiler will not infer silently. The message names the annotation that makes it explicit.
+    fn mixed_void_error(&self, decl: &HirFnDecl, obligations: &HashSet<Symbol>) -> anyhow::Error {
+        let name = self.hir.text(decl.name);
+        let list = self.quoted_obligation_list(obligations);
+        // The annotation spells the obligations as clause atoms: `: void opt fails`.
+        let mut names: Vec<&str> = obligations.iter().map(|o| self.hir.text(*o)).collect();
+        names.sort();
+        let annotation = format!(": void {}", names.join(" "));
+        self.error_help(
+            format!("'{name}' returns a value owing {list} on some paths and no value on others"),
+            &decl.body,
+            format!("annotate its return '{annotation}', or return a value on every path"),
+        )
+    }
+
+    /// The obligations sorted and quoted for a diagnostic, like `'fails', 'opt'`.
+    fn quoted_obligation_list(&self, obligations: &HashSet<Symbol>) -> String {
+        let mut names: Vec<&str> = obligations.iter().map(|o| self.hir.text(*o)).collect();
+        names.sort();
+        names.iter().map(|o| format!("'{o}'")).collect::<Vec<_>>().join(", ")
     }
 
     fn type_decl(&mut self, node: &HirId<HirStmt>, type_name: Option<Symbol>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
@@ -650,7 +693,7 @@ impl<'a> Checker<'a> {
 
     fn function_stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
         if let HirStmt::Fn(decl) = self.hir.get(stmt) {
-            self.function(decl)?;
+            self.function(Some(*stmt), decl)?;
         }
         Ok(())
     }
@@ -852,9 +895,7 @@ impl<'a> Checker<'a> {
             _ => None,
         };
 
-        let mut owed: Vec<&str> = obligations.iter().map(|o| self.hir.text(*o)).collect();
-        owed.sort();
-        let owed = owed.iter().map(|o| format!("'{o}'")).collect::<Vec<_>>().join(", ");
+        let owed = self.quoted_obligation_list(obligations);
 
         // The header stays generic so it is easy to search for. The caret and help carry the name.
         let mut diagnostic = Diagnostic::new(format!("unchecked value owes {owed}"), self.hir.pos(operand).clone());

@@ -219,6 +219,13 @@ pub struct HirFnDecl {
     pub clause: HirSlotClause,
 }
 
+impl HirFnDecl {
+    /// Whether the return carries no annotation.
+    pub(crate) fn is_unmarked(&self) -> bool {
+        self.ret == ReturnShape::Void && !self.clause.void
+    }
+}
+
 /// A `catch (param) { … }` clause of a try statement.
 pub struct HirCatchClause {
     pub param: Option<HirId<HirExpr>>,
@@ -397,6 +404,31 @@ impl Hir {
                 if same { left } else { Vec::new() }
             },
             _ => Vec::new(),
+        }
+    }
+
+    /// Whether every path through a function body ends in a `return` or `throw`.
+    pub(crate) fn definitely_returns(&self, body: &HirId<HirExpr>) -> bool {
+        match self.get(body) {
+            HirExpr::Block(stmts) => stmts.iter().any(|s| self.stmt_returns(s)),
+            _ => false,
+        }
+    }
+
+    fn stmt_returns(&self, stmt: &HirId<HirStmt>) -> bool {
+        match self.get(stmt) {
+            HirStmt::Return(_) | HirStmt::Throw(_) => true,
+            HirStmt::Block(body) => self.definitely_returns(body),
+            HirStmt::If(_, then, Some(otherwise)) => self.definitely_returns(then) && self.stmt_returns(otherwise),
+            // A `finally` that returns always runs. Otherwise the try returns when its body does
+            // and any catch does too.
+            HirStmt::Try(body, catch, finally) => {
+                if finally.as_ref().is_some_and(|f| self.definitely_returns(f)) {
+                    return true;
+                }
+                self.definitely_returns(body) && catch.as_ref().map_or(true, |c| self.definitely_returns(&c.body))
+            },
+            _ => false,
         }
     }
 

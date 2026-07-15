@@ -1,0 +1,2 @@
+fn tryf(flag) { if (flag) { return null; } } // error: 'tryf' returns a value owing 'opt' on some paths and no value on others
+tryf(true);
