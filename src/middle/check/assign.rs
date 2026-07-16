@@ -1,5 +1,7 @@
 //! Assignment checks: write conformance and mutability.
 
+use std::collections::HashSet;
+
 use crate::core::objects::TypeMember;
 use crate::middle::hir::{HirExpr, HirId, Symbol};
 
@@ -18,7 +20,7 @@ impl<'a> Checker<'a> {
                         return Err(self.error(format!("Cannot reassign `{}`; it names a function", self.hir.text(name)), lhs));
                     }
                     let (mutable, assigned) = (self.locals[i].mutable, self.locals[i].assigned);
-                    let slot_nullable = self.locals[i].owed.contains(&self.sigs.opt);
+                    let owed = self.locals[i].owed.clone();
                     if !mutable && assigned {
                         let text = self.hir.text(name);
                         if self.locals[i].binder {
@@ -28,7 +30,7 @@ impl<'a> Checker<'a> {
                         return Err(self.error_help(format!("Cannot reassign immutable binding `{text}`"), lhs,
                             format!("you can make `{text}` mutable by declaring it as `say mut {text}`")));
                     }
-                    self.check_into_slot(&typed.flow, slot_nullable, name, lhs)?;
+                    self.check_into_slot(&typed.flow, &owed, name, lhs)?;
                     self.locals[i].assigned = true;
                     self.locals[i].tag = typed.tag.clone();
                     self.reset_narrowing(i, matches!(typed.flow, Flow::Clean));
@@ -143,11 +145,20 @@ impl<'a> Checker<'a> {
 
     /// Checks a value moving into a field per the field's nullability.
     fn check_into_field(&mut self, flow: &Flow, field_nullable: bool, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        // Storing into a field persists the value, which a `discharge to escape` value forbids.
+        self.reject_escape(flow, node)?;
         let text = self.hir.text(field);
         let void = || format!("Cannot assign a void result to field '{text}'; the call returns no value");
         if field_nullable {
             // A nullable field still rejects a void result, which is not a value.
-            return if flow.is_void() { Err(self.error(void(), node)) } else { Ok(()) };
+            if flow.is_void() {
+                return Err(self.error(void(), node));
+            }
+            // An unknown value into an `opt` field is guarded against every object witness it may be.
+            if matches!(flow, Flow::Unknown) {
+                self.record_boundary_barrier(node, &HashSet::from([self.sigs.opt]));
+            }
+            return Ok(());
         }
         match self.non_null_violation(flow, node) {
             None => Ok(()),

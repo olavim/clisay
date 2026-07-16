@@ -1,8 +1,9 @@
 use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
-use crate::middle::ir::{Inst, Label};
+use crate::middle::ir::{BarrierAllow, Inst, Label};
 use crate::middle::bind::{FnKind, Place};
+use crate::middle::check::{Barrier, WitnessSet};
 
 use super::Compiler;
 
@@ -51,16 +52,47 @@ impl<'a> Compiler<'a> {
             HirExpr::Coalesce(left, right) => self.coalesce(expr, left, right)?,
             HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(expr, target, member, *is_dot)?,
             HirExpr::SafeCall(callee, args) => self.safe_call(expr, callee, args)?,
-            HirExpr::Propagate(operand) => self.propagate(operand)?,
+            HirExpr::Propagate(operand) => self.propagate(expr, operand)?,
             HirExpr::Handle(left, _, handler) => self.handle(expr, left, handler)?,
-            // `!` leaves its operand's value; the barrier below guards it when the check pass flagged it.
-            HirExpr::Assert(operand) => self.expression(operand)?,
+            HirExpr::Assert(operand) => self.assert(expr, operand)?,
         };
 
-        // A value that the check pass marked as an `unknown` crossing into a non-null slot is guarded.
+        // An unknown value reaching a slot or `!` is checked against the witnesses it does not allow.
+        if let Some(barrier) = self.barriers.boundary(expr) {
+            self.emit_boundary_barrier(expr, barrier)?;
+        }
+        // A `!` operand owing only `opt` rides the fast-path null assertion.
         if self.barriers.has(expr) {
             self.emit(Inst::AssertNonNull, expr);
         }
+        Ok(())
+    }
+
+    /// Emits the boundary guard for an unknown value. The VM throws any registered witness the value provides
+    /// that is not among them.
+    fn emit_boundary_barrier(&mut self, node: &HirId<HirExpr>, barrier: &Barrier) -> Result<(), anyhow::Error> {
+        let mut names = Vec::with_capacity(barrier.allow_names.len());
+        for &name in &barrier.allow_names {
+            names.push(self.member_constant(name)?);
+        }
+        let idx = self.ir.add_barrier_allow(BarrierAllow { null_allowed: barrier.null_allowed, names })?;
+        self.emit(Inst::BarrierGuard(idx), node);
+        Ok(())
+    }
+
+    fn emit_is_jumps(&mut self, node: &HirId<HirExpr>, names: &[Symbol], target: Label) -> Result<(), anyhow::Error> {
+        for &name in names {
+            let idx = self.member_constant(name)?;
+            self.emit(Inst::JumpIfIs(target, idx), node);
+        }
+        Ok(())
+    }
+
+    fn emit_witness_jumps(&mut self, node: &HirId<HirExpr>, set: &WitnessSet, target: Label) -> Result<(), anyhow::Error> {
+        if set.null {
+            self.emit(Inst::JumpIfNull(target), node);
+        }
+        self.emit_is_jumps(node, &set.names, target)?;
         Ok(())
     }
 
@@ -68,11 +100,21 @@ impl<'a> Compiler<'a> {
     fn coalesce(&mut self, node: &HirId<HirExpr>, left: &HirId<HirExpr>, right: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(left)?;
-        if self.barriers.tests_object_witness(node) {
-            self.emit(Inst::JumpIfClean(end), left);
-            self.emit(Inst::Pop, left);
-        } else {
-            self.emit(Inst::JumpIfNotNullOrPop(end), left);
+        match self.barriers.witness_set(node) {
+            Some(set) if set.contains_user_witnesses => {
+                let fallback = self.ir.new_label();
+                self.emit_witness_jumps(left, set, fallback)?;
+                self.emit(Inst::Jump(end), left);
+                self.ir.bind(fallback);
+                self.emit(Inst::Pop, left);
+            },
+            Some(_) => {
+                self.emit(Inst::JumpIfClean(end), left);
+                self.emit(Inst::Pop, left);
+            },
+            None => {
+                self.emit(Inst::JumpIfNotNullOrPop(end), left);
+            },
         }
         self.expression(right)?;
         self.ir.bind(end);
@@ -83,7 +125,7 @@ impl<'a> Compiler<'a> {
     fn safe_call(&mut self, node: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(callee)?;
-        self.emit(self.chain_guard(node, end), callee);
+        self.chain_guard(node, callee, end)?;
         for arg in args {
             self.expression(arg)?;
         }
@@ -93,12 +135,43 @@ impl<'a> Compiler<'a> {
     }
 
     /// Compiles `a?!`: on a bad value the enclosing function returns it.
-    fn propagate(&mut self, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn propagate(&mut self, node: &HirId<HirExpr>, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let cont = self.ir.new_label();
         self.expression(operand)?;
-        self.emit(Inst::JumpIfClean(cont), operand);
-        self.emit(Inst::Return, operand);
+        match self.barriers.witness_set(node) {
+            Some(set) if set.contains_user_witnesses => {
+                let set = set.clone();
+                let do_return = self.ir.new_label();
+                self.emit_witness_jumps(operand, &set, do_return)?;
+                self.emit(Inst::Jump(cont), operand);
+                self.ir.bind(do_return);
+                self.emit(Inst::Return, operand);
+            },
+            _ => {
+                self.emit(Inst::JumpIfClean(cont), operand);
+                self.emit(Inst::Return, operand);
+            },
+        }
         self.ir.bind(cont);
+        Ok(())
+    }
+
+    /// Compiles `a!`: yield the clean value. Any witness the operand owes is thrown when the value `is` it.
+    fn assert(&mut self, node: &HirId<HirExpr>, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        self.expression(operand)?;
+        let Some(set) = self.barriers.witness_set(node) else { return Ok(()) };
+        let throw_it = self.ir.new_label();
+        let skip = self.ir.new_label();
+        self.emit_is_jumps(operand, &set.names, throw_it)?;
+
+        if set.null {
+            self.emit(Inst::AssertNonNull, operand);
+        }
+
+        self.emit(Inst::Jump(skip), operand);
+        self.ir.bind(throw_it);
+        self.emit(Inst::Throw, operand);
+        self.ir.bind(skip);
         Ok(())
     }
 
@@ -118,16 +191,24 @@ impl<'a> Compiler<'a> {
     fn safe_access(&mut self, node: &HirId<HirExpr>, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_dot: bool) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(target)?;
-        self.emit(self.chain_guard(node, end), target);
+        self.chain_guard(node, target, end)?;
         self.expression(member)?;
         self.emit(if is_dot { Inst::GetProperty } else { Inst::GetIndex }, target);
         self.ir.bind(end);
         Ok(())
     }
 
-    /// The short-circuit op for a `?` chain.
-    fn chain_guard(&self, node: &HirId<HirExpr>, end: Label) -> Inst {
-        if self.barriers.tests_object_witness(node) { Inst::JumpIfBad(end) } else { Inst::JumpIfNull(end) }
+    /// Emits the `?` chain's short-circuit: on a bad operand, jump to `end` keeping the operand.
+    fn chain_guard(&mut self, node: &HirId<HirExpr>, at: &HirId<HirExpr>, end: Label) -> Result<(), anyhow::Error> {
+        match self.barriers.witness_set(node) {
+            Some(set) if set.contains_user_witnesses => {
+                let set = set.clone();
+                self.emit_witness_jumps(at, &set, end)?;
+            },
+            Some(_) => self.emit(Inst::JumpIfBad(end), at),
+            None => self.emit(Inst::JumpIfNull(end), at),
+        }
+        Ok(())
     }
 
     /// Compiles an expression in statement position, where its value is discarded.

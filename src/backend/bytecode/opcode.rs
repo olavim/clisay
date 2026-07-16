@@ -76,6 +76,7 @@ opcodes! {
     JumpIfNull => JUMP_IF_NULL(Jump),
     JumpIfClean => JUMP_IF_CLEAN(Jump),
     JumpIfBad => JUMP_IF_BAD(Jump),
+    JumpIfIs => JUMP_IF_IS(Jump, Const),
     JumpIfGe => JUMP_IF_GE(Jump),
     JumpIfGt => JUMP_IF_GT(Jump),
     JumpIfLe => JUMP_IF_LE(Jump),
@@ -95,6 +96,7 @@ opcodes! {
     PushTry => PUSH_TRY(Jump),
     PopTry => POP_TRY,
     AssertNonNull => ASSERT_NON_NULL,
+    BarrierGuard => BARRIER_GUARD(Byte, List),
 
     // Explicit stack manipulation
     Pop => POP,

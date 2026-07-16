@@ -604,7 +604,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Interns a member name (a string key) into the constant pool, returning its index.
-    fn member_constant(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
+    pub(super) fn member_constant(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
         let name_ref = self.gc.intern(self.hir.text(name));
         self.ir.add_constant(Value::from(name_ref))
     }

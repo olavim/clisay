@@ -4,6 +4,7 @@ use fnv::FnvHashMap;
 use crate::frontend::lex::Diagnostic;
 
 use crate::core::gc::Gc;
+use crate::core::value::Value;
 use crate::core::objects::ObjType;
 use crate::core::objects::ObjString;
 use crate::middle::ir::{Inst, Ir, Label};
@@ -66,6 +67,7 @@ impl<'a> Compiler<'a> {
             types: FnvHashMap::default()
         };
 
+        compiler.record_witness_registry();
         let stmt_id = compiler.hir.get_root();
         compiler.statement(&stmt_id)?;
         Ok(compiler.finish())
@@ -73,6 +75,15 @@ impl<'a> Compiler<'a> {
 
     fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &HirId<T>) -> anyhow::Error {
         anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node_id).clone()))
+    }
+
+    /// Interns the program's object witness names into the `Ir`, so the VM can recognize a
+    /// crossing value as a witness at a boundary barrier.
+    fn record_witness_registry(&mut self) {
+        let names = self.barriers.witness_names().iter()
+            .map(|name| Value::from(self.gc.intern(self.hir.text(*name))))
+            .collect();
+        self.ir.set_witness_names(names);
     }
 
     fn finish(mut self) -> Ir {

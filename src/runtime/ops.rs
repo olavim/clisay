@@ -139,6 +139,19 @@ impl Vm {
         }
     }
 
+    /// Keep the top value and jump when `value is <name>`.
+    pub(super) fn op_jump_if_is(&mut self) {
+        let offset = as_short!(self.read_next(), self.read_next()) as usize;
+        let const_idx = self.read_next() as usize;
+        let name = self.chunk.constants[const_idx].as_object().as_string_ptr();
+        let value = self.stack.peek(0);
+        let provides = matches!(value.kind(), ValueKind::Object(ObjectKind::Instance))
+            && unsafe { &*(*value.as_object().as_instance_ptr()).ty }.provided.contains(&name);
+        if provides {
+            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
+        }
+    }
+
     /// Keep the top value and jump when it is bad (an obligation witness).
     pub(super) fn op_jump_if_bad(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
@@ -148,14 +161,35 @@ impl Vm {
         }
     }
 
-    pub(super) fn op_assert_non_null(&mut self) -> Result<(), anyhow::Error> {
+    /// Guards an unknown value at a destination. Throws a value that provides a registered witness
+    /// the destination does not allow, aborts on a disallowed null, and passes everything else.
+    pub(super) fn op_barrier_guard(&mut self) -> Result<(), anyhow::Error> {
+        let null_allowed = self.read_next() != 0;
+        let count = self.read_next() as usize;
+        let mut allow: Vec<*mut ObjString> = Vec::with_capacity(count);
+        for _ in 0..count {
+            let idx = self.read_next() as usize;
+            allow.push(self.chunk.constants[idx].as_object().as_string_ptr());
+        }
         let value = self.stack.peek(0);
         if value.is_null() {
-            return self.error("unexpected null");
+            return if null_allowed { Ok(()) } else { self.error("unexpected null") };
         }
-        if self.is_err(value) {
-            let err = self.stack.pop();
-            return self.throw_value(err);
+        if matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
+            let ty = unsafe { &*(*value.as_object().as_instance_ptr()).ty };
+            for &name in &ty.provided {
+                if self.witnesses.contains(&name) && !allow.contains(&name) {
+                    let bad = self.stack.pop();
+                    return self.throw_value(bad);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn op_assert_non_null(&mut self) -> Result<(), anyhow::Error> {
+        if self.stack.peek(0).is_null() {
+            return self.error("unexpected null");
         }
         Ok(())
     }

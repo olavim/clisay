@@ -12,6 +12,7 @@ use super::opcode::{self, OpCode, Operand};
 pub struct BytecodeChunk {
     pub code: Vec<OpCode>,
     pub constants: Vec<Value>,
+    pub witness_names: Vec<Value>,
     pub code_pos: Vec<SourcePosition>
 }
 
@@ -19,7 +20,8 @@ impl BytecodeChunk {
     pub fn new() -> BytecodeChunk {
         BytecodeChunk {
             code: Vec::new(),
-            constants: Vec::new(), 
+            constants: Vec::new(),
+            witness_names: Vec::new(),
             code_pos: Vec::new()
         }
     }
@@ -79,12 +81,16 @@ impl GcTraceable for BytecodeChunk {
         for constant in &self.constants {
             constant.mark(gc);
         }
+        for name in &self.witness_names {
+            name.mark(gc);
+        }
     }
 
     fn size(&self) -> usize {
         mem::size_of::<BytecodeChunk>()
             + self.code.capacity() * mem::size_of::<OpCode>()
             + self.constants.capacity() * mem::size_of::<Value>()
+            + self.witness_names.capacity() * mem::size_of::<Value>()
             + self.code_pos.capacity() * mem::size_of::<SourcePosition>()
     }
 }

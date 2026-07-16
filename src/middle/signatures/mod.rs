@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::middle::hir::{Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ReturnShape, Symbol};
+use crate::middle::hir::{Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ObligationRule, ReturnShape, Symbol};
 
 /// A function's return: the obligations its result carries and whether any path returns a value.
 #[derive(Clone, Default)]
@@ -40,8 +40,6 @@ impl TypeTag {
 pub enum Witness {
     Null,
     Type(Symbol),
-    // Constructed once user obligations declare a trait witness.
-    #[allow(dead_code)]
     Trait(Symbol),
 }
 
@@ -50,6 +48,8 @@ pub struct Signatures {
     pub(crate) fails: Symbol,
     /// Each obligation's witness. Built-ins are seeded here; user obligations extend it.
     pub(crate) witnesses: HashMap<Symbol, Witness>,
+    /// Each user obligation's rule.
+    pub(crate) rules: HashMap<Symbol, ObligationRule>,
 
     // Per-function facts, keyed by the function's statement.
     pub(crate) fns: HashMap<HirId<HirStmt>, FnSig>,
@@ -73,6 +73,7 @@ impl Signatures {
             opt,
             fails,
             witnesses: HashMap::from([(opt, Witness::Null)]),
+            rules: HashMap::new(),
             fns: HashMap::new(),
             ret_tags: HashMap::new(),
             types_by_name: HashMap::new(),
@@ -91,6 +92,20 @@ impl Signatures {
     /// The witness of an obligation, when one is known.
     pub(crate) fn witness(&self, obligation: Symbol) -> Option<&Witness> {
         self.witnesses.get(&obligation)
+    }
+
+    /// Every registered object witness as `(obligation, witness type/trait name)`. The null
+    /// witness of `opt` is excluded, since it is tested by the null op, not the `is` test.
+    pub(crate) fn object_witnesses(&self) -> impl Iterator<Item = (Symbol, Symbol)> + '_ {
+        self.witnesses.iter().filter_map(|(ob, w)| match w {
+            Witness::Type(name) | Witness::Trait(name) => Some((*ob, *name)),
+            Witness::Null => None,
+        })
+    }
+
+    /// Whether an obligation's rule is `discharge to escape`: usable in place, but not persistable.
+    pub(crate) fn is_to_escape(&self, obligation: Symbol) -> bool {
+        matches!(self.rules.get(&obligation), Some(ObligationRule::ToEscape))
     }
 
     pub(crate) fn obligation_for_witness(&self, name: Symbol) -> Option<Symbol> {
@@ -125,6 +140,7 @@ pub fn collect(hir: &Hir) -> Signatures {
     }
     let mut collector = Collector { hir, opt, fails, err, sigs };
     collector.stmt(&hir.get_root());
+    collector.register_obligations();
     collector.infer_ret_tags();
     collector.infer_propagated();
     collector.sigs
@@ -184,6 +200,21 @@ impl<'a> Collector<'a> {
                 }
             },
             HirStmt::Nop => {},
+        }
+    }
+
+    /// Registers each user obligation's witness and rule.
+    fn register_obligations(&mut self) {
+        for (name, decl) in self.hir.obligations() {
+            self.sigs.rules.insert(name, decl.rule);
+            if let Some(witness) = decl.witness {
+                let w = if self.sigs.is_type(witness) {
+                    Witness::Type(witness)
+                } else {
+                    Witness::Trait(witness)
+                };
+                self.sigs.witnesses.insert(name, w);
+            }
         }
     }
 

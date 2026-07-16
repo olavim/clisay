@@ -6,7 +6,7 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::Diagnostic;
 
-use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchElem, Matcher, Operator, Stmt, Symbol, TypeDecl};
+use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchElem, Matcher, ObligationRule, Operator, Stmt, Symbol, TypeDecl};
 
 /// What an identifier reference binds to.
 pub enum Binding {
@@ -103,6 +103,10 @@ struct Resolver<'a> {
 impl<'a> Resolver<'a> {
     fn error<T>(&self, msg: impl Into<String>, at: &AstId<T>) -> anyhow::Error {
         anyhow!("{}", Diagnostic::new(msg, self.ast.pos(at).clone()))
+    }
+
+    fn error_help<T>(&self, msg: impl Into<String>, at: &AstId<T>, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, self.ast.pos(at).clone()).with_help(help))
     }
 
     fn push_scope(&mut self) {
@@ -214,7 +218,11 @@ impl<'a> Resolver<'a> {
             },
             Stmt::Block(body) => self.visit_expr(body)?,
             Stmt::Say(field) => if let Some(value) = &field.value { self.visit_expr(value)?; },
-            Stmt::Obligation { witness, .. } => {
+            Stmt::Obligation { witness, rule, .. } => {
+                if matches!(rule, ObligationRule::BeforeDrop) {
+                    return Err(self.error_help("'discharge before drop' is not available yet", stmt,
+                        "obligations discharged at drop are not implemented yet"));
+                }
                 if let Some(witness) = witness {
                     if !self.is_type_or_trait(*witness) {
                         return Err(self.error(format!("'{}' is not a type or trait", self.ast.text(*witness)), stmt));

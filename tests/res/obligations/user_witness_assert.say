@@ -1,0 +1,13 @@
+// `!` on a user-witness value throws it at runtime when the value is the witness, and passes it
+// through otherwise. The throw is catchable, so `try`/`catch` sees it.
+type Token { pub v; init(x) { this.v = x; } }
+obligation parsed: discharge to use Token;
+say bad: parsed = Token(1);
+say good: parsed = 5;
+try {
+    say r = bad!;
+    print("unreachable");
+} catch (e) {
+    print("caught"); // expect: caught
+}
+print(good!); // expect: 5
