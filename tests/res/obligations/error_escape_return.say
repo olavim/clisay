@@ -1,0 +1,11 @@
+obligation borrowed: discharge to escape;
+fn leak(x: borrowed) {
+    return x;
+}
+// error(full):
+// error: 'x' owes 'borrowed'; it cannot be stored or escape its scope
+//  --> error_escape_return.say:3:12
+//   |
+// 2 | fn leak(x: borrowed) {
+// 3 |     return x;
+//   |            ^

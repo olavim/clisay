@@ -8,6 +8,9 @@ impl<'a> Checker<'a> {
     /// Checks a `return <value>` against the declared return shape: a `!` rejects a possibly-null
     /// or void value, a `?` accepts any value, and a void function may not return a value at all.
     pub(super) fn check_return(&mut self, flow: &Flow, shape: ReturnShape, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        // A `discharge to escape` value may not leave its scope, so it cannot be returned.
+        self.reject_escape(flow, node)?;
+        
         // An unmarked function infers its obligations from what it returns. A bad value is a legal
         // return that names an obligation.
         if self.current_return_unmarked {

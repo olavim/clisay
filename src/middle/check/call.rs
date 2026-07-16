@@ -57,6 +57,10 @@ impl<'a> Checker<'a> {
         if let Some(sig) = native::native_method(name) {
             self.check_native_args(&sig, arg_types, args)?;
             if sig.container == Container::Preserves {
+                // A stored argument persists into the container, which a `discharge to escape` value forbids.
+                for (typed, arg) in arg_types.iter().zip(args) {
+                    self.reject_escape(&typed.flow, arg)?;
+                }
                 self.preserve_into_receiver(receiver, arg_types);
             }
             return Ok(Typed::of(self.native_ret_flow(sig.ret), TypeTag::Unknown));

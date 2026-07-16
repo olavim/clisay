@@ -20,40 +20,80 @@ use crate::middle::signatures::{Signatures, TypeTag, Witness};
 use self::construct::Seal;
 use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatcher, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
-/// The runtime checks codegen emits: null-barriers where an `unknown` value crosses into an
-/// unobligated slot, and object-witness tests at discharge nodes.
+/// The runtime witnesses a discharge node must test: `null` for `opt`, and one type/trait name
+/// per object witness.
+#[derive(Clone)]
+pub struct WitnessSet {
+    pub null: bool,
+    pub names: Vec<Symbol>,
+    /// Whether the set names a witness other than the built-in `Err`, so codegen must use the
+    /// `is` test rather than the fast bad/clean ops.
+    pub contains_user_witnesses: bool,
+}
+
+/// The witnesses a destination allows (a slot or a `!`). Its boundary guard throws any registered
+/// witness it does not allow when an unknown value reaches it.
+pub struct Barrier {
+    pub null_allowed: bool,
+    pub allow_names: Vec<Symbol>,
+}
+
+/// The runtime checks codegen emits. A barrier tests an unknown value against the witnesses its
+/// destination does not allow, whether the value enters a slot or is asserted clean by `!`.
 #[derive(Default)]
 pub struct Barriers {
-    /// Nodes where an `unknown` value crosses into a clean slot and needs a null-barrier.
+    /// The null fast path: a `!` operand owing only `opt`, where a null check alone suffices.
     null_barriers: HashSet<HirId<HirExpr>>,
-    /// Discharge nodes (`??`, `?`) whose operand owes an object witness.
-    witness_tests: HashSet<HirId<HirExpr>>,
+    /// An unknown value guarded against the witnesses its destination does not allow: a value
+    /// entering a slot, or a `!` on an unknown operand.
+    boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
+    /// Discharge nodes (`??`, `?`, `!`) whose operand owes an object witness.
+    witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
+    /// Every registered object witness name, the VM's registry for recognizing a crossing value
+    /// as a witness at a boundary barrier.
+    witness_names: Vec<Symbol>,
 }
 
 impl Barriers {
-    /// Whether a null-barrier must guard the value produced at this node.
+    /// Whether a `!` operand at this node needs the built-in null assertion.
     pub fn has(&self, node: &HirId<HirExpr>) -> bool {
         self.null_barriers.contains(node)
     }
 
-    /// Whether a discharge node must run the general object-witness test, not just the null fast-path.
-    pub fn tests_object_witness(&self, node: &HirId<HirExpr>) -> bool {
-        self.witness_tests.contains(node)
+    /// The boundary guard for an unknown value at this node, if one is needed.
+    pub fn boundary(&self, node: &HirId<HirExpr>) -> Option<&Barrier> {
+        self.boundary_barriers.get(node)
+    }
+
+    /// Every registered object witness name, for the VM's boundary-barrier registry.
+    pub fn witness_names(&self) -> &[Symbol] {
+        &self.witness_names
+    }
+
+    /// The witness set a discharge node tests, when its operand owes an object witness.
+    pub fn witness_set(&self, node: &HirId<HirExpr>) -> Option<&WitnessSet> {
+        self.witness_tests.get(node)
     }
 
     pub fn len(&self) -> usize {
-        self.null_barriers.len()
+        self.null_barriers.len() + self.boundary_barriers.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.null_barriers.is_empty()
+        self.null_barriers.is_empty() && self.boundary_barriers.is_empty()
     }
 }
 
 pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barriers, anyhow::Error> {
     let mut checker = Checker::new(hir, bindings, sigs);
     checker.stmt(&hir.get_root())?;
-    Ok(Barriers { null_barriers: checker.barriers, witness_tests: checker.witness_tests })
+    let witness_names = sigs.object_witnesses().map(|(_, name)| name).collect();
+    Ok(Barriers {
+        null_barriers: checker.barriers,
+        boundary_barriers: checker.boundary_barriers,
+        witness_tests: checker.witness_tests,
+        witness_names,
+    })
 }
 
 /// The obligation state of a value as it flows.
@@ -195,10 +235,12 @@ struct Checker<'a> {
     current_return_owes: bool,
     /// Whether the current function has no return marker.
     current_return_unmarked: bool,
-    /// Nodes where an `unknown` value enters a non-null slot and needs a runtime barrier.
+    /// The null fast path: a `!` operand owing only `opt`, needing just the null assertion.
     barriers: HashSet<HirId<HirExpr>>,
+    /// Nodes where an unknown value needs the boundary guard: a slot crossing or a `!` operand.
+    boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
     /// Discharge nodes whose operand owes an object witness.
-    witness_tests: HashSet<HirId<HirExpr>>,
+    witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
 }
 
 impl<'a> Checker<'a> {
@@ -217,7 +259,8 @@ impl<'a> Checker<'a> {
             current_return_owes: false,
             current_return_unmarked: false,
             barriers: HashSet::new(),
-            witness_tests: HashSet::new(),
+            boundary_barriers: HashMap::new(),
+            witness_tests: HashMap::new(),
         }
     }
 
@@ -293,7 +336,39 @@ impl<'a> Checker<'a> {
     }
 
     fn owes_object_witness(&self, flow: &Flow) -> bool {
-        matches!(flow, Flow::Bad { obligations, .. } if obligations.contains(&self.sigs.fails))
+        matches!(flow, Flow::Bad { obligations, .. }
+            if obligations.iter().any(|o| matches!(self.sigs.witness(*o), Some(Witness::Type(_) | Witness::Trait(_)))))
+    }
+
+    /// The type witness of the built-in `fails` obligation.
+    fn err_witness(&self) -> Option<Symbol> {
+        match self.sigs.witness(self.sigs.fails) {
+            Some(Witness::Type(e)) => Some(*e),
+            _ => None,
+        }
+    }
+
+    /// Records which witnesses a discharge node must test at runtime.
+    fn record_witness_test(&mut self, node: &HirId<HirExpr>, flow: &Flow) {
+        let Flow::Bad { obligations, .. } = flow else { return };
+        let err = self.err_witness();
+        let mut set = WitnessSet { null: false, names: Vec::new(), contains_user_witnesses: false };
+        for &o in obligations {
+            match self.sigs.witness(o) {
+                Some(Witness::Null) => set.null = true,
+                Some(Witness::Type(w) | Witness::Trait(w)) => {
+                    if !set.names.contains(w) {
+                        set.names.push(*w);
+                    }
+                    if Some(*w) != err { set.contains_user_witnesses = true; }
+                },
+                None => {},
+            }
+        }
+        // A recorded set always names an object witness: callers only record when
+        // `owes_object_witness` holds. Codegen relies on this to fast-path an opt-only operand.
+        debug_assert!(!set.names.is_empty(), "witness test recorded with no object witness");
+        self.witness_tests.insert(*node, set);
     }
 
     /// Whether a value is a container carrying element obligations.
@@ -338,7 +413,7 @@ impl<'a> Checker<'a> {
     /// access. The exact member flow is discarded, so this is conservative but never unsound.
     fn chain_result(&mut self, operand: &Flow, node: &HirId<HirExpr>) -> Typed {
         if self.owes_object_witness(operand) {
-            self.witness_tests.insert(*node);
+            self.record_witness_test(node, operand);
         }
         let mut obligations = match operand {
             Flow::Bad { obligations, .. } => obligations.clone(),
@@ -523,7 +598,7 @@ impl<'a> Checker<'a> {
             // a possibly-bad left crosses with no barrier. The result is `a` when clean, else `b`.
             HirExpr::Coalesce(l, r) => {
                 let left = self.expr(l)?;
-                if self.owes_object_witness(&left.flow) { self.witness_tests.insert(*expr); }
+                if self.owes_object_witness(&left.flow) { self.record_witness_test(expr, &left.flow); }
                 let right = self.expr(r)?;
                 let tag = if left.tag == right.tag { left.tag.clone() } else { TypeTag::Unknown };
                 let flow = if matches!(left.flow, Flow::Clean) { Flow::Clean } else { right.flow };
@@ -546,6 +621,7 @@ impl<'a> Checker<'a> {
             // the obligation instead, recorded in signatures. The yielded value is clean.
             HirExpr::Propagate(operand) => {
                 let typed = self.expr(operand)?;
+                if self.owes_object_witness(&typed.flow) { self.record_witness_test(expr, &typed.flow); }
                 Typed::of(Flow::Clean, typed.tag)
             },
             // `a ?? p => h` binds the caught bad value to `p`, which still owes what `a` owed. A
@@ -571,7 +647,12 @@ impl<'a> Checker<'a> {
             // the operand is already proven clean.
             HirExpr::Assert(x) => {
                 let typed = self.expr(x)?;
-                if !matches!(typed.flow, Flow::Clean) {
+                if self.owes_object_witness(&typed.flow) {
+                    self.record_witness_test(expr, &typed.flow);
+                } else if matches!(typed.flow, Flow::Unknown) {
+                    // An unknown value could be any witness, so `!` must assert against them all.
+                    self.record_boundary_barrier(expr, &HashSet::new());
+                } else if !matches!(typed.flow, Flow::Clean) {
                     self.add_barrier(expr);
                 }
                 Typed::of(Flow::Clean, typed.tag)
@@ -581,11 +662,10 @@ impl<'a> Checker<'a> {
 
     fn say(&mut self, name: Symbol, clause: &HirSlotClause, mutable: bool, value: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
         let owed = self.clause_owed(clause);
-        let slot_nullable = owed.contains(&self.sigs.opt);
         let (assigned, tag) = if let Some(value) = value {
             self.reject_this_store(value)?;
             let typed = self.expr(value)?;
-            self.check_into_slot(&typed.flow, slot_nullable, name, value)?;
+            self.check_into_slot(&typed.flow, &owed, name, value)?;
             (true, typed.tag)
         } else {
             (false, TypeTag::Unknown)
@@ -700,8 +780,16 @@ impl<'a> Checker<'a> {
 
     fn literal_children(&mut self, lit: &HirLiteral, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match lit {
-            HirLiteral::Array(elems) => for e in elems { self.expr(e)?; },
-            HirLiteral::Dict(pairs) => for (k, v) in pairs { self.expr(k)?; self.expr(v)?; },
+            // Putting a value into a container persists it, which a `discharge to escape` value forbids.
+            HirLiteral::Array(elems) => for e in elems {
+                let t = self.expr(e)?;
+                self.reject_escape(&t.flow, e)?;
+            },
+            HirLiteral::Dict(pairs) => for (k, v) in pairs {
+                self.expr(k)?;
+                let t = self.expr(v)?;
+                self.reject_escape(&t.flow, v)?;
+            },
             HirLiteral::Lambda(decl) => self.lambda(decl, node)?,
             _ => {},
         }
@@ -734,18 +822,30 @@ impl<'a> Checker<'a> {
         Ok(Typed::of(flow, self.locals[i].tag.clone()))
     }
 
-    /// Marks a node whose `unknown` value crosses into a non-null slot, so codegen guards it
-    /// with a runtime null-check.
+    /// Marks a `!` operand owing only `opt`, whose null state is asserted at runtime.
     fn add_barrier(&mut self, node: &HirId<HirExpr>) {
         self.barriers.insert(*node);
     }
 
+    /// Records the guard for an unknown value reaching a destination accepting `accepted`. The
+    /// guard allows those obligations' witnesses.
+    fn record_boundary_barrier(&mut self, node: &HirId<HirExpr>, accepted: &HashSet<Symbol>) {
+        let null_allowed = accepted.contains(&self.sigs.opt);
+        let mut allow_names = Vec::new();
+        for (ob, name) in self.sigs.object_witnesses() {
+            if accepted.contains(&ob) && !allow_names.contains(&name) {
+                allow_names.push(name);
+            }
+        }
+        self.boundary_barriers.insert(*node, Barrier { null_allowed, allow_names });
+    }
+
     /// Classifies a value entering a non-null target. A non-null slot forbids `opt`, so only a
-    /// value owing `opt` violates it.
+    /// value owing `opt` violates it. An unknown value records the non-null boundary guard.
     fn non_null_violation(&mut self, value: &Flow, target: &HirId<HirExpr>) -> Option<Violation> {
         match value {
             Flow::Clean => None,
-            Flow::Unknown => { self.add_barrier(target); None },
+            Flow::Unknown => { self.record_boundary_barrier(target, &HashSet::new()); None },
             Flow::Void => Some(Violation::Void),
             Flow::Bad { obligations, definite, .. } if obligations.contains(&self.sigs.opt) => {
                 Some(if *definite { Violation::Null } else { Violation::Nullable })
@@ -754,12 +854,20 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Checks if moving a value into a slot is allowed per its nullability.
-    fn check_into_slot(&mut self, flow: &Flow, slot_nullable: bool, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    /// Checks a value entering a slot against the obligations the slot accepts.
+    fn check_into_slot(&mut self, flow: &Flow, accepted: &HashSet<Symbol>, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let text = self.hir.text(name);
         let void = || format!("Cannot assign a void result to '{text}'; the call returns no value");
-        if slot_nullable {
-            return if flow.is_void() { Err(self.error(void(), node)) } else { Ok(()) };
+        if flow.is_void() {
+            return Err(self.error(void(), node));
+        }
+        // An unknown value is guarded against every witness the slot does not accept.
+        if matches!(flow, Flow::Unknown) {
+            self.record_boundary_barrier(node, accepted);
+            return Ok(());
+        }
+        if accepted.contains(&self.sigs.opt) {
+            return Ok(());
         }
         match self.non_null_violation(flow, node) {
             None => Ok(()),
@@ -890,18 +998,23 @@ impl<'a> Checker<'a> {
 
         let Flow::Bad { obligations, .. } = &typed.flow else { return Ok(()) };
 
+        let blocking: HashSet<Symbol> = obligations.iter().copied().filter(|o| !self.sigs.is_to_escape(*o)).collect();
+        if blocking.is_empty() {
+            return Ok(());
+        }
+
         let name = match self.hir.get(operand) {
             HirExpr::Identifier(name) => Some(self.hir.text(*name)),
             _ => None,
         };
 
-        let owed = self.quoted_obligation_list(obligations);
+        let owed = self.quoted_obligation_list(&blocking);
 
         // The header stays generic so it is easy to search for. The caret and help carry the name.
         let mut diagnostic = Diagnostic::new(format!("unchecked value owes {owed}"), self.hir.pos(operand).clone());
 
         // Name the witness so the reader knows what to rule out, and how.
-        let mut witnesses: Vec<&str> = obligations.iter().filter_map(|o| self.witness_name(*o)).collect();
+        let mut witnesses: Vec<&str> = blocking.iter().filter_map(|o| self.witness_name(*o)).collect();
         witnesses.sort();
         witnesses.dedup();
 
@@ -917,6 +1030,21 @@ impl<'a> Checker<'a> {
         }
 
         Err(anyhow!("{}", diagnostic))
+    }
+
+    /// Rejects persisting a value that owes a `discharge to escape` obligation.
+    fn reject_escape(&self, flow: &Flow, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
+        if !obligations.iter().any(|o| self.sigs.is_to_escape(*o)) {
+            return Ok(());
+        }
+        let escaping: HashSet<Symbol> = obligations.iter().copied().filter(|o| self.sigs.is_to_escape(*o)).collect();
+        let subject = match self.hir.get(node) {
+            HirExpr::Identifier(name) => format!("'{}'", self.hir.text(*name)),
+            _ => "this value".to_string(),
+        };
+        let owed = self.quoted_obligation_list(&escaping);
+        Err(self.error(format!("{subject} owes {owed}; it cannot be stored or escape its scope"), node))
     }
 
     fn invalid_operands(&self, op: BinOp, l: &HirId<HirExpr>, ln: &Typed, r: &HirId<HirExpr>, rn: &Typed) -> anyhow::Error {

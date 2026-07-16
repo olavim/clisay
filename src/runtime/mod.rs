@@ -90,6 +90,9 @@ pub struct Vm {
     try_frames: Vec<TryFrame>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
+    /// Every registered object witness name. A boundary barrier throws a crossing value when it
+    /// provides one of these names and that name is not among the destination's allowed witnesses.
+    witnesses: fnv::FnvHashSet<*mut ObjString>,
     index_cache: Box<[IndexCache]>,
     call_cache: Box<[CallCache]>,
     out: Vec<String>
@@ -171,6 +174,10 @@ impl Vm {
             err: build_err_type(&mut gc)
         };
 
+        let witnesses = chunk.witness_names.iter()
+            .map(|name| name.as_object().as_string_ptr())
+            .collect();
+
         let mut vm = Vm {
             gc,
             ip: std::ptr::null(),
@@ -181,6 +188,7 @@ impl Vm {
             try_frames: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
+            witnesses,
             index_cache: vec![IndexCache { site: 0, ty: std::ptr::null_mut(), member: TypeMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
             call_cache: vec![CallCache { site: usize::MAX, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0 }; CALL_CACHE_SIZE].into_boxed_slice(),
             out: Vec::new()

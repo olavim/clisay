@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 
-pub use crate::frontend::ast::{ReturnShape, Symbol};
+pub use crate::frontend::ast::{ObligationRule, ReturnShape, Symbol};
 use crate::frontend::lex::{SourcePosition, TokenType};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -328,15 +328,30 @@ impl<T> std::hash::Hash for HirId<T> {
     }
 }
 
+pub struct ObligationDecl {
+    pub witness: Option<Symbol>,
+    pub rule: ObligationRule,
+}
+
 pub struct Hir {
     nodes: Vec<HirArenaNode>,
     ident_ids: HashMap<String, u32>,
     ident_texts: Vec<String>,
+    obligations: HashMap<Symbol, ObligationDecl>,
 }
 
 impl Hir {
     pub(crate) fn new(ident_ids: HashMap<String, u32>, ident_texts: Vec<String>) -> Hir {
-        Hir { nodes: Vec::new(), ident_ids, ident_texts }
+        Hir { nodes: Vec::new(), ident_ids, ident_texts, obligations: HashMap::new() }
+    }
+
+    pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: Option<Symbol>, rule: ObligationRule) {
+        self.obligations.insert(name, ObligationDecl { witness, rule });
+    }
+
+    /// Every user-declared obligation, keyed by name.
+    pub fn obligations(&self) -> impl Iterator<Item = (Symbol, &ObligationDecl)> {
+        self.obligations.iter().map(|(name, decl)| (*name, decl))
     }
 
     pub fn text(&self, symbol: Symbol) -> &str {
