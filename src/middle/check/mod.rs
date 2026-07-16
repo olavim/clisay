@@ -1,12 +1,16 @@
 //! Flow-sensitive semantic checks.
 
 mod assign;
+mod barriers;
 mod call;
 mod construct;
+mod matching;
 mod narrow;
 mod native;
 mod returns;
 mod traits;
+mod values;
+mod witness;
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,73 +20,12 @@ use crate::frontend::lex::Diagnostic;
 
 use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
-use crate::middle::signatures::{Signatures, TypeTag, Witness};
+use crate::middle::signatures::{Signatures, TypeTag};
 use self::construct::Seal;
-use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatcher, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use self::matching::whole_value_binders;
+use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
-/// The runtime witnesses a discharge node must test: `null` for `opt`, and one type/trait name
-/// per object witness.
-#[derive(Clone)]
-pub struct WitnessSet {
-    pub null: bool,
-    pub names: Vec<Symbol>,
-    /// Whether the set names a witness other than the built-in `Err`, so codegen must use the
-    /// `is` test rather than the fast bad/clean ops.
-    pub contains_user_witnesses: bool,
-}
-
-/// The witnesses a destination allows (a slot or a `!`). Its boundary guard throws any registered
-/// witness it does not allow when an unknown value reaches it.
-pub struct Barrier {
-    pub null_allowed: bool,
-    pub allow_names: Vec<Symbol>,
-}
-
-/// The runtime checks codegen emits. A barrier tests an unknown value against the witnesses its
-/// destination does not allow, whether the value enters a slot or is asserted clean by `!`.
-#[derive(Default)]
-pub struct Barriers {
-    /// The null fast path: a `!` operand owing only `opt`, where a null check alone suffices.
-    null_barriers: HashSet<HirId<HirExpr>>,
-    /// An unknown value guarded against the witnesses its destination does not allow: a value
-    /// entering a slot, or a `!` on an unknown operand.
-    boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
-    /// Discharge nodes (`??`, `?`, `!`) whose operand owes an object witness.
-    witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
-    /// Every registered object witness name, the VM's registry for recognizing a crossing value
-    /// as a witness at a boundary barrier.
-    witness_names: Vec<Symbol>,
-}
-
-impl Barriers {
-    /// Whether a `!` operand at this node needs the built-in null assertion.
-    pub fn has(&self, node: &HirId<HirExpr>) -> bool {
-        self.null_barriers.contains(node)
-    }
-
-    /// The boundary guard for an unknown value at this node, if one is needed.
-    pub fn boundary(&self, node: &HirId<HirExpr>) -> Option<&Barrier> {
-        self.boundary_barriers.get(node)
-    }
-
-    /// Every registered object witness name, for the VM's boundary-barrier registry.
-    pub fn witness_names(&self) -> &[Symbol] {
-        &self.witness_names
-    }
-
-    /// The witness set a discharge node tests, when its operand owes an object witness.
-    pub fn witness_set(&self, node: &HirId<HirExpr>) -> Option<&WitnessSet> {
-        self.witness_tests.get(node)
-    }
-
-    pub fn len(&self) -> usize {
-        self.null_barriers.len() + self.boundary_barriers.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.null_barriers.is_empty() && self.boundary_barriers.is_empty()
-    }
-}
+pub use barriers::{Barrier, Barriers, WitnessSet};
 
 pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barriers, anyhow::Error> {
     let mut checker = Checker::new(hir, bindings, sigs);
@@ -328,99 +271,6 @@ impl<'a> Checker<'a> {
     /// The obligations a slot's `:` clause declares.
     fn clause_owed(&self, clause: &HirSlotClause) -> HashSet<Symbol> {
         clause.names.iter().copied().collect()
-    }
-
-    /// A value owing `fails`: an `Err` witness.
-    fn fails_flow(&self) -> Flow {
-        Flow::Bad { obligations: HashSet::from([self.sigs.fails]), definite: false, container: false }
-    }
-
-    fn owes_object_witness(&self, flow: &Flow) -> bool {
-        matches!(flow, Flow::Bad { obligations, .. }
-            if obligations.iter().any(|o| matches!(self.sigs.witness(*o), Some(Witness::Type(_) | Witness::Trait(_)))))
-    }
-
-    /// The type witness of the built-in `fails` obligation.
-    fn err_witness(&self) -> Option<Symbol> {
-        match self.sigs.witness(self.sigs.fails) {
-            Some(Witness::Type(e)) => Some(*e),
-            _ => None,
-        }
-    }
-
-    /// Records which witnesses a discharge node must test at runtime.
-    fn record_witness_test(&mut self, node: &HirId<HirExpr>, flow: &Flow) {
-        let Flow::Bad { obligations, .. } = flow else { return };
-        let err = self.err_witness();
-        let mut set = WitnessSet { null: false, names: Vec::new(), contains_user_witnesses: false };
-        for &o in obligations {
-            match self.sigs.witness(o) {
-                Some(Witness::Null) => set.null = true,
-                Some(Witness::Type(w) | Witness::Trait(w)) => {
-                    if !set.names.contains(w) {
-                        set.names.push(*w);
-                    }
-                    if Some(*w) != err { set.contains_user_witnesses = true; }
-                },
-                None => {},
-            }
-        }
-        // A recorded set always names an object witness: callers only record when
-        // `owes_object_witness` holds. Codegen relies on this to fast-path an opt-only operand.
-        debug_assert!(!set.names.is_empty(), "witness test recorded with no object witness");
-        self.witness_tests.insert(*node, set);
-    }
-
-    /// Whether a value is a container carrying element obligations.
-    fn is_container(flow: &Flow) -> bool {
-        matches!(flow, Flow::Bad { container: true, .. })
-    }
-
-    /// The witness type name when the value is confirmed to be a witness it owes.
-    fn confirmed_witness_name(&self, typed: &Typed) -> Option<&'a str> {
-        let TypeTag::Concrete(tag) = &typed.tag else { return None };
-        let Flow::Bad { obligations, .. } = &typed.flow else { return None };
-        if !obligations.iter().all(|o| matches!(self.sigs.witness(*o), Some(Witness::Type(_) | Witness::Trait(_)))) {
-            return None;
-        }
-        obligations.iter().find_map(|o| match self.sigs.witness(*o) {
-            Some(Witness::Type(w)) if w == tag => Some(self.hir.text(*w)),
-            _ => None,
-        })
-    }
-
-    /// Whether the value is confirmed to be one of the witnesses it owes.
-    fn confirmed_witness(&self, typed: &Typed) -> bool {
-        self.confirmed_witness_name(typed).is_some()
-    }
-
-    /// The tag a caught value narrows to. A single type witness confirms the value's type. A set,
-    /// a trait witness, or `opt` leaves it unknown.
-    fn single_object_witness_tag(&self, caught: &HashSet<Symbol>) -> TypeTag {
-        let mut it = caught.iter();
-        match (it.next(), it.next()) {
-            (Some(o), None) => match self.sigs.witness(*o) {
-                Some(Witness::Type(name)) => TypeTag::Concrete(*name),
-                _ => TypeTag::Unknown,
-            },
-            _ => TypeTag::Unknown,
-        }
-    }
-
-    /// The result of a `?` chain. It carries the operand's obligations, since a bad operand
-    /// short-circuits to that value. `opt` is always added because the chain can also yield null on
-    /// the clean path: a null short-circuit when the operand owes `opt`, or a nullable/dynamic
-    /// access. The exact member flow is discarded, so this is conservative but never unsound.
-    fn chain_result(&mut self, operand: &Flow, node: &HirId<HirExpr>) -> Typed {
-        if self.owes_object_witness(operand) {
-            self.record_witness_test(node, operand);
-        }
-        let mut obligations = match operand {
-            Flow::Bad { obligations, .. } => obligations.clone(),
-            _ => HashSet::new(),
-        };
-        obligations.insert(self.sigs.opt);
-        Typed::of(Flow::Bad { obligations, definite: false, container: false }, TypeTag::Unknown)
     }
 
     fn stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
@@ -822,61 +672,6 @@ impl<'a> Checker<'a> {
         Ok(Typed::of(flow, self.locals[i].tag.clone()))
     }
 
-    /// Marks a `!` operand owing only `opt`, whose null state is asserted at runtime.
-    fn add_barrier(&mut self, node: &HirId<HirExpr>) {
-        self.barriers.insert(*node);
-    }
-
-    /// Records the guard for an unknown value reaching a destination accepting `accepted`. The
-    /// guard allows those obligations' witnesses.
-    fn record_boundary_barrier(&mut self, node: &HirId<HirExpr>, accepted: &HashSet<Symbol>) {
-        let null_allowed = accepted.contains(&self.sigs.opt);
-        let mut allow_names = Vec::new();
-        for (ob, name) in self.sigs.object_witnesses() {
-            if accepted.contains(&ob) && !allow_names.contains(&name) {
-                allow_names.push(name);
-            }
-        }
-        self.boundary_barriers.insert(*node, Barrier { null_allowed, allow_names });
-    }
-
-    /// Classifies a value entering a non-null target. A non-null slot forbids `opt`, so only a
-    /// value owing `opt` violates it. An unknown value records the non-null boundary guard.
-    fn non_null_violation(&mut self, value: &Flow, target: &HirId<HirExpr>) -> Option<Violation> {
-        match value {
-            Flow::Clean => None,
-            Flow::Unknown => { self.record_boundary_barrier(target, &HashSet::new()); None },
-            Flow::Void => Some(Violation::Void),
-            Flow::Bad { obligations, definite, .. } if obligations.contains(&self.sigs.opt) => {
-                Some(if *definite { Violation::Null } else { Violation::Nullable })
-            },
-            Flow::Bad { .. } => None,
-        }
-    }
-
-    /// Checks a value entering a slot against the obligations the slot accepts.
-    fn check_into_slot(&mut self, flow: &Flow, accepted: &HashSet<Symbol>, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let text = self.hir.text(name);
-        let void = || format!("Cannot assign a void result to '{text}'; the call returns no value");
-        if flow.is_void() {
-            return Err(self.error(void(), node));
-        }
-        // An unknown value is guarded against every witness the slot does not accept.
-        if matches!(flow, Flow::Unknown) {
-            self.record_boundary_barrier(node, accepted);
-            return Ok(());
-        }
-        if accepted.contains(&self.sigs.opt) {
-            return Ok(());
-        }
-        match self.non_null_violation(flow, node) {
-            None => Ok(()),
-            Some(Violation::Void) => Err(self.error(void(), node)),
-            Some(Violation::Null) => Err(self.error(format!("Cannot assign null to non-null binding '{text}'"), node)),
-            Some(Violation::Nullable) => Err(self.error(format!("Cannot assign a nullable value to non-null binding '{text}'"), node)),
-        }
-    }
-
     /// Member or data access `target.member` / `target[member]`. Resolves a field on a known-type
     /// receiver to its declared nullability; any other access is a dynamic-boundary read.
     fn member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
@@ -981,175 +776,6 @@ impl<'a> Checker<'a> {
         Ok(Typed::nonnull())
     }
 
-    /// A single-caret error for a confirmed witness used where its type is not allowed. Each
-    /// operation site names itself, since a confirmed witness is not fixed by narrowing.
-    fn confirmed_use_error(&self, header: String, operand: &HirId<HirExpr>, witness: &str) -> anyhow::Error {
-        anyhow!("{}", Diagnostic::new(header, self.hir.pos(operand).clone()).with_label(witness.to_string()))
-    }
-
-    /// Rejects an operand that cannot be used as a value here: a void result, or one still owing an
-    /// obligation. A confirmed witness is caught by its operation site first, so this only advises
-    /// narrowing a value that merely may be a witness.
-    fn require_usable_value(&self, typed: &Typed, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        debug_assert!(!self.confirmed_witness(typed), "a confirmed witness must be handled at its operation site, not advised to narrow");
-        if typed.flow.is_void() {
-            return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), operand));
-        }
-
-        let Flow::Bad { obligations, .. } = &typed.flow else { return Ok(()) };
-
-        let blocking: HashSet<Symbol> = obligations.iter().copied().filter(|o| !self.sigs.is_to_escape(*o)).collect();
-        if blocking.is_empty() {
-            return Ok(());
-        }
-
-        let name = match self.hir.get(operand) {
-            HirExpr::Identifier(name) => Some(self.hir.text(*name)),
-            _ => None,
-        };
-
-        let owed = self.quoted_obligation_list(&blocking);
-
-        // The header stays generic so it is easy to search for. The caret and help carry the name.
-        let mut diagnostic = Diagnostic::new(format!("unchecked value owes {owed}"), self.hir.pos(operand).clone());
-
-        // Name the witness so the reader knows what to rule out, and how.
-        let mut witnesses: Vec<&str> = blocking.iter().filter_map(|o| self.witness_name(*o)).collect();
-        witnesses.sort();
-        witnesses.dedup();
-
-        if witnesses.is_empty() {
-            diagnostic = diagnostic.with_help("discharge it before use");
-        } else {
-            let witness = witnesses.join(" or ");
-            diagnostic = diagnostic.with_label(format!("might be {witness}"));
-            diagnostic = match name {
-                Some(name) => diagnostic.with_help(format!("make sure `{name}` is not {witness} before using it")),
-                None => diagnostic.with_help(format!("make sure the value is not {witness} before using it")),
-            };
-        }
-
-        Err(anyhow!("{}", diagnostic))
-    }
-
-    /// Rejects persisting a value that owes a `discharge to escape` obligation.
-    fn reject_escape(&self, flow: &Flow, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
-        if !obligations.iter().any(|o| self.sigs.is_to_escape(*o)) {
-            return Ok(());
-        }
-        let escaping: HashSet<Symbol> = obligations.iter().copied().filter(|o| self.sigs.is_to_escape(*o)).collect();
-        let subject = match self.hir.get(node) {
-            HirExpr::Identifier(name) => format!("'{}'", self.hir.text(*name)),
-            _ => "this value".to_string(),
-        };
-        let owed = self.quoted_obligation_list(&escaping);
-        Err(self.error(format!("{subject} owes {owed}; it cannot be stored or escape its scope"), node))
-    }
-
-    fn invalid_operands(&self, op: BinOp, l: &HirId<HirExpr>, ln: &Typed, r: &HirId<HirExpr>, rn: &Typed) -> anyhow::Error {
-        let (lt, rt) = (self.operand_type_name(ln, l), self.operand_type_name(rn, r));
-        let header = format!("invalid operands of `{op}`: {lt} and {rt}");
-        // Point the primary caret at the confirmed operand; the other side is a labeled span.
-        let (primary, primary_ty, other, other_ty) = if self.confirmed_witness(ln) {
-            (l, &lt, r, &rt)
-        } else {
-            (r, &rt, l, &lt)
-        };
-        anyhow!("{}", Diagnostic::new(header, self.hir.pos(primary).clone())
-            .with_label(primary_ty.to_string())
-            .with_span(self.hir.pos(other).clone(), other_ty.to_string()))
-    }
-
-    fn operand_type_name(&self, typed: &Typed, node: &HirId<HirExpr>) -> String {
-        if let Some(witness) = self.confirmed_witness_name(typed) {
-            return witness.to_string();
-        }
-        match self.hir.get(node) {
-            HirExpr::Literal(HirLiteral::Number(_)) => "number".to_string(),
-            HirExpr::Literal(HirLiteral::String(_)) => "string".to_string(),
-            HirExpr::Literal(HirLiteral::Boolean(_)) => "boolean".to_string(),
-            HirExpr::Literal(HirLiteral::Null) => "null".to_string(),
-            _ => match &typed.tag {
-                TypeTag::Concrete(name) => self.hir.text(*name).to_string(),
-                _ => "value".to_string(),
-            },
-        }
-    }
-
-    /// The type or trait that witnesses an obligation at runtime, if it has one. A pure-static
-    /// obligation has no object witness to name.
-    fn witness_name(&self, obligation: Symbol) -> Option<&'a str> {
-        match self.sigs.witness(obligation)? {
-            Witness::Type(name) | Witness::Trait(name) => Some(self.hir.text(*name)),
-            Witness::Null => Some("null"),
-        }
-    }
-
-    /// The witnesses a match arm rules out for the arms below it.
-    fn arm_rules_out(&self, arm: &HirMatchArm, remaining: &HashSet<Symbol>) -> HashSet<Symbol> {
-        if let Some(guard) = &arm.guard {
-            // For now just require a literal `true` guard to rule out witnesses. A more general analysis could
-            // evaluate the guard's flow facts and see if it is total over a witness.
-            if !self.is_literal_true(guard) {
-                return HashSet::new();
-            }
-        }
-        remaining.iter().copied().filter(|w| self.matcher_total_over(&arm.matcher, *w)).collect()
-    }
-
-    /// Whether a matcher matches every value in a witness's bad state.
-    fn matcher_total_over(&self, matcher: &HirMatcher, witness: Symbol) -> bool {
-        self.sigs.witness(witness).is_some_and(|w| self.total_over(matcher, w))
-    }
-
-    /// Whether a matcher matches every value the witness names. The `|`/`&`/`as` combinators recurse
-    /// the same way for any witness; only the leaf test differs. A bare `is W` is always total. A
-    /// destructure is total only for a type witness, and only when every named field is public and
-    /// binds irrefutably. A trait destructure tests a provider's public surface, which a real
-    /// witness can lack, so it is never total.
-    fn total_over(&self, matcher: &HirMatcher, witness: &Witness) -> bool {
-        match matcher {
-            HirMatcher::As(_, inner) => self.total_over(inner, witness),
-            HirMatcher::Or(alternatives) => alternatives.iter().any(|m| self.total_over(m, witness)),
-            HirMatcher::And(parts) => parts.iter().all(|m| self.total_over(m, witness)),
-            HirMatcher::Literal(HirLiteral::Null) => matches!(witness, Witness::Null),
-            HirMatcher::Type { name: tested, shape, .. } => match witness {
-                Witness::Type(name) if tested == name => shape.as_ref().is_none_or(|s| self.destructure_total(*name, s)),
-                Witness::Trait(name) => tested == name && shape.is_none(),
-                _ => false,
-            },
-            _ => false,
-        }
-    }
-
-    /// Whether an `is Type { ... }` destructure matches every value of the type: every named field
-    /// is public and binds irrefutably.
-    fn destructure_total(&self, type_name: Symbol, shape: &HirMatcher) -> bool {
-        let HirMatcher::Shape(fields) = shape else { return false };
-        fields.iter().all(|field| {
-            self.is_public_field(type_name, &field.key)
-                && matches!(field.value, HirMatcher::Binder(_) | HirMatcher::Wildcard)
-        })
-    }
-
-    /// Whether `key` names a public field of the type. A built-in witness type carries no layout,
-    /// so its public surface is answered directly.
-    fn is_public_field(&self, type_name: Symbol, key: &HirLiteral) -> bool {
-        let HirLiteral::String(field) = key else { return false };
-        match self.layout_of(type_name) {
-            Some(layout) => match self.hir.symbol_of(field) {
-                Some(field) => matches!(layout.members.get(&field), Some(TypeMember::Field(_))) && layout.is_public(field),
-                None => false,
-            },
-            None => builtin_public_field(self.hir.text(type_name), field),
-        }
-    }
-
-    fn is_literal_true(&self, guard: &HirId<HirExpr>) -> bool {
-        matches!(self.hir.get(guard), HirExpr::Literal(HirLiteral::Boolean(true)))
-    }
-
     fn member_text(&self, member: &HirId<HirExpr>) -> Option<&'a str> {
         match self.hir.get(member) {
             HirExpr::Literal(HirLiteral::String(name)) => Some(name),
@@ -1161,29 +787,5 @@ impl<'a> Checker<'a> {
         self.member_text(member).and_then(|name| self.hir.symbol_of(name))
     }
 
-}
-
-/// The public fields of a built-in witness type, which carries no layout. `Err` exposes `value`.
-fn builtin_public_field(type_name: &str, field: &str) -> bool {
-    matches!((type_name, field), ("Err", "value"))
-}
-
-/// The names a matcher binds to the whole matched value: a top-level binder or an `as` name. A
-/// shape, array, or type destructure binds sub-values, which are clean payloads.
-fn whole_value_binders(matcher: &HirMatcher) -> Vec<Symbol> {
-    let mut out = Vec::new();
-    collect_whole_value_binders(matcher, &mut out);
-    out
-}
-
-fn collect_whole_value_binders(matcher: &HirMatcher, out: &mut Vec<Symbol>) {
-    match matcher {
-        HirMatcher::Binder(name) => out.push(*name),
-        HirMatcher::As(name, inner) => { out.push(*name); collect_whole_value_binders(inner, out); },
-        HirMatcher::And(parts) => for part in parts { collect_whole_value_binders(part, out); },
-        // Alternatives bind the same names, so the first one stands for all.
-        HirMatcher::Or(alternatives) => if let Some(first) = alternatives.first() { collect_whole_value_binders(first, out); },
-        _ => {},
-    }
 }
 
