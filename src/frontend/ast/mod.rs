@@ -170,6 +170,14 @@ pub struct FnDecl {
     pub clause: SlotClause,
 }
 
+/// A `req fn f(params): clause;` method hole.
+pub struct ReqFn {
+    pub name: Symbol,
+    pub params: Vec<Param>,
+    pub ret: ReturnShape,
+    pub clause: SlotClause,
+}
+
 /// A `catch (param) { ... }` clause of a try statement.
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
@@ -199,7 +207,7 @@ pub struct TypeDecl {
     pub trait_refs: Vec<TraitRef>,
     /// Traits depended on via `req T1, T2, ...`.
     pub req_traits: Vec<Symbol>,
-    pub req_fns: Vec<(Symbol, usize, ReturnShape)>,
+    pub req_fns: Vec<ReqFn>,
     pub req_members: Vec<Symbol>,
     pub gives: Vec<(Symbol, Symbol)>,
     pub init_name: Symbol,

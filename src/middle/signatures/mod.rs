@@ -14,7 +14,7 @@ pub struct RetSig {
 
 /// A function's per-parameter obligation set and its return signature.
 pub struct FnSig {
-    pub params: Vec<HashSet<Symbol>>,
+    pub param_clauses: Vec<HashSet<Symbol>>,
     pub ret: RetSig,
 }
 
@@ -233,7 +233,7 @@ impl<'a> Collector<'a> {
             ret.obligations.insert(self.fails);
         }
         FnSig {
-            params: decl.params.iter().map(|p| self.obligation_set(p.nullable)).collect(),
+            param_clauses: decl.params.iter().map(|p| p.clause.names.iter().copied().collect()).collect(),
             ret,
         }
     }
@@ -249,25 +249,19 @@ impl<'a> Collector<'a> {
         matches!(self.hir.get(callee), HirExpr::Identifier(name) if Some(*name) == self.err)
     }
 
-    fn obligation_set(&self, nullable: bool) -> HashSet<Symbol> {
-        let mut set = HashSet::new();
-        if nullable {
-            set.insert(self.opt);
-        }
-        set
-    }
-
-    /// Maps a function's return marker onto its obligation set and value presence. An unmarked
-    /// function infers its presence from the body. Its obligations are filled by the propagation fixpoint.
+    /// Maps a function's declared return onto its obligation set and value presence. A marked return
+    /// owes exactly its clause obligations. An unmarked return infers its presence from the body, and
+    /// its obligations are filled by the propagation fixpoint.
     fn ret_sig(&self, decl: &HirFnDecl) -> RetSig {
         if decl.is_unmarked() {
             return RetSig { obligations: HashSet::new(), void: self.has_void_path(&decl.body) };
         }
-        match decl.ret {
-            ReturnShape::Void => RetSig { obligations: decl.clause.names.iter().copied().collect(), void: true },
-            ReturnShape::Nullable => RetSig { obligations: self.obligation_set(true), void: false },
-            ReturnShape::NonNull | ReturnShape::Inferred => RetSig::default(),
+        // A synthesized forwarder carries a `?` marker with no clause, so honor the marker too.
+        let mut obligations: HashSet<Symbol> = decl.clause.names.iter().copied().collect();
+        if decl.ret == ReturnShape::Nullable {
+            obligations.insert(self.opt);
         }
+        RetSig { obligations, void: decl.ret == ReturnShape::Void }
     }
 
     /// Whether a function body can finish without returning a value: it falls off the end, or it

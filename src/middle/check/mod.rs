@@ -608,6 +608,7 @@ impl<'a> Checker<'a> {
         if let Some(type_name) = type_name {
             self.check_field_definitions(type_name, node)?;
             self.check_method_overrides(decl)?;
+            self.check_req_conformance(decl)?;
             self.check_init(&decl.init, type_name)?;
         } else {
             // A trait method reaches only the trait's declared surface through `this`.

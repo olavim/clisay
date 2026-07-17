@@ -94,7 +94,7 @@ impl<'a> Checker<'a> {
         // Read the params through the shared signatures borrow so the later check can take &mut self.
         let sigs = self.sigs;
         let Some(sig) = sigs.fns.get(&stmt) else { return Ok(()) };
-        let nullable: Vec<bool> = sig.params.iter().map(|p| p.contains(&sigs.opt)).collect();
+        let nullable: Vec<bool> = sig.param_clauses.iter().map(|p| p.contains(&sigs.opt)).collect();
         self.check_args(&nullable, arg_types, args)
     }
 

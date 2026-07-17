@@ -12,8 +12,8 @@ impl<'a> Checker<'a> {
     /// The witnesses a match arm rules out for the arms below it.
     pub(super) fn arm_rules_out(&self, arm: &HirMatchArm, remaining: &HashSet<Symbol>) -> HashSet<Symbol> {
         if let Some(guard) = &arm.guard {
-            // For now just require a literal `true` guard to rule out witnesses. A more general analysis could
-            // evaluate the guard's flow facts and see if it is total over a witness.
+            // A guarded arm may not run, so it cannot be trusted to rule out a witness.
+            // Only a literal `true` guard always runs.
             if !self.is_literal_true(guard) {
                 return HashSet::new();
             }

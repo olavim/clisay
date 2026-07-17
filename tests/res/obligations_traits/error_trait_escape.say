@@ -1,0 +1,6 @@
+obligation borrowed: discharge to escape;
+trait View {
+    pub fn get(x: borrowed) { return x; } // error: 'x' owes 'borrowed'; it cannot be stored or escape its scope
+}
+type W with View { init() {} }
+print("unreachable");

@@ -223,6 +223,14 @@ impl HirFnDecl {
     }
 }
 
+pub struct HirReqFn {
+    pub name: Symbol,
+    /// What each parameter passes in. A satisfier must accept at least these obligations.
+    pub param_clauses: Vec<HirSlotClause>,
+    /// What the return may carry. A satisfier may promise fewer obligations.
+    pub ret: HirSlotClause,
+}
+
 pub struct HirCatchClause {
     pub param: Option<HirId<HirExpr>>,
     pub mutable: bool,
@@ -238,6 +246,7 @@ pub struct HirTypeDecl {
     /// Fields declared reassignable with a `mut` modifier (`mut count;`).
     pub mut_fields: HashSet<Symbol>,
     pub methods: Vec<HirId<HirStmt>>,
+    pub req_fns: Vec<HirReqFn>,
     pub method_traits: Vec<Option<Symbol>>,
     pub pub_members: HashSet<Symbol>,
     pub inner_members: HashSet<Symbol>,
