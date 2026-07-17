@@ -1,0 +1,11 @@
+obligation tainted;
+say t: tainted = "x";
+say n = t + 1;
+// error(full):
+// error: unchecked value owes 'tainted'
+//  --> error_undischarged_use.say:3:9
+//   |
+// 2 | say t: tainted = "x";
+// 3 | say n = t + 1;
+//   |         ^
+//   = help: discharge it before use

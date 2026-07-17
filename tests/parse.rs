@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, ObligationRule, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 fn top_stmts(ast: &Ast) -> Vec<AstId<Stmt>> {
@@ -74,8 +74,110 @@ fn req_fn_return_shape() {
     let ast = parse("trait T { req fn find()?; req fn count()!; req fn onClick(); }");
     let stmts = top_stmts(&ast);
     let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a trait") };
-    let shapes: Vec<ReturnShape> = decl.req_fns.iter().map(|(_, _, ret)| *ret).collect();
+    let shapes: Vec<ReturnShape> = decl.req_fns.iter().map(|rf| rf.ret).collect();
     assert_eq!(shapes, vec![ReturnShape::Nullable, ReturnShape::NonNull, ReturnShape::Void]);
+}
+
+#[test]
+fn say_slot_clause() {
+    let ast = parse("say v: opt; say w: opt fails;");
+    let stmts = top_stmts(&ast);
+    let names = |init: &FieldInit| -> Vec<String> {
+        init.clause.names.iter().map(|n| ast.text(*n).to_string()).collect()
+    };
+    let Stmt::Say(v) = ast.get(&stmts[0]) else { panic!("not a say") };
+    assert_eq!(names(v), vec!["opt"]);
+    assert!(!v.clause.container && !v.clause.void);
+    let Stmt::Say(w) = ast.get(&stmts[1]) else { panic!("not a say") };
+    assert_eq!(names(w), vec!["opt", "fails"]);
+}
+
+#[test]
+fn field_slot_clause_container() {
+    let ast = parse("type T { x: [taint]; }");
+    let stmts = top_stmts(&ast);
+    let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a type") };
+    let (_, clause) = &decl.field_clauses[0];
+    assert!(clause.container);
+    assert_eq!(ast.text(clause.names[0]), "taint");
+}
+
+#[test]
+fn fn_return_slot_clause_void() {
+    let ast = parse("fn f(): void {}");
+    let stmts = top_stmts(&ast);
+    let decl = nth_fn(&ast, &stmts, 0);
+    assert!(decl.clause.void);
+    assert!(decl.clause.names.is_empty());
+}
+
+#[test]
+fn slot_clause_void_position_is_free() {
+    // `void` is an atom, so it composes with obligations in any order.
+    for src in ["fn f(): opt void {}", "fn f(): void opt {}", "fn f(): fails opt void {}"] {
+        let ast = parse(src);
+        let stmts = top_stmts(&ast);
+        let decl = nth_fn(&ast, &stmts, 0);
+        assert!(decl.clause.void, "{src}");
+        assert!(!decl.clause.names.is_empty(), "{src}");
+    }
+}
+
+#[test]
+fn slot_clause_rejections() {
+    assert!(try_parse("say a: opt opt;").is_err());
+    assert!(try_parse("say b: [[taint]];").is_err());
+    assert!(try_parse("say c: [void];").is_err());
+    assert!(try_parse("fn f(): void void {}").is_err());
+    assert!(try_parse("say d: void;").is_err());
+    assert!(try_parse("fn g(x: void) {}").is_err());
+    assert!(try_parse("type T { a: void; }").is_err());
+    assert!(try_parse("say e: ;").is_err());
+    assert!(try_parse("say f: = 1;").is_err());
+}
+
+#[test]
+fn container_malformed_insides_get_targeted_errors() {
+    let void = try_parse("say a: [taint void];").err().expect("expected a parse error");
+    assert!(void.contains("'void' is not a valid container obligation"), "{void}");
+
+    let nested = try_parse("say b: [opt [fails]];").err().expect("expected a parse error");
+    assert!(nested.contains("cannot nest"), "{nested}");
+
+    let comma = try_parse("say c: [opt, [fails]];").err().expect("expected a parse error");
+    assert!(comma.contains("separated by spaces"), "{comma}");
+}
+
+#[test]
+fn obligation_declaration() {
+    let ast = parse("obligation tainted; obligation parsed: discharge to use Unparsed; obligation borrowed: discharge to escape; obligation held: discharge before drop;");
+    let stmts = top_stmts(&ast);
+
+    let Stmt::Obligation { name, witness, rule } = ast.get(&stmts[0]) else { panic!("not an obligation") };
+    assert_eq!(ast.text(*name), "tainted");
+    assert!(witness.is_none());
+    assert_eq!(*rule, ObligationRule::ToUse);
+
+    let Stmt::Obligation { witness, rule, .. } = ast.get(&stmts[1]) else { panic!("not an obligation") };
+    let Some(w) = *witness else { panic!("witness form has no witness") };
+    assert_eq!(ast.text(w), "Unparsed");
+    assert_eq!(*rule, ObligationRule::ToUse);
+
+    let Stmt::Obligation { witness, rule, .. } = ast.get(&stmts[2]) else { panic!("not an obligation") };
+    assert!(witness.is_none());
+    assert_eq!(*rule, ObligationRule::ToEscape);
+
+    let Stmt::Obligation { rule, .. } = ast.get(&stmts[3]) else { panic!("not an obligation") };
+    assert_eq!(*rule, ObligationRule::BeforeDrop);
+}
+
+#[test]
+fn obligation_declaration_rejections() {
+    assert!(try_parse("obligation bad: discharge to escape Row;").is_err());
+    assert!(try_parse("obligation bad: discharge before drop Row;").is_err());
+    assert!(try_parse("obligation bad: discharge to use 0;").is_err());
+    assert!(try_parse("obligation bad: discharge to sink;").is_err());
+    assert!(try_parse("obligation bad: no use;").is_err());
 }
 
 #[test]
@@ -85,12 +187,46 @@ fn coalesce_operator() {
 }
 
 #[test]
-fn safe_navigation_operators() {
-    let dot = parse("say x = a?.b;");
-    assert!(matches!(dot.get(&say_value(&dot)), Expr::SafeAccess(_, _, true)));
+fn access_guard_operator() {
+    let member = parse("say x = user?.name;");
+    assert!(matches!(member.get(&say_value(&member)), Expr::SafeAccess(_, _, true)));
 
-    let index = parse("say x = a?[b];");
+    let index = parse("say x = arr?[i];");
     assert!(matches!(index.get(&say_value(&index)), Expr::SafeAccess(_, _, false)));
+
+    let call = parse("say x = cb?();");
+    assert!(matches!(call.get(&say_value(&call)), Expr::SafeCall(_, _)));
+}
+
+#[test]
+fn access_guard_ignores_space_after_question() {
+    // `?` binds left, so whitespace before the accessor is irrelevant.
+    let tight = parse("say x = x?.y;");
+    let spaced = parse("say x = x? .y;");
+    assert!(matches!(tight.get(&say_value(&tight)), Expr::SafeAccess(_, _, true)));
+    assert!(matches!(spaced.get(&say_value(&spaced)), Expr::SafeAccess(_, _, true)));
+}
+
+#[test]
+fn propagate_operator() {
+    let ast = parse("say x = readFile(p)?!;");
+    assert!(matches!(ast.get(&say_value(&ast)), Expr::Propagate(_)));
+}
+
+#[test]
+fn coalesce_handler_form() {
+    let ast = parse("say x = parse(s) ?? e => log(e);");
+    let Expr::Handle(_, binder, _) = ast.get(&say_value(&ast)) else { panic!("not a handler") };
+    assert_eq!(ast.text(*binder), "e");
+    let lambda = parse("say x = a ?? (y => y);");
+    assert!(matches!(lambda.get(&say_value(&lambda)), Expr::Binary(Operator::Coalesce, _, _)));
+}
+
+#[test]
+fn access_guard_rejections() {
+    assert!(try_parse("say x = foo?;").is_err());
+    assert!(try_parse("say x = foo ?.bar;").is_err());
+    assert!(try_parse("say x = foo ?!;").is_err());
 }
 
 #[test]

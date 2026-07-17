@@ -4,9 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{AstId, Expr, Literal, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
+use crate::ast::{AstId, Expr, Literal, ReqFn, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirStmt, HirTypeDecl};
 
 use super::Lowerer;
 
@@ -84,6 +84,12 @@ impl<'a> Lowerer<'a> {
 
         let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
 
+        // The `req fn` holes this type must satisfy: its own and those of every `with` trait.
+        let mut req_fns: Vec<HirReqFn> = decl.req_fns.iter().map(|rf| self.lower_req_fn(rf)).collect();
+        for (_, td) in &traits {
+            req_fns.extend(td.req_fns.iter().map(|rf| self.lower_req_fn(rf)));
+        }
+
         // Restore the previous composer context so sibling types in the same scope
         // don't see this type's traits or aliases.
         self.provided_traits = prev_provided;
@@ -103,6 +109,7 @@ impl<'a> Lowerer<'a> {
             nullable_fields: decl.nullable_fields.clone(),
             mut_fields: decl.mut_fields.clone(),
             methods: composed.methods,
+            req_fns,
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
             inner_members: decl.inner_members.clone(),
@@ -112,17 +119,14 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Lowers a `trait` declaration into a standalone `HirTypeDecl` for **self-containment validation**.
+    /// Lowers a `trait` declaration into a standalone `HirTypeDecl` for self-containment validation.
     /// The resolver validates the body against the trait's surface independently of any composing type.
     pub(super) fn lower_trait(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
         let surface = self.trait_surface(type_id, decl)?;
 
         let mut composed = Composed::empty();
         self.fold_trait(decl.name, decl, &HashSet::new(), &mut composed)?;
-
-        // A placeholder empty init: a trait's init body is validated at the composing type.
-        let empty = self.hir.add(HirExpr::Block(Vec::new()), pos.clone());
-        let init = self.hir.add(HirStmt::Fn(HirFnDecl { name: decl.init_name, params: Vec::new(), body: empty, ret: ReturnShape::NonNull }), pos.clone());
+        let init = self.hir.add(HirStmt::Nop, pos.clone());
 
         Ok(HirTypeDecl {
             name: decl.name,
@@ -131,6 +135,7 @@ impl<'a> Lowerer<'a> {
             nullable_fields: decl.nullable_fields.clone(),
             mut_fields: decl.mut_fields.clone(),
             methods: composed.methods,
+            req_fns: Vec::new(), // satisfaction is checked at composing types, not the trait itself
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
             inner_members: decl.inner_members.clone(),
@@ -145,7 +150,7 @@ impl<'a> Lowerer<'a> {
         let mut surface: HashSet<Symbol> = HashSet::new();
         for field in &decl.fields { surface.insert(*field); }
         for method in &decl.methods { surface.insert(self.ast_fn(method).name); }
-        for (name, _, _) in &decl.req_fns { surface.insert(*name); }
+        for rf in &decl.req_fns { surface.insert(rf.name); }
         for name in &decl.req_members { surface.insert(*name); }
 
         // Exposed members provided through `with` (transitively).
@@ -278,6 +283,7 @@ impl<'a> Lowerer<'a> {
                 name: self.hir.add(HirExpr::Identifier(psym), pos.clone()),
                 nullable: false,
                 mutable: false,
+                clause: HirSlotClause::default(),
             });
             args.push(self.hir.add(HirExpr::Identifier(psym), pos.clone()));
         }
@@ -290,7 +296,18 @@ impl<'a> Lowerer<'a> {
         let call = self.hir.add(HirExpr::Call(method_access, args), pos.clone());
         let ret_stmt = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
         let body = self.hir.add(HirExpr::Block(vec![ret_stmt]), pos.clone());
-        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, params, body, ret }), pos.clone())
+        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, params, body, ret, clause: HirSlotClause::default() }), pos.clone())
+    }
+
+    /// Lowers a `req fn` hole to its per-slot clauses, folding each `?` marker into the clause the
+    /// same way a declared parameter or return does. The `[obl]` container flag rides along so the
+    /// variance check can keep container and bare shapes distinct.
+    fn lower_req_fn(&self, rf: &ReqFn) -> HirReqFn {
+        let param_clauses = rf.params.iter()
+            .map(|p| self.slot_clause(p.nullable, &p.clause))
+            .collect();
+        let ret = self.slot_clause(rf.ret == ReturnShape::Nullable, &rf.clause);
+        HirReqFn { name: rf.name, param_clauses, ret }
     }
 
     /// At an instantiable type, every `req T`, `req fn`, and `req <member>` of the flattened trait
@@ -331,12 +348,13 @@ impl<'a> Lowerer<'a> {
         }
 
         // `req fn`: every hole must be filled by an exposed method of matching name and arity.
-        let req_fns = decl.req_fns.iter().copied()
-            .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_fns.iter().copied()));
-        for (func_sym, arity, _) in req_fns {
-            if !exposed.contains(&(func_sym, arity)) {
+        let req_fns = decl.req_fns.iter()
+            .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_fns.iter()));
+        for rf in req_fns {
+            let arity = rf.params.len();
+            if !exposed.contains(&(rf.name, arity)) {
                 return Err(self.error_at(format!("Unsatisfied `req fn {}` (arity {arity}): needs an `inner`/`pub` method '{}' taking {arity} argument(s)",
-                    self.hir.text(func_sym), self.hir.text(func_sym)), pos));
+                    self.hir.text(rf.name), self.hir.text(rf.name)), pos));
             }
         }
 
@@ -365,10 +383,7 @@ impl<'a> Lowerer<'a> {
         aliases
     }
 
-    /// Folds one trait's methods into `composed`, recording its private-method slots under
-    /// `trait_sym`. Exposed methods take their plain name (or a `"<Trait>.<method>"` alias when a
-    /// host override in `host_methods` shadows them); private methods take a per-trait slot name so
-    /// two traits' same-named privates never collide.
+    /// Folds one trait's methods into `composed`.
     fn fold_trait(&mut self, trait_sym: Symbol, type_decl: &TypeDecl, host_methods: &HashSet<Symbol>, composed: &mut Composed) -> Result<(), anyhow::Error> {
         let renames = self.trait_renames(type_decl);
         let mut private_map: HashMap<Symbol, Symbol> = HashMap::new();
@@ -421,9 +436,9 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
         let params = self.params(&decl.params)?;
-        let ret = decl.ret;
+        let (ret, clause) = self.return_clause(decl);
         let body = self.expr(&decl.body)?;
-        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, params, body, ret }), pos))
+        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, params, body, ret, clause }), pos))
     }
 
     pub(super) fn as_qualified_method_call(&self, callee: &AstId<Expr>) -> Option<(Symbol, String)> {

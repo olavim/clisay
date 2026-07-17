@@ -1,0 +1,9 @@
+fn load()! { return Err("boom"); }
+say bad = load() ?? e => -e;
+// error(full):
+// error: invalid operand of `-`: Err
+//  --> help_confirmed_unary.say:2:27
+//   |
+// 1 | fn load()! { return Err("boom"); }
+// 2 | say bad = load() ?? e => -e;
+//   |                           ^ Err

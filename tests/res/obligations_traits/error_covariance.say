@@ -1,0 +1,10 @@
+// A clean `req fn` cannot be satisfied by a method owing `fails`; the trait would use it undischarged.
+trait Source {
+    req fn read();
+}
+type File with Source {
+    pub fn read(): fails { return Err("x"); } // error: Method 'read' satisfies 'req fn read' but its return owes 'fails', which the requirement does not permit
+    init() {}
+}
+say f = File();
+print("unreachable");

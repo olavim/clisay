@@ -3,10 +3,11 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt;
 use std::marker::PhantomData;
 
-pub use crate::frontend::ast::{ReturnShape, Symbol};
-use crate::frontend::lex::SourcePosition;
+pub use crate::frontend::ast::{ObligationRule, ReturnShape, Symbol};
+use crate::frontend::lex::{SourcePosition, TokenType};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
@@ -37,6 +38,42 @@ pub enum UnOp {
     BitNot,
 }
 
+/// The source glyph of each operator lives in `TokenType`, so both `Display` impls route through
+/// it rather than repeating the strings.
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            BinOp::Add => TokenType::Plus,
+            BinOp::Subtract => TokenType::Minus,
+            BinOp::Multiply => TokenType::Multiply,
+            BinOp::Divide => TokenType::Divide,
+            BinOp::LeftShift => TokenType::LessLess,
+            BinOp::RightShift => TokenType::GreaterGreater,
+            BinOp::LessThan => TokenType::LessThan,
+            BinOp::LessThanEqual => TokenType::LessEqual,
+            BinOp::GreaterThan => TokenType::GreaterThan,
+            BinOp::GreaterThanEqual => TokenType::GreaterEqual,
+            BinOp::Equal => TokenType::EqualEqual,
+            BinOp::NotEqual => TokenType::NotEqual,
+            BinOp::And => TokenType::AmpAmp,
+            BinOp::Or => TokenType::PipePipe,
+            BinOp::BitAnd => TokenType::Amp,
+            BinOp::BitOr => TokenType::Pipe,
+            BinOp::BitXor => TokenType::Hat,
+        })
+    }
+}
+
+impl fmt::Display for UnOp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            UnOp::Negate => TokenType::Minus,
+            UnOp::Not => TokenType::Exclamation,
+            UnOp::BitNot => TokenType::Tilde,
+        })
+    }
+}
+
 pub enum HirLiteral {
     Null,
     Boolean(bool),
@@ -63,12 +100,20 @@ pub enum HirExpr {
     /// `init` args, then the brace field initializers.
     Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
     This,
-    /// Null-coalescing `a ?? b`: yields `a` when non-null, else `b`. Short-circuit
-    /// lowering is deferred to codegen.
+    /// Coalesce `a ?? b`: discharges `a`'s obligation set, yielding `a` when it is clean, else `b`.
+    /// Short-circuit lowering is deferred to codegen.
     Coalesce(HirId<HirExpr>, HirId<HirExpr>),
-    /// Safe navigation `a?.b` / `a?[i]`: yields null when the target is null. `is_dot`
-    /// distinguishes `.name` from `[expr]`. See `HirExpr::Index`.
+    /// The `?` access-guard `a?.b` / `a?[i]`: on a bad operand the chain short-circuits to it,
+    /// carrying its obligation; otherwise the access runs. `is_dot` distinguishes `.name` from
+    /// `[expr]` (see `HirExpr::Index`).
     SafeAccess(HirId<HirExpr>, HirId<HirExpr>, bool),
+    /// The `?` access-guard on a call `cb?(args)`: short-circuits to the callee on a bad operand,
+    /// carrying its obligation; otherwise the call runs.
+    SafeCall(HirId<HirExpr>, Vec<HirId<HirExpr>>),
+    /// The propagate operator `a?!`: on a bad value the enclosing function returns it.
+    Propagate(HirId<HirExpr>),
+    /// The handler `e ?? p => h`: on a bad value binds it to `p` and yields `h`, else yields `e`.
+    Handle(HirId<HirExpr>, Symbol, HirId<HirExpr>),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(HirId<HirExpr>),
     Has(HirId<HirExpr>, Box<HirMatcher>),
@@ -138,6 +183,14 @@ impl HirMatcher {
     }
 }
 
+/// A slot's lowered `:` clause.
+#[derive(Default, Clone)]
+pub struct HirSlotClause {
+    pub names: Vec<Symbol>,
+    pub container: bool,
+    pub void: bool,
+}
+
 pub struct HirFieldInit {
     pub name: Symbol,
     pub value: Option<HirId<HirExpr>>,
@@ -145,6 +198,7 @@ pub struct HirFieldInit {
     pub nullable: bool,
     /// Declared reassignable with a `mut` modifier (`say mut x`). Immutable otherwise.
     pub mutable: bool,
+    pub clause: HirSlotClause,
 }
 
 /// A function/method/lambda parameter: its bound identifier plus the declared
@@ -153,6 +207,7 @@ pub struct HirParam {
     pub name: HirId<HirExpr>,
     pub nullable: bool,
     pub mutable: bool,
+    pub clause: HirSlotClause,
 }
 
 pub struct HirFnDecl {
@@ -161,6 +216,23 @@ pub struct HirFnDecl {
     pub body: HirId<HirExpr>,
     /// The declared return shape (the postfix marker after the parameter list).
     pub ret: ReturnShape,
+    pub clause: HirSlotClause,
+}
+
+impl HirFnDecl {
+    /// Whether the return carries no annotation.
+    pub(crate) fn is_unmarked(&self) -> bool {
+        self.ret == ReturnShape::Void && !self.clause.void
+    }
+}
+
+/// A `req fn` hole's obligation signature: the contract a composer's satisfying method must meet.
+pub struct HirReqFn {
+    pub name: Symbol,
+    /// What each parameter passes in. A satisfier must accept at least these obligations.
+    pub param_clauses: Vec<HirSlotClause>,
+    /// What the return may carry. A satisfier may promise fewer obligations.
+    pub ret: HirSlotClause,
 }
 
 /// A `catch (param) { … }` clause of a try statement.
@@ -179,6 +251,8 @@ pub struct HirTypeDecl {
     /// Fields declared reassignable with a `mut` modifier (`mut count;`).
     pub mut_fields: HashSet<Symbol>,
     pub methods: Vec<HirId<HirStmt>>,
+    /// The `req fn` holes this composer must satisfy: its own and those of its `with` traits.
+    pub req_fns: Vec<HirReqFn>,
     /// The declaring trait of each method in `methods` (parallel), or `None` for a member
     /// the host type declares itself.
     pub method_traits: Vec<Option<Symbol>>,
@@ -216,6 +290,7 @@ pub enum HirStmt {
     Type(Box<HirTypeDecl>),
     Trait(Box<HirTypeDecl>),
     Match(HirId<HirExpr>, Vec<HirMatchArm>),
+    Nop,
 }
 
 pub enum HirNodeKind {
@@ -278,17 +353,34 @@ impl<T> std::hash::Hash for HirId<T> {
     }
 }
 
+/// A user `obligation` declaration's witness and rule, kept for signatures and the check pass.
+/// The declaration itself lowers to a `Nop`, so its facts live here instead.
+pub struct ObligationDecl {
+    pub witness: Option<Symbol>,
+    pub rule: ObligationRule,
+}
+
 /// The lowered compilation unit: a flat arena of HIR nodes plus the identifier
 /// interning tables (moved out of the `Ast` during lowering).
 pub struct Hir {
     nodes: Vec<HirArenaNode>,
     ident_ids: HashMap<String, u32>,
     ident_texts: Vec<String>,
+    obligations: HashMap<Symbol, ObligationDecl>,
 }
 
 impl Hir {
     pub(crate) fn new(ident_ids: HashMap<String, u32>, ident_texts: Vec<String>) -> Hir {
-        Hir { nodes: Vec::new(), ident_ids, ident_texts }
+        Hir { nodes: Vec::new(), ident_ids, ident_texts, obligations: HashMap::new() }
+    }
+
+    pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: Option<Symbol>, rule: ObligationRule) {
+        self.obligations.insert(name, ObligationDecl { witness, rule });
+    }
+
+    /// Every user-declared obligation, keyed by name.
+    pub fn obligations(&self) -> impl Iterator<Item = (Symbol, &ObligationDecl)> {
+        self.obligations.iter().map(|(name, decl)| (*name, decl))
     }
 
     /// The text of an interned symbol.
@@ -340,6 +432,31 @@ impl Hir {
                 if same { left } else { Vec::new() }
             },
             _ => Vec::new(),
+        }
+    }
+
+    /// Whether every path through a function body ends in a `return` or `throw`.
+    pub(crate) fn definitely_returns(&self, body: &HirId<HirExpr>) -> bool {
+        match self.get(body) {
+            HirExpr::Block(stmts) => stmts.iter().any(|s| self.stmt_returns(s)),
+            _ => false,
+        }
+    }
+
+    fn stmt_returns(&self, stmt: &HirId<HirStmt>) -> bool {
+        match self.get(stmt) {
+            HirStmt::Return(_) | HirStmt::Throw(_) => true,
+            HirStmt::Block(body) => self.definitely_returns(body),
+            HirStmt::If(_, then, Some(otherwise)) => self.definitely_returns(then) && self.stmt_returns(otherwise),
+            // A `finally` that returns always runs. Otherwise the try returns when its body does
+            // and any catch does too.
+            HirStmt::Try(body, catch, finally) => {
+                if finally.as_ref().is_some_and(|f| self.definitely_returns(f)) {
+                    return true;
+                }
+                self.definitely_returns(body) && catch.as_ref().map_or(true, |c| self.definitely_returns(&c.body))
+            },
+            _ => false,
         }
     }
 

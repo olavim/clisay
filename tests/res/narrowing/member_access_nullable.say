@@ -1,3 +1,3 @@
 // Member access on an un-narrowed nullable is rejected.
 say h?;
-h.x; // error: 'h' may be null; narrow it before use
+h.x; // error: unchecked value owes 'opt'

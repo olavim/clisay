@@ -1,0 +1,1 @@
+fn f(x: void) { } // error: A parameter cannot be void

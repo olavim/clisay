@@ -1,0 +1,10 @@
+// A container parameter is contravariant in its element set: a satisfier may accept more.
+trait Sink {
+    req fn accept(x: [opt]);
+}
+type Db with Sink {
+    pub fn accept(x: [opt fails]) { }
+    init() {}
+}
+say d = Db();
+print("ok"); // expect: ok

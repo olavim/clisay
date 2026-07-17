@@ -1,0 +1,17 @@
+// A guard that is the literal `true` is constant-folded, so its arm rules out its witness like a
+// guard-free one. The null arm subtracts opt, so the final binder is clean.
+fn get(flag)? {
+    if (flag == 1) { return null; }
+    if (flag == 2) { return Err("boom"); }
+    return 10;
+}
+fn run(flag) {
+    match get(flag) {
+        null if true => print("null"),
+        is Err { value: e } => print(e),
+        v => print(v + 5),
+    }
+}
+run(1); // expect: null
+run(2); // expect: boom
+run(3); // expect: 15

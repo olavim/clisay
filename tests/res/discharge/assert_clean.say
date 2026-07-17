@@ -1,0 +1,5 @@
+// A `!` on a clean value passes through.
+fn ok()! {
+    return 5;
+}
+print(ok()!); // expect: 5

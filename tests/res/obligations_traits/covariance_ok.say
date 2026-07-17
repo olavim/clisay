@@ -1,0 +1,10 @@
+// A `req fn` owing `fails` is satisfied by a clean read, since a clean return owes less.
+trait Source {
+    req fn read(): fails;
+}
+type File with Source {
+    pub fn read()! { return 1; }
+    init() {}
+}
+say f = File();
+print(f.read()); // expect: 1

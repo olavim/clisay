@@ -1,0 +1,10 @@
+// A whole-value binder owes whatever no earlier arm has ruled out.
+fn get(flag)? {
+    if (flag == 1) { return null; }
+    if (flag == 2) { return Err("boom"); }
+    return 10;
+}
+match get(3) {
+    v => print(v + 5), // error: unchecked value owes 'fails', 'opt'
+    null => print("null"),
+}

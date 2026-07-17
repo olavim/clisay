@@ -1,0 +1,3 @@
+obligation taint;
+say a: [taint] = [];
+print(a[0] + 1); // error: unchecked value owes 'taint'

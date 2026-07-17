@@ -1,0 +1,17 @@
+// A foreign user witness reaching a clean or `opt` slot through the dynamic boundary is thrown,
+// not laundered as clean/`opt`.
+type Token { pub v; init(x) { this.v = x; } }
+obligation parsed: discharge to use Token;
+say bag = [Token(1)];
+try {
+    say y = bag[0];
+    print("unreachable");
+} catch (e) {
+    print("clean caught"); // expect: clean caught
+}
+try {
+    say z: opt = bag[0];
+    print("unreachable");
+} catch (e) {
+    print("opt caught"); // expect: opt caught
+}

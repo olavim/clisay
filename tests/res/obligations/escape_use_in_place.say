@@ -1,0 +1,6 @@
+// A `discharge to escape` value may be used in place, just not persisted.
+obligation borrowed: discharge to escape;
+fn show(x: borrowed) {
+    print(x + 1); // expect: 2
+}
+show(1);

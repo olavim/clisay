@@ -1,0 +1,9 @@
+// The reverse also fails: a container return does not satisfy a hole expecting a bare value.
+trait Source {
+    req fn read(): fails;
+}
+type File with Source {
+    pub fn read(): [fails] { return [Err("x")]; } // error: Method 'read' satisfies 'req fn read' but its return is a container, which the requirement does not declare
+    init() {}
+}
+print("unreachable");

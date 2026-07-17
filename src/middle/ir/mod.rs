@@ -27,6 +27,9 @@ pub enum Inst {
     JumpIfTrueOrPop(Label),
     JumpIfNotNullOrPop(Label),
     JumpIfNull(Label),
+    JumpIfClean(Label),
+    JumpIfBad(Label),
+    JumpIfIs(Label, u8),
     JumpIfGe(Label),
     JumpIfGt(Label),
     JumpIfLe(Label),
@@ -42,9 +45,11 @@ pub enum Inst {
     Throw,
     PushTry(Label),
     PopTry,
-    /// The null-barrier: throw if the top of the stack is null, else leave it. Guards an
-    /// `unknown` value crossing into a non-null slot, and backs the `!` operator.
+    /// Aborts if the top of the stack is null, else leaves it.
     AssertNonNull,
+    /// Guards an unknown value at a destination: throws any registered witness the destination
+    /// does not allow.
+    BarrierGuard(u16),
 
     // Stack / constants
     Pop,
@@ -116,6 +121,13 @@ pub enum Inst {
     ArrayMiddle(u8, u8),
 }
 
+/// A boundary barrier's data: whether the destination permits null, and the constant-pool indices
+/// of the witness names it allows.
+pub struct BarrierAllow {
+    pub null_allowed: bool,
+    pub names: Vec<u8>,
+}
+
 pub struct Ir {
     code: Vec<Inst>,
     positions: Vec<SourcePosition>,
@@ -126,6 +138,8 @@ pub struct Ir {
     fn_entries: Vec<(*mut ObjFn, Label)>,
     /// Brace-construction field-id lists.
     construct_fields: Vec<Vec<u8>>,
+    barrier_allows: Vec<BarrierAllow>,
+    witness_names: Vec<Value>,
 }
 
 impl Ir {
@@ -138,6 +152,8 @@ impl Ir {
             labels: Vec::new(),
             fn_entries: Vec::new(),
             construct_fields: Vec::new(),
+            barrier_allows: Vec::new(),
+            witness_names: Vec::new(),
         }
     }
 
@@ -151,6 +167,27 @@ impl Ir {
 
     pub fn construct_fields(&self, idx: u16) -> &[u8] {
         &self.construct_fields[idx as usize]
+    }
+
+    pub fn add_barrier_allow(&mut self, allow: BarrierAllow) -> Result<u16, anyhow::Error> {
+        if self.barrier_allows.len() >= u16::MAX as usize {
+            bail!("Too many boundary barriers");
+        }
+        self.barrier_allows.push(allow);
+        Ok((self.barrier_allows.len() - 1) as u16)
+    }
+
+    pub fn barrier_allow(&self, idx: u16) -> &BarrierAllow {
+        &self.barrier_allows[idx as usize]
+    }
+
+    /// Records the program's object witness names for the VM's boundary-barrier registry.
+    pub fn set_witness_names(&mut self, names: Vec<Value>) {
+        self.witness_names = names;
+    }
+
+    pub fn witness_names(&self) -> &[Value] {
+        &self.witness_names
     }
 
     pub fn emit(&mut self, inst: Inst, pos: &SourcePosition) {
@@ -236,6 +273,16 @@ impl Ir {
             .map(|target| target.map(|idx| old_to_new[idx]))
             .collect();
 
-        Ir { code, positions, constants: self.constants, constant_indices: self.constant_indices, labels, fn_entries: self.fn_entries, construct_fields: self.construct_fields }
+        Ir {
+            code,
+            positions,
+            constants: self.constants,
+            constant_indices: self.constant_indices,
+            labels,
+            fn_entries: self.fn_entries,
+            construct_fields: self.construct_fields,
+            barrier_allows: self.barrier_allows,
+            witness_names: self.witness_names
+        }
     }
 }

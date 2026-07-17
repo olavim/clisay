@@ -1,0 +1,9 @@
+// `??` discharges the whole obligation set: both null and Err fall to the fallback.
+fn get(flag)? {
+    if (flag) { return Err("boom"); }
+    return null;
+}
+say a = get(true) ?? "fallback";
+print(a); // expect: fallback
+say b = get(false) ?? "fallback";
+print(b); // expect: fallback

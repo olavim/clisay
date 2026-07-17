@@ -172,3 +172,18 @@ fn lexer(resource: &str) -> Result<(), Failed> {
 fn nullability(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
+
+#[test_resources("tests/res/obligations")]
+fn obligations(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/discharge")]
+fn discharge(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/obligations_traits")]
+fn obligations_traits(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}

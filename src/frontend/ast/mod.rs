@@ -72,14 +72,17 @@ pub enum Expr {
     /// constructed callee (`C` or `C(args)`); the list is the brace field initializers.
     Construct(AstId<Expr>, Vec<(Symbol, AstId<Expr>)>),
     This,
-    /// Safe navigation `a?.b` / `a?[i]`: short-circuits to null when the target is null.
-    /// `SafeAccess(target, index, is_dot)`.
+    /// The `?` access-guard on a member or index: `a?.b` / `a?[i]`.
     SafeAccess(AstId<Expr>, AstId<Expr>, bool),
+    /// The `?` access-guard on a call: `cb?(args)`.
+    SafeCall(AstId<Expr>, Vec<AstId<Expr>>),
+    /// The propagate operator `a?!`: exits the enclosing function carrying the bad value.
+    Propagate(AstId<Expr>),
+    /// The handler form `e ?? p => h`: binds the bad value to `p` and yields `h`.
+    Handle(AstId<Expr>, Symbol, AstId<Expr>),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
-    /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean. The
-    /// matcher is the bindingless subset of the matcher grammar. A bare nominal `is T` uses `Is`
-    /// instead; everything richer (shapes, `&`/`|`) lands here.
+    /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean.
     Has(AstId<Expr>, AstId<Matcher>),
     /// The `scrutinee ~ matcher` one-liner. Yields a boolean and, on success, publishes the
     /// matcher's binders.
@@ -129,6 +132,14 @@ pub enum Matcher {
     And(Vec<AstId<Matcher>>),
 }
 
+/// A parsed `:` clause on a slot (a variable, parameter, field, or return).
+#[derive(Default)]
+pub struct SlotClause {
+    pub names: Vec<Symbol>,
+    pub container: bool,
+    pub void: bool,
+}
+
 pub struct FieldInit {
     pub name: Symbol,
     pub value: Option<AstId<Expr>>,
@@ -136,6 +147,8 @@ pub struct FieldInit {
     pub nullable: bool,
     /// Declared reassignable with a `mut` modifier (`say mut x`).
     pub mutable: bool,
+    /// The `:` slot clause
+    pub clause: SlotClause,
 }
 
 /// A function/method/lambda parameter: the bound identifier plus its declared
@@ -144,10 +157,10 @@ pub struct Param {
     pub name: AstId<Expr>,
     pub nullable: bool,
     pub mutable: bool,
+    pub clause: SlotClause,
 }
 
-/// A function/method/lambda's declared return shape, the postfix marker after the
-/// parameter list. Lambdas carry `Inferred` since their shape comes from the body.
+// TODO: fold into SlotClause
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReturnShape {
     /// `fn f()!` returns a non-null value.
@@ -165,6 +178,15 @@ pub struct FnDecl {
     pub params: Vec<Param>,
     pub body: AstId<Expr>,
     pub ret: ReturnShape,
+    pub clause: SlotClause,
+}
+
+/// A `req fn f(params): clause;` method hole.
+pub struct ReqFn {
+    pub name: Symbol,
+    pub params: Vec<Param>,
+    pub ret: ReturnShape,
+    pub clause: SlotClause,
 }
 
 /// A `catch (param) { ... }` clause of a try statement.
@@ -198,7 +220,7 @@ pub struct TypeDecl {
     /// Traits depended on via `req T1, T2, ...`.
     pub req_traits: Vec<Symbol>,
     /// Method holes declared via `req fn f(params)`.
-    pub req_fns: Vec<(Symbol, usize, ReturnShape)>,
+    pub req_fns: Vec<ReqFn>,
     /// Member holes declared via `req name`.
     pub req_members: Vec<Symbol>,
     /// Delegation fields declared via `field gives Trait`.
@@ -208,6 +230,7 @@ pub struct TypeDecl {
     pub fields: HashSet<Symbol>,
     pub nullable_fields: HashSet<Symbol>,
     pub mut_fields: HashSet<Symbol>,
+    pub field_clauses: Vec<(Symbol, SlotClause)>,
     /// Field initializers (`field = value`), spliced into the init during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,
@@ -219,6 +242,13 @@ pub struct MatchArm {
     pub matcher: AstId<Matcher>,
     pub guard: Option<AstId<Expr>>,
     pub body: AstId<Expr>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ObligationRule {
+    ToUse,
+    ToEscape,
+    BeforeDrop,
 }
 
 pub enum Stmt {
@@ -235,6 +265,7 @@ pub enum Stmt {
     Say(FieldInit),
     Fn(FnDecl),
     Type(Box<TypeDecl>),
+    Obligation { name: Symbol, witness: Option<Symbol>, rule: ObligationRule },
     /// A match statement dispatching the scrutinee over arms.
     Match(AstId<Expr>, Vec<MatchArm>)
 }
@@ -361,9 +392,12 @@ impl Ast {
         &self.nodes[id.id].pos
     }
 
-    /// The interned text of a symbol. Valid until [`Ast::take_idents`] moves the table out.
     pub fn text(&self, sym: Symbol) -> &str {
         &self.ident_texts[sym.index()]
+    }
+
+    pub fn symbol(&self, text: &str) -> Option<Symbol> {
+        self.ident_ids.get(text).copied().map(Symbol::from_raw)
     }
 
     pub fn get_root(&self) -> AstId<Stmt> {

@@ -1,0 +1,5 @@
+say arr = [Err("boom")];
+say caught = arr[0] ?? x => x is Err;
+print(caught); // expect: true
+say payload = arr[0] ?? x => x.value;
+print(payload); // expect: boom

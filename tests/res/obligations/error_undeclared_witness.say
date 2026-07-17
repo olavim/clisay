@@ -1,0 +1,1 @@
+obligation bad: discharge to use Nonexistent; // error: 'Nonexistent' is not a type or trait

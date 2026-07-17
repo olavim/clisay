@@ -148,9 +148,12 @@ impl Vm {
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure.as_closure_ptr(), stack_start, init_method.ip_start)
             },
+            // A native initializer receives the fresh instance as its target and fills its fields.
             objects::TAG_NATIVE_FUNCTION => {
-                self.call_native(arg_count, init_method_obj.as_native_function_ptr())?;
-                return Ok(());
+                let init_native_ref = init_method_obj.as_native_function_ptr();
+                let instance = self.alloc(ObjInstance::new(type_ptr));
+                self.stack.set(arg_count, Value::from(instance));
+                self.call_native(arg_count, init_native_ref)
             },
             _ => unsafe { std::hint::unreachable_unchecked() }
         }

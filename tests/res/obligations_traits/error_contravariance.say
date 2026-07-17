@@ -1,0 +1,10 @@
+// A `req fn` passing an `opt` needs a satisfier that accepts one; a clean param would get an unguarded null.
+trait Mover {
+    req fn onMove(x: opt);
+}
+type Player with Mover {
+    pub fn onMove(x) { } // error: Method 'onMove' satisfies 'req fn onMove' but parameter 1 does not accept 'opt', which the requirement passes
+    init() {}
+}
+say p = Player();
+print("unreachable");

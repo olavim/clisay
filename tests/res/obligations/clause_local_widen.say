@@ -1,0 +1,3 @@
+say a = 1;
+say e: opt = a;
+print(e); // expect: 1

@@ -1,0 +1,11 @@
+say h?;
+h.x;
+// error(full):
+// error: unchecked value owes 'opt'
+//  --> help_owes_opt.say:2:1
+//   |
+// 1 | say h?;
+// 2 | h.x;
+//   | ^ might be null
+//   |
+//   = help: make sure `h` is not null before using it

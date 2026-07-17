@@ -26,6 +26,7 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
 
     let mut chunk = BytecodeChunk::new();
     chunk.constants = ir.constants().to_vec();
+    chunk.witness_names = ir.witness_names().to_vec();
     for (i, inst) in ir.code().iter().enumerate() {
         encode(inst, &offsets, &ir, &mut chunk, &ir.positions()[i]);
     }
@@ -41,10 +42,11 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
     for operand in opcode::operands(op) {
         match operand.size() {
             Some(sz) => len += sz,
-            None => {
-                let Inst::Construct(fields_idx, _) = *inst else { unreachable!("only Construct has a List operand") };
-                len += 1 + ir.construct_fields(fields_idx).len(); // count byte + ids
-            }
+            None => match *inst {
+                Inst::Construct(fields_idx, _) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
+                Inst::BarrierGuard(idx) => len += 1 + ir.barrier_allow(idx).names.len(), // count byte + name indices
+                _ => unreachable!("only Construct and BarrierGuard have a List operand"),
+            },
         }
     }
     len
@@ -88,7 +90,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         Jump(l)
         | JumpIfFalse(l)
         | JumpIfFalseOrPop(l) | JumpIfTrueOrPop(l)
-        | JumpIfNotNullOrPop(l) | JumpIfNull(l)
+        | JumpIfNotNullOrPop(l) | JumpIfNull(l) | JumpIfClean(l) | JumpIfBad(l)
         | JumpIfGe(l) | JumpIfGt(l)
         | JumpIfLe(l) | JumpIfLt(l)
         | JumpIfEq(l) | JumpIfNeq(l)
@@ -100,6 +102,11 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | JumpIfLtLocalConst(l, local, c) => {
             write_jump(chunk, target_of(l));
             chunk.write(local, pos);
+            chunk.write(c, pos);
+        }
+
+        JumpIfIs(l, c) => {
+            write_jump(chunk, target_of(l));
             chunk.write(c, pos);
         }
 
@@ -126,6 +133,15 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
                 chunk.write(id, pos);
             }
             chunk.write(arg_count, pos);
+        }
+
+        BarrierGuard(idx) => {
+            let allow = ir.barrier_allow(idx);
+            chunk.write(allow.null_allowed as u8, pos);
+            chunk.write(allow.names.len() as u8, pos);
+            for &i in &allow.names {
+                chunk.write(i, pos);
+            }
         }
 
         SubConstLocal(c, local) | AddConstLocal(c, local) => {

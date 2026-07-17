@@ -7,4 +7,4 @@ type Node {
     }
 }
 say n = Node(5);
-n.next.x; // error: Value may be null; narrow it before use
+n.next.x; // error: unchecked value owes 'opt'

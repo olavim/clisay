@@ -1,0 +1,7 @@
+// A trait's exposed method cannot carry a `discharge to escape` obligation out; the return is the ordinary escape error.
+obligation borrowed: discharge to escape;
+trait View {
+    pub fn get(x: borrowed) { return x; } // error: 'x' owes 'borrowed'; it cannot be stored or escape its scope
+}
+type W with View { init() {} }
+print("unreachable");

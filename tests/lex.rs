@@ -7,11 +7,11 @@ fn kinds(src: &str) -> Vec<TokenType> {
 
 #[test]
 fn lexes_question_mark() {
-    // A bare `?` is the nullable marker; the `??`/`?.`/`?[` forms are their own tokens.
     assert_eq!(kinds("?"), vec![TokenType::Question]);
+    assert_eq!(kinds("?!"), vec![TokenType::QuestionBang]);
     assert_eq!(kinds("??"), vec![TokenType::QuestionQuestion]);
-    assert_eq!(kinds("?."), vec![TokenType::QuestionDot]);
-    assert_eq!(kinds("?["), vec![TokenType::QuestionBracket]);
+    assert_eq!(kinds("?."), vec![TokenType::Question, TokenType::Dot]);
+    assert_eq!(kinds("?["), vec![TokenType::Question, TokenType::LeftBracket]);
 }
 
 #[test]
@@ -65,4 +65,20 @@ fn mut_is_a_contextual_keyword() {
     let toks = lex("mut");
     assert_eq!(toks[0].kind, TokenType::Identifier);
     assert_eq!(toks[0].contextual(), Some(ContextualKeyword::Mut));
+}
+
+#[test]
+fn obligation_is_a_hard_keyword() {
+    assert_eq!(kinds("obligation"), vec![TokenType::Obligation]);
+}
+
+#[test]
+fn discharge_and_void_are_contextual_keywords() {
+    let discharge = lex("discharge");
+    assert_eq!(discharge[0].kind, TokenType::Identifier);
+    assert_eq!(discharge[0].contextual(), Some(ContextualKeyword::Discharge));
+
+    let void = lex("void");
+    assert_eq!(void[0].kind, TokenType::Identifier);
+    assert_eq!(void[0].contextual(), Some(ContextualKeyword::Void));
 }

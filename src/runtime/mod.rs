@@ -46,13 +46,15 @@ struct CallCache {
 
 struct NativeTypes {
     array: *mut ObjType,
-    dict: *mut ObjType
+    dict: *mut ObjType,
+    err: *mut ObjType
 }
 
 impl GcTraceable for NativeTypes {
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.array);
         gc.mark_object(self.dict);
+        gc.mark_object(self.err);
     }
     
     fn fmt(&self) -> String {
@@ -88,6 +90,9 @@ pub struct Vm {
     try_frames: Vec<TryFrame>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
+    /// Every registered object witness name. A boundary barrier throws a crossing value when it
+    /// provides one of these names and that name is not among the destination's allowed witnesses.
+    witnesses: fnv::FnvHashSet<*mut ObjString>,
     index_cache: Box<[IndexCache]>,
     call_cache: Box<[CallCache]>,
     out: Vec<String>
@@ -112,6 +117,24 @@ fn disassemble(chunk: &BytecodeChunk) {
 
 fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjType {
     let ty = native_type.build_type(gc);
+    gc.alloc(ty)
+}
+
+fn build_err_type(gc: &mut Gc) -> *mut ObjType {
+    let mut ty = ObjType::new(gc.intern("Err"));
+    ty.members.insert(gc.intern("value"), TypeMember::Field(0));
+    ty.fields.insert(0);
+    let init = ObjNativeFn::new(gc.intern("Err"), 1, |vm, target, args| {
+        let instance = target.as_object().as_instance_ptr();
+        unsafe { (*instance).set(0, args[0]) };
+        vm.push(target);
+        Ok(())
+    });
+    ty.methods.insert(1, gc.alloc(init).into());
+    ty.init_id = Some(1);
+    ty.member_count = 2;
+    ty.provided.insert(gc.intern("Err"));
+    ty.build_template();
     gc.alloc(ty)
 }
 
@@ -147,8 +170,13 @@ impl Vm {
 
         let native_types = NativeTypes {
             array: build_native_type(&mut gc, NativeArray),
-            dict: build_native_type(&mut gc, NativeDict)
+            dict: build_native_type(&mut gc, NativeDict),
+            err: build_err_type(&mut gc)
         };
+
+        let witnesses = chunk.witness_names.iter()
+            .map(|name| name.as_object().as_string_ptr())
+            .collect();
 
         let mut vm = Vm {
             gc,
@@ -160,6 +188,7 @@ impl Vm {
             try_frames: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
+            witnesses,
             index_cache: vec![IndexCache { site: 0, ty: std::ptr::null_mut(), member: TypeMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
             call_cache: vec![CallCache { site: usize::MAX, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0 }; CALL_CACHE_SIZE].into_boxed_slice(),
             out: Vec::new()
@@ -212,6 +241,9 @@ impl Vm {
             vm.push(Value::NULL);
             Ok(())
         });
+
+        let err_name = vm.gc.intern("Err");
+        vm.globals.insert(err_name, Value::from(vm.native_types.err));
 
         // The registered built-ins must match the list `middle::bind` checks references against,
         // or a valid call to a native would be rejected as an undefined variable (or vice versa).
