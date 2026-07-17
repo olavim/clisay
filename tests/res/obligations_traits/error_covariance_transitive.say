@@ -1,0 +1,10 @@
+// A `req fn` reached through a transitive `with` chain is still checked for variance.
+trait Base {
+    req fn read(): opt;
+}
+trait Mid with Base { }
+type File with Mid {
+    pub fn read(): opt fails { return Err("x"); } // error: Method 'read' satisfies 'req fn read' but its return owes 'fails', which the requirement does not permit
+    init() {}
+}
+print("unreachable");

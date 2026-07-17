@@ -226,6 +226,15 @@ impl HirFnDecl {
     }
 }
 
+/// A `req fn` hole's obligation signature: the contract a composer's satisfying method must meet.
+pub struct HirReqFn {
+    pub name: Symbol,
+    /// What each parameter passes in. A satisfier must accept at least these obligations.
+    pub param_clauses: Vec<HirSlotClause>,
+    /// What the return may carry. A satisfier may promise fewer obligations.
+    pub ret: HirSlotClause,
+}
+
 /// A `catch (param) { … }` clause of a try statement.
 pub struct HirCatchClause {
     pub param: Option<HirId<HirExpr>>,
@@ -242,6 +251,8 @@ pub struct HirTypeDecl {
     /// Fields declared reassignable with a `mut` modifier (`mut count;`).
     pub mut_fields: HashSet<Symbol>,
     pub methods: Vec<HirId<HirStmt>>,
+    /// The `req fn` holes this composer must satisfy: its own and those of its `with` traits.
+    pub req_fns: Vec<HirReqFn>,
     /// The declaring trait of each method in `methods` (parallel), or `None` for a member
     /// the host type declares itself.
     pub method_traits: Vec<Option<Symbol>>,

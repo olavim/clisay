@@ -4,9 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{AstId, Expr, Literal, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
+use crate::ast::{AstId, Expr, Literal, ReqFn, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, HirTypeDecl};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirStmt, HirTypeDecl};
 
 use super::Lowerer;
 
@@ -84,6 +84,12 @@ impl<'a> Lowerer<'a> {
 
         let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
 
+        // The `req fn` holes this type must satisfy: its own and those of every `with` trait.
+        let mut req_fns: Vec<HirReqFn> = decl.req_fns.iter().map(|rf| self.lower_req_fn(rf)).collect();
+        for (_, td) in &traits {
+            req_fns.extend(td.req_fns.iter().map(|rf| self.lower_req_fn(rf)));
+        }
+
         // Restore the previous composer context so sibling types in the same scope
         // don't see this type's traits or aliases.
         self.provided_traits = prev_provided;
@@ -103,6 +109,7 @@ impl<'a> Lowerer<'a> {
             nullable_fields: decl.nullable_fields.clone(),
             mut_fields: decl.mut_fields.clone(),
             methods: composed.methods,
+            req_fns,
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
             inner_members: decl.inner_members.clone(),
@@ -128,6 +135,7 @@ impl<'a> Lowerer<'a> {
             nullable_fields: decl.nullable_fields.clone(),
             mut_fields: decl.mut_fields.clone(),
             methods: composed.methods,
+            req_fns: Vec::new(), // satisfaction is checked at composing types, not the trait itself
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
             inner_members: decl.inner_members.clone(),
@@ -142,7 +150,7 @@ impl<'a> Lowerer<'a> {
         let mut surface: HashSet<Symbol> = HashSet::new();
         for field in &decl.fields { surface.insert(*field); }
         for method in &decl.methods { surface.insert(self.ast_fn(method).name); }
-        for (name, _, _) in &decl.req_fns { surface.insert(*name); }
+        for rf in &decl.req_fns { surface.insert(rf.name); }
         for name in &decl.req_members { surface.insert(*name); }
 
         // Exposed members provided through `with` (transitively).
@@ -291,6 +299,17 @@ impl<'a> Lowerer<'a> {
         self.hir.add(HirStmt::Fn(HirFnDecl { name: method, params, body, ret, clause: HirSlotClause::default() }), pos.clone())
     }
 
+    /// Lowers a `req fn` hole to its per-slot clauses, folding each `?` marker into the clause the
+    /// same way a declared parameter or return does. The `[obl]` container flag rides along so the
+    /// variance check can keep container and bare shapes distinct.
+    fn lower_req_fn(&self, rf: &ReqFn) -> HirReqFn {
+        let param_clauses = rf.params.iter()
+            .map(|p| self.slot_clause(p.nullable, &p.clause))
+            .collect();
+        let ret = self.slot_clause(rf.ret == ReturnShape::Nullable, &rf.clause);
+        HirReqFn { name: rf.name, param_clauses, ret }
+    }
+
     /// At an instantiable type, every `req T`, `req fn`, and `req <member>` of the flattened trait
     /// set (and the type's own) must be satisfied.
     fn check_requirements(&self, decl: &TypeDecl, traits: &[(Symbol, &'a TypeDecl)], gives: &[Symbol], pos: &SourcePosition) -> Result<(), anyhow::Error> {
@@ -329,12 +348,13 @@ impl<'a> Lowerer<'a> {
         }
 
         // `req fn`: every hole must be filled by an exposed method of matching name and arity.
-        let req_fns = decl.req_fns.iter().copied()
-            .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_fns.iter().copied()));
-        for (func_sym, arity, _) in req_fns {
-            if !exposed.contains(&(func_sym, arity)) {
+        let req_fns = decl.req_fns.iter()
+            .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_fns.iter()));
+        for rf in req_fns {
+            let arity = rf.params.len();
+            if !exposed.contains(&(rf.name, arity)) {
                 return Err(self.error_at(format!("Unsatisfied `req fn {}` (arity {arity}): needs an `inner`/`pub` method '{}' taking {arity} argument(s)",
-                    self.hir.text(func_sym), self.hir.text(func_sym)), pos));
+                    self.hir.text(rf.name), self.hir.text(rf.name)), pos));
             }
         }
 

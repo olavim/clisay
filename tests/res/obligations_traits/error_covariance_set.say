@@ -1,0 +1,9 @@
+// A satisfier owing an obligation outside the hole's set is rejected, and the diagnostic names it.
+trait Source {
+    req fn read(): opt;
+}
+type File with Source {
+    pub fn read(): opt fails { return Err("x"); } // error: Method 'read' satisfies 'req fn read' but its return owes 'fails', which the requirement does not permit
+    init() {}
+}
+print("unreachable");

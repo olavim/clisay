@@ -46,17 +46,17 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
     }
 
-    /// Parses a `req fn f(params)<marker>;` method hole, returning its name, arity, and
-    /// declared return shape.
-    pub(super) fn parse_req_fn(&mut self) -> Result<(Symbol, usize, ReturnShape), anyhow::Error> {
+    /// Parses a `req fn f(params)<marker>: clause;` method hole.
+    pub(super) fn parse_req_fn(&mut self) -> Result<ReqFn, anyhow::Error> {
         self.tokens.expect(TokenType::Fn)?;
         let name = self.parse_identifier()?;
         let name = self.ast.intern(&name);
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
         let ret = self.parse_return_shape();
+        let clause = self.parse_slot_clause(SlotKind::Return)?;
         self.tokens.expect(TokenType::Semicolon)?;
-        Ok((name, params.len(), ret))
+        Ok(ReqFn { name, params, ret, clause })
     }
 
     pub(super) fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -80,7 +80,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
         let mut pub_members: HashSet<Symbol> = HashSet::default();
         let mut inner_members: HashSet<Symbol> = HashSet::default();
-        let mut req_fns: Vec<(Symbol, usize, ReturnShape)> = Vec::new();
+        let mut req_fns: Vec<ReqFn> = Vec::new();
         let mut req_members: Vec<Symbol> = Vec::new();
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;

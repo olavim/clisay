@@ -1,0 +1,9 @@
+// A container return and a bare return are not interchangeable; a bare value fails a container hole.
+trait Source {
+    req fn read(): [fails];
+}
+type File with Source {
+    pub fn read(): fails { return Err("x"); } // error: Method 'read' satisfies 'req fn read' but its return is not a container, which the requirement declares
+    init() {}
+}
+print("unreachable");

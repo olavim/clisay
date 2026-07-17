@@ -74,7 +74,7 @@ fn req_fn_return_shape() {
     let ast = parse("trait T { req fn find()?; req fn count()!; req fn onClick(); }");
     let stmts = top_stmts(&ast);
     let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a trait") };
-    let shapes: Vec<ReturnShape> = decl.req_fns.iter().map(|(_, _, ret)| *ret).collect();
+    let shapes: Vec<ReturnShape> = decl.req_fns.iter().map(|rf| rf.ret).collect();
     assert_eq!(shapes, vec![ReturnShape::Nullable, ReturnShape::NonNull, ReturnShape::Void]);
 }
 

@@ -1,0 +1,10 @@
+// A satisfier's inferred return obligation is caught, not just a declared one.
+fn risky(): fails { return Err("x"); }
+trait Loader {
+    req fn load();
+}
+type App with Loader {
+    pub fn load() { return risky()?!; } // error: Method 'load' satisfies 'req fn load' but its return owes 'fails', which the requirement does not permit
+    init() {}
+}
+print("unreachable");

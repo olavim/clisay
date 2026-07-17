@@ -1,0 +1,9 @@
+// Contravariance is checked per parameter; the diagnostic names the offending position.
+trait Sink {
+    req fn accept(a, b: opt);
+}
+type Db with Sink {
+    pub fn accept(a, b) { } // error: Method 'accept' satisfies 'req fn accept' but parameter 2 does not accept 'opt', which the requirement passes
+    init() {}
+}
+print("unreachable");
