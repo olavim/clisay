@@ -1,0 +1,9 @@
+trait Sink {
+    req fn accept(x?);
+}
+type Db with Sink {
+    pub fn accept(x: opt) { }
+    init() {}
+}
+say d = Db();
+print("ok"); // expect: ok

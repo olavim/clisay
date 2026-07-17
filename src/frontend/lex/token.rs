@@ -59,6 +59,8 @@ pub enum ContextualKeyword {
     Pub,
     Inner,
     Mut,
+    Discharge,
+    Void,
 }
 
 impl ContextualKeyword {
@@ -70,6 +72,8 @@ impl ContextualKeyword {
             "pub" => ContextualKeyword::Pub,
             "inner" => ContextualKeyword::Inner,
             "mut" => ContextualKeyword::Mut,
+            "discharge" => ContextualKeyword::Discharge,
+            "void" => ContextualKeyword::Void,
             _ => return None,
         })
     }
@@ -84,6 +88,8 @@ impl fmt::Display for ContextualKeyword {
             ContextualKeyword::Pub => "pub",
             ContextualKeyword::Inner => "inner",
             ContextualKeyword::Mut => "mut",
+            ContextualKeyword::Discharge => "discharge",
+            ContextualKeyword::Void => "void",
         })
     }
 }
@@ -139,6 +145,7 @@ impl fmt::Display for Token {
 tokens! {
     Type => "type",
     Trait => "trait",
+    Obligation => "obligation",
     This => "this",
     Is => "is",
     Has => "has",
@@ -208,6 +215,5 @@ tokens! {
     AmpAmpEqual => "&&=",
     PipePipeEqual => "||=",
     QuestionQuestion => "??",
-    QuestionDot => "?.",
-    QuestionBracket => "?["
+    QuestionBang => "?!"
 }

@@ -1,0 +1,13 @@
+// `!` on an unknown value asserts against every witness, so one that is a user witness is thrown
+// rather than passing through as clean.
+type Token { pub v; init(x) { this.v = x; } }
+obligation parsed: discharge to use Token;
+say bag = [Token(1)];
+try {
+    say y = bag[0]!;
+    print("unreachable");
+} catch (e) {
+    print("caught"); // expect: caught
+}
+say ok = [7];
+print(ok[0]!); // expect: 7

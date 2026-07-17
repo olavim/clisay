@@ -1,0 +1,2 @@
+fn logOpt(m): void opt { print(m); }
+say x = logOpt("a"); // error: Cannot assign a void result to 'x'; the call returns no value

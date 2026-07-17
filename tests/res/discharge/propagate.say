@@ -1,0 +1,15 @@
+// `?!` propagates the bad value, so `loadA` is inferred `: fails`.
+fn readConfig(flag)! {
+    if (flag) { return Err("boom"); }
+    return "ok";
+}
+fn loadA(flag)! {
+    return readConfig(flag)?!;
+}
+print(loadA(false)); // expect: ok
+try {
+    loadA(true)!;
+    print("unreachable");
+} catch (e) {
+    print("caught"); // expect: caught
+}

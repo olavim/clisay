@@ -1,0 +1,9 @@
+fn load()! { return Err("boom"); }
+say bad = load() ?? e => e();
+// error(full):
+// error: `e` is not callable
+//  --> help_confirmed_call.say:2:26
+//   |
+// 1 | fn load()! { return Err("boom"); }
+// 2 | say bad = load() ?? e => e();
+//   |                          ^ Err

@@ -1,8 +1,8 @@
-//! Initializer assembly.
+//! Initializer lowering.
 
 use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp};
 
 use super::Lowerer;
 
@@ -67,7 +67,7 @@ impl<'a> Lowerer<'a> {
 
     fn make_init_fn(&mut self, name: Symbol, params: Vec<HirParam>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
         let body = self.hir.add(HirExpr::Block(body), pos.clone());
-        let fn_decl = HirFnDecl { name, params, body, ret: ReturnShape::NonNull };
+        let fn_decl = HirFnDecl { name, params, body, ret: ReturnShape::NonNull, clause: HirSlotClause::default() };
         self.hir.add(HirStmt::Fn(fn_decl), pos.clone())
     }
 }

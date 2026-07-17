@@ -1,0 +1,13 @@
+// A `?` chain over a fails operand carries fails and short-circuits on Err, not just null.
+type Box { pub field; }
+fn readConfig(flag)! {
+    if (flag) { return Err("boom"); }
+    return Box { field: "ok" };
+}
+print(readConfig(false)?.field); // expect: ok
+try {
+    readConfig(true)?.field!;
+    print("unreachable");
+} catch (e) {
+    print("caught"); // expect: caught
+}

@@ -1,0 +1,4 @@
+// An `[obl]` slot holds a container whose elements owe the obligation.
+obligation taint;
+say a: [taint] = [];
+print(a.length()); // expect: 0

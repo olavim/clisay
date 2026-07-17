@@ -1,0 +1,4 @@
+// The `?` access-guard also chains an index access.
+say arr? = null;
+say r? = arr?[0];
+print(r); // expect: null

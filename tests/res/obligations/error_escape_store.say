@@ -1,0 +1,13 @@
+obligation borrowed: discharge to escape;
+type Box {
+    pub mut item;
+    init() { this.item = 0; }
+    fn stash(x: borrowed) { this.item = x; }
+}
+// error(full):
+// error: 'x' owes 'borrowed'; it cannot be stored or escape its scope
+//  --> error_escape_store.say:5:41
+//   |
+// 4 |     init() { this.item = 0; }
+// 5 |     fn stash(x: borrowed) { this.item = x; }
+//   |                                         ^

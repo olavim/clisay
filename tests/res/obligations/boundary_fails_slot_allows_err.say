@@ -1,0 +1,4 @@
+// A legitimate Err crossing the dynamic boundary into a `fails` slot lands there. `??` discharges it.
+say errs = [Err("boom")];
+say r: fails = errs[0];
+print(r ?? "recovered"); // expect: recovered

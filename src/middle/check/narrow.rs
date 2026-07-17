@@ -8,14 +8,15 @@ impl<'a> Checker<'a> {
     /// A reassignment drops the binding's narrowing facts. The slot is non-null again only if
     /// the new value is.
     pub(super) fn reset_narrowing(&mut self, i: usize, now_non_null: bool) {
-        self.narrowed.retain(|key| !matches!(key, NarrowKey::Local(j) | NarrowKey::LocalField(j, _) if *j == i));
+        self.narrowed.retain(|key, _| !matches!(key, NarrowKey::Local(j) | NarrowKey::LocalField(j, _) if *j == i));
         if now_non_null {
-            self.narrowed.insert(NarrowKey::Local(i));
+            self.narrowed.entry(NarrowKey::Local(i)).or_default().insert(self.sigs.opt);
         }
     }
 
-    pub(super) fn is_narrowed(&self, key: &NarrowKey) -> bool {
-        self.narrowed.contains(key)
+    /// Whether `obligation` is discharged for a place on the current path.
+    pub(super) fn discharged(&self, key: &NarrowKey, obligation: Symbol) -> bool {
+        self.narrowed.get(key).is_some_and(|set| set.contains(&obligation))
     }
 
     /// The narrow key for `target.field` when the place can be narrowed: a `this` field, or a
@@ -45,6 +46,8 @@ impl<'a> Checker<'a> {
             // A bare truthiness test narrows in the truthy branch.
             HirExpr::Identifier(_) | HirExpr::Index(_, _, _) if positive => self.narrow_place(cond),
             HirExpr::Is(target, type_name) if positive => self.narrow_is(target, *type_name),
+            // The false branch of `x is W` rules out `W`'s obligation. This is the direction flip a witness needs.
+            HirExpr::Is(target, type_name) if !positive => self.narrow_is_negative(target, *type_name),
             // A match against a structural/type/array shape proves the scrutinee non-null.
             HirExpr::Match(scrutinee, matcher) if positive && matcher_implies_non_null(matcher) => self.narrow_place(scrutinee),
             // `x != null` narrows when true; `x == null` narrows when false.
@@ -74,12 +77,12 @@ impl<'a> Checker<'a> {
     fn narrow_place(&self, expr: &HirId<HirExpr>) -> Vec<NarrowFact> {
         match self.hir.get(expr) {
             HirExpr::Identifier(name) => match self.frame_index_of(*name) {
-                Some(i) if self.locals[i].func.is_none() => vec![NarrowFact::NonNull(NarrowKey::Local(i))],
+                Some(i) if self.locals[i].func.is_none() => vec![NarrowFact::Discharge(NarrowKey::Local(i), self.sigs.opt)],
                 _ => Vec::new(),
             },
             HirExpr::Index(target, member, _) => {
                 let key = self.string_member(member).and_then(|field| self.narrowable_field_key(target, field));
-                key.map(|k| vec![NarrowFact::NonNull(k)]).unwrap_or_default()
+                key.map(|k| vec![NarrowFact::Discharge(k, self.sigs.opt)]).unwrap_or_default()
             },
             _ => Vec::new(),
         }
@@ -89,18 +92,33 @@ impl<'a> Checker<'a> {
         self.layout_of(type_name).is_some_and(|layout| layout.is_mutable(field))
     }
 
-    /// An `is`-test narrows a local to non-null, and to the tested concrete type when known.
+    /// The positive branch of `x is W` narrows a local to non-null and to the tested concrete
+    /// type. When `W` witnesses an obligation the value keeps owing it. The tag just records that
+    /// it is confirmed to be `W`.
     fn narrow_is(&self, target: &HirId<HirExpr>, type_name: Symbol) -> Vec<NarrowFact> {
         let HirExpr::Identifier(name) = self.hir.get(target) else { return Vec::new() };
         let Some(i) = self.frame_index_of(*name) else { return Vec::new() };
         if self.locals[i].func.is_some() {
             return Vec::new();
         }
-        let mut facts = vec![NarrowFact::NonNull(NarrowKey::Local(i))];
-        if self.sigs.is_type(type_name) {
+        let mut facts = vec![NarrowFact::Discharge(NarrowKey::Local(i), self.sigs.opt)];
+        if self.sigs.is_type(type_name) || self.sigs.is_witness_type(type_name) {
             facts.push(NarrowFact::Tag(i, TypeTag::Concrete(type_name)));
         }
         facts
+    }
+
+    /// The false branch of `x is W` discharges the obligation `W` witnesses, if `W` names one.
+    fn narrow_is_negative(&self, target: &HirId<HirExpr>, type_name: Symbol) -> Vec<NarrowFact> {
+        let HirExpr::Identifier(name) = self.hir.get(target) else { return Vec::new() };
+        let Some(i) = self.frame_index_of(*name) else { return Vec::new() };
+        if self.locals[i].func.is_some() {
+            return Vec::new();
+        }
+        match self.sigs.obligation_for_witness(type_name) {
+            Some(obligation) => vec![NarrowFact::Discharge(NarrowKey::Local(i), obligation)],
+            None => Vec::new(),
+        }
     }
 
     fn is_null(&self, expr: &HirId<HirExpr>) -> bool {
@@ -110,7 +128,7 @@ impl<'a> Checker<'a> {
     pub(super) fn apply_narrowings(&mut self, narrowings: &[NarrowFact]) {
         for fact in narrowings {
             match fact {
-                NarrowFact::NonNull(key) => { self.narrowed.insert(key.clone()); },
+                NarrowFact::Discharge(key, obligation) => { self.narrowed.entry(key.clone()).or_default().insert(*obligation); },
                 NarrowFact::Tag(i, tag) => self.locals[*i].tag = tag.clone(),
             }
         }

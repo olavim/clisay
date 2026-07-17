@@ -46,17 +46,17 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
     }
 
-    /// Parses a `req fn f(params)<marker>;` method hole, returning its name, arity, and
-    /// declared return shape.
-    pub(super) fn parse_req_fn(&mut self) -> Result<(Symbol, usize, ReturnShape), anyhow::Error> {
+    /// Parses a `req fn f(params)<marker>: clause;` method hole.
+    pub(super) fn parse_req_fn(&mut self) -> Result<ReqFn, anyhow::Error> {
         self.tokens.expect(TokenType::Fn)?;
         let name = self.parse_identifier()?;
         let name = self.ast.intern(&name);
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
         let ret = self.parse_return_shape();
+        let clause = self.parse_slot_clause(SlotKind::Return)?;
         self.tokens.expect(TokenType::Semicolon)?;
-        Ok((name, params.len(), ret))
+        Ok(ReqFn { name, params, ret, clause })
     }
 
     pub(super) fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -75,11 +75,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut fields: HashSet<Symbol> = HashSet::default();
         let mut nullable_fields: HashSet<Symbol> = HashSet::default();
         let mut mut_fields: HashSet<Symbol> = HashSet::default();
+        let mut field_clauses: Vec<(Symbol, SlotClause)> = Vec::new();
         let mut field_inits: Vec<(Symbol, AstId<Expr>)> = Vec::new();
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
         let mut pub_members: HashSet<Symbol> = HashSet::default();
         let mut inner_members: HashSet<Symbol> = HashSet::default();
-        let mut req_fns: Vec<(Symbol, usize, ReturnShape)> = Vec::new();
+        let mut req_fns: Vec<ReqFn> = Vec::new();
         let mut req_members: Vec<Symbol> = Vec::new();
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
@@ -136,6 +137,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             if is_trait { return Err(self.error_help("A trait cannot declare fields", &member_pos, "`req` the state it needs and let the host type hold it")); }
                             let field = self.ast.intern(&name);
                             let nullable = self.parse_nullable();
+                            let clause = self.parse_slot_clause(SlotKind::Field)?;
                             let give = if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Gives) {
                                 self.tokens.next();
                                 let give_pos = self.tokens.peek(0).pos.clone();
@@ -153,8 +155,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
                             self.tokens.expect(TokenType::Semicolon)?;
                             fields.insert(field);
+
                             if nullable { nullable_fields.insert(field); }
                             if mutable { mut_fields.insert(field); }
+
+                            if !clause.names.is_empty() || clause.void {
+                                field_clauses.push((field, clause));
+                            }
+
                             match visibility {
                                 Visibility::Pub => { pub_members.insert(field); },
                                 Visibility::Inner => { inner_members.insert(field); },
@@ -164,6 +172,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             if let Some(trait_sym) = give {
                                 gives.push((field, trait_sym));
                             }
+
                             if let Some(value) = value {
                                 field_inits.push((field, value));
                             }
@@ -193,6 +202,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             fields,
             nullable_fields,
             mut_fields,
+            field_clauses,
             field_inits,
             methods: method_stmts,
             pub_members,

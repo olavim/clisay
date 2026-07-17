@@ -15,12 +15,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
         let ret = self.parse_return_shape();
+        let clause = self.parse_slot_clause(SlotKind::Return)?;
         let body = self.parse_block()?;
         Ok(FnDecl {
             name,
             params,
             body,
             ret,
+            clause,
         })
     }
 
@@ -41,7 +43,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let body = self.node_expr(Expr::Block(stmts), pos.clone());
         // An `init` takes no return marker. It produces no value.
-        let fn_decl = FnDecl { name, params, body, ret: ReturnShape::Void };
+        let fn_decl = FnDecl { name, params, body, ret: ReturnShape::Void, clause: SlotClause::default() };
         Ok(self.node_stmt(Stmt::Fn(fn_decl), pos))
     }
 
@@ -58,7 +60,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     let mutable = self.parse_mut();
                     let name = self.parse_identifier_expr()?;
                     let nullable = self.parse_nullable();
-                    params.push(Param { name, nullable, mutable });
+                    let clause = self.parse_slot_clause(SlotKind::Param)?;
+                    params.push(Param { name, nullable, mutable, clause });
                 }
                 self.tokens.expect(end_token)?;
                 params

@@ -1,0 +1,17 @@
+fn get(flag)? {
+    if (flag == 1) { return null; }
+    return Err("boom");
+}
+match get(0) {
+    v => print(v + 5),
+    null => print("null"),
+}
+// error(full):
+// error: unchecked value owes 'fails', 'opt'
+//  --> help_owes_multi.say:6:16
+//   |
+// 5 | match get(0) {
+// 6 |     v => print(v + 5),
+//   |                ^ might be Err or null
+//   |
+//   = help: make sure `v` is not Err or null before using it
