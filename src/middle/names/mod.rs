@@ -332,6 +332,7 @@ impl<'a> Resolver<'a> {
                 self.visit_expr(callee)?;
                 for (_, value) in fields { self.visit_expr(value)?; }
             },
+            Expr::Mut(inner) => self.visit_expr(inner)?,
             Expr::This => {},
             Expr::SafeAccess(target, member, _) => { self.visit_expr(target)?; self.visit_expr(member)?; },
             Expr::SafeCall(target, args) => { 

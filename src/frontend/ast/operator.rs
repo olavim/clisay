@@ -8,7 +8,7 @@ use crate::frontend::lex::{TokenStream, TokenType};
 /// operator-keyed and grouped by fixity.
 macro_rules! operators {
     (
-        prefix: { $($pre_op:ident => $pre_tok:ident, $pre_bp:literal;)* }
+        prefix: { $($pre_op:ident => $pre_tok:ident, $pre_bp:expr;)* }
         infix: { $($in_op:ident => $in_tok:ident, $in_bp:literal;)* }
         infix_right: { $($inr_op:ident => $inr_tok:ident, $inr_bp:literal;)* }
         postfix: { $($post_op:ident => $post_tok:ident, $post_bp:literal;)* }
@@ -114,9 +114,9 @@ macro_rules! operators {
 
 operators! {
     prefix: {
-        Negate => Minus, 13;
-        LogicalNot => Exclamation, 13;
-        BitNot => Tilde, 13;
+        Negate => Minus, Operator::UNARY_PREFIX_PRECEDENCE;
+        LogicalNot => Exclamation, Operator::UNARY_PREFIX_PRECEDENCE;
+        BitNot => Tilde, Operator::UNARY_PREFIX_PRECEDENCE;
         Group => LeftParen, 16;
         Array => LeftBracket, 16;
         Dict => LeftBrace, 16;
@@ -171,6 +171,8 @@ operators! {
 }
 
 impl Operator {
+    pub const UNARY_PREFIX_PRECEDENCE: u8 = 13;
+
     fn has_lower_prefix_precedence(&self, precedence: u8) -> bool {
         let prec = self.prefix_precedence().unwrap();
         return prec < precedence || (self.is_left_associative() && prec == precedence);

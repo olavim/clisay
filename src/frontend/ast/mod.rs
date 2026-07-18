@@ -82,6 +82,9 @@ pub enum Expr {
     Handle(AstId<Expr>, Symbol, AstId<Expr>),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
+    /// Value mutability minted at a construction: `mut {}`, `mut []`, `mut Ctor()`.
+    /// Not an actual expression, but parsed as one for mechanical convenience.
+    Mut(AstId<Expr>),
     /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean.
     Has(AstId<Expr>, AstId<Matcher>),
     /// The `scrutinee ~ matcher` one-liner. Yields a boolean and, on success, publishes the
@@ -132,9 +135,22 @@ pub enum Matcher {
     And(Vec<AstId<Matcher>>),
 }
 
+/// The value-mutability capability leading a slot clause.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Capability {
+    /// An immutable value.
+    #[default]
+    None,
+    /// `mut`: a borrowed mutable value.
+    Mut,
+    /// `move mut`: a moved mutable value.
+    MoveMut,
+}
+
 /// A parsed `:` clause on a slot (a variable, parameter, field, or return).
 #[derive(Default)]
 pub struct SlotClause {
+    pub capability: Capability,
     pub names: Vec<Symbol>,
     pub container: bool,
     pub void: bool,
@@ -151,8 +167,7 @@ pub struct FieldInit {
     pub clause: SlotClause,
 }
 
-/// A function/method/lambda parameter: the bound identifier plus its declared
-/// nullability and mutability markers (`fn f(mut x?)`).
+/// A function/method/lambda parameter.
 pub struct Param {
     pub name: AstId<Expr>,
     pub nullable: bool,

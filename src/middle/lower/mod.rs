@@ -191,6 +191,7 @@ impl<'a> Lowerer<'a> {
                 }
                 HirExpr::Construct(callee, args, brace)
             },
+            Expr::Mut(inner) => return self.expr(inner),
             Expr::This => HirExpr::This,
             Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
             Expr::SafeCall(callee, args) => HirExpr::SafeCall(self.expr(callee)?, self.exprs(args)?),
