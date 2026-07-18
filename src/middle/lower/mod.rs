@@ -191,7 +191,7 @@ impl<'a> Lowerer<'a> {
                 }
                 HirExpr::Construct(callee, args, brace)
             },
-            Expr::Mut(inner) => return self.expr(inner),
+            Expr::Mut(inner) => return self.lower_value_mut(expr_id, inner),
             Expr::This => HirExpr::This,
             Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
             Expr::SafeCall(callee, args) => HirExpr::SafeCall(self.expr(callee)?, self.exprs(args)?),
@@ -229,6 +229,13 @@ impl<'a> Lowerer<'a> {
             _ => HirExpr::Binary(lower_binop(op), self.expr(left)?, self.expr(right)?),
         };
         Ok(self.hir.add(kind, pos))
+    }
+
+    fn lower_value_mut(&mut self, node: &AstId<Expr>, inner: &AstId<Expr>) -> Result<HirId<HirExpr>, anyhow::Error> {
+        match self.ast.get(inner) {
+            Expr::Literal(Literal::Array(_)) | Expr::Literal(Literal::Dict(_)) | Expr::Construct(..) | Expr::Call(..) => self.expr(inner),
+            _ => Err(self.error("`mut` marks a mutable value; it can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`", node)),
+        }
     }
 
     fn exprs(&mut self, exprs: &[AstId<Expr>]) -> Result<Vec<HirId<HirExpr>>, anyhow::Error> {

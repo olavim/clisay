@@ -101,31 +101,33 @@ struct Local {
     binder: bool,
     /// Whether the binding holds a container whose elements owe `owed`.
     container: bool,
+    /// Whether the value in the slot is provably immutable. `freeze` downgrades a slot to it.
+    immutable: bool,
 }
 
 impl Local {
     fn param(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
-        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false }
+        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, immutable: false }
     }
 
     fn catch(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
-        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false }
+        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, immutable: false }
     }
 
     fn binder(name: Symbol) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, immutable: false }
     }
 
     fn binder_owing(name: Symbol, owed: HashSet<Symbol>) -> Local {
-        Local { name, owed, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false }
+        Local { name, owed, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, immutable: false }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false, container: false }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false, container: false, immutable: false }
     }
 
     fn value(name: Symbol, owed: HashSet<Symbol>, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
-        Local { name, owed, mutable, assigned, tag, func: None, binder: false, container: false }
+        Local { name, owed, mutable, assigned, tag, func: None, binder: false, container: false, immutable: false }
     }
 }
 
@@ -150,6 +152,7 @@ enum NarrowFact {
 struct LocalFlow {
     assigned: bool,
     tag: TypeTag,
+    immutable: bool,
 }
 
 /// A snapshot of flow facts that branches widen back at a join.

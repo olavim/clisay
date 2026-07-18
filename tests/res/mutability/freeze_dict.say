@@ -1,5 +1,4 @@
 say d = mut {};
 d["a"] = 1;
 freeze(d);
-print(d["a"]); // expect: 1
-d["a"] = 2; // error: Cannot mutate an immutable value
+d["a"] = 2; // error: 'd' is immutable and cannot be mutated
