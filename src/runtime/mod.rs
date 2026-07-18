@@ -242,6 +242,12 @@ impl Vm {
             Ok(())
         });
 
+        vm.define_native("freeze", 1, |vm, _target, args| {
+            objects::freeze_value(args[0]);
+            vm.push(args[0]);
+            Ok(())
+        });
+
         let err_name = vm.gc.intern("Err");
         vm.globals.insert(err_name, Value::from(vm.native_types.err));
 

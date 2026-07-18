@@ -2,7 +2,7 @@ use anyhow::bail;
 
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
-use crate::core::objects::{NativeFn, ObjNativeFn, ObjString};
+use crate::core::objects::{NativeFn, ObjNativeFn, ObjString, IMMUTABLE_MUTATION};
 use crate::core::value::{Value, ValueKind};
 
 use super::NativeType;
@@ -51,6 +51,9 @@ impl NativeArray {
     }
 
     fn push(host: &mut dyn Host, target: Value, value: Value) -> Result<(), anyhow::Error> {
+        if target.as_object().is_immutable() {
+            bail!("{IMMUTABLE_MUTATION}");
+        }
         let array = unsafe { &mut *target.as_object().as_array_ptr() };
         array.values.push(value);
         host.push(Value::NULL);
