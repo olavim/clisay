@@ -1,0 +1,6 @@
+// A user `freeze` shadows the builtin, so the call loses the static discharge.
+fn freeze(x) {}
+say d = mut {};
+freeze(d);
+d["a"] = 1;
+print(d["a"]); // expect: 1

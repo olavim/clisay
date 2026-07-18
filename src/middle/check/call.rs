@@ -29,6 +29,11 @@ impl<'a> Checker<'a> {
                 if self.frame_index_of(name).is_none() {
                     if let Some(sig) = native::builtin(self.hir.text(name)) {
                         self.check_native_args(&sig, &arg_types, args)?;
+                        // `freeze(x)` also discharges the mutation capability, handing its
+                        // argument back immutable.
+                        if self.hir.text(name) == "freeze" {
+                            if let Some(arg) = args.first() { self.discharge_freeze(arg); }
+                        }
                         return Ok(Typed::of(self.native_ret_flow(sig.ret), TypeTag::Unknown));
                     }
                 }
@@ -36,6 +41,14 @@ impl<'a> Checker<'a> {
             },
             HirExpr::Index(receiver, member, _) => self.method_call(callee, receiver, member, &arg_types, args),
             _ => self.indirect_call(callee),
+        }
+    }
+
+    /// Downgrades a frozen argument's slot to immutable in place.
+    fn discharge_freeze(&mut self, arg: &HirId<HirExpr>) {
+        let HirExpr::Identifier(name) = self.hir.get(arg) else { return };
+        if let Some(i) = self.frame_index_of(*name) {
+            self.locals[i].immutable = true;
         }
     }
 

@@ -1,6 +1,5 @@
 type Counter { pub mut n; init() { this.n = 0; } }
 say c = mut Counter();
 c.n = 5;
-print(c.n); // expect: 5
 freeze(c);
-c.n = 6; // error: Cannot mutate an immutable value
+c.n = 6; // error: 'c' is immutable and cannot be mutated

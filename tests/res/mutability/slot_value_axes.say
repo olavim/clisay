@@ -1,0 +1,11 @@
+// Slot mutability and value mutability are independent axes.
+say f = mut {};
+f["y"] = 2;
+print(f["y"]); // expect: 2
+
+// @split
+say mut g = mut {};
+g["y"] = 2;
+g = mut {};
+g["z"] = 3;
+print(g["z"]); // expect: 3

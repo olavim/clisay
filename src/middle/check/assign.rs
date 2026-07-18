@@ -33,6 +33,8 @@ impl<'a> Checker<'a> {
                     self.check_into_slot(&typed.flow, &owed, name, lhs)?;
                     self.locals[i].assigned = true;
                     self.locals[i].tag = typed.tag.clone();
+                    // The immutability fact follows the value, so a rebind drops it.
+                    self.locals[i].immutable = false;
                     self.reset_narrowing(i, matches!(typed.flow, Flow::Clean));
                 } else if self.sigs.types_by_name.contains_key(&name) {
                     // A type binding names a declaration, not a reassignable slot.
@@ -57,16 +59,30 @@ impl<'a> Checker<'a> {
             }
             return Ok(());
         }
+
+        // A frozen value rejects mutation at compile time.
+        if let Some(name) = self.immutable_target(target) {
+            return Err(self.error(format!("'{}' is immutable and cannot be mutated", self.hir.text(name)), lhs));
+        }
+
         // A bracket index `obj[expr] = ...` is the dynamic data path. It bypasses the field rules.
         if !is_dot {
             return Ok(());
         }
+
         let receiver = self.receiver(target)?;
         let Some(field) = self.string_member(member) else { return Ok(()) };
         if let TypeTag::Concrete(type_name) = &receiver.tag {
             self.assign_field_external(*type_name, field, value, lhs, rhs)?;
         }
         Ok(())
+    }
+
+    /// The name of a mutation target that is a provably immutable local, or `None`.
+    fn immutable_target(&self, target: &HirId<HirExpr>) -> Option<Symbol> {
+        let HirExpr::Identifier(name) = self.hir.get(target) else { return None };
+        let i = self.frame_index_of(*name)?;
+        self.locals[i].immutable.then_some(*name)
     }
 
     /// Checks an assignment `this.field = value`.
@@ -76,9 +92,11 @@ impl<'a> Checker<'a> {
             Some(layout) => (matches!(layout.members.get(&field), Some(TypeMember::Field(_))), layout.is_nullable(field), layout.is_mutable(field)),
             None => return Ok(()),
         };
+
         if !is_field {
             return Ok(());
         }
+
         if !mutable {
             if !self.seal.in_init() {
                 return Err(self.immutable_field_error(type_name, field, lhs));
@@ -90,6 +108,7 @@ impl<'a> Checker<'a> {
                 });
             }
         }
+
         self.check_into_field(flow, nullable, field, rhs)?;
         self.seal.mark_assigned(field, *lhs);
         Ok(())

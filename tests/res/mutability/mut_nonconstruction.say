@@ -1,0 +1,2 @@
+say x = 1;
+say y = mut x; // error: `mut` marks a mutable value; it can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`
