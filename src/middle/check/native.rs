@@ -56,6 +56,7 @@ pub fn builtin(name: &str) -> Option<NativeSig> {
         "gcHeapSize" => NativeSig::new(&[], RetSig::CLEAN),
         "gcCollect" => NativeSig::new(&[], RetSig::VOID),
         "gcStress" => NativeSig::new(&[ObSet::CLEAN], RetSig::VOID),
+        "freeze" => NativeSig::new(&[ObSet::ANY], RetSig::CLEAN),
         _ => return None,
     };
     Some(sig)

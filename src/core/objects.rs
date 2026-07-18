@@ -5,17 +5,41 @@ use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
 use super::host::Host;
-use super::value::Value;
+use super::value::{Value, ValueKind};
+
+/// The runtime diagnostic raised when a mutation hits an immutable value.
+pub const IMMUTABLE_MUTATION: &str = "Cannot mutate an immutable value";
+
+/// Marks a value immutable, then its container children.
+pub fn freeze_value(value: Value) {
+    let ValueKind::Object(kind) = value.kind() else { return };
+    let object = value.as_object();
+    if object.is_immutable() {
+        return;
+    }
+    object.set_immutable();
+    match kind {
+        ObjectKind::Array => for &v in unsafe { &(*object.as_array_ptr()).values } { freeze_value(v); },
+        ObjectKind::Dict => for &v in unsafe { (*object.as_dict_ptr()).entries.values() } { freeze_value(v); },
+        ObjectKind::Instance => {
+            let instance = unsafe { &*object.as_instance_ptr() };
+            let ty = unsafe { &*instance.ty };
+            for &id in &ty.fields { freeze_value(instance.get(id)); }
+        },
+        _ => {},
+    }
+}
 
 #[repr(C)]
 pub struct ObjectHeader {
     pub kind: ObjectKind,
-    pub marked: bool
+    pub marked: bool,
+    pub immutable: bool
 }
 
 impl ObjectHeader {
     pub fn new(kind: ObjectKind) -> ObjectHeader {
-        ObjectHeader { kind, marked: false }
+        ObjectHeader { kind, marked: false, immutable: false }
     }
 }
 
@@ -132,6 +156,16 @@ impl Object {
     #[inline]
     pub fn as_header_ptr(&self) -> *mut ObjectHeader {
         unsafe { without_tag(self.header) }
+    }
+
+    #[inline]
+    pub fn is_immutable(&self) -> bool {
+        unsafe { (*self.as_header_ptr()).immutable }
+    }
+
+    #[inline]
+    pub fn set_immutable(&self) {
+        unsafe { (*self.as_header_ptr()).immutable = true; }
     }
 
     #[inline]

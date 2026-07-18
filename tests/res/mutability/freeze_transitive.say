@@ -1,0 +1,7 @@
+say inner = mut {};
+inner["x"] = 1;
+say outer = mut {};
+outer["inner"] = inner;
+freeze(outer);
+print(outer["inner"]["x"]); // expect: 1
+inner["x"] = 2; // error: Cannot mutate an immutable value

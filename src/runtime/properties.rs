@@ -194,6 +194,7 @@ impl Vm {
         if !matches!(target.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         }
+        self.ensure_mutable(target)?;
 
         let value = self.stack.pop();
         let instance = unsafe { &mut *target.as_object().as_instance_ptr() };
@@ -216,12 +217,20 @@ impl Vm {
         }
     }
 
+    fn ensure_mutable(&self, target: Value) -> Result<(), anyhow::Error> {
+        if matches!(target.kind(), ValueKind::Object(_)) && target.as_object().is_immutable() {
+            return self.error(objects::IMMUTABLE_MUTATION);
+        }
+        Ok(())
+    }
+
     pub(super) fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
         let prop = self.stack.pop();
         let target = self.stack.pop();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
+        self.ensure_mutable(target)?;
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target),
@@ -271,6 +280,7 @@ impl Vm {
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
+        self.ensure_mutable(target)?;
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target),
@@ -367,6 +377,7 @@ impl Vm {
         if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
+        self.ensure_mutable(value)?;
 
         let object = value.as_object();
         let instance_ref = object.as_instance_ptr();
