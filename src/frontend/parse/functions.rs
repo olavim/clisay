@@ -47,7 +47,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.node_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    /// Parses a parameter list up to `end_token`. Each parameter is `[mut] name [?]`.
+    /// Parses a parameter list up to `end_token`. Each parameter is `name [?] [: clause]`.
     pub(super) fn parse_params(&mut self, end_token: TokenType) -> Result<Vec<Param>, anyhow::Error> {
         let params = match self.tokens.next_if(end_token) {
             Some(_) => Vec::new(),
@@ -57,11 +57,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     if params.len() > 0 {
                         self.tokens.expect(TokenType::Comma)?;
                     }
-                    let mutable = self.parse_mut();
                     let name = self.parse_identifier_expr()?;
                     let nullable = self.parse_nullable();
                     let clause = self.parse_slot_clause(SlotKind::Param)?;
-                    params.push(Param { name, nullable, mutable, clause });
+                    params.push(Param { name, nullable, mutable: false, clause });
                 }
                 self.tokens.expect(end_token)?;
                 params

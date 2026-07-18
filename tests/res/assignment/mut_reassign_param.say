@@ -1,4 +1,5 @@
-fn f(mut param) {
+fn f(param) {
+    say mut param = param;
     param = 1;
     print(param);
 }

@@ -31,7 +31,7 @@ pub use output::Output;
 /// and not a stable public API.
 #[doc(hidden)]
 pub mod internals {
-    pub use crate::ast::{MatchArm, Ast, AstId, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRule, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
+    pub use crate::ast::{MatchArm, Ast, AstId, Capability, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRule, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
     pub use crate::frontend::lex::{ContextualKeyword, Token, TokenType};
     pub use crate::middle::hir::{
         Hir, HirMatchArm, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, HirTypeDecl,
