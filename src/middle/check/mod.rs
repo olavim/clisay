@@ -20,7 +20,7 @@ use crate::frontend::lex::Diagnostic;
 
 use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
-use crate::middle::signatures::{Signatures, TypeTag};
+use crate::middle::signatures::{Mutability, Signatures, TypeTag};
 use self::construct::Seal;
 use self::matching::whole_value_binders;
 use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
@@ -71,12 +71,14 @@ enum Violation {
 struct Typed {
     flow: Flow,
     tag: TypeTag,
+    mutability: Mutability,
 }
 
 impl Typed {
-    fn unknown() -> Typed { Typed { flow: Flow::Unknown, tag: TypeTag::Unknown } }
-    fn nonnull() -> Typed { Typed { flow: Flow::Clean, tag: TypeTag::Unknown } }
-    fn of(flow: Flow, tag: TypeTag) -> Typed { Typed { flow, tag } }
+    fn unknown() -> Typed { Typed { flow: Flow::Unknown, tag: TypeTag::Unknown, mutability: Mutability::Unknown } }
+    fn nonnull() -> Typed { Typed { flow: Flow::Clean, tag: TypeTag::Unknown, mutability: Mutability::Unknown } }
+    fn of(flow: Flow, tag: TypeTag) -> Typed { Typed { flow, tag, mutability: Mutability::Unknown } }
+    fn with_mutability(mut self, mutability: Mutability) -> Typed { self.mutability = mutability; self }
 }
 
 /// A type's field with the facts the definition and construction checks need.
@@ -101,33 +103,33 @@ struct Local {
     binder: bool,
     /// Whether the binding holds a container whose elements owe `owed`.
     container: bool,
-    /// Whether the value in the slot is provably immutable. `freeze` downgrades a slot to it.
-    immutable: bool,
+    /// The value-mutability of the value in the slot.
+    mutability: Mutability,
 }
 
 impl Local {
     fn param(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
-        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, immutable: false }
+        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown }
     }
 
     fn catch(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
-        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, immutable: false }
+        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown }
     }
 
     fn binder(name: Symbol) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, immutable: false }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, mutability: Mutability::Unknown }
     }
 
     fn binder_owing(name: Symbol, owed: HashSet<Symbol>) -> Local {
-        Local { name, owed, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, immutable: false }
+        Local { name, owed, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, mutability: Mutability::Unknown }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false, container: false, immutable: false }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false, container: false, mutability: Mutability::Unknown }
     }
 
     fn value(name: Symbol, owed: HashSet<Symbol>, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
-        Local { name, owed, mutable, assigned, tag, func: None, binder: false, container: false, immutable: false }
+        Local { name, owed, mutable, assigned, tag, func: None, binder: false, container: false, mutability: Mutability::Unknown }
     }
 }
 
@@ -152,7 +154,7 @@ enum NarrowFact {
 struct LocalFlow {
     assigned: bool,
     tag: TypeTag,
-    immutable: bool,
+    mutability: Mutability,
 }
 
 /// A snapshot of flow facts that branches widen back at a join.
@@ -181,6 +183,8 @@ struct Checker<'a> {
     current_return_owes: bool,
     /// Whether the current function has no return marker.
     current_return_unmarked: bool,
+    /// Whether the current function's return is declared `: mut`.
+    current_return_mut: bool,
     /// The null fast path: a `!` operand owing only `opt`, needing just the null assertion.
     barriers: HashSet<HirId<HirExpr>>,
     /// Nodes where an unknown value needs the boundary guard: a slot crossing or a `!` operand.
@@ -204,6 +208,7 @@ impl<'a> Checker<'a> {
             current_return: None,
             current_return_owes: false,
             current_return_unmarked: false,
+            current_return_mut: false,
             barriers: HashSet::new(),
             boundary_barriers: HashMap::new(),
             witness_tests: HashMap::new(),
@@ -288,17 +293,19 @@ impl<'a> Checker<'a> {
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
             HirStmt::Say(field) => self.say(field.name, &field.clause, field.mutable, &field.value)?,
             HirStmt::Expression(e) | HirStmt::Block(e) => { self.expr(e)?; },
-            HirStmt::Return(opt) => match (opt, self.current_return) {
-                (Some(e), Some(shape)) => {
+            HirStmt::Return(opt) => match opt {
+                Some(e) => {
                     let typed = self.expr(e)?;
-                    self.check_return(&typed.flow, shape, e)?;
+                    self.check_return_mutability(&typed, e)?;
+                    if let Some(shape) = self.current_return {
+                        self.check_return(&typed.flow, shape, e)?;
+                    }
                 },
                 // A `!` function falls back to null on a bare return, which it may not.
-                (None, Some(ReturnShape::NonNull)) => {
+                None if self.current_return == Some(ReturnShape::NonNull) => {
                     return Err(self.error("A '!' function must return a value, but this 'return' yields null".to_string(), stmt));
                 },
-                (Some(e), None) => { self.expr(e)?; },
-                (None, _) => {},
+                None => {},
             },
             HirStmt::Throw(e) => { self.expr(e)?; },
             HirStmt::While(cond, body) => {
@@ -423,6 +430,7 @@ impl<'a> Checker<'a> {
                 }
                 Typed::of(Flow::Clean, tag)
             },
+            HirExpr::Mut(inner) => self.expr(inner)?.with_mutability(Mutability::Mutable),
             HirExpr::Index(target, member, _) => self.member_access(target, member)?,
             HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
             HirExpr::Unary(op, x) => self.unary(*op, x)?,
@@ -515,16 +523,17 @@ impl<'a> Checker<'a> {
 
     fn say(&mut self, name: Symbol, clause: &HirSlotClause, mutable: bool, value: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
         let owed = self.clause_owed(clause);
-        let (assigned, tag) = if let Some(value) = value {
+        let (assigned, tag, mutability) = if let Some(value) = value {
             self.reject_this_store(value)?;
             let typed = self.expr(value)?;
             self.check_into_slot(&typed.flow, &owed, name, value)?;
-            (true, typed.tag)
+            (true, typed.tag, typed.mutability)
         } else {
-            (false, TypeTag::Unknown)
+            (false, TypeTag::Unknown, Mutability::Unknown)
         };
         let mut local = Local::value(name, owed, mutable, assigned, tag);
         local.container = clause.container;
+        local.mutability = mutability;
         self.locals.push(local);
         Ok(())
     }
@@ -539,6 +548,7 @@ impl<'a> Checker<'a> {
             let name = self.ident_sym(&param.name);
             let mut local = Local::param(name, self.clause_owed(&param.clause), param.mutable);
             local.container = param.clause.container;
+            local.mutability = Mutability::param(param.clause.capability);
             self.locals.push(local);
         }
         let result = body(self);
@@ -566,6 +576,7 @@ impl<'a> Checker<'a> {
         });
         let prev_owes = std::mem::replace(&mut self.current_return_owes, !decl.clause.names.is_empty());
         let prev_unmarked = std::mem::replace(&mut self.current_return_unmarked, unmarked);
+        let prev_mut = std::mem::replace(&mut self.current_return_mut, decl.clause.capability.is_mut());
         let result = self.with_frame(&decl.params, |c| {
             c.expr(&decl.body)?;
             // A non-null return must be produced on every path.
@@ -577,6 +588,7 @@ impl<'a> Checker<'a> {
         self.current_return = saved_return;
         self.current_return_owes = prev_owes;
         self.current_return_unmarked = prev_unmarked;
+        self.current_return_mut = prev_mut;
         self.seal.restore(saved_seal);
         result
     }
@@ -673,7 +685,7 @@ impl<'a> Checker<'a> {
             Flow::Bad { obligations: owed, definite: false, container: self.locals[i].container }
         };
 
-        Ok(Typed::of(flow, self.locals[i].tag.clone()))
+        Ok(Typed::of(flow, self.locals[i].tag.clone()).with_mutability(self.locals[i].mutability))
     }
 
     /// Member or data access `target.member` / `target[member]`. Resolves a field on a known-type

@@ -147,6 +147,13 @@ pub enum Capability {
     MoveMut,
 }
 
+impl Capability {
+    /// Whether the marker grants mutability.
+    pub fn is_mut(self) -> bool {
+        matches!(self, Capability::Mut | Capability::MoveMut)
+    }
+}
+
 /// A parsed `:` clause on a slot (a variable, parameter, field, or return).
 #[derive(Default)]
 pub struct SlotClause {

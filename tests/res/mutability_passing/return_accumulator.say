@@ -1,0 +1,10 @@
+// A `: mut` return grants a live mutable, so the caller keeps mutating it.
+fn counts(): mut {
+  say c = mut {};
+  c["a"] = 1;
+  return c;
+}
+say result = counts();
+result["b"] = 2;
+print(result["a"]); // expect: 1
+print(result["b"]); // expect: 2

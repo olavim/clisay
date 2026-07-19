@@ -1,5 +1,6 @@
-// A user `freeze` shadows the builtin, so the call loses the static discharge.
-fn freeze(x) {}
+// A user `freeze` shadows the builtin, so the call loses the static discharge. It borrows through
+// `mut`, so `d` stays mutable after the call.
+fn freeze(x: mut) {}
 say d = mut {};
 freeze(d);
 d["a"] = 1;

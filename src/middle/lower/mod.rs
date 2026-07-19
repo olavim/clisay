@@ -9,7 +9,7 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
-use crate::ast::{MatchArm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
+use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
     BinOp, Hir, HirSlotClause, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
 };
@@ -233,7 +233,10 @@ impl<'a> Lowerer<'a> {
 
     fn lower_value_mut(&mut self, node: &AstId<Expr>, inner: &AstId<Expr>) -> Result<HirId<HirExpr>, anyhow::Error> {
         match self.ast.get(inner) {
-            Expr::Literal(Literal::Array(_)) | Expr::Literal(Literal::Dict(_)) | Expr::Construct(..) | Expr::Call(..) => self.expr(inner),
+            Expr::Literal(Literal::Array(_)) | Expr::Literal(Literal::Dict(_)) | Expr::Construct(..) | Expr::Call(..) => {
+                let lowered = self.expr(inner)?;
+                Ok(self.hir.add(HirExpr::Mut(lowered), self.ast.pos(node).clone()))
+            },
             _ => Err(self.error("`mut` marks a mutable value; it can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`", node)),
         }
     }
@@ -364,7 +367,7 @@ impl<'a> Lowerer<'a> {
         if marker_nullable && !names.contains(&self.opt) {
             names.push(self.opt);
         }
-        HirSlotClause { names, container: clause.container, void: clause.void }
+        HirSlotClause { capability: clause.capability, names, container: clause.container, void: clause.void }
     }
 
     pub(super) fn return_clause(&self, decl: &FnDecl) -> (ReturnShape, HirSlotClause) {
@@ -373,7 +376,7 @@ impl<'a> Lowerer<'a> {
             ReturnShape::Void
         } else if clause.names.contains(&self.opt) {
             ReturnShape::Nullable
-        } else if !decl.clause.names.is_empty() {
+        } else if !decl.clause.names.is_empty() || decl.clause.capability != Capability::None {
             ReturnShape::Inferred
         } else {
             decl.ret

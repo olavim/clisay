@@ -1,0 +1,7 @@
+// A `mut` parameter borrows the caller's value and fills it in place.
+fn addDefaults(config: mut) {
+  config["timeout"] = 30;
+}
+say cfg = mut {};
+addDefaults(cfg);
+print(cfg["timeout"]); // expect: 30

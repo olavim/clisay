@@ -1,0 +1,4 @@
+fn make(): mut { return mut {}; }
+fn store(cfg) { cfg["k"] = 1; }
+say m = make();
+store(m); // error: 'm' is mutable and cannot be passed where an immutable value is expected; freeze it first

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::core::objects::TypeMember;
 use crate::middle::hir::{HirExpr, HirId, Symbol};
 
-use super::{Checker, Flow, TypeTag, Typed, Violation};
+use super::{Mutability, Checker, Flow, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
     pub(super) fn assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
@@ -33,8 +33,8 @@ impl<'a> Checker<'a> {
                     self.check_into_slot(&typed.flow, &owed, name, lhs)?;
                     self.locals[i].assigned = true;
                     self.locals[i].tag = typed.tag.clone();
-                    // The immutability fact follows the value, so a rebind drops it.
-                    self.locals[i].immutable = false;
+                    // The mutability follows the value, so a rebind takes the new value's.
+                    self.locals[i].mutability = typed.mutability;
                     self.reset_narrowing(i, matches!(typed.flow, Flow::Clean));
                 } else if self.sigs.types_by_name.contains_key(&name) {
                     // A type binding names a declaration, not a reassignable slot.
@@ -82,7 +82,7 @@ impl<'a> Checker<'a> {
     fn immutable_target(&self, target: &HirId<HirExpr>) -> Option<Symbol> {
         let HirExpr::Identifier(name) = self.hir.get(target) else { return None };
         let i = self.frame_index_of(*name)?;
-        self.locals[i].immutable.then_some(*name)
+        (self.locals[i].mutability == Mutability::Immutable).then_some(*name)
     }
 
     /// Checks an assignment `this.field = value`.

@@ -471,6 +471,7 @@ impl<'a> Resolver<'a> {
                 let brace = brace.clone();
                 self.construct(expr, &callee, &args, &brace)?;
             },
+            HirExpr::Mut(inner) => self.expression(inner)?,
             HirExpr::This => self.require_type(expr)?,
             HirExpr::Coalesce(left, right) => {
                 self.expression(left)?;

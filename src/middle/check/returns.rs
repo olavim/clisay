@@ -2,9 +2,17 @@
 
 use crate::middle::hir::{HirExpr, HirId, ReturnShape};
 
-use super::{Checker, Flow, Violation};
+use super::{Mutability, Checker, Flow, Typed, Violation};
 
 impl<'a> Checker<'a> {
+    /// A `: mut` function must hand back a mutable value.
+    pub(super) fn check_return_mutability(&self, typed: &Typed, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if self.current_return_mut && typed.mutability == Mutability::Immutable {
+            return Err(self.error("this function is declared ': mut' but returns an immutable value".to_string(), node));
+        }
+        Ok(())
+    }
+
     /// Checks a `return <value>` against the declared return shape: a `!` rejects a possibly-null
     /// or void value, a `?` accepts any value, and a void function may not return a value at all.
     pub(super) fn check_return(&mut self, flow: &Flow, shape: ReturnShape, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {

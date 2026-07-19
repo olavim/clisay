@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 
-pub use crate::frontend::ast::{ObligationRule, ReturnShape, Symbol};
+pub use crate::frontend::ast::{Capability, ObligationRule, ReturnShape, Symbol};
 use crate::frontend::lex::{SourcePosition, TokenType};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -99,6 +99,8 @@ pub enum HirExpr {
     /// Brace construction `C(args) { field: value, ... }`: the callee type expression, the
     /// `init` args, then the brace field initializers.
     Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
+    /// A `mut`-minted construction (`mut {}`, `mut []`, `mut Ctor()`).
+    Mut(HirId<HirExpr>),
     This,
     /// Coalesce `a ?? b`: discharges `a`'s obligation set, yielding `a` when it is clean, else `b`.
     /// Short-circuit lowering is deferred to codegen.
@@ -186,6 +188,7 @@ impl HirMatcher {
 /// A slot's lowered `:` clause.
 #[derive(Default, Clone)]
 pub struct HirSlotClause {
+    pub capability: Capability,
     pub names: Vec<Symbol>,
     pub container: bool,
     pub void: bool,
