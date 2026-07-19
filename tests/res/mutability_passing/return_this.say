@@ -1,0 +1,10 @@
+// A method returning `this` needs no `: mut`; the receiver stays live for the next call.
+type Box {
+  pub mut v;
+  init() { this.v = 0; }
+  pub fn setV(x)! { this.v = x; return this; }
+  pub fn get()! { return this.v; }
+}
+say b = mut Box();
+b.setV(5);
+print(b.get()); // expect: 5

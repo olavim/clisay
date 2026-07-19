@@ -1,0 +1,5 @@
+// An untagged function that returns a directly-minted mutable auto-freezes it, so the caller gets
+// an immutable value. This mirrors auto_freeze.say but mints the mutable in place of a `: mut` call.
+fn make()! { return mut {}; }
+say r = make();
+r["k"] = 1; // error: 'r' is immutable and cannot be mutated

@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::middle::hir::{Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ObligationRule, ReturnShape, Symbol};
+use crate::middle::hir::{Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ObligationRule, ReturnShape, Symbol};
 
 /// A function's return: the obligations its result carries and whether any path returns a value.
 #[derive(Clone, Default)]
@@ -15,7 +15,27 @@ pub struct RetSig {
 /// A function's per-parameter obligation set and its return signature.
 pub struct FnSig {
     pub param_clauses: Vec<HashSet<Symbol>>,
+    pub param_markers: Vec<Capability>,
     pub ret: RetSig,
+}
+
+/// The value-mutability a value carries as it flows: the capability lattice the check pass tracks,
+/// distinct from `Capability`, the syntactic `mut`/`move mut` marker a clause declares.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mutability {
+    /// A `mut` parameter or a `: mut` return: the value may be mutated.
+    Mutable,
+    /// Frozen, or an untagged return auto-frozen on the way out.
+    Immutable,
+    #[default]
+    Unknown,
+}
+
+impl Mutability {
+    /// The capability a parameter's clause marker grants its binding.
+    pub fn param(capability: Capability) -> Mutability {
+        if capability.is_mut() { Mutability::Mutable } else { Mutability::Unknown }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -54,6 +74,7 @@ pub struct Signatures {
     // Per-function facts, keyed by the function's statement.
     pub(crate) fns: HashMap<HirId<HirStmt>, FnSig>,
     pub(crate) ret_tags: HashMap<HirId<HirStmt>, TypeTag>,
+    pub(crate) ret_mut: HashMap<HirId<HirStmt>, Mutability>,
 
     // Name-to-declaration lookups.
     pub(crate) types_by_name: HashMap<Symbol, HirId<HirStmt>>,
@@ -76,6 +97,7 @@ impl Signatures {
             rules: HashMap::new(),
             fns: HashMap::new(),
             ret_tags: HashMap::new(),
+            ret_mut: HashMap::new(),
             types_by_name: HashMap::new(),
             fns_by_name: HashMap::new(),
             methods_by_type: HashMap::new(),
@@ -142,6 +164,7 @@ pub fn collect(hir: &Hir) -> Signatures {
     collector.stmt(&hir.get_root());
     collector.register_obligations();
     collector.infer_ret_tags();
+    collector.infer_ret_mut();
     collector.infer_propagated();
     collector.sigs
 }
@@ -234,6 +257,7 @@ impl<'a> Collector<'a> {
         }
         FnSig {
             param_clauses: decl.params.iter().map(|p| p.clause.names.iter().copied().collect()).collect(),
+            param_markers: decl.params.iter().map(|p| p.clause.capability).collect(),
             ret,
         }
     }
@@ -300,7 +324,7 @@ impl<'a> Collector<'a> {
         match self.hir.get(expr) {
             HirExpr::Block(stmts) => for s in stmts { self.stmt(s); },
             HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) | HirExpr::Propagate(x)
-            | HirExpr::Has(x, _) | HirExpr::Match(x, _) => self.expr(x),
+            | HirExpr::Has(x, _) | HirExpr::Match(x, _) | HirExpr::Mut(x) => self.expr(x),
             HirExpr::Binary(_, l, r) | HirExpr::Assign(l, r) | HirExpr::Coalesce(l, r)
             | HirExpr::Handle(l, _, r) | HirExpr::SafeAccess(l, r, _) | HirExpr::Index(l, r, _) => { self.expr(l); self.expr(r); },
             HirExpr::Call(callee, args) | HirExpr::SafeCall(callee, args) => {
@@ -346,6 +370,45 @@ impl<'a> Collector<'a> {
             if !changed {
                 break;
             }
+        }
+    }
+
+    fn infer_ret_mut(&mut self) {
+        let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
+        for stmt in stmts {
+            let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
+            let mutability = self.ret_mut_of(decl);
+            self.sigs.ret_mut.insert(stmt, mutability);
+        }
+    }
+
+    /// A function's return capability. A `: mut` grant hands back a mutable. An untagged body
+    /// freezes any mutable it returns, so its result is immutable when every return is a value the
+    /// pass can prove mutable.
+    fn ret_mut_of(&self, decl: &HirFnDecl) -> Mutability {
+        if decl.clause.capability.is_mut() {
+            return Mutability::Mutable;
+        }
+        let mut returns = Vec::new();
+        self.collect_returns(&decl.body, &mut returns);
+        if !returns.is_empty() && returns.iter().all(|r| self.returns_mutable(r)) {
+            Mutability::Immutable
+        } else {
+            Mutability::Unknown
+        }
+    }
+
+    /// Whether a return hands back a statically-mutable value: a `mut`-minted construction or a call
+    /// to a `: mut` function. These are the returns an untagged body auto-freezes.
+    fn returns_mutable(&self, expr: &HirId<HirExpr>) -> bool {
+        match self.hir.get(expr) {
+            HirExpr::Mut(_) => true,
+            HirExpr::Call(callee, _) => {
+                let HirExpr::Identifier(name) = self.hir.get(callee) else { return false };
+                let Some(stmt) = self.sigs.fns_by_name.get(name) else { return false };
+                matches!(self.hir.get(stmt), HirStmt::Fn(d) if d.clause.capability.is_mut())
+            },
+            _ => false,
         }
     }
 
@@ -480,7 +543,7 @@ impl<'a> Collector<'a> {
     fn collect_propagates(&self, expr: &HirId<HirExpr>, out: &mut Vec<HirId<HirExpr>>) {
         match self.hir.get(expr) {
             HirExpr::Propagate(operand) => { out.push(*operand); self.collect_propagates(operand, out); },
-            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) | HirExpr::Has(x, _) | HirExpr::Match(x, _) => self.collect_propagates(x, out),
+            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Assert(x) | HirExpr::Has(x, _) | HirExpr::Match(x, _) | HirExpr::Mut(x) => self.collect_propagates(x, out),
             HirExpr::Binary(_, l, r) | HirExpr::Assign(l, r) | HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r)
             | HirExpr::SafeAccess(l, r, _) | HirExpr::Index(l, r, _) => { 
                 self.collect_propagates(l, out); 

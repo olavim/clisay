@@ -2,11 +2,11 @@
 
 use std::collections::HashSet;
 
-use crate::middle::hir::{HirExpr, HirId, HirStmt};
+use crate::middle::hir::{Capability, HirExpr, HirId, HirStmt};
 use crate::middle::signatures::RetSig;
 
 use super::native::{self, Container, NativeSig};
-use super::{Checker, Flow, TypeTag, Typed, Violation};
+use super::{Mutability, Checker, Flow, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
     pub(super) fn call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<Typed, anyhow::Error> {
@@ -29,12 +29,14 @@ impl<'a> Checker<'a> {
                 if self.frame_index_of(name).is_none() {
                     if let Some(sig) = native::builtin(self.hir.text(name)) {
                         self.check_native_args(&sig, &arg_types, args)?;
+                        let result = Typed::of(self.native_ret_flow(sig.ret), TypeTag::Unknown);
                         // `freeze(x)` also discharges the mutation capability, handing its
                         // argument back immutable.
                         if self.hir.text(name) == "freeze" {
                             if let Some(arg) = args.first() { self.discharge_freeze(arg); }
+                            return Ok(result.with_mutability(Mutability::Immutable));
                         }
-                        return Ok(Typed::of(self.native_ret_flow(sig.ret), TypeTag::Unknown));
+                        return Ok(result);
                     }
                 }
                 self.indirect_call(callee)
@@ -48,7 +50,7 @@ impl<'a> Checker<'a> {
     fn discharge_freeze(&mut self, arg: &HirId<HirExpr>) {
         let HirExpr::Identifier(name) = self.hir.get(arg) else { return };
         if let Some(i) = self.frame_index_of(*name) {
-            self.locals[i].immutable = true;
+            self.locals[i].mutability = Mutability::Immutable;
         }
     }
 
@@ -95,11 +97,12 @@ impl<'a> Checker<'a> {
         Ok(Typed::unknown())
     }
 
-    /// The nullability and type of a call result, given the callee and receiver tag.
+    /// The nullability, type, and mutability of a call result, given the callee and receiver tag.
     fn call_result(&self, stmt: HirId<HirStmt>, receiver_tag: &TypeTag) -> Typed {
         let flow = self.sigs.fns.get(&stmt).map_or(Flow::Unknown, |s| self.ret_flow(&s.ret));
+        let mutability = self.sigs.ret_mut.get(&stmt).copied().unwrap_or(Mutability::Unknown);
         let tag = self.sigs.ret_tags.get(&stmt).map_or(TypeTag::Unknown, |t| t.resolve(receiver_tag));
-        Typed::of(flow, tag)
+        Typed::of(flow, tag).with_mutability(mutability)
     }
 
     /// Checks a user call's arguments against the resolved function's declared parameters.
@@ -108,7 +111,43 @@ impl<'a> Checker<'a> {
         let sigs = self.sigs;
         let Some(sig) = sigs.fns.get(&stmt) else { return Ok(()) };
         let nullable: Vec<bool> = sig.param_clauses.iter().map(|p| p.contains(&sigs.opt)).collect();
+        self.check_arg_mutability(&sig.param_markers, arg_types, args)?;
         self.check_args(&nullable, arg_types, args)
+    }
+
+    /// Matches each argument's mutability against its parameter marker.
+    fn check_arg_mutability(&self, markers: &[Capability], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+        for (i, &marker) in markers.iter().enumerate() {
+            let Some(typed) = arg_types.get(i) else { break };
+            if marker.is_mut() {
+                if typed.mutability == Mutability::Immutable {
+                    return Err(self.needs_mut_error(&args[i]));
+                }
+            } else if typed.mutability == Mutability::Mutable {
+                return Err(self.freeze_it_error(&args[i]));
+            }
+        }
+        Ok(())
+    }
+
+    /// The error for passing a mutable value where an immutable one is expected.
+    fn freeze_it_error(&self, arg: &HirId<HirExpr>) -> anyhow::Error {
+        let subject = self.arg_subject(arg);
+        self.error(format!("{subject} is mutable and cannot be passed where an immutable value is expected; freeze it first"), arg)
+    }
+
+    /// The error for passing an immutable value to a parameter that requires a mutable one.
+    fn needs_mut_error(&self, arg: &HirId<HirExpr>) -> anyhow::Error {
+        let subject = self.arg_subject(arg);
+        self.error(format!("{subject} is immutable but this parameter requires a mutable value; pass a value minted with 'mut'"), arg)
+    }
+
+    /// Names an argument for a capability error.
+    fn arg_subject(&self, arg: &HirId<HirExpr>) -> String {
+        match self.hir.get(arg) {
+            HirExpr::Identifier(name) => format!("'{}'", self.hir.text(*name)),
+            _ => "this value".to_string(),
+        }
     }
 
     /// Checks each argument against a callee's per-parameter nullability.

@@ -2,7 +2,7 @@
 
 use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, HirMatcher, Symbol, UnOp};
 
-use super::{Checker, FlowSnapshot, LocalFlow, NarrowFact, NarrowKey, TypeTag};
+use super::{Mutability, Checker, FlowSnapshot, LocalFlow, NarrowFact, NarrowKey, TypeTag};
 
 impl<'a> Checker<'a> {
     /// A reassignment drops the binding's narrowing facts. The slot is non-null again only if
@@ -149,7 +149,7 @@ impl<'a> Checker<'a> {
             locals: self.locals.iter().map(|l| LocalFlow {
                 assigned: l.assigned,
                 tag: l.tag.clone(),
-                immutable: l.immutable
+                mutability: l.mutability,
             }).collect(),
             narrowed: self.narrowed.clone(),
         }
@@ -159,7 +159,7 @@ impl<'a> Checker<'a> {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             local.assigned = snap.assigned;
             local.tag = snap.tag.clone();
-            local.immutable = snap.immutable;
+            local.mutability = snap.mutability;
         }
         self.narrowed = flow.narrowed.clone();
     }
@@ -171,8 +171,9 @@ impl<'a> Checker<'a> {
             let (then_local, else_local) = (&then_snap.locals[i], &else_snap.locals[i]);
             local.assigned = then_local.assigned && else_local.assigned;
             local.tag = if then_local.tag == else_local.tag { then_local.tag.clone() } else { TypeTag::Unknown };
-            // A value is provably immutable only where every path has frozen it.
-            local.immutable = then_local.immutable && else_local.immutable;
+            local.mutability = if then_local.mutability == else_local.mutability
+                { then_local.mutability } else
+                { Mutability::Unknown };
         }
     }
 }

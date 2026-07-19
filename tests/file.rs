@@ -192,3 +192,8 @@ fn obligations_traits(resource: &str) -> Result<(), Failed> {
 fn mutability(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
+
+#[test_resources("tests/res/mutability_passing")]
+fn mutability_passing(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
