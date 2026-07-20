@@ -46,27 +46,26 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn at_mut_marker(&self) -> bool {
-        matches!(self.tokens.peek(0).contextual(), Some(ContextualKeyword::Mut | ContextualKeyword::Move))
+        self.tokens.matches(TokenType::StarMut)
+            || self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut)
     }
 
     fn parse_mut_marker(&mut self, clause: &mut SlotClause, slot: SlotKind) -> Result<(), anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
 
         if !slot.allows_capability() {
-            return Err(self.error_help(format!("A {} cannot carry a mutability capability", slot.label()), &pos, "'mut' / 'move mut' are parameter or return facts"));
+            return Err(self.error_help(format!("A {} cannot carry a mutability capability", slot.label()), &pos, "'mut' / '*mut' are parameter or return facts"));
         }
         if clause.capability != Capability::None {
             parse_error!(self, &pos, "Repeated mutability capability");
         }
 
-        clause.capability = match self.tokens.next().contextual() {
-            Some(ContextualKeyword::Mut) => Capability::Mut,
-            _ => {
-                if self.tokens.next().contextual() != Some(ContextualKeyword::Mut) {
-                    return Err(self.error_help("'move' must be followed by 'mut'", &pos, "ownership transfer is the moving form of 'mut', spelled 'move mut'"));
-                }
-                Capability::MoveMut
-            },
+        // `*mut` transfers ownership; plain `mut` borrows.
+        clause.capability = if self.tokens.next_if(TokenType::StarMut).is_some() {
+            Capability::MoveMut
+        } else {
+            self.tokens.next();
+            Capability::Mut
         };
         Ok(())
     }

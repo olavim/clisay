@@ -28,7 +28,7 @@ impl<'a> Compiler<'a> {
         let arity = decl.params.len() as u8;
         let upvalues = self.bindings.upvalues(&decl.body).to_vec();
 
-        // One bit per `move mut` parameter, read by the opaque-call barrier. Parameters past 63
+        // One bit per `*mut` parameter, read by the opaque-call barrier. Parameters past 63
         // fall outside the mask and the barrier reads them as borrow.
         let move_mask = decl.params.iter().take(64).enumerate()
             .filter(|(_, p)| p.clause.capability.is_move())

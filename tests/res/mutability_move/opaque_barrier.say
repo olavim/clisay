@@ -7,7 +7,7 @@ print(v["k"]); // expect: 1
 
 // @split
 // A borrowed argument handed to a consuming callee is rejected at the boundary.
-fn consumes(x: move mut) { }
+fn consumes(x: *mut) { }
 fn apply(cb, val: mut) {
   cb(val); // error: This argument must survive the call, but the callee would consume it
 }
@@ -17,7 +17,7 @@ apply(consumes, v);
 // @split
 // An owned argument the caller is done with may reach either kind of callee.
 fn borrows(x: mut) { }
-fn consumes(x: move mut) { }
+fn consumes(x: *mut) { }
 fn useIt(cb) {
   say v = mut {};
   cb(v);

@@ -52,8 +52,8 @@ fn param_markers() {
 
 #[test]
 fn param_capability_marker() {
-    // `mut` / `move mut` lead the clause, ahead of the obligation atoms.
-    let ast = parse("fn f(a: mut, b: move mut, c: mut opt) {}");
+    // `mut` / `*mut` lead the clause, ahead of the obligation atoms.
+    let ast = parse("fn f(a: mut, b: *mut, c: mut opt) {}");
     let stmts = top_stmts(&ast);
     let params = &nth_fn(&ast, &stmts, 0).params;
     assert_eq!(params[0].clause.capability, Capability::Mut);
@@ -81,7 +81,7 @@ fn capability_marker_position_is_free() {
         assert_eq!(ast.text(param.clause.names[0]), "opt", "{src}");
     }
 
-    let ast = parse("fn f(x: opt move mut fails) {}");
+    let ast = parse("fn f(x: opt *mut fails) {}");
     let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
     assert_eq!(param.clause.capability, Capability::MoveMut);
     let names: Vec<&str> = param.clause.names.iter().map(|n| ast.text(*n)).collect();
@@ -114,11 +114,12 @@ fn value_mut_wraps_any_operand_optimistically() {
 
 #[test]
 fn capability_marker_rejections() {
-    assert!(try_parse("fn f(x: move) {}").is_err());
+    // `*mut` is one token, so a space between `*` and `mut` is not the move marker.
+    assert!(try_parse("fn f(x: * mut) {}").is_err());
     assert!(try_parse("say x: mut;").is_err());
     assert!(try_parse("type T { a: mut; }").is_err());
     assert!(try_parse("fn f(x: mut mut) {}").is_err());
-    assert!(try_parse("fn f(x: mut move mut) {}").is_err());
+    assert!(try_parse("fn f(x: mut *mut) {}").is_err());
 }
 
 #[test]

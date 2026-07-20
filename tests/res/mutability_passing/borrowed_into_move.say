@@ -1,6 +1,6 @@
-// A borrowed `mut` parameter cannot be moved into a consuming `move mut` parameter on a direct
+// A borrowed `mut` parameter cannot be moved into a consuming `*mut` parameter on a direct
 // call: the caller only lent the value and cannot give it away.
-fn sink(xs: move mut) { }
+fn sink(xs: *mut) { }
 fn launder(ys: mut) {
   sink(ys); // error: 'ys' is borrowed and cannot be moved into a parameter that consumes it
 }
