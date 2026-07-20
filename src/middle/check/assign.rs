@@ -47,6 +47,8 @@ impl<'a> Checker<'a> {
             HirExpr::Index(target, member, is_dot) => self.assign_index(target, member, *is_dot, &typed.flow, lhs, rhs)?,
             _ => {},
         }
+        // A store hands the value to a new owner, so a mutable right side moves.
+        self.move_source(rhs);
         Ok(typed)
     }
 

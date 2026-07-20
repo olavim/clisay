@@ -1,0 +1,13 @@
+type Holder {
+  pub mut data;
+  init() { this.data = mut []; }
+  pub fn leak(): mut { return this.data; }
+}
+// error(full):
+// error: Cannot return the mutable field 'data'; it would move out of the receiver
+//  --> help_return_mutable_field.say:4:31
+//   |
+// 3 |   init() { this.data = mut []; }
+// 4 |   pub fn leak(): mut { return this.data; }
+//   |                               ^^^^^^^^^
+//   = help: freeze or copy it before returning

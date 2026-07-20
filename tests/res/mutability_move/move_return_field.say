@@ -1,0 +1,6 @@
+// Returning a mutable field would move it out of the borrowed receiver; freeze or copy instead.
+type Holder {
+  pub mut data;
+  init() { this.data = mut []; }
+  pub fn leak(): mut { return this.data; } // error: Cannot return the mutable field 'data'; it would move out of the receiver
+}
