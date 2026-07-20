@@ -45,7 +45,8 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
             None => match *inst {
                 Inst::Construct(fields_idx, _) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
                 Inst::BarrierGuard(idx) => len += 1 + ir.barrier_allow(idx).names.len(), // count byte + name indices
-                _ => unreachable!("only Construct and BarrierGuard have a List operand"),
+                Inst::AssertBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
+                _ => unreachable!("only Construct, BarrierGuard, and AssertBorrow have a List operand"),
             },
         }
     }
@@ -119,6 +120,15 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         ArrayMiddle(prefix, suffix) => {
             chunk.write(prefix, pos);
             chunk.write(suffix, pos);
+        }
+
+        AssertBorrow(arg_count, idx) => {
+            let positions = ir.survive_positions(idx);
+            chunk.write(arg_count, pos);
+            chunk.write(positions.len() as u8, pos);
+            for &p in positions {
+                chunk.write(p, pos);
+            }
         }
 
         Invoke(name, arg_count) => {

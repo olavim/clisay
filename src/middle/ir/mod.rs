@@ -50,6 +50,9 @@ pub enum Inst {
     /// Guards an unknown value at a destination: throws any registered witness the destination
     /// does not allow.
     BarrierGuard(u16),
+    /// Asserts an opaque callee borrows the guarded argument positions. Operands are the argument
+    /// count (the callee's stack depth) and an index into the barrier's position list.
+    AssertBorrow(u8, u16),
 
     // Stack / constants
     Pop,
@@ -139,6 +142,7 @@ pub struct Ir {
     /// Brace-construction field-id lists.
     construct_fields: Vec<Vec<u8>>,
     barrier_allows: Vec<BarrierAllow>,
+    survive_positions: Vec<Vec<u8>>,
     witness_names: Vec<Value>,
 }
 
@@ -153,6 +157,7 @@ impl Ir {
             fn_entries: Vec::new(),
             construct_fields: Vec::new(),
             barrier_allows: Vec::new(),
+            survive_positions: Vec::new(),
             witness_names: Vec::new(),
         }
     }
@@ -167,6 +172,18 @@ impl Ir {
 
     pub fn construct_fields(&self, idx: u16) -> &[u8] {
         &self.construct_fields[idx as usize]
+    }
+
+    pub fn add_survive_positions(&mut self, positions: Vec<u8>) -> Result<u16, anyhow::Error> {
+        if self.survive_positions.len() >= u16::MAX as usize {
+            bail!("Too many opaque-call barriers");
+        }
+        self.survive_positions.push(positions);
+        Ok((self.survive_positions.len() - 1) as u16)
+    }
+
+    pub fn survive_positions(&self, idx: u16) -> &[u8] {
+        &self.survive_positions[idx as usize]
     }
 
     pub fn add_barrier_allow(&mut self, allow: BarrierAllow) -> Result<u16, anyhow::Error> {
@@ -282,6 +299,7 @@ impl Ir {
             fn_entries: self.fn_entries,
             construct_fields: self.construct_fields,
             barrier_allows: self.barrier_allows,
+            survive_positions: self.survive_positions,
             witness_names: self.witness_names
         }
     }

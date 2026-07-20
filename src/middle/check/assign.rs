@@ -35,6 +35,8 @@ impl<'a> Checker<'a> {
                     self.locals[i].tag = typed.tag.clone();
                     // The mutability follows the value, so a rebind takes the new value's.
                     self.locals[i].mutability = typed.mutability;
+                    // A rebind installs a fresh value, so any earlier move of the slot is undone.
+                    self.locals[i].move_site = None;
                     self.reset_narrowing(i, matches!(typed.flow, Flow::Clean));
                 } else if self.sigs.types_by_name.contains_key(&name) {
                     // A type binding names a declaration, not a reassignable slot.

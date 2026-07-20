@@ -1,0 +1,5 @@
+// A `: mut` factory returning `mut Ctor()` carries the constructed type's tag, so a method call on
+// its result still runs the callee's argument checks.
+type Foo { pub fn take(x) { } }
+fn make(): mut { return mut Foo(); }
+make().take(null); // error: Cannot pass null as argument 1; the parameter is non-null

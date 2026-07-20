@@ -49,6 +49,42 @@ impl Vm {
         }
     }
 
+    /// The opaque-call mode barrier. An argument the caller must keep alive may not be handed to a
+    /// callee that consumes it, so this asserts the callee borrows the guarded parameter.
+    pub(super) fn op_assert_borrow(&mut self) -> Result<(), anyhow::Error> {
+        let arg_count = self.read_next() as usize;
+        let count = self.read_next() as usize;
+        let callee = self.stack.peek(arg_count);
+        for _ in 0..count {
+            let position = self.read_next() as usize;
+            if self.callee_consumes(callee, position) {
+                return self.error(objects::CONSUMED_BORROW);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a callable consumes its argument at `position`.
+    fn callee_consumes(&self, callee: Value, position: usize) -> bool {
+        if !callee.is_callable() {
+            return false;
+        }
+        let object = callee.as_object();
+        match object.tag() {
+            objects::TAG_CLOSURE => unsafe { &*object.as_closure_ptr() }.consumes(position),
+            objects::TAG_BOUND_METHOD => {
+                let method = unsafe { &*object.as_bound_method_ptr() }.method;
+                method.tag() == objects::TAG_CLOSURE && unsafe { &*method.as_closure_ptr() }.consumes(position)
+            },
+            objects::TAG_TYPE => {
+                let init = unsafe { &*object.as_type_ptr() }.initializer();
+                matches!(init, Some(obj) if obj.tag() == objects::TAG_FUNCTION
+                    && unsafe { &*obj.as_function_ptr() }.consumes(position))
+            },
+            _ => false,
+        }
+    }
+
     pub(super) fn call_native(&mut self, arg_count: usize, native_fn_ptr: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
         let func = unsafe { &*native_fn_ptr };
         check_arity!(self, arg_count, func.arity as usize, func.name);

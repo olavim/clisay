@@ -1,0 +1,8 @@
+// The opaque-call barrier reaches a consuming `move mut` parameter through a bound method too.
+type Box { pub fn eat(x: move mut) { } }
+fn apply(cb, val: mut) {
+  cb(val); // error: This argument must survive the call, but the callee would consume it
+}
+say b = Box();
+say v = mut {};
+apply(b.eat, v);

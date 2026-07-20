@@ -10,6 +10,10 @@ use super::value::{Value, ValueKind};
 /// The runtime diagnostic raised when a mutation hits an immutable value.
 pub const IMMUTABLE_MUTATION: &str = "Cannot mutate an immutable value";
 
+/// The runtime diagnostic raised when an opaque call must keep its argument but the callee would
+/// consume it.
+pub const CONSUMED_BORROW: &str = "This argument must survive the call, but the callee would consume it";
+
 /// Marks a value immutable, then its container children.
 pub fn freeze_value(value: Value) {
     let ValueKind::Object(kind) = value.kind() else { return };
@@ -230,17 +234,27 @@ pub struct ObjFn {
     pub name: *mut ObjString,
     pub arity: u8,
     pub ip_start: usize,
-    pub upvalues: Vec<UpvalueLocation>
+    pub upvalues: Vec<UpvalueLocation>,
+    /// One bit per parameter, set where the parameter takes its argument by `move mut`. The
+    /// opaque-call barrier reads it to tell borrow from move. Parameters past 63 are read as borrow.
+    pub move_mask: u64
 }
 
 impl ObjFn {
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>) -> ObjFn {
+    /// Whether the parameter at `position` consumes its argument, as opposed to borrowing it.
+    #[inline]
+    pub fn consumes(&self, position: usize) -> bool {
+        position < 64 && self.move_mask & (1u64 << position) != 0
+    }
+
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, move_mask: u64) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
             arity,
             ip_start,
-            upvalues
+            upvalues,
+            move_mask
         }
     }
 }
@@ -304,12 +318,19 @@ pub struct ObjClosure {
     pub name: *mut ObjString,
     pub arity: u8,
     pub upvalue_count: u8,
-    pub ip_start: usize
+    pub ip_start: usize,
+    pub move_mask: u64
 }
 
 impl ObjClosure {
     /// Byte offset of the trailing upvalue array.
     const UPVALUES_OFFSET: usize = mem::size_of::<ObjClosure>();
+
+    /// Whether the parameter at `position` consumes its argument, as opposed to borrowing it.
+    #[inline]
+    pub fn consumes(&self, position: usize) -> bool {
+        position < 64 && self.move_mask & (1u64 << position) != 0
+    }
 
     #[inline]
     pub fn alloc_size(count: usize) -> usize {

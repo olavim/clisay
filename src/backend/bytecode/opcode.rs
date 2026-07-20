@@ -97,6 +97,7 @@ opcodes! {
     PopTry => POP_TRY,
     AssertNonNull => ASSERT_NON_NULL,
     BarrierGuard => BARRIER_GUARD(Byte, List),
+    AssertBorrow => ASSERT_BORROW(Byte, List),
 
     // Explicit stack manipulation
     Pop => POP,

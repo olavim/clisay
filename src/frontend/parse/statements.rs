@@ -143,6 +143,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     let open = self.tokens.expect(TokenType::LeftParen)?.pos.clone();
                     let mutable = self.parse_mut();
                     let param = self.parse_identifier_expr()?;
+                    // A caught value is always nullable, so a marker or clause carries no meaning,
+                    // but accept the parameter surface so a catch binding parses like any other.
+                    self.parse_nullable();
+                    self.parse_slot_clause(SlotKind::Param)?;
                     self.tokens.expect_close(TokenType::RightParen, &open)?;
                     (Some(param), mutable)
                 },

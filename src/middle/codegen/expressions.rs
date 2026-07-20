@@ -395,6 +395,13 @@ impl<'a> Compiler<'a> {
         for arg in args {
             self.expression(arg)?;
         }
+
+        // An opaque call that must keep an argument asserts the callee borrows it, not consumes it.
+        if let Some(positions) = self.barriers.survive(callee) {
+            let idx = self.ir.add_survive_positions(positions.to_vec())?;
+            self.emit(Inst::AssertBorrow(args.len() as u8, idx), callee);
+        }
+
         self.emit(Inst::Call(args.len() as u8), callee);
 
         Ok(())

@@ -152,6 +152,11 @@ impl Capability {
     pub fn is_mut(self) -> bool {
         matches!(self, Capability::Mut | Capability::MoveMut)
     }
+
+    /// Whether the marker consumes its argument, as opposed to borrowing it.
+    pub fn is_move(self) -> bool {
+        matches!(self, Capability::MoveMut)
+    }
 }
 
 /// A parsed `:` clause on a slot (a variable, parameter, field, or return).
