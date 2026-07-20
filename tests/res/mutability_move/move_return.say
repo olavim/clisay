@@ -1,0 +1,11 @@
+// An early return in a branch moves the value only on that path; the fall-through keeps it live.
+fn build(flag): mut {
+  say a = mut [1, 2];
+  if flag { return a; }
+  a[0] = 3;
+  return a;
+}
+say x = build(false);
+print(x[0]); // expect: 3
+say y = build(true);
+print(y[0]); // expect: 1

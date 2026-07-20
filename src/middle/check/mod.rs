@@ -23,7 +23,7 @@ use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::signatures::{Mutability, Signatures, TypeTag};
 use self::construct::Seal;
 use self::matching::whole_value_binders;
-use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
 pub use barriers::{Barrier, Barriers, WitnessSet};
 
@@ -105,31 +105,33 @@ struct Local {
     container: bool,
     /// The value-mutability of the value in the slot.
     mutability: Mutability,
+    /// The expression that moved the mutable value out, or `None` while the binding is live.
+    move_site: Option<HirId<HirExpr>>,
 }
 
 impl Local {
     fn param(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
-        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown }
+        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, move_site: None }
     }
 
     fn catch(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
-        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown }
+        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, move_site: None }
     }
 
     fn binder(name: Symbol) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, mutability: Mutability::Unknown }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, mutability: Mutability::Unknown, move_site: None }
     }
 
     fn binder_owing(name: Symbol, owed: HashSet<Symbol>) -> Local {
-        Local { name, owed, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, mutability: Mutability::Unknown }
+        Local { name, owed, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, mutability: Mutability::Unknown, move_site: None }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false, container: false, mutability: Mutability::Unknown }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false, container: false, mutability: Mutability::Unknown, move_site: None }
     }
 
     fn value(name: Symbol, owed: HashSet<Symbol>, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
-        Local { name, owed, mutable, assigned, tag, func: None, binder: false, container: false, mutability: Mutability::Unknown }
+        Local { name, owed, mutable, assigned, tag, func: None, binder: false, container: false, mutability: Mutability::Unknown, move_site: None }
     }
 }
 
@@ -155,9 +157,11 @@ struct LocalFlow {
     assigned: bool,
     tag: TypeTag,
     mutability: Mutability,
+    move_site: Option<HirId<HirExpr>>,
 }
 
 /// A snapshot of flow facts that branches widen back at a join.
+#[derive(Clone)]
 struct FlowSnapshot {
     locals: Vec<LocalFlow>,
     narrowed: HashMap<NarrowKey, HashSet<Symbol>>,
@@ -244,6 +248,25 @@ impl<'a> Checker<'a> {
             .map(|i| self.frame_start + i)
     }
 
+    /// Consumes the local an expression names when it holds a mutable value. A move leaves the
+    /// source dead, so a later read is use-after-move.
+    fn move_source(&mut self, node: &HirId<HirExpr>) {
+        let HirExpr::Identifier(name) = self.hir.get(node) else { return };
+        if let Some(i) = self.frame_index_of(*name) {
+            if self.locals[i].mutability == Mutability::Mutable {
+                self.locals[i].move_site = Some(*node);
+            }
+        }
+    }
+
+    /// Stores a value into a container. The value persists there, so a `discharge to escape` value
+    /// is rejected, and a mutable value moves in as the container becomes its owner.
+    fn store_into_container(&mut self, flow: &Flow, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        self.reject_escape(flow, expr)?;
+        self.move_source(expr);
+        Ok(())
+    }
+
     /// The nearest binding of `name` across all frames. Functions resolve across frames so a
     /// nested body can call an enclosing function.
     fn func_of(&self, name: Symbol) -> Option<HirId<HirStmt>> {
@@ -297,9 +320,12 @@ impl<'a> Checker<'a> {
                 Some(e) => {
                     let typed = self.expr(e)?;
                     self.check_return_mutability(&typed, e)?;
+                    self.check_return_field_move(e)?;
                     if let Some(shape) = self.current_return {
                         self.check_return(&typed.flow, shape, e)?;
                     }
+                    // Returning a mutable value moves it out to the caller.
+                    self.move_source(e);
                 },
                 // A `!` function falls back to null on a bare return, which it may not.
                 None if self.current_return == Some(ReturnShape::NonNull) => {
@@ -333,7 +359,17 @@ impl<'a> Checker<'a> {
                     }
                     Ok(c.snapshot())
                 })?;
-                self.join(&then_snap, &else_snap);
+
+                // A branch that returns or throws never reaches the code after the if, so its end
+                // state is not merged.
+                let then_diverges = self.hir.definitely_returns(then);
+                let else_diverges = otherwise.as_ref().is_some_and(|o| self.hir.stmt_returns(o));
+                match (then_diverges, else_diverges) {
+                    (false, false) => self.join(&then_snap, &else_snap),
+                    (true, false) => self.restore(&else_snap),
+                    (false, true) => self.restore(&then_snap),
+                    (true, true) => {},
+                }
             },
             HirStmt::Try(body, catch, finally) => {
                 self.expr(body)?;
@@ -353,13 +389,21 @@ impl<'a> Checker<'a> {
                 if typed.flow.is_void() {
                     return Err(self.error("This call returns no value, so its result cannot be matched here".to_string(), scrutinee));
                 }
+
                 // A match discharges by ruling out witnesses. A guard-free arm total over a witness
                 // clears it for the arms below.
                 let mut remaining = match &typed.flow {
                     Flow::Bad { obligations, .. } => obligations.clone(),
                     _ => HashSet::new(),
                 };
+
+                // Arms are mutually exclusive, so each runs from the same pre-match state and only
+                // the arms that fall through decide the state after the match.
+                let baseline = self.snapshot();
+                let mut fallthrough: Vec<FlowSnapshot> = Vec::new();
+                let mut exhaustive = false;
                 for arm in arms {
+                    self.restore(&baseline);
                     let whole_binders = whole_value_binders(&arm.matcher);
                     let mut binders = arm.matcher.binders();
                     if let Some(guard) = &arm.guard {
@@ -370,8 +414,32 @@ impl<'a> Checker<'a> {
                         c.expr(&arm.body)?;
                         Ok(())
                     })?;
+
+                    // A returning or throwing arm never reaches the code after the match.
+                    if !self.hir.definitely_returns(&arm.body) {
+                        fallthrough.push(self.snapshot());
+                    }
+
+                    // An irrefutable guardless arm always matches, so no value slips past unmatched.
+                    exhaustive |= arm.guard.is_none() && matcher_irrefutable(&arm.matcher);
                     let ruled = self.arm_rules_out(arm, &remaining);
                     remaining.retain(|w| !ruled.contains(w));
+                }
+
+                // A non-exhaustive match can fall through with no arm matching, keeping the pre-match
+                // state. Narrowing does not cross a match, so the pre-match narrowings stay.
+                let mut outcomes = fallthrough;
+                if !exhaustive {
+                    outcomes.push(baseline.clone());
+                }
+
+                match outcomes.split_first() {
+                    Some((first, rest)) => {
+                        self.restore(first);
+                        for snap in rest { self.join_in(snap); }
+                        self.narrowed = baseline.narrowed;
+                    },
+                    None => self.restore(&baseline),
                 }
             },
         }
@@ -527,6 +595,7 @@ impl<'a> Checker<'a> {
             self.reject_this_store(value)?;
             let typed = self.expr(value)?;
             self.check_into_slot(&typed.flow, &owed, name, value)?;
+            self.move_source(value);
             (true, typed.tag, typed.mutability)
         } else {
             (false, TypeTag::Unknown, Mutability::Unknown)
@@ -646,15 +715,14 @@ impl<'a> Checker<'a> {
 
     fn literal_children(&mut self, lit: &HirLiteral, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match lit {
-            // Putting a value into a container persists it, which a `discharge to escape` value forbids.
             HirLiteral::Array(elems) => for e in elems {
                 let t = self.expr(e)?;
-                self.reject_escape(&t.flow, e)?;
+                self.store_into_container(&t.flow, e)?;
             },
             HirLiteral::Dict(pairs) => for (k, v) in pairs {
                 self.expr(k)?;
                 let t = self.expr(v)?;
-                self.reject_escape(&t.flow, v)?;
+                self.store_into_container(&t.flow, v)?;
             },
             HirLiteral::Lambda(decl) => self.lambda(decl, node)?,
             _ => {},
@@ -669,6 +737,14 @@ impl<'a> Checker<'a> {
 
         if self.locals[i].func.is_some() {
             return Ok(Typed::unknown());
+        }
+
+        if let Some(site) = self.locals[i].move_site {
+            let msg = format!("'{}' is used after it is moved", self.hir.text(name));
+            // Caret both the use and the move so the reader sees where the value went.
+            return Err(anyhow!("{}", Diagnostic::new(msg, self.hir.pos(expr).clone())
+                .with_label("used here")
+                .with_span(self.hir.pos(&site).clone(), "moved here")));
         }
 
         if !self.locals[i].assigned && !self.locals[i].owed.contains(&self.sigs.opt) {
@@ -805,3 +881,12 @@ impl<'a> Checker<'a> {
 
 }
 
+fn matcher_irrefutable(matcher: &HirMatcher) -> bool {
+    match matcher {
+        HirMatcher::Wildcard | HirMatcher::Binder(_) => true,
+        HirMatcher::As(_, inner) => matcher_irrefutable(inner),
+        HirMatcher::And(parts) => parts.iter().all(matcher_irrefutable),
+        HirMatcher::Or(alternatives) => alternatives.iter().any(matcher_irrefutable),
+        _ => false,
+    }
+}

@@ -1,0 +1,11 @@
+// Storing a mutable value into a container or field moves it in.
+say a = mut [1];
+say holder = mut [a];
+print(a[0]); // error: 'a' is used after it is moved
+
+// @split
+type Box { pub mut v; init() { this.v = 0; } }
+say a = mut [1];
+say b = mut Box();
+b.v = a;
+print(a[0]); // error: 'a' is used after it is moved

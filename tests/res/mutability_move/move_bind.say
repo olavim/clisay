@@ -1,0 +1,15 @@
+// Binding a mutable value moves it: the new owner is live, the source is dead.
+say a = mut [1, 2];
+say b = a;
+print(b[0]); // expect: 1
+
+// @split
+say a = mut [1, 2];
+say b = a;
+print(a[0]); // error: 'a' is used after it is moved
+
+
+// @split
+say a = mut [1, 2];
+{ say b = a; }
+print(a[0]); // error: 'a' is used after it is moved

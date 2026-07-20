@@ -13,6 +13,23 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// Returning a field of a receiver would move a mutable value out of a receiver the caller only
+    /// lends. A `: mut` function promises an owned mutable, so a bare field return is rejected.
+    pub(super) fn check_return_field_move(&self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if !self.current_return_mut {
+            return Ok(());
+        }
+        let HirExpr::Index(target, member, true) = self.hir.get(node) else { return Ok(()) };
+        let Some(field) = self.member_text(member) else { return Ok(()) };
+        if !matches!(self.hir.get(target), HirExpr::This | HirExpr::Identifier(_)) {
+            return Ok(());
+        }
+        Err(self.error_help(
+            format!("Cannot return the mutable field '{field}'; it would move out of the receiver"),
+            node,
+            "freeze or copy it before returning"))
+    }
+
     /// Checks a `return <value>` against the declared return shape: a `!` rejects a possibly-null
     /// or void value, a `?` accepts any value, and a void function may not return a value at all.
     pub(super) fn check_return(&mut self, flow: &Flow, shape: ReturnShape, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {

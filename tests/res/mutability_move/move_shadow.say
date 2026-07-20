@@ -1,0 +1,11 @@
+// A `move mut` param consumes its argument; shadow-rebinding the returned value keeps one owner.
+fn consume(xs: move mut): mut { return xs; }
+say arr = mut [1, 2];
+say arr = consume(arr);
+print(arr[0]); // expect: 1
+
+// @split
+fn consume(xs: move mut) {}
+say a = mut [1];
+consume(a);
+consume(a); // error: 'a' is used after it is moved

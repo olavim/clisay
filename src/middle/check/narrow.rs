@@ -150,6 +150,7 @@ impl<'a> Checker<'a> {
                 assigned: l.assigned,
                 tag: l.tag.clone(),
                 mutability: l.mutability,
+                move_site: l.move_site,
             }).collect(),
             narrowed: self.narrowed.clone(),
         }
@@ -160,8 +161,19 @@ impl<'a> Checker<'a> {
             local.assigned = snap.assigned;
             local.tag = snap.tag.clone();
             local.mutability = snap.mutability;
+            local.move_site = snap.move_site;
         }
         self.narrowed = flow.narrowed.clone();
+    }
+
+    /// Merges another branch's end state into the current local flow.
+    pub(super) fn join_in(&mut self, other: &FlowSnapshot) {
+        for (local, o) in self.locals.iter_mut().zip(&other.locals) {
+            local.assigned = local.assigned && o.assigned;
+            local.tag = if local.tag == o.tag { local.tag.clone() } else { TypeTag::Unknown };
+            local.mutability = if local.mutability == o.mutability { local.mutability } else { Mutability::Unknown };
+            local.move_site = local.move_site.or(o.move_site);
+        }
     }
 
     /// Merges two branch snapshots.
@@ -174,6 +186,7 @@ impl<'a> Checker<'a> {
             local.mutability = if then_local.mutability == else_local.mutability
                 { then_local.mutability } else
                 { Mutability::Unknown };
+            local.move_site = then_local.move_site.or(else_local.move_site);
         }
     }
 }

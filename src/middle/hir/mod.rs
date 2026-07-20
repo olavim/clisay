@@ -446,7 +446,7 @@ impl Hir {
         }
     }
 
-    fn stmt_returns(&self, stmt: &HirId<HirStmt>) -> bool {
+    pub(crate) fn stmt_returns(&self, stmt: &HirId<HirStmt>) -> bool {
         match self.get(stmt) {
             HirStmt::Return(_) | HirStmt::Throw(_) => true,
             HirStmt::Block(body) => self.definitely_returns(body),

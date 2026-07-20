@@ -1,0 +1,6 @@
+// freeze is a discharge, not a move: the source survives, now immutable and freely aliasable.
+say a = mut [1, 2];
+freeze(a);
+say b = a;
+print(a[0]); // expect: 1
+print(b[0]); // expect: 1

@@ -72,9 +72,8 @@ impl<'a> Checker<'a> {
         if let Some(sig) = native::native_method(name) {
             self.check_native_args(&sig, arg_types, args)?;
             if sig.container == Container::Preserves {
-                // A stored argument persists into the container, which a `discharge to escape` value forbids.
                 for (typed, arg) in arg_types.iter().zip(args) {
-                    self.reject_escape(&typed.flow, arg)?;
+                    self.store_into_container(&typed.flow, arg)?;
                 }
                 self.preserve_into_receiver(receiver, arg_types);
             }
@@ -112,7 +111,19 @@ impl<'a> Checker<'a> {
         let Some(sig) = sigs.fns.get(&stmt) else { return Ok(()) };
         let nullable: Vec<bool> = sig.param_clauses.iter().map(|p| p.contains(&sigs.opt)).collect();
         self.check_arg_mutability(&sig.param_markers, arg_types, args)?;
-        self.check_args(&nullable, arg_types, args)
+        self.check_args(&nullable, arg_types, args)?;
+        self.consume_move_args(&sig.param_markers, args);
+        Ok(())
+    }
+
+    /// Moves each argument passed to a `move mut` parameter. A plain `mut` parameter borrows, so
+    /// it leaves the argument live.
+    fn consume_move_args(&mut self, markers: &[Capability], args: &[HirId<HirExpr>]) {
+        for (i, &marker) in markers.iter().enumerate() {
+            if matches!(marker, Capability::MoveMut) {
+                if let Some(arg) = args.get(i) { self.move_source(arg); }
+            }
+        }
     }
 
     /// Matches each argument's mutability against its parameter marker.
