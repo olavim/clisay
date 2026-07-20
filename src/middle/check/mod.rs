@@ -23,7 +23,7 @@ use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::signatures::{Mutability, Signatures, TypeTag};
 use self::construct::Seal;
 use self::matching::whole_value_binders;
-use crate::middle::hir::{BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::hir::{BinOp, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
 pub use barriers::{Barrier, Barriers, WitnessSet};
 
@@ -35,6 +35,7 @@ pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barrie
         null_barriers: checker.barriers,
         boundary_barriers: checker.boundary_barriers,
         witness_tests: checker.witness_tests,
+        survive_barriers: checker.survive_barriers,
         witness_names,
     })
 }
@@ -105,33 +106,40 @@ struct Local {
     container: bool,
     /// The value-mutability of the value in the slot.
     mutability: Mutability,
+    borrowed: bool,
     /// The expression that moved the mutable value out, or `None` while the binding is live.
     move_site: Option<HirId<HirExpr>>,
 }
 
 impl Local {
+    /// A binding with every fact at its neutral default. Each named constructor overrides only the
+    /// fields that distinguish it, so a new field is added here once.
+    fn base(name: Symbol) -> Local {
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, borrowed: false, move_site: None }
+    }
+
     fn param(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
-        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, move_site: None }
+        Local { owed, mutable, ..Local::base(name) }
     }
 
     fn catch(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
-        Local { name, owed, mutable, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, move_site: None }
+        Local::param(name, owed, mutable)
     }
 
     fn binder(name: Symbol) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, mutability: Mutability::Unknown, move_site: None }
+        Local { binder: true, ..Local::base(name) }
     }
 
     fn binder_owing(name: Symbol, owed: HashSet<Symbol>) -> Local {
-        Local { name, owed, mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: true, container: false, mutability: Mutability::Unknown, move_site: None }
+        Local { owed, binder: true, ..Local::base(name) }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: Some(stmt), binder: false, container: false, mutability: Mutability::Unknown, move_site: None }
+        Local { func: Some(stmt), ..Local::base(name) }
     }
 
     fn value(name: Symbol, owed: HashSet<Symbol>, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
-        Local { name, owed, mutable, assigned, tag, func: None, binder: false, container: false, mutability: Mutability::Unknown, move_site: None }
+        Local { owed, mutable, assigned, tag, ..Local::base(name) }
     }
 }
 
@@ -195,6 +203,9 @@ struct Checker<'a> {
     boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
     /// Discharge nodes whose operand owes an object witness.
     witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
+    /// Opaque calls whose argument must survive, keyed by callee node to the argument positions
+    /// that need the callee to borrow rather than consume.
+    survive_barriers: HashMap<HirId<HirExpr>, Vec<u8>>,
 }
 
 impl<'a> Checker<'a> {
@@ -216,6 +227,7 @@ impl<'a> Checker<'a> {
             barriers: HashSet::new(),
             boundary_barriers: HashMap::new(),
             witness_tests: HashMap::new(),
+            survive_barriers: HashMap::new(),
         }
     }
 
@@ -246,6 +258,15 @@ impl<'a> Checker<'a> {
     fn frame_index_of(&self, name: Symbol) -> Option<usize> {
         self.locals[self.frame_start..].iter().rposition(|l| l.name == name)
             .map(|i| self.frame_start + i)
+    }
+
+    /// Marks an enclosing-frame mutable binding moved when a nested function reads it.
+    fn capture_enclosing(&mut self, name: Symbol, node: &HirId<HirExpr>) {
+        let Some(i) = self.locals[..self.frame_start].iter().rposition(|l| l.name == name) else { return };
+        let local = &mut self.locals[i];
+        if local.func.is_none() && local.mutability == Mutability::Mutable && local.move_site.is_none() {
+            local.move_site = Some(*node);
+        }
     }
 
     /// Consumes the local an expression names when it holds a mutable value. A move leaves the
@@ -618,6 +639,8 @@ impl<'a> Checker<'a> {
             let mut local = Local::param(name, self.clause_owed(&param.clause), param.mutable);
             local.container = param.clause.container;
             local.mutability = Mutability::param(param.clause.capability);
+            // A plain `mut` parameter borrows its argument; `move mut` owns it.
+            local.borrowed = param.clause.capability == Capability::Mut;
             self.locals.push(local);
         }
         let result = body(self);
@@ -732,6 +755,8 @@ impl<'a> Checker<'a> {
 
     fn identifier(&mut self, name: Symbol, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let Some(i) = self.frame_index_of(name) else {
+            // A read that resolves to an enclosing frame is a closure capture.
+            self.capture_enclosing(name, expr);
             return Ok(Typed::unknown());
         };
 

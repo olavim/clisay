@@ -1,0 +1,13 @@
+// Capturing a mutable value in a closure moves it, so the enclosing binding then goes dead.
+say a = mut {};
+a["k"] = 1;
+say f = () => { print(a["k"]); };
+print(a["k"]); // error: 'a' is used after it is moved
+
+// @split
+// Freezing before the capture leaves the value immutable, so the capture is not a move.
+say a = mut {};
+a["k"] = 1;
+freeze(a);
+say f = () => { print(a["k"]); };
+print(a["k"]); // expect: 1

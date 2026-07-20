@@ -16,7 +16,16 @@ fn main() {
 
     let file = args[1].as_str();
     let src = std::fs::read_to_string(file).unwrap();
-    if let Err(err) = run(file, &src) {
+    // The compiler passes recurse with expression depth, so a deeply nested program can exhaust the
+    // main thread's stack. Run on a worker thread with a generous one.
+    let file = file.to_string();
+    let result = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || run(&file, &src))
+        .unwrap()
+        .join()
+        .unwrap();
+    if let Err(err) = result {
         eprintln!("{err}");
         std::process::exit(1);
     }

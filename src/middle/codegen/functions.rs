@@ -27,7 +27,14 @@ impl<'a> Compiler<'a> {
         let name = self.gc.intern(self.hir.text(decl.name));
         let arity = decl.params.len() as u8;
         let upvalues = self.bindings.upvalues(&decl.body).to_vec();
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues));
+
+        // One bit per `move mut` parameter, read by the opaque-call barrier. Parameters past 63
+        // fall outside the mask and the barrier reads them as borrow.
+        let move_mask = decl.params.iter().take(64).enumerate()
+            .filter(|(_, p)| p.clause.capability.is_move())
+            .fold(0u64, |mask, (i, _)| mask | (1u64 << i));
+
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, move_mask));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))

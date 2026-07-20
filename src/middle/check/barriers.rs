@@ -35,6 +35,9 @@ pub struct Barriers {
     pub(super) boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
     /// Discharge nodes (`??`, `?`, `!`) whose operand owes an object witness.
     pub(super) witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
+    /// Opaque calls whose argument must survive, keyed by callee node to the argument positions
+    /// the callee must borrow.
+    pub(super) survive_barriers: HashMap<HirId<HirExpr>, Vec<u8>>,
     /// Every registered object witness name, the VM's registry for recognizing a crossing value
     /// as a witness at a boundary barrier.
     pub(super) witness_names: Vec<Symbol>,
@@ -61,6 +64,11 @@ impl Barriers {
         self.witness_tests.get(node)
     }
 
+    /// The argument positions an opaque call at this callee must assert the callee borrows.
+    pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[u8]> {
+        self.survive_barriers.get(callee).map(Vec::as_slice)
+    }
+
     pub fn len(&self) -> usize {
         self.null_barriers.len() + self.boundary_barriers.len()
     }
@@ -74,6 +82,11 @@ impl<'a> Checker<'a> {
     /// Marks a `!` operand owing only `opt`, whose null state is asserted at runtime.
     pub(super) fn add_barrier(&mut self, node: &HirId<HirExpr>) {
         self.barriers.insert(*node);
+    }
+
+    /// Records that an opaque call must assert its callee borrows the given argument positions.
+    pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<u8>) {
+        self.survive_barriers.insert(*callee, positions);
     }
 
     /// Records the guard for an unknown value reaching a destination accepting `accepted`. The

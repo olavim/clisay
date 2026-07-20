@@ -39,11 +39,37 @@ impl<'a> Checker<'a> {
                         return Ok(result);
                     }
                 }
-                self.indirect_call(callee)
+                self.check_opaque_call(callee, args, &arg_types)
             },
             HirExpr::Index(receiver, member, _) => self.method_call(callee, receiver, member, &arg_types, args),
-            _ => self.indirect_call(callee),
+            _ => self.check_opaque_call(callee, args, &arg_types),
         }
+    }
+
+    /// Checks an opaque call. Each mutable argument is either consumed or, when it is a borrow
+    /// the caller cannot give away, guarded by a runtime assertion that the callee borrows it.
+    fn check_opaque_call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[Typed]) -> Result<Typed, anyhow::Error> {
+        let mut survive = Vec::new();
+        for (i, typed) in arg_types.iter().enumerate() {
+            if typed.mutability != Mutability::Mutable {
+                continue;
+            }
+            if self.arg_is_borrowed(&args[i]) {
+                survive.push(i as u8);
+            } else {
+                // An owned mutable handed to an opaque call is consumed by it.
+                self.move_source(&args[i]);
+            }
+        }
+        if !survive.is_empty() {
+            self.record_survive_barrier(callee, survive);
+        }
+        self.indirect_call(callee)
+    }
+
+    fn arg_is_borrowed(&self, arg: &HirId<HirExpr>) -> bool {
+        let HirExpr::Identifier(name) = self.hir.get(arg) else { return false };
+        self.frame_index_of(*name).is_some_and(|i| self.locals[i].borrowed)
     }
 
     /// Downgrades a frozen argument's slot to immutable in place.
@@ -134,11 +160,21 @@ impl<'a> Checker<'a> {
                 if typed.mutability == Mutability::Immutable {
                     return Err(self.needs_mut_error(&args[i]));
                 }
+                // A borrow cannot be given away, so it may not feed a consuming parameter.
+                if marker.is_move() && self.arg_is_borrowed(&args[i]) {
+                    return Err(self.consumes_borrow_error(&args[i]));
+                }
             } else if typed.mutability == Mutability::Mutable {
                 return Err(self.freeze_it_error(&args[i]));
             }
         }
         Ok(())
+    }
+
+    /// The error for handing a borrowed value to a parameter that consumes it.
+    fn consumes_borrow_error(&self, arg: &HirId<HirExpr>) -> anyhow::Error {
+        let subject = self.arg_subject(arg);
+        self.error(format!("{subject} is borrowed and cannot be moved into a parameter that consumes it"), arg)
     }
 
     /// The error for passing a mutable value where an immutable one is expected.

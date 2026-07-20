@@ -160,9 +160,10 @@ pub fn collect(hir: &Hir) -> Signatures {
     if let Some(err) = err {
         sigs.witnesses.insert(fails, Witness::Type(err));
     }
-    let mut collector = Collector { hir, opt, fails, err, sigs };
+    let mut collector = Collector { hir, opt, fails, err, sigs, returns: HashMap::new() };
     collector.stmt(&hir.get_root());
     collector.register_obligations();
+    collector.collect_all_returns();
     collector.infer_ret_tags();
     collector.infer_ret_mut();
     collector.infer_propagated();
@@ -175,6 +176,7 @@ struct Collector<'a> {
     fails: Symbol,
     err: Option<Symbol>,
     sigs: Signatures,
+    returns: HashMap<HirId<HirStmt>, Vec<HirId<HirExpr>>>,
 }
 
 impl<'a> Collector<'a> {
@@ -360,8 +362,7 @@ impl<'a> Collector<'a> {
         loop {
             let mut changed = false;
             for stmt in &stmts {
-                let HirStmt::Fn(decl) = self.hir.get(stmt) else { continue };
-                let tag = self.infer_body_tag(&decl.body);
+                let tag = self.infer_body_tag(&self.returns[stmt]);
                 if self.sigs.ret_tags.get(stmt) != Some(&tag) {
                     self.sigs.ret_tags.insert(*stmt, tag);
                     changed = true;
@@ -377,20 +378,29 @@ impl<'a> Collector<'a> {
         let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
         for stmt in stmts {
             let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
-            let mutability = self.ret_mut_of(decl);
+            let mutability = self.ret_mut_of(decl, &self.returns[&stmt]);
             self.sigs.ret_mut.insert(stmt, mutability);
+        }
+    }
+
+    /// Walks each function body once, so the tag and mutability passes share the return list.
+    fn collect_all_returns(&mut self) {
+        let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
+        for stmt in stmts {
+            let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
+            let mut returns = Vec::new();
+            self.collect_returns(&decl.body, &mut returns);
+            self.returns.insert(stmt, returns);
         }
     }
 
     /// A function's return capability. A `: mut` grant hands back a mutable. An untagged body
     /// freezes any mutable it returns, so its result is immutable when every return is a value the
     /// pass can prove mutable.
-    fn ret_mut_of(&self, decl: &HirFnDecl) -> Mutability {
+    fn ret_mut_of(&self, decl: &HirFnDecl, returns: &[HirId<HirExpr>]) -> Mutability {
         if decl.clause.capability.is_mut() {
             return Mutability::Mutable;
         }
-        let mut returns = Vec::new();
-        self.collect_returns(&decl.body, &mut returns);
         if !returns.is_empty() && returns.iter().all(|r| self.returns_mutable(r)) {
             Mutability::Immutable
         } else {
@@ -413,12 +423,10 @@ impl<'a> Collector<'a> {
     }
 
     /// The joined return type tag of a body: a single tag if every return agrees, else unknown.
-    fn infer_body_tag(&self, body: &HirId<HirExpr>) -> TypeTag {
-        let mut returns = Vec::new();
-        self.collect_returns(body, &mut returns);
+    fn infer_body_tag(&self, returns: &[HirId<HirExpr>]) -> TypeTag {
         let mut joined: Option<TypeTag> = None;
         for ret in returns {
-            let tag = self.classify_return(&ret);
+            let tag = self.classify_return(ret);
             joined = Some(match joined {
                 None => tag,
                 Some(prev) if prev == tag => prev,
@@ -431,6 +439,8 @@ impl<'a> Collector<'a> {
     fn classify_return(&self, expr: &HirId<HirExpr>) -> TypeTag {
         match self.hir.get(expr) {
             HirExpr::This => TypeTag::SelfType,
+            // A `: mut` factory returns `mut Ctor()`, so classify the wrapped construction.
+            HirExpr::Mut(inner) => self.classify_return(inner),
             HirExpr::Construct(callee, _, _) => {
                 self.sigs.type_named(self.hir, callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
             },

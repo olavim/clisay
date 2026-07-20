@@ -7,6 +7,12 @@ extern crate test_collector;
 mod common;
 
 fn main() {
+    // The compiler passes recurse with expression depth, and debug frames are large, so a deeply
+    // nested program can exhaust a default test-thread stack. Widen it before any thread spawns.
+    if std::env::var_os("RUST_MIN_STACK").is_none() {
+        std::env::set_var("RUST_MIN_STACK", "67108864");
+    }
+
     let mut args = libtest_mimic::Arguments::from_args();
     args.filter = args.filter.map(|name| name.replace("_test_dummy", ""));
     if args.exact {
