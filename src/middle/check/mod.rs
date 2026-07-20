@@ -639,7 +639,7 @@ impl<'a> Checker<'a> {
             let mut local = Local::param(name, self.clause_owed(&param.clause), param.mutable);
             local.container = param.clause.container;
             local.mutability = Mutability::param(param.clause.capability);
-            // A plain `mut` parameter borrows its argument; `move mut` owns it.
+            // A plain `mut` parameter borrows its argument; `*mut` owns it.
             local.borrowed = param.clause.capability == Capability::Mut;
             self.locals.push(local);
         }

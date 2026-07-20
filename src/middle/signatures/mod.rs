@@ -20,7 +20,7 @@ pub struct FnSig {
 }
 
 /// The value-mutability a value carries as it flows: the capability lattice the check pass tracks,
-/// distinct from `Capability`, the syntactic `mut`/`move mut` marker a clause declares.
+/// distinct from `Capability`, the syntactic `mut`/`*mut` marker a clause declares.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mutability {
     /// A `mut` parameter or a `: mut` return: the value may be mutated.

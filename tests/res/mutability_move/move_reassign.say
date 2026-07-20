@@ -1,5 +1,5 @@
 // Rebinding a moved slot installs a fresh value, so the earlier move no longer bars a read.
-fn consume(xs: move mut) { }
+fn consume(xs: *mut) { }
 say mut a = mut [1];
 consume(a);
 a = mut [2];

@@ -142,7 +142,7 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Moves each argument passed to a `move mut` parameter. A plain `mut` parameter borrows, so
+    /// Moves each argument passed to a `*mut` parameter. A plain `mut` parameter borrows, so
     /// it leaves the argument live.
     fn consume_move_args(&mut self, markers: &[Capability], args: &[HirId<HirExpr>]) {
         for (i, &marker) in markers.iter().enumerate() {

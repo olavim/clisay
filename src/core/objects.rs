@@ -235,7 +235,7 @@ pub struct ObjFn {
     pub arity: u8,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>,
-    /// One bit per parameter, set where the parameter takes its argument by `move mut`. The
+    /// One bit per parameter, set where the parameter takes its argument by `*mut`. The
     /// opaque-call barrier reads it to tell borrow from move. Parameters past 63 are read as borrow.
     pub move_mask: u64
 }

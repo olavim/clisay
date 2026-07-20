@@ -143,7 +143,7 @@ pub enum Capability {
     None,
     /// `mut`: a borrowed mutable value.
     Mut,
-    /// `move mut`: a moved mutable value.
+    /// `*mut`: a moved mutable value.
     MoveMut,
 }
 

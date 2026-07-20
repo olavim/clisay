@@ -147,6 +147,7 @@ fn render_help(width: usize, help: &[String]) -> String {
 static REGEX_STRING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"\\]|\\.)*""#).unwrap());
 static REGEX_NUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?").unwrap());
 static REGEX_ALPHANUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[a-zA-Z_][a-zA-Z0-9_]*").unwrap());
+static REGEX_STAR_MUT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*mut\b").unwrap());
 static REGEX_COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\/\/[^\n\r]*").unwrap());
 static REGEX_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\r\n|\r|\n)").unwrap());
 static REGEX_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\S\r\n]+").unwrap());
@@ -298,6 +299,10 @@ fn next_token(input: &str, input_index: usize, pos: &SourcePosition) -> Result<T
     
     if let Some(end) = find_at(&REGEX_STRING, input, input_index) {
         return Ok(Token::new(TokenType::StringLiteral, &input[input_index..end]));
+    }
+
+    if let Some(end) = find_at(&REGEX_STAR_MUT, input, input_index) {
+        return Ok(Token::new(TokenType::StarMut, &input[input_index..end]));
     }
 
     // Match the longest punctuation operator first, so `<<=` beats `<<` beats `<`.
