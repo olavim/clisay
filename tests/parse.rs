@@ -222,7 +222,7 @@ fn container_malformed_insides_get_targeted_errors() {
 
 #[test]
 fn obligation_declaration() {
-    let ast = parse("obligation tainted; obligation parsed: discharge to use Unparsed; obligation borrowed: discharge to escape; obligation held: discharge before drop;");
+    let ast = parse("obligation tainted; obligation parsed: discharge to use Unparsed; obligation borrowed: no persist; obligation held: no drop;");
     let stmts = top_stmts(&ast);
 
     let Stmt::Obligation { name, witness, rule } = ast.get(&stmts[0]) else { panic!("not an obligation") };
@@ -237,16 +237,17 @@ fn obligation_declaration() {
 
     let Stmt::Obligation { witness, rule, .. } = ast.get(&stmts[2]) else { panic!("not an obligation") };
     assert!(witness.is_none());
-    assert_eq!(*rule, ObligationRule::ToEscape);
+    assert_eq!(*rule, ObligationRule::NoPersist);
 
     let Stmt::Obligation { rule, .. } = ast.get(&stmts[3]) else { panic!("not an obligation") };
-    assert_eq!(*rule, ObligationRule::BeforeDrop);
+    assert_eq!(*rule, ObligationRule::NoDrop);
 }
 
 #[test]
 fn obligation_declaration_rejections() {
-    assert!(try_parse("obligation bad: discharge to escape Row;").is_err());
-    assert!(try_parse("obligation bad: discharge before drop Row;").is_err());
+    assert!(try_parse("obligation bad: discharge to escape;").is_err());
+    assert!(try_parse("obligation bad: discharge before drop;").is_err());
+    assert!(try_parse("obligation bad: no persist Row;").is_err());
     assert!(try_parse("obligation bad: discharge to use 0;").is_err());
     assert!(try_parse("obligation bad: discharge to sink;").is_err());
     assert!(try_parse("obligation bad: no use;").is_err());

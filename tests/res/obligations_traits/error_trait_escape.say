@@ -1,4 +1,4 @@
-obligation borrowed: discharge to escape;
+obligation borrowed: no persist;
 trait View {
     pub fn get(x: borrowed) { return x; } // error: 'x' owes 'borrowed'; it cannot be stored or escape its scope
 }

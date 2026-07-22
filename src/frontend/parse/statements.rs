@@ -76,30 +76,35 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
 
         let pos = self.tokens.peek(0).pos.clone();
-        if self.tokens.peek(0).contextual() != Some(ContextualKeyword::Discharge) {
-            return Err(self.obligation_rule_error(&pos));
-        }
-        self.tokens.next();
-
-        match self.parse_identifier()?.as_str() {
-            "to" => match self.parse_identifier()?.as_str() {
-                "use" => {
-                    let witness = self.tokens.next_if(TokenType::Identifier).map(|tok| self.ast.intern(&tok.lexeme));
-                    Ok((ObligationRule::ToUse, witness))
+        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Discharge) {
+            self.tokens.next();
+            return match self.parse_identifier()?.as_str() {
+                "to" => match self.parse_identifier()?.as_str() {
+                    "use" => {
+                        let witness = self.tokens.next_if(TokenType::Identifier).map(|tok| self.ast.intern(&tok.lexeme));
+                        Ok((ObligationRule::ToUse, witness))
+                    },
+                    _ => Err(self.obligation_rule_error(&pos)),
                 },
-                "escape" => Ok((ObligationRule::ToEscape, None)),
                 _ => Err(self.obligation_rule_error(&pos)),
-            },
-            "before" => match self.parse_identifier()?.as_str() {
-                "drop" => Ok((ObligationRule::BeforeDrop, None)),
-                _ => Err(self.obligation_rule_error(&pos)),
-            },
-            _ => Err(self.obligation_rule_error(&pos)),
+            };
         }
+
+        // The witnessless rungs open with `no`, which lexes as a plain identifier.
+        if self.tokens.peek(0).kind == TokenType::Identifier && self.tokens.peek(0).lexeme == "no" {
+            self.tokens.next();
+            return match self.parse_identifier()?.as_str() {
+                "persist" => Ok((ObligationRule::NoPersist, None)),
+                "drop" => Ok((ObligationRule::NoDrop, None)),
+                _ => Err(self.obligation_rule_error(&pos)),
+            };
+        }
+
+        Err(self.obligation_rule_error(&pos))
     }
 
     fn obligation_rule_error(&self, pos: &SourcePosition) -> anyhow::Error {
-        self.error_help("Invalid obligation rule", pos, "a rule is `discharge to use`, `discharge to escape`, or `discharge before drop`")
+        self.error_help("Invalid obligation rule", pos, "a rule is `discharge to use`, `no persist`, or `no drop`")
     }
 
     pub(super) fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {

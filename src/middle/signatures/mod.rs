@@ -125,9 +125,9 @@ impl Signatures {
         })
     }
 
-    /// Whether an obligation's rule is `discharge to escape`: usable in place, but not persistable.
-    pub(crate) fn is_to_escape(&self, obligation: Symbol) -> bool {
-        matches!(self.rules.get(&obligation), Some(ObligationRule::ToEscape))
+    /// Whether an obligation's rule is `no persist`: usable in place, but not persistable.
+    pub(crate) fn is_no_persist(&self, obligation: Symbol) -> bool {
+        matches!(self.rules.get(&obligation), Some(ObligationRule::NoPersist))
     }
 
     pub(crate) fn obligation_for_witness(&self, name: Symbol) -> Option<Symbol> {
