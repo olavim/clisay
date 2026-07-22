@@ -164,6 +164,17 @@ impl HirMatcher {
         out
     }
 
+    /// Whether this matcher accepts every value, so a guardless arm using it is a catch-all.
+    pub fn is_irrefutable(&self) -> bool {
+        match self {
+            HirMatcher::Wildcard | HirMatcher::Binder(_) => true,
+            HirMatcher::As(_, inner) => inner.is_irrefutable(),
+            HirMatcher::And(parts) => parts.iter().all(HirMatcher::is_irrefutable),
+            HirMatcher::Or(alternatives) => alternatives.iter().any(HirMatcher::is_irrefutable),
+            _ => false,
+        }
+    }
+
     fn collect_binders(&self, out: &mut Vec<Symbol>) {
         match self {
             HirMatcher::Wildcard | HirMatcher::Literal(_) => {},
@@ -433,6 +444,14 @@ impl Hir {
         HirId { id: self.nodes.len() - 1, _marker: PhantomData }
     }
 
+    /// Every lambda literal's expression id.
+    pub(crate) fn lambda_ids(&self) -> Vec<HirId<HirExpr>> {
+        self.nodes.iter().enumerate()
+            .filter(|(_, n)| matches!(&n.kind, HirNodeKind::Expr(HirExpr::Literal(HirLiteral::Lambda(_)))))
+            .map(|(i, _)| HirId { id: i, _marker: PhantomData })
+            .collect()
+    }
+
     /// The binder names a condition makes live in its true branch, in store order. `&&` unions
     /// both sides. An `||` contributes a name only when both sides bind the identical set.
     pub fn condition_binders(&self, cond: &HirId<HirExpr>) -> Vec<Symbol> {
@@ -449,6 +468,17 @@ impl Hir {
                 let same = left.len() == right.len() && left.iter().all(|name| right.contains(name));
                 if same { left } else { Vec::new() }
             },
+            _ => Vec::new(),
+        }
+    }
+
+    /// The child expressions a value's ownership flows through.
+    pub(crate) fn ownership_children(&self, value: &HirId<HirExpr>) -> Vec<HirId<HirExpr>> {
+        match self.get(value) {
+            HirExpr::Mut(x) | HirExpr::Assert(x) | HirExpr::Propagate(x) => vec![*x],
+            HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r) => vec![*l, *r],
+            HirExpr::Literal(HirLiteral::Array(elems)) => elems.clone(),
+            HirExpr::Literal(HirLiteral::Dict(pairs)) => pairs.iter().flat_map(|(k, v)| [*k, *v]).collect(),
             _ => Vec::new(),
         }
     }
@@ -473,6 +503,12 @@ impl Hir {
                     return true;
                 }
                 self.definitely_returns(body) && catch.as_ref().map_or(true, |c| self.definitely_returns(&c.body))
+            },
+            // A match returns on every path when it cannot fall through: some guardless arm is a
+            // catch-all, and every arm returns.
+            HirStmt::Match(_, arms) => {
+                arms.iter().any(|a| a.guard.is_none() && a.matcher.is_irrefutable())
+                    && arms.iter().all(|a| self.definitely_returns(&a.body))
             },
             _ => false,
         }

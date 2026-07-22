@@ -1,0 +1,5 @@
+// A value taken from `??` is moved, so the source is dead afterward.
+say a = mut [1];
+say c = mut [2];
+say b = a ?? c;
+print(a[0]); // error: value used after it was moved

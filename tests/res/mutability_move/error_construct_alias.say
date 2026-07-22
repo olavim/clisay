@@ -1,0 +1,5 @@
+// A constructor argument is moved into the new instance, so the source is dead afterward.
+type Box { pub mut item; init(x: *mut) { this.item = x; } }
+say a = mut [1];
+say b = Box(a);
+print(a[0]); // error: value used after it was moved

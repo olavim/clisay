@@ -1,0 +1,4 @@
+// A read-only borrow may not be mutated in place by the callee.
+fn store(cfg) { cfg["k"] = 1; }
+say m = mut {};
+store(m); // error: mutable value lent to a parameter that mutates it

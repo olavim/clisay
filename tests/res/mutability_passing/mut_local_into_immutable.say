@@ -1,5 +1,0 @@
-// A directly-minted `mut` value is mutable, so passing it to an unmarked parameter is the freeze-it
-// error, the same as a value handed back by a `: mut` return.
-fn store(cfg) { cfg["k"] = 1; }
-say m = mut {};
-store(m); // error: expected immutable argument

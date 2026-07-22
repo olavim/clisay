@@ -1,0 +1,5 @@
+// Reading an element yields a fresh value and moves nothing.
+say a = mut [1, 2];
+say b = a[0];
+a[0] = 9;
+print(a[0]); // expect: 9

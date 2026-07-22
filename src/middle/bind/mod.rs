@@ -153,6 +153,11 @@ impl Bindings {
         self.places[id]
     }
 
+    /// The binding of an identifier node.
+    pub fn place_of(&self, id: &HirId<HirExpr>) -> Option<Place> {
+        self.places.get(id).copied()
+    }
+
     pub fn member(&self, id: &HirId<HirExpr>) -> u8 {
         self.members[id]
     }

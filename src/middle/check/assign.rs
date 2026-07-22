@@ -37,6 +37,8 @@ impl<'a> Checker<'a> {
                     self.locals[i].mutability = typed.mutability;
                     // A rebind installs a fresh value, so any earlier move of the slot is undone.
                     self.locals[i].move_site = None;
+                    // The slot takes on whatever sources the new value reaches.
+                    self.locals[i].provenance = self.provenance_of(rhs);
                     self.reset_narrowing(i, matches!(typed.flow, Flow::Clean));
                 } else if self.sigs.types_by_name.contains_key(&name) {
                     // A type binding names a declaration, not a reassignable slot.
@@ -49,9 +51,19 @@ impl<'a> Checker<'a> {
             HirExpr::Index(target, member, is_dot) => self.assign_index(target, member, *is_dot, &typed.flow, lhs, rhs)?,
             _ => {},
         }
-        // A store hands the value to a new owner, so a mutable right side moves.
+        // A store hands the value to a new holder, so a mutable right side moves.
         self.move_source(rhs);
         Ok(typed)
+    }
+
+    /// Records that a local receiving a stored value takes on that value's sources, so the value
+    /// flows back to them when the local dies. A non-local receiver is left alone; the value is
+    /// still moved either way.
+    fn attach_field_provenance(&mut self, target: &HirId<HirExpr>, rhs: &HirId<HirExpr>) {
+        let HirExpr::Identifier(name) = self.hir.get(target) else { return };
+        let Some(i) = self.frame_index_of(*name) else { return };
+        let sources = self.source_indices(rhs);
+        self.locals[i].provenance.extend(sources);
     }
 
     /// Checks an assignment `target.member = value`.
@@ -64,13 +76,23 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
 
+        // Storing into a local's field or element gives that local the value's sources, so the
+        // value flows back to them when it dies.
+        self.attach_field_provenance(target, rhs);
+
         // A frozen value rejects mutation at compile time.
         if let Some(name) = self.immutable_target(target) {
             return Err(self.error_labeled("cannot mutate an immutable value".to_string(), target, format!("`{}` is immutable", self.hir.text(name))));
         }
 
-        // A bracket index `obj[expr] = ...` is the dynamic data path. It bypasses the field rules.
+        // A bracket index `obj[expr] = ...` is the dynamic data path. It bypasses the field rules,
+        // but writing through the base still captures it, so an enclosing binding it names may move.
         if !is_dot {
+            if let HirExpr::Identifier(name) = self.hir.get(target) {
+                if self.frame_index_of(*name).is_none() {
+                    self.capture_enclosing(*name, target);
+                }
+            }
             return Ok(());
         }
 

@@ -8,4 +8,4 @@ print(arr[0]); // expect: 1
 fn consume(xs: *mut) {}
 say a = mut [1];
 consume(a);
-consume(a); // error: 'a' is used after it is moved
+consume(a); // error: value used after it was moved

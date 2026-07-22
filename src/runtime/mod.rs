@@ -77,7 +77,9 @@ pub struct CallFrame {
 pub struct TryFrame {
     origin: *mut CallFrame,
     handler_ip: *const OpCode,
-    stack_start: *mut Value
+    stack_start: *mut Value,
+    /// The borrow-stack depth when the `try` began, restored on an unwind to this handler.
+    borrow_depth: usize
 }
 
 pub struct Vm {
@@ -88,6 +90,8 @@ pub struct Vm {
     pub(crate) stack: Stack<Value, MAX_STACK>,
     frames: CachedStack<CallFrame, MAX_FRAMES>,
     try_frames: Vec<TryFrame>,
+    /// Values marked borrowed for an active call, each with its prior bit for nesting.
+    borrows: Vec<(Value, bool)>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     /// Every registered object witness name. A boundary barrier throws a crossing value when it
@@ -186,6 +190,7 @@ impl Vm {
             stack: Stack::new(),
             frames: CachedStack::new(),
             try_frames: Vec::new(),
+            borrows: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
             witnesses,
@@ -339,6 +344,12 @@ impl Vm {
         }
 
         for value in self.stack.iter() {
+            value.mark(&mut self.gc);
+        }
+
+        // A borrowed value may leave the stack while the call runs, so keep it alive until its
+        // matching release restores the borrowed bit on its header.
+        for (value, _) in &self.borrows {
             value.mark(&mut self.gc);
         }
 

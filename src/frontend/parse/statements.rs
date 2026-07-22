@@ -90,8 +90,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             };
         }
 
-        // The witnessless rungs open with `no`, which lexes as a plain identifier.
-        if self.tokens.peek(0).kind == TokenType::Identifier && self.tokens.peek(0).lexeme == "no" {
+        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::No) {
             self.tokens.next();
             return match self.parse_identifier()?.as_str() {
                 "persist" => Ok((ObligationRule::NoPersist, None)),

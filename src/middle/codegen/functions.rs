@@ -1,13 +1,33 @@
 use crate::core::objects::ObjFn;
 use crate::core::value::Value;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt};
 use crate::middle::ir::Inst;
 use crate::middle::bind::FnKind;
 
 use super::Compiler;
 
+/// A bitmask with one bit set per parameter the predicate holds for, capped at 64.
+fn param_bits(flags: impl IntoIterator<Item = bool>) -> u64 {
+    flags.into_iter().take(64).enumerate()
+        .filter(|(_, set)| *set)
+        .fold(0u64, |mask, (i, _)| mask | (1u64 << i))
+}
+
 impl<'a> Compiler<'a> {
-    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, decl: &HirFnDecl, kind: FnKind) -> Result<u8, anyhow::Error> {
+    /// The persist mask of a named function or method, read from the escape summary.
+    pub(super) fn persist_mask(&self, stmt: &HirId<HirStmt>) -> u64 {
+        self.sigs.param_escapes.get(stmt).map(|e| param_bits(e.iter().copied())).unwrap_or(0)
+    }
+
+    /// The persist mask of a lambda, read from its per-lambda escape summary. An unanalyzed lambda
+    /// conservatively marks every parameter as escaping so the barrier rejects a borrow into it.
+    pub(super) fn lambda_persist_mask(&self, expr: &HirId<HirExpr>, arity: usize) -> u64 {
+        self.sigs.lambda_param_escapes.get(expr)
+            .map(|e| param_bits(e.iter().copied()))
+            .unwrap_or_else(|| if arity >= 64 { u64::MAX } else { (1u64 << arity) - 1 })
+    }
+
+    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, decl: &HirFnDecl, kind: FnKind, persist_mask: u64) -> Result<u8, anyhow::Error> {
         self.fn_kinds.push(kind);
 
         // Add a jump over the function's body after declaration.
@@ -28,13 +48,12 @@ impl<'a> Compiler<'a> {
         let arity = decl.params.len() as u8;
         let upvalues = self.bindings.upvalues(&decl.body).to_vec();
 
-        // One bit per `*mut` parameter, read by the opaque-call barrier. Parameters past 63
-        // fall outside the mask and the barrier reads them as borrow.
-        let move_mask = decl.params.iter().take(64).enumerate()
-            .filter(|(_, p)| p.clause.capability.is_move())
-            .fold(0u64, |mask, (i, _)| mask | (1u64 << i));
+        // A parameter lets its argument escape if it takes it by `*mut` or persists it.
+        // Parameters past 63 are read as borrowing.
+        let move_mask = param_bits(decl.params.iter().map(|p| p.clause.capability.is_move()));
+        let escape_mask = move_mask | persist_mask;
 
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, move_mask));
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))

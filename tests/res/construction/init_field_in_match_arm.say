@@ -1,0 +1,12 @@
+// A field assigned inside an init match arm is recognized, so construction does not demand it again.
+type Box {
+    pub mut x;
+    init(n) {
+        match n {
+            0 => { this.x = 10; },
+            _ => { this.x = 1; },
+        }
+    }
+}
+print(Box(0).x); // expect: 10
+print(Box(9).x); // expect: 1

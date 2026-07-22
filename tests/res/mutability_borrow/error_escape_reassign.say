@@ -1,0 +1,5 @@
+// Reassigning a name from a parameter persists conservatively, then forwards on.
+fn inner(y): mut { return y; }
+fn outer(x) { say mut a = mut []; a = x; inner(a); }
+say m = mut [1, 2];
+outer(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'

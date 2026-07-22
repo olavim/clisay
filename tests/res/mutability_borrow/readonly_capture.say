@@ -1,0 +1,6 @@
+// A named function that only reads a captured mutable borrows it, so the binding stays live.
+say registry = mut [];
+fn show() { print(registry.length()); }
+show(); // expect: 0
+registry.push(1);
+show(); // expect: 1

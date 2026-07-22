@@ -94,7 +94,7 @@ impl Gc {
         arity: u8,
         ip_start: usize,
         upvalues: &[*mut ObjUpvalue],
-        move_mask: u64
+        escape_mask: u64
     ) -> *mut ObjClosure {
         let count = upvalues.len();
         let size = ObjClosure::alloc_size(count);
@@ -108,7 +108,7 @@ impl Gc {
                 arity,
                 upvalue_count: count as u8,
                 ip_start,
-                move_mask
+                escape_mask
             });
             std::ptr::copy_nonoverlapping(
                 upvalues.as_ptr(),

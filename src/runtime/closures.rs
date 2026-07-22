@@ -50,11 +50,11 @@ impl Vm {
             upvalues.push(upvalue);
         }
 
-        let (name, arity, ip_start, move_mask) = (fn_ref.name, fn_ref.arity, fn_ref.ip_start, fn_ref.move_mask);
+        let (name, arity, ip_start, escape_mask) = (fn_ref.name, fn_ref.arity, fn_ref.ip_start, fn_ref.escape_mask);
         if self.gc.should_collect() {
             self.start_gc();
         }
-        self.gc.alloc_closure(name, arity, ip_start, &upvalues, move_mask).into()
+        self.gc.alloc_closure(name, arity, ip_start, &upvalues, escape_mask).into()
     }
 
     pub(super) fn op_close_upvalue(&mut self) {

@@ -197,6 +197,7 @@ impl Vm {
         self.ensure_mutable(target)?;
 
         let value = self.stack.pop();
+        self.ensure_not_borrowed(value)?;
         let instance = unsafe { &mut *target.as_object().as_instance_ptr() };
         instance.set(member_id, value);
         Ok(())
@@ -225,6 +226,15 @@ impl Vm {
         Ok(())
     }
 
+    /// Traps a store of a borrowed value: it may not be persisted while it is borrowed.
+    pub(super) fn ensure_not_borrowed(&self, value: Value) -> Result<(), anyhow::Error> {
+        if value.is_borrowed() {
+            let label = format!("`{}` is borrowed here", self.get_source_position().snippet());
+            return self.error_labeled(objects::PERSISTED_BORROW, label);
+        }
+        Ok(())
+    }
+
     pub(super) fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
         let prop = self.stack.pop();
         let target = self.stack.pop();
@@ -232,6 +242,7 @@ impl Vm {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
+        self.ensure_not_borrowed(self.stack.peek(0))?;
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target),
@@ -282,6 +293,7 @@ impl Vm {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
+        self.ensure_not_borrowed(self.stack.peek(0))?;
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target),
@@ -383,6 +395,7 @@ impl Vm {
         let object = value.as_object();
         let instance_ref = object.as_instance_ptr();
         let value = self.stack.peek(0);
+        self.ensure_not_borrowed(value)?;
         let instance = unsafe { &mut *instance_ref };
         instance.set(member_id, value);
         Ok(())

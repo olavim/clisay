@@ -1,0 +1,6 @@
+// A `no persist` parameter may forward its borrow to a borrow-only opaque callback.
+obligation borrowed: no persist;
+fn reader(v) { print(v[0]); }
+fn each(xs: borrowed, cb) { cb(xs); }
+say m = mut [1, 2];
+each(m, reader); // expect: 1

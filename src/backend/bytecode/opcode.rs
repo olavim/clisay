@@ -98,6 +98,8 @@ opcodes! {
     AssertNonNull => ASSERT_NON_NULL,
     BarrierGuard => BARRIER_GUARD(Byte, List),
     AssertBorrow => ASSERT_BORROW(Byte, List),
+    MarkBorrow => MARK_BORROW(Byte, List),
+    ReleaseBorrow => RELEASE_BORROW(Byte),
 
     // Explicit stack manipulation
     Pop => POP,

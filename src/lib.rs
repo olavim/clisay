@@ -76,7 +76,7 @@ pub mod internals {
 
     pub fn nullck(src: &str) -> Barriers {
         let (hir, bindings) = bind(src);
-        let sigs = crate::middle::signatures::collect(&hir);
+        let sigs = crate::middle::signatures::collect(&hir, &bindings);
         crate::middle::check::check(&hir, &bindings, &sigs).expect("nullck error")
     }
 }
@@ -102,9 +102,9 @@ pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
     let names = resolve_names(&ast)?;
     let hir = lower(ast, &names)?;
     let bindings = resolve_bindings(&hir)?;
-    let sigs = collect_signatures(&hir);
+    let sigs = collect_signatures(&hir, &bindings);
     let barriers = check(&hir, &bindings, &sigs)?;
-    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers)?;
+    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs)?;
     let ir = optimize(ir);
     
     let chunk = assemble(ir)?;

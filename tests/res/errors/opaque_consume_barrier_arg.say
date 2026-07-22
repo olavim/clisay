@@ -6,11 +6,11 @@ say p = mut {};
 say q = mut {};
 apply(cb, p, q);
 // error(full):
-// error: cannot move a borrowed argument into a consuming callee
+// error: cannot pass a borrowed argument to a callee that lets it escape
 //  --> opaque_consume_barrier_arg.say:3:8
 //   |
 // 2 | fn apply(f, x: mut, y: mut) {
 // 3 |   f(x, y);
-//   |        ^ the callee consumes `y`
+//   |        ^ the callee lets `y` escape
 //   |
 // 	at apply (opaque_consume_barrier_arg.say:3)

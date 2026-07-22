@@ -1,0 +1,6 @@
+// Aliasing a borrowed parameter with `say` and only reading it stays a borrow: the caller keeps it mutable.
+fn show(xs) { say alias = xs; print(alias[0]); }
+say a = mut [1, 2];
+show(a); // expect: 1
+a[0] = 9;
+print(a[0]); // expect: 9

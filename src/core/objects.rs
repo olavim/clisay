@@ -12,7 +12,10 @@ pub const IMMUTABLE_MUTATION: &str = "cannot mutate an immutable value";
 
 /// The runtime diagnostic raised when an opaque call must keep its argument but the callee would
 /// consume it.
-pub const CONSUMED_BORROW: &str = "cannot move a borrowed argument into a consuming callee";
+pub const ESCAPED_BORROW: &str = "cannot pass a borrowed argument to a callee that lets it escape";
+
+/// The runtime diagnostic raised when a borrowed value is persisted at a store site.
+pub const PERSISTED_BORROW: &str = "cannot persist a borrowed value";
 
 /// Marks a value immutable, then its container children.
 pub fn freeze_value(value: Value) {
@@ -38,12 +41,14 @@ pub fn freeze_value(value: Value) {
 pub struct ObjectHeader {
     pub kind: ObjectKind,
     pub marked: bool,
-    pub immutable: bool
+    pub immutable: bool,
+    /// Set while the value is lent as a borrow to an active call. A store of a borrowed value panics.
+    pub borrowed: bool
 }
 
 impl ObjectHeader {
     pub fn new(kind: ObjectKind) -> ObjectHeader {
-        ObjectHeader { kind, marked: false, immutable: false }
+        ObjectHeader { kind, marked: false, immutable: false, borrowed: false }
     }
 }
 
@@ -173,6 +178,16 @@ impl Object {
     }
 
     #[inline]
+    pub fn is_borrowed(&self) -> bool {
+        unsafe { (*self.as_header_ptr()).borrowed }
+    }
+
+    #[inline]
+    pub fn set_borrowed(&self, value: bool) {
+        unsafe { (*self.as_header_ptr()).borrowed = value; }
+    }
+
+    #[inline]
     pub fn as_string(&self) -> &String {
         unsafe { &(*self.as_string_ptr()).value }
     }
@@ -235,26 +250,26 @@ pub struct ObjFn {
     pub arity: u8,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>,
-    /// One bit per parameter, set where the parameter takes its argument by `*mut`. The
-    /// opaque-call barrier reads it to tell borrow from move. Parameters past 63 are read as borrow.
-    pub move_mask: u64
+    /// One bit per parameter, set where the parameter lets its argument escape: it takes it by
+    /// `*mut` or persists it. Parameters past 63 are read as borrowing.
+    pub escape_mask: u64
 }
 
 impl ObjFn {
-    /// Whether the parameter at `position` consumes its argument, as opposed to borrowing it.
+    /// Whether the parameter at `position` lets its argument escape, as opposed to borrowing it.
     #[inline]
-    pub fn consumes(&self, position: usize) -> bool {
-        position < 64 && self.move_mask & (1u64 << position) != 0
+    pub fn escapes(&self, position: usize) -> bool {
+        position < 64 && self.escape_mask & (1u64 << position) != 0
     }
 
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, move_mask: u64) -> ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
             arity,
             ip_start,
             upvalues,
-            move_mask
+            escape_mask
         }
     }
 }
@@ -319,17 +334,17 @@ pub struct ObjClosure {
     pub arity: u8,
     pub upvalue_count: u8,
     pub ip_start: usize,
-    pub move_mask: u64
+    pub escape_mask: u64
 }
 
 impl ObjClosure {
     /// Byte offset of the trailing upvalue array.
     const UPVALUES_OFFSET: usize = mem::size_of::<ObjClosure>();
 
-    /// Whether the parameter at `position` consumes its argument, as opposed to borrowing it.
+    /// Whether the parameter at `position` lets its argument escape, as opposed to borrowing it.
     #[inline]
-    pub fn consumes(&self, position: usize) -> bool {
-        position < 64 && self.move_mask & (1u64 << position) != 0
+    pub fn escapes(&self, position: usize) -> bool {
+        position < 64 && self.escape_mask & (1u64 << position) != 0
     }
 
     #[inline]

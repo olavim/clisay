@@ -19,4 +19,4 @@ match a[0] {
   1 => { consume(a); },
   _ => {},
 }
-print(a[0]); // error: 'a' is used after it is moved
+print(a[0]); // error: value used after it was moved

@@ -46,7 +46,8 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
                 Inst::Construct(fields_idx, _) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
                 Inst::BarrierGuard(idx) => len += 1 + ir.barrier_allow(idx).names.len(), // count byte + name indices
                 Inst::AssertBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
-                _ => unreachable!("only Construct, BarrierGuard, and AssertBorrow have a List operand"),
+                Inst::MarkBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
+                _ => unreachable!("only Construct, BarrierGuard, AssertBorrow, and MarkBorrow have a List operand"),
             },
         }
     }
@@ -86,6 +87,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
         | CloseUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
         | GetField(b) | SetField(b) | SetFieldPop(b)
+        | ReleaseBorrow(b)
         | Is(b) | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
 
         Jump(l)
@@ -122,7 +124,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(suffix, pos);
         }
 
-        AssertBorrow(arg_count, idx) => {
+        AssertBorrow(arg_count, idx) | MarkBorrow(arg_count, idx) => {
             let positions = ir.survive_positions(idx);
             chunk.write(arg_count, pos);
             chunk.write(positions.len() as u8, pos);

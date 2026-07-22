@@ -151,17 +151,30 @@ impl<'a> Checker<'a> {
                 tag: l.tag.clone(),
                 mutability: l.mutability,
                 move_site: l.move_site,
+                provenance: l.provenance.clone(),
             }).collect(),
             narrowed: self.narrowed.clone(),
         }
     }
 
     pub(super) fn restore(&mut self, flow: &FlowSnapshot) {
+        self.restore_keeping_moves(flow);
+        for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
+            local.move_site = snap.move_site;
+            local.provenance = snap.provenance.clone();
+        }
+    }
+
+    /// Restores flow but keeps each local's move site and give-back sources. A loop body's moves
+    /// persist to the next iteration and past the loop, while its narrowings and assignments do not
+    /// survive zero runs. A value moved before the loop stays moved on the zero-run path, so its
+    /// pre-loop move merges back in rather than being masked by an in-body rebind.
+    pub(super) fn restore_keeping_moves(&mut self, flow: &FlowSnapshot) {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             local.assigned = snap.assigned;
             local.tag = snap.tag.clone();
             local.mutability = snap.mutability;
-            local.move_site = snap.move_site;
+            local.move_site = local.move_site.or(snap.move_site);
         }
         self.narrowed = flow.narrowed.clone();
     }
@@ -173,6 +186,7 @@ impl<'a> Checker<'a> {
             local.tag = if local.tag == o.tag { local.tag.clone() } else { TypeTag::Unknown };
             local.mutability = if local.mutability == o.mutability { local.mutability } else { Mutability::Unknown };
             local.move_site = local.move_site.or(o.move_site);
+            local.provenance.retain(|s| o.provenance.contains(s));
         }
     }
 
@@ -187,6 +201,7 @@ impl<'a> Checker<'a> {
                 { then_local.mutability } else
                 { Mutability::Unknown };
             local.move_site = then_local.move_site.or(else_local.move_site);
+            local.provenance = then_local.provenance.iter().copied().filter(|s| else_local.provenance.contains(s)).collect();
         }
     }
 }

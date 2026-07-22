@@ -1,0 +1,8 @@
+fn keep(bin: mut, x: mut) { bin.push(x); }
+// error(full):
+// error: cannot persist a borrowed value
+//  --> error_persist_borrow_advice.say:1:38
+//   |
+// 1 | fn keep(bin: mut, x: mut) { bin.push(x); }
+//   |                                      ^
+//   = help: take it by `*mut` to own it, then it may be persisted

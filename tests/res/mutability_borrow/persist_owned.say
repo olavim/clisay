@@ -1,0 +1,5 @@
+// A `*mut` argument is owned, so the callee may persist it into a container.
+fn keep(bin: mut, x: *mut) { bin.push(x); }
+say b = mut [];
+keep(b, mut [1]);
+print(b.length()); // expect: 1
