@@ -370,7 +370,9 @@ impl<'a> Compiler<'a> {
             }
             let name_ref = self.gc.intern(name);
             let idx = self.ir.add_constant(Value::from(name_ref))?;
+            let marked = self.emit_mark_borrow(callee, args)?;
             self.emit(Inst::Invoke(idx, args.len() as u8), callee);
+            self.emit_release_borrow(marked, callee);
             return Ok(());
         }
 
@@ -389,9 +391,26 @@ impl<'a> Compiler<'a> {
             self.emit(Inst::AssertBorrow(args.len() as u8, idx), callee);
         }
 
+        let marked = self.emit_mark_borrow(callee, args)?;
         self.emit(Inst::Call(args.len() as u8), callee);
+        self.emit_release_borrow(marked, callee);
 
         Ok(())
+    }
+
+    fn emit_mark_borrow(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<u8, anyhow::Error> {
+        let Some(positions) = self.barriers.borrow_marks(callee) else { return Ok(0) };
+        let entries: Vec<_> = positions.iter().map(|&p| (p, self.hir.pos(&args[p as usize]).clone())).collect();
+        let count = entries.len() as u8;
+        let idx = self.ir.add_survive_positions(entries)?;
+        self.emit(Inst::MarkBorrow(args.len() as u8, idx), callee);
+        Ok(count)
+    }
+
+    fn emit_release_borrow(&mut self, count: u8, callee: &HirId<HirExpr>) {
+        if count > 0 {
+            self.emit(Inst::ReleaseBorrow(count), callee);
+        }
     }
 
     fn as_method_invoke(&self, callee: &HirId<HirExpr>) -> Option<(HirId<HirExpr>, String)> {
@@ -408,7 +427,8 @@ impl<'a> Compiler<'a> {
     }
 
     fn lambda(&mut self, expr: &HirId<HirExpr>, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
-        let const_idx = self.function(expr, decl, kind)?;
+        let persist_mask = self.lambda_persist_mask(expr, decl.params.len());
+        let const_idx = self.function(expr, decl, kind, persist_mask)?;
         self.emit(Inst::PushClosure(const_idx), expr);
         return Ok(());
     }

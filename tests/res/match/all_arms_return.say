@@ -1,0 +1,9 @@
+// A `!` function whose match arms all return satisfies return-completeness with no trailing statement.
+fn pick(n)! {
+    match n {
+        0 => { return "zero"; },
+        _ => { return "other"; },
+    }
+}
+print(pick(0)); // expect: zero
+print(pick(9)); // expect: other

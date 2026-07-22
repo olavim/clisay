@@ -57,30 +57,60 @@ impl Vm {
         let callee = self.stack.peek(arg_count);
         for _ in 0..count {
             let position = self.read_next() as usize;
-            if self.callee_consumes(callee, position) {
-                let label = format!("the callee consumes `{}`", self.get_source_position().snippet());
-                return self.error_labeled(objects::CONSUMED_BORROW, label);
+            if self.callee_escapes(callee, position) {
+                let label = format!("the callee lets `{}` escape", self.get_source_position().snippet());
+                return self.error_labeled(objects::ESCAPED_BORROW, label);
             }
         }
         Ok(())
     }
 
-    /// Whether a callable consumes its argument at `position`.
-    fn callee_consumes(&self, callee: Value, position: usize) -> bool {
+    /// Marks the listed argument positions borrowed for the following call, so a store of any of
+    /// them traps. Each entry saves the prior bit for nesting; a matching `RELEASE_BORROW` restores.
+    pub(super) fn op_mark_borrow(&mut self) {
+        let arg_count = self.read_next() as usize;
+        let count = self.read_next() as usize;
+        for _ in 0..count {
+            let position = self.read_next() as usize;
+            let value = self.stack.peek(arg_count - 1 - position);
+            let prev = value.is_borrowed();
+            // A frozen `no persist` value is still marked: immutability stops mutation, not the
+            // persist that the borrow bit traps.
+            if value.is_object() {
+                value.as_object().set_borrowed(true);
+            }
+            self.borrows.push((value, prev));
+        }
+    }
+
+    /// Restores the last `count` marked borrows after a call returns.
+    pub(super) fn op_release_borrow(&mut self) {
+        let count = self.read_next() as usize;
+        for _ in 0..count {
+            if let Some((value, prev)) = self.borrows.pop() {
+                if value.is_object() {
+                    value.as_object().set_borrowed(prev);
+                }
+            }
+        }
+    }
+
+    /// Whether a callable lets its argument at `position` escape, as opposed to borrowing it.
+    fn callee_escapes(&self, callee: Value, position: usize) -> bool {
         if !callee.is_callable() {
             return false;
         }
         let object = callee.as_object();
         match object.tag() {
-            objects::TAG_CLOSURE => unsafe { &*object.as_closure_ptr() }.consumes(position),
+            objects::TAG_CLOSURE => unsafe { &*object.as_closure_ptr() }.escapes(position),
             objects::TAG_BOUND_METHOD => {
                 let method = unsafe { &*object.as_bound_method_ptr() }.method;
-                method.tag() == objects::TAG_CLOSURE && unsafe { &*method.as_closure_ptr() }.consumes(position)
+                method.tag() == objects::TAG_CLOSURE && unsafe { &*method.as_closure_ptr() }.escapes(position)
             },
             objects::TAG_TYPE => {
                 let init = unsafe { &*object.as_type_ptr() }.initializer();
                 matches!(init, Some(obj) if obj.tag() == objects::TAG_FUNCTION
-                    && unsafe { &*obj.as_function_ptr() }.consumes(position))
+                    && unsafe { &*obj.as_function_ptr() }.escapes(position))
             },
             _ => false,
         }
@@ -155,10 +185,12 @@ impl Vm {
         let instance_ptr = self.alloc(ObjInstance::new(type_ptr));
         self.stack.pop();
 
-        // Brace values sit on top of the stack in field order; set them before init runs.
+        // Brace values sit on top of the stack in field order; set them before init runs. A brace
+        // persists its value into the instance, so a borrowed one may not escape here.
         let instance = unsafe { &mut *instance_ptr };
         for j in 0..field_count {
             let value = self.stack.peek(field_count - 1 - j);
+            self.ensure_not_borrowed(value)?;
             instance.set(field_ids[j], value);
         }
         // Drop the brace values, then run init on the instance (it returns `this`).

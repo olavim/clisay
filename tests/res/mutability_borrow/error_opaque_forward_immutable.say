@@ -1,0 +1,6 @@
+// A frozen `no persist` value forwarded to a persisting callback still traps at the store site.
+obligation borrowed: no persist;
+say sink = mut [];
+fn keeper(v) { sink.push(v); } // error: cannot persist a borrowed value
+fn each(xs: borrowed, cb) { cb(xs); }
+each(freeze([1, 2]), keeper);

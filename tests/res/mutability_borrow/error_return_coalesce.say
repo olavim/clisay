@@ -1,0 +1,4 @@
+// A `mut` parameter returned through `??` escapes, which the borrow forbids.
+fn f(x: mut) { return x ?? mut []; } // error: a `mut` parameter borrows its argument and cannot let it escape
+say a = mut [1];
+say b = f(a);

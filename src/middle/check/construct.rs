@@ -150,7 +150,7 @@ impl<'a> Checker<'a> {
     pub(super) fn lambda(&mut self, decl: &HirFnDecl, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let in_init = self.seal.in_init();
         let outer_seen = self.seal.take_this_seen();
-        self.function(None, decl)?;
+        self.function(None, self.sigs.lambda_writes.get(node), decl)?;
         let captured_this = self.seal.this_seen();
         self.seal.set_this_seen(outer_seen);
         if in_init && captured_this {

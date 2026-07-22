@@ -1,0 +1,4 @@
+// A constructor checks argument nullability: null into a non-null init parameter is rejected,
+// as at a non-null function parameter.
+type Box { pub v; init(x) { this.v = x; } }
+say b = Box(null); // error: expected non-null argument

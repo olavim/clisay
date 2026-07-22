@@ -63,6 +63,11 @@ impl Vm {
         }
 
         let frame = self.try_frames.pop().unwrap();
+        // Restore borrows marked since the `try` began, whose `RELEASE_BORROW` the unwind skips.
+        while self.borrows.len() > frame.borrow_depth {
+            let (v, prev) = self.borrows.pop().unwrap();
+            if v.is_object() { v.as_object().set_borrowed(prev); }
+        }
         self.frames.set_top(frame.origin);
         self.stack.set_top(frame.stack_start);
         self.ip = frame.handler_ip;
@@ -75,7 +80,8 @@ impl Vm {
         self.try_frames.push(TryFrame {
             origin: self.frames.top_ptr(),
             handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
-            stack_start: self.stack.top()
+            stack_start: self.stack.top(),
+            borrow_depth: self.borrows.len()
         });
     }
 

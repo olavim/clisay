@@ -1,0 +1,6 @@
+// A read-only helper borrows a live mutable.
+fn show(xs) { print(xs[0]); }
+say a = mut [1, 2];
+show(a); // expect: 1
+a[0] = 9;
+show(a); // expect: 9

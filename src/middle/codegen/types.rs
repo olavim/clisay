@@ -68,7 +68,7 @@ impl<'a> Compiler<'a> {
 
     fn compile_fn(&mut self, stmt: &HirId<HirStmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {
         let decl = self.fn_decl(stmt);
-        let const_idx = self.function(stmt, decl, kind)?;
+        let const_idx = self.function(stmt, decl, kind, self.persist_mask(stmt))?;
         let func_const = self.ir.constants()[const_idx as usize];
         Ok(func_const.as_object().as_function_ptr())
     }

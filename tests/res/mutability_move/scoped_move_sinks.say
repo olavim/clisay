@@ -1,0 +1,43 @@
+// A value moved into a scope-local through an array literal returns when the array dies.
+say a = mut [1];
+{ say b = [a]; }
+print(a[0]); // expect: 1
+
+// @split
+// Through a dict literal.
+say a = mut [1];
+{ say b = mut { "k": a }; }
+print(a[0]); // expect: 1
+
+// @split
+// Through a constructor call.
+type Box { pub mut item; init(x: *mut) { this.item = x; } }
+say a = mut [1];
+{ say b = Box(a); }
+print(a[0]); // expect: 1
+
+// @split
+// Through a constructor call.
+type Box { init(x) { } }
+say a = mut [1];
+say b = Box(a);
+print(a[0]); // expect: 1
+
+// @split
+// Through a reassignment of a block-local.
+say a = mut [1];
+{ say mut b = mut [9]; b = a; }
+print(a[0]); // expect: 1
+
+// @split
+// Through a field store on a block-local receiver.
+type Box { pub mut item; init() { this.item = 0; } }
+say a = mut [1];
+{ say b = Box(); b.item = a; }
+print(a[0]); // expect: 1
+
+// @split
+// Through a writing capture, when the closure does not escape the block.
+say a = mut [1];
+{ say f = () => { a[0] = 2; }; }
+print(a[0]); // expect: 1

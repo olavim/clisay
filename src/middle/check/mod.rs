@@ -6,7 +6,6 @@ mod call;
 mod construct;
 mod matching;
 mod narrow;
-mod native;
 mod returns;
 mod traits;
 mod values;
@@ -23,7 +22,7 @@ use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::signatures::{Mutability, Signatures, TypeTag};
 use self::construct::Seal;
 use self::matching::whole_value_binders;
-use crate::middle::hir::{BinOp, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::hir::{BinOp, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
 pub use barriers::{Barrier, Barriers, WitnessSet};
 
@@ -36,6 +35,7 @@ pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barrie
         boundary_barriers: checker.boundary_barriers,
         witness_tests: checker.witness_tests,
         survive_barriers: checker.survive_barriers,
+        borrow_marks: checker.borrow_marks,
         witness_names,
     })
 }
@@ -91,6 +91,22 @@ struct FieldInfo {
     init_assigned: bool,
 }
 
+/// Why a mutable binding was moved.
+#[derive(Clone, Copy)]
+enum MoveCause {
+    /// Bound, stored, returned, or passed to a consuming parameter.
+    Value,
+    /// Captured by a closure that writes the value. Carries the closure's name.
+    Capture(Symbol),
+}
+
+/// Where and why a mutable binding was moved out.
+#[derive(Clone, Copy)]
+struct MovedAt {
+    node: HirId<HirExpr>,
+    cause: MoveCause,
+}
+
 /// A tracked binding in the current function frame.
 struct Local {
     name: Symbol,
@@ -107,15 +123,19 @@ struct Local {
     /// The value-mutability of the value in the slot.
     mutability: Mutability,
     borrowed: bool,
-    /// The expression that moved the mutable value out, or `None` while the binding is live.
-    move_site: Option<HirId<HirExpr>>,
+    /// Where the mutable value was moved out, or `None` while the binding is live.
+    move_site: Option<MovedAt>,
+    /// The prior slots this binding took its mutable value from. They stay dead while it holds the
+    /// value. The nearest survivor becomes the live holder again if it dies still holding it. A
+    /// binding with sources is escape-tracked.
+    provenance: Vec<usize>,
 }
 
 impl Local {
     /// A binding with every fact at its neutral default. Each named constructor overrides only the
     /// fields that distinguish it, so a new field is added here once.
     fn base(name: Symbol) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, borrowed: false, move_site: None }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, borrowed: false, move_site: None, provenance: Vec::new() }
     }
 
     fn param(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
@@ -165,7 +185,8 @@ struct LocalFlow {
     assigned: bool,
     tag: TypeTag,
     mutability: Mutability,
-    move_site: Option<HirId<HirExpr>>,
+    move_site: Option<MovedAt>,
+    provenance: Vec<usize>,
 }
 
 /// A snapshot of flow facts that branches widen back at a join.
@@ -177,7 +198,7 @@ struct FlowSnapshot {
 
 /// The declared facts of the function currently being checked.
 #[derive(Default)]
-struct FnContext {
+struct FnContext<'a> {
     /// The declared return shape. `Inferred` marks a lambda or the program root.
     return_shape: ReturnShape,
     /// Whether the return declares any obligation.
@@ -192,6 +213,8 @@ struct FnContext {
     return_clause: Option<SourcePosition>,
     /// The parameters as `(name, span)`.
     params: Vec<(Symbol, SourcePosition)>,
+    /// The names this body writes, so a read-only capture is told from a writing one.
+    writes: Option<&'a HashSet<Symbol>>,
 }
 
 struct Checker<'a> {
@@ -210,7 +233,7 @@ struct Checker<'a> {
     seal: Seal,
     current_trait_surface: Option<HashSet<Symbol>>,
     /// The function currently being checked.
-    fn_ctx: FnContext,
+    fn_ctx: FnContext<'a>,
     /// The null fast path: a `!` operand owing only `opt`, needing just the null assertion.
     barriers: HashSet<HirId<HirExpr>>,
     /// Nodes where an unknown value needs the boundary guard: a slot crossing or a `!` operand.
@@ -220,6 +243,8 @@ struct Checker<'a> {
     /// Opaque calls whose argument must survive, keyed by callee node to the argument positions
     /// that need the callee to borrow rather than consume.
     survive_barriers: HashMap<HirId<HirExpr>, Vec<u8>>,
+    /// Calls that lend a mutable argument, keyed by callee node to the param positions to mark as borrowed.
+    borrow_marks: HashMap<HirId<HirExpr>, Vec<u8>>,
 }
 
 impl<'a> Checker<'a> {
@@ -239,6 +264,7 @@ impl<'a> Checker<'a> {
             boundary_barriers: HashMap::new(),
             witness_tests: HashMap::new(),
             survive_barriers: HashMap::new(),
+            borrow_marks: HashMap::new(),
         }
     }
 
@@ -291,30 +317,167 @@ impl<'a> Checker<'a> {
             .map(|i| self.frame_start + i)
     }
 
-    /// Marks an enclosing-frame mutable binding moved when a nested function reads it.
+    /// Moves an enclosing-frame mutable binding when a nested function writes it. A read-only
+    /// capture borrows the value, so the enclosing binding stays live.
     fn capture_enclosing(&mut self, name: Symbol, node: &HirId<HirExpr>) {
         let Some(i) = self.locals[..self.frame_start].iter().rposition(|l| l.name == name) else { return };
+        if !self.fn_ctx.writes.is_some_and(|w| w.contains(&name)) {
+            return;
+        }
+        let cause = self.fn_ctx.name.map_or(MoveCause::Value, MoveCause::Capture);
         let local = &mut self.locals[i];
         if local.func.is_none() && local.mutability == Mutability::Mutable && local.move_site.is_none() {
-            local.move_site = Some(*node);
+            local.move_site = Some(MovedAt { node: *node, cause });
         }
     }
 
-    /// Consumes the local an expression names when it holds a mutable value. A move leaves the
-    /// source dead, so a later read is use-after-move.
-    fn move_source(&mut self, node: &HirId<HirExpr>) {
-        let HirExpr::Identifier(name) = self.hir.get(node) else { return };
-        if let Some(i) = self.frame_index_of(*name) {
-            if self.locals[i].mutability == Mutability::Mutable {
-                self.locals[i].move_site = Some(*node);
+    fn use_after_move_error(&self, name: Symbol, use_site: &HirId<HirExpr>, moved: MovedAt) -> anyhow::Error {
+        let text = self.hir.text(name);
+        match moved.cause {
+            MoveCause::Value => {
+                // A loop's re-check reads the value at the very node that moved it, so one caret is
+                // clearer than two on the same spot.
+                if *use_site == moved.node {
+                    return self.loop_move_error(name, moved);
+                }
+                // Caret both the use and the move so the reader sees where the value went.
+                anyhow!("{}", Diagnostic::new("value used after it was moved".to_string(), self.hir.pos(use_site).clone())
+                    .with_label(format!("`{text}` used here"))
+                    .with_span(self.hir.pos(&moved.node).clone(), format!("`{text}` moved here")))
+            },
+            MoveCause::Capture(captor) => {
+                let who = if self.hir.text(captor) == "lambda" { "a closure".to_string() } else { format!("closure `{}`", self.hir.text(captor)) };
+                anyhow!("{}", Diagnostic::new("value used after it was moved into a closure".to_string(), self.hir.pos(use_site).clone())
+                    .with_label(format!("`{text}` used here"))
+                    .with_span(self.hir.pos(&moved.node).clone(), format!("`{text}` is written here, which moves it into {who}"))
+                    .with_help(format!("a closure that writes a captured value takes ownership of it; to keep using `{text}`, pass it to a `mut` function parameter instead of capturing it, or `copy` it into the closure")))
+            },
+        }
+    }
+
+    /// Moving a value reads it, so a loop body that moves one reads a moved value on the next pass.
+    /// The read and the move are the same spot, so a single caret marks it.
+    fn loop_move_error(&self, name: Symbol, moved: MovedAt) -> anyhow::Error {
+        let text = self.hir.text(name);
+        anyhow!("{}", Diagnostic::new("value used after it was moved".to_string(), self.hir.pos(&moved.node).clone())
+            .with_label(format!("`{text}` is moved here, then read again on the next loop iteration")))
+    }
+
+    /// When a block-local dies still holding its moved value, hands the value back to a surviving
+    /// source. A local moved out on some path holds nothing, so it hands back nothing. The nearest
+    /// source that outlives the block becomes the live holder again, along every path, past cycles.
+    fn revive_scoped_sources(&mut self, mark: usize) {
+        for i in (mark..self.locals.len()).rev() {
+            if self.locals[i].move_site.is_some() {
+                continue;
+            }
+            let mut stack = self.locals[i].provenance.clone();
+            let mut seen: HashSet<usize> = HashSet::new();
+            while let Some(s) = stack.pop() {
+                if !seen.insert(s) {
+                    continue;
+                }
+                if s < mark {
+                    self.locals[s].move_site = None;
+                } else {
+                    stack.extend(self.locals[s].provenance.iter().copied());
+                }
             }
         }
     }
 
+    /// Whether local `i` holds a mutable value: it owns or borrows one directly, or took one from
+    /// other sources. These are the slots move tracking follows.
+    fn holds_mutable(&self, i: usize) -> bool {
+        self.locals[i].mutability == Mutability::Mutable || !self.locals[i].provenance.is_empty()
+    }
+
+    /// The mutable-value holders a value expression reaches, each with the node to blame.
+    fn reachable_sources(&self, node: &HirId<HirExpr>, out: &mut Vec<(usize, HirId<HirExpr>)>) {
+        match self.hir.get(node) {
+            HirExpr::Identifier(name) => {
+                if let Some(i) = self.frame_index_of(*name) {
+                    if self.holds_mutable(i) {
+                        out.push((i, *node));
+                    }
+                }
+            },
+            // A brace also persists its field values into the new instance, so each escapes.
+            HirExpr::Construct(callee, args, brace) => {
+                self.reachable_init_args(callee, args, out);
+                for (_, v) in brace { self.reachable_sources(v, out); }
+            },
+            HirExpr::Call(callee, args) => self.reachable_init_args(callee, args, out),
+            _ => for c in self.hir.ownership_children(node) { self.reachable_sources(&c, out); },
+        }
+    }
+
+    /// The sources a call's arguments keep reachable, when the callee is a constructor. Only the
+    /// arguments its init persists escape into the instance; the rest are borrowed. A non-constructor
+    /// call yields a fresh value, so it reaches none.
+    fn reachable_init_args(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], out: &mut Vec<(usize, HirId<HirExpr>)>) {
+        let Some(init) = self.constructor_init(callee) else { return };
+        for (i, a) in args.iter().enumerate() {
+            if self.sigs.param_escapes_at(&init, i) {
+                self.reachable_sources(a, out);
+            }
+        }
+    }
+
+    /// The init of the type a callee names.
+    fn constructor_init(&self, callee: &HirId<HirExpr>) -> Option<HirId<HirStmt>> {
+        let type_name = self.sigs.type_named(self.hir, callee)?;
+        let type_stmt = self.sigs.types_by_name.get(&type_name)?;
+        let HirStmt::Type(decl) = self.hir.get(type_stmt) else { return None };
+        Some(decl.init)
+    }
+
+    /// Marks every mutable-value holder a moved value reaches as moved out, so a later read is
+    /// use-after-move. Returns those holders, so a caller that also records provenance reuses the walk.
+    fn move_source(&mut self, node: &HirId<HirExpr>) -> Vec<usize> {
+        let mut sources = Vec::new();
+        self.reachable_sources(node, &mut sources);
+        let moved: Vec<usize> = sources.iter().map(|(i, _)| *i).collect();
+        for (i, blame) in sources {
+            self.locals[i].move_site = Some(MovedAt { node: blame, cause: MoveCause::Value });
+        }
+        moved
+    }
+
+    /// The mutable-value holders a value reaches.
+    fn source_indices(&self, value: &HirId<HirExpr>) -> Vec<usize> {
+        let mut sources = Vec::new();
+        self.reachable_sources(value, &mut sources);
+        sources.into_iter().map(|(i, _)| i).collect()
+    }
+
+    /// The source slots feeding a binding's value: the mutable-value holders it reaches, plus the
+    /// enclosing sources a captured writing closure moves.
+    fn provenance_of(&self, value: &HirId<HirExpr>) -> Vec<usize> {
+        let mut out = self.source_indices(value);
+        out.extend(self.captured_sources(value));
+        out
+    }
+
+    /// The enclosing locals a closure moves by writing to them. Only mutable-value holders count.
+    fn captured_sources(&self, value: &HirId<HirExpr>) -> Vec<usize> {
+        let HirExpr::Literal(HirLiteral::Lambda(_)) = self.hir.get(value) else { return Vec::new() };
+        let Some(writes) = self.sigs.lambda_writes.get(value) else { return Vec::new() };
+        writes.iter().filter_map(|name| {
+            let i = self.frame_index_of(*name)?;
+            self.holds_mutable(i).then_some(i)
+        }).collect()
+    }
+
     /// Stores a value into a container. The value persists there, so a `no persist` value
-    /// is rejected, and a mutable value moves in as the container becomes its owner.
+    /// is rejected, a borrowed value is rejected since it cannot outlive its lender, and a mutable
+    /// value moves in as the container becomes its owner.
     fn store_into_container(&mut self, flow: &Flow, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.reject_escape(flow, expr)?;
+        if self.arg_is_borrowed(expr) {
+            return Err(self.error_help("cannot persist a borrowed value".to_string(), expr,
+                "take it by `*mut` to own it, then it may be persisted"));
+        }
         self.move_source(expr);
         Ok(())
     }
@@ -362,7 +525,7 @@ impl<'a> Checker<'a> {
             HirStmt::Fn(decl) => {
                 // Register the name first so the body may call itself.
                 self.locals.push(Local::func(decl.name, *stmt));
-                self.function(Some(*stmt), decl)?;
+                self.function(Some(*stmt), self.sigs.writes.get(stmt), decl)?;
             },
             HirStmt::Type(decl) => self.type_decl(stmt, Some(decl.name), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
@@ -388,11 +551,15 @@ impl<'a> Checker<'a> {
                 self.expr(cond)?;
                 let body_narrow = self.narrowings(cond, true);
                 let binders = self.hir.condition_binders(cond);
-                // Loop bodies may run zero times, so their flow facts don't survive the loop.
-                self.narrow_branch(&body_narrow, |c| -> Result<(), anyhow::Error> {
-                    c.with_binders(&binders, |c| c.expr(body))?;
-                    Ok(())
-                })?;
+                let pre = self.snapshot();
+                // Check the body twice. The second pass sees the first pass's moves, so a value the
+                // body reads after moving it is caught as a cross-iteration use. A rebind before the
+                // move clears it first, so rebind-then-move is still accepted.
+                for _ in 0..2 {
+                    self.apply_narrowings(&body_narrow);
+                    self.with_binders(&binders, |c| c.expr(body))?;
+                    self.restore_keeping_moves(&pre);
+                }
             },
             HirStmt::If(cond, then, otherwise) => {
                 self.expr(cond)?;
@@ -471,7 +638,7 @@ impl<'a> Checker<'a> {
                     }
 
                     // An irrefutable guardless arm always matches, so no value slips past unmatched.
-                    exhaustive |= arm.guard.is_none() && matcher_irrefutable(&arm.matcher);
+                    exhaustive |= arm.guard.is_none() && arm.matcher.is_irrefutable();
                     let ruled = self.arm_rules_out(arm, &remaining);
                     remaining.retain(|w| !ruled.contains(w));
                 }
@@ -570,6 +737,7 @@ impl<'a> Checker<'a> {
             HirExpr::Block(stmts) => {
                 let mark = self.locals.len();
                 for s in stmts { self.stmt(s)?; }
+                self.revive_scoped_sources(mark);
                 self.locals.truncate(mark);
                 Typed::unknown()
             },
@@ -641,18 +809,22 @@ impl<'a> Checker<'a> {
 
     fn say(&mut self, name: Symbol, clause: &HirSlotClause, mutable: bool, value: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
         let owed = self.clause_owed(clause);
-        let (assigned, tag, mutability) = if let Some(value) = value {
+        let (assigned, tag, mutability, provenance) = if let Some(value) = value {
             self.reject_this_store(value)?;
             let typed = self.expr(value)?;
             self.check_into_slot(&typed.flow, &owed, name, value)?;
-            self.move_source(value);
-            (true, typed.tag, typed.mutability)
+            // The move records the sources feeding the value, so the slot reuses that walk for its
+            // provenance and adds the closure captures a bare walk would miss.
+            let mut provenance = self.move_source(value);
+            provenance.extend(self.captured_sources(value));
+            (true, typed.tag, typed.mutability, provenance)
         } else {
-            (false, TypeTag::Unknown, Mutability::Unknown)
+            (false, TypeTag::Unknown, Mutability::Unknown, Vec::new())
         };
         let mut local = Local::value(name, owed, mutable, assigned, tag);
         local.container = clause.container;
         local.mutability = mutability;
+        local.provenance = provenance;
         self.locals.push(local);
         Ok(())
     }
@@ -678,7 +850,7 @@ impl<'a> Checker<'a> {
         result
     }
 
-    fn function(&mut self, stmt: Option<HirId<HirStmt>>, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
+    fn function(&mut self, stmt: Option<HirId<HirStmt>>, writes: Option<&'a HashSet<Symbol>>, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
         // An unmarked return is inferred whole from the body. When it can both finish with no value
         // and return a bad value, the mixed shape must be named, not inferred.
         let unmarked = decl.is_unmarked();
@@ -687,6 +859,20 @@ impl<'a> Checker<'a> {
                 .map(|s| &s.ret).filter(|r| r.void && !r.obligations.is_empty())
             {
                 return Err(self.mixed_void_error(decl, &ret.obligations));
+            }
+        }
+        // A `mut` parameter borrows its argument, so it may not persist it. `*mut` owns the
+        // argument and may persist it. A `no persist` parameter is left to `reject_escape`.
+        if let Some(stmt) = stmt {
+            for (i, param) in decl.params.iter().enumerate() {
+                let cap = param.clause.capability;
+                let owes_no_persist = self.owes_no_persist(param.clause.names.iter().copied());
+                if cap.is_mut() && !cap.is_move() && !owes_no_persist && self.sigs.param_escapes_at(&stmt, i) {
+                    return Err(self.error_help(
+                        "a `mut` parameter borrows its argument and cannot let it escape".to_string(),
+                        &param.name,
+                        "take it by `*mut` to own it, or freeze or copy it before persisting"));
+                }
             }
         }
         let saved_seal = self.seal.suspend();
@@ -699,6 +885,7 @@ impl<'a> Checker<'a> {
             name: Some(decl.name),
             return_clause: decl.clause.pos.clone(),
             params: decl.params.iter().map(|p| (self.ident_sym(&p.name), p.pos.clone())).collect(),
+            writes,
         };
         let saved = std::mem::replace(&mut self.fn_ctx, ctx);
         let result = self.with_frame(&decl.params, |c| {
@@ -760,7 +947,7 @@ impl<'a> Checker<'a> {
 
     fn function_stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
         if let HirStmt::Fn(decl) = self.hir.get(stmt) {
-            self.function(Some(*stmt), decl)?;
+            self.function(Some(*stmt), self.sigs.writes.get(stmt), decl)?;
         }
         Ok(())
     }
@@ -794,11 +981,7 @@ impl<'a> Checker<'a> {
         }
 
         if let Some(site) = self.locals[i].move_site {
-            let msg = format!("'{}' is used after it is moved", self.hir.text(name));
-            // Caret both the use and the move so the reader sees where the value went.
-            return Err(anyhow!("{}", Diagnostic::new(msg, self.hir.pos(expr).clone())
-                .with_label("used here")
-                .with_span(self.hir.pos(&site).clone(), "moved here")));
+            return Err(self.use_after_move_error(name, expr, site));
         }
 
         if !self.locals[i].assigned && !self.locals[i].owed.contains(&self.sigs.opt) {
@@ -935,12 +1118,3 @@ impl<'a> Checker<'a> {
 
 }
 
-fn matcher_irrefutable(matcher: &HirMatcher) -> bool {
-    match matcher {
-        HirMatcher::Wildcard | HirMatcher::Binder(_) => true,
-        HirMatcher::As(_, inner) => matcher_irrefutable(inner),
-        HirMatcher::And(parts) => parts.iter().all(matcher_irrefutable),
-        HirMatcher::Or(alternatives) => alternatives.iter().any(matcher_irrefutable),
-        _ => false,
-    }
-}

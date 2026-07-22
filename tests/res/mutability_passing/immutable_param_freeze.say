@@ -1,4 +1,0 @@
-fn make(): mut { return mut {}; }
-fn store(cfg) { cfg["k"] = 1; }
-say m = make();
-store(m); // error: expected immutable argument

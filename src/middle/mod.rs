@@ -1,4 +1,5 @@
 pub mod hir;
+pub mod native;
 pub mod names;
 pub mod lower;
 pub mod ir;

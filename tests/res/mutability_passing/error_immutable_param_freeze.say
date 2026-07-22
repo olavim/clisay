@@ -1,0 +1,6 @@
+// A mutable factory result handed to a parameter that persists it is the keeps-argument error.
+type Sink { pub mut item; init() { this.item = 0; } fn keep(x) { this.item = x; } }
+fn make(): mut { return mut {}; }
+say s = Sink();
+say m = make();
+s.keep(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'

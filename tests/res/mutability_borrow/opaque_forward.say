@@ -1,0 +1,7 @@
+// A `no persist` parameter may forward its borrow to an opaque callback.
+obligation borrowed: no persist;
+type Box {
+    pub mut item;
+    init() { this.item = 0; }
+    fn run(x: borrowed, cb) { cb(x); }
+}

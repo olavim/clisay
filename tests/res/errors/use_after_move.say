@@ -2,11 +2,11 @@ say a = mut [1, 2];
 say b = a;
 print(a[0]);
 // error(full):
-// error: 'a' is used after it is moved
+// error: value used after it was moved
 //  --> use_after_move.say:3:7
 //   |
 // 1 | say a = mut [1, 2];
 // 2 | say b = a;
-//   |         ^ moved here
+//   |         ^ `a` moved here
 // 3 | print(a[0]);
-//   |       ^ used here
+//   |       ^ `a` used here

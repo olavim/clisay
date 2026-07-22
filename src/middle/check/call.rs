@@ -8,7 +8,7 @@ use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::middle::hir::{Capability, HirExpr, HirId, HirStmt};
 use crate::middle::signatures::RetSig;
 
-use super::native::{self, Container, NativeSig};
+use crate::middle::native::{self, Container, NativeSig};
 use super::{Mutability, Checker, Flow, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
@@ -19,6 +19,9 @@ impl<'a> Checker<'a> {
                 let name = *name;
                 if self.sigs.is_type(name) {
                     self.check_construction(name, &HashSet::new(), callee)?;
+                    if let Some(init) = self.constructor_init(callee) {
+                        self.check_call_args(callee, init, &arg_types, args)?;
+                    }
                     return Ok(Typed::of(Flow::Clean, TypeTag::Concrete(name)));
                 }
                 if self.hir.text(name) == "Err" && self.frame_index_of(name).is_none() {
@@ -54,6 +57,11 @@ impl<'a> Checker<'a> {
     fn check_opaque_call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[Typed]) -> Result<Typed, anyhow::Error> {
         let mut survive = Vec::new();
         for (i, typed) in arg_types.iter().enumerate() {
+            // A `no persist` value must survive: the opaque callee may not persist it.
+            if self.arg_owes_no_persist(&typed.flow) {
+                survive.push(i as u8);
+                continue;
+            }
             if typed.mutability != Mutability::Mutable {
                 continue;
             }
@@ -65,14 +73,21 @@ impl<'a> Checker<'a> {
             }
         }
         if !survive.is_empty() {
-            self.record_survive_barrier(callee, survive);
+            self.record_survive_barrier(callee, survive.clone());
+            // Mark the borrowed args so the runtime panics if an opaque callee tries to persist them.
+            self.record_borrow_marks(callee, survive);
         }
         self.indirect_call(callee)
     }
 
-    fn arg_is_borrowed(&self, arg: &HirId<HirExpr>) -> bool {
+    pub(super) fn arg_is_borrowed(&self, arg: &HirId<HirExpr>) -> bool {
         let HirExpr::Identifier(name) = self.hir.get(arg) else { return false };
         self.frame_index_of(*name).is_some_and(|i| self.locals[i].borrowed)
+    }
+
+    /// Whether a value owes a `no persist` obligation, so an opaque call must not persist it.
+    fn arg_owes_no_persist(&self, flow: &Flow) -> bool {
+        matches!(flow, Flow::Bad { obligations, .. } if self.owes_no_persist(obligations.iter().copied()))
     }
 
     /// Downgrades a frozen argument's slot to immutable in place.
@@ -131,14 +146,20 @@ impl<'a> Checker<'a> {
     }
 
     /// Checks a user call's arguments against the resolved function's declared parameters.
-    fn check_call_args(&mut self, callee: &HirId<HirExpr>, stmt: HirId<HirStmt>, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+    fn check_call_args(&mut self, callee: &HirId<HirExpr>, callee_fn: HirId<HirStmt>, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         // Read the params through the shared signatures borrow so the later check can take &mut self.
         let sigs = self.sigs;
-        let Some(sig) = sigs.fns.get(&stmt) else { return Ok(()) };
+        let Some(sig) = sigs.fns.get(&callee_fn) else { return Ok(()) };
         let nullable: Vec<bool> = sig.param_clauses.iter().map(|p| p.contains(&sigs.opt)).collect();
-        self.check_arg_mutability(callee, &sig.param_markers, arg_types, args)?;
+        self.check_arg_mutability(callee, callee_fn, &sig.param_markers, arg_types, args)?;
         self.check_args(callee, &nullable, arg_types, args)?;
         self.consume_move_args(&sig.param_markers, args);
+        // A mutable argument lent to a non-consuming parameter is borrowed for the call, so mark it.
+        let marks: Vec<u8> = sig.param_markers.iter().enumerate()
+            .filter(|(i, m)| !m.is_move() && arg_types.get(*i).is_some_and(|t| t.mutability == Mutability::Mutable))
+            .map(|(i, _)| i as u8)
+            .collect();
+        self.record_borrow_marks(callee, marks);
         Ok(())
     }
 
@@ -153,7 +174,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Matches each argument's mutability against its parameter marker.
-    fn check_arg_mutability(&self, callee: &HirId<HirExpr>, markers: &[Capability], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+    fn check_arg_mutability(&self, callee: &HirId<HirExpr>, callee_fn: HirId<HirStmt>, markers: &[Capability], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         for (i, &marker) in markers.iter().enumerate() {
             let Some(typed) = arg_types.get(i) else { break };
             if marker.is_mut() {
@@ -165,10 +186,40 @@ impl<'a> Checker<'a> {
                     return Err(self.consumes_borrow_error(callee, &args[i]));
                 }
             } else if typed.mutability == Mutability::Mutable {
-                return Err(self.freeze_it_error(callee, &args[i]));
+                // A read-only helper borrows the mutable, so it is admitted only where the callee
+                // neither persists nor mutates it.
+                if self.sigs.param_escapes_at(&callee_fn, i) {
+                    return Err(self.keeps_argument_error(callee, &args[i]));
+                }
+                if self.sigs.param_mutates_at(&callee_fn, i) {
+                    return Err(self.mutates_argument_error(callee, &args[i]));
+                }
             }
         }
         Ok(())
+    }
+
+    /// The error for passing a mutable value to a parameter that persists it.
+    fn keeps_argument_error(&self, callee: &HirId<HirExpr>, arg: &HirId<HirExpr>) -> anyhow::Error {
+        let subject = self.quoted_subject(arg);
+        let c = self.callee_name(callee);
+        self.error_ctx(
+            format!("{subject} is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'"),
+            self.hir.pos(arg), format!("{subject} is mutable"),
+            self.hir.pos(callee), format!("{c} keeps its argument"))
+    }
+
+    /// The error for passing a mutable value to a parameter the callee mutates in place. The fix is
+    /// on the callee's parameter, so the help leads there. Freezing is no help, since the callee
+    /// needs to write the value.
+    fn mutates_argument_error(&self, callee: &HirId<HirExpr>, arg: &HirId<HirExpr>) -> anyhow::Error {
+        let subject = self.quoted_subject(arg);
+        let c = self.callee_name(callee);
+        self.error_ctx_help(
+            "mutable value lent to a parameter that mutates it".to_string(),
+            self.hir.pos(arg), format!("{subject} is mutable"),
+            self.hir.pos(callee), format!("{c} mutates its argument"),
+            format!("declare the parameter `mut` to let it mutate the borrow, or pass a `copy` to leave {subject} unchanged"))
     }
 
     /// The error for handing a borrowed value to a parameter that consumes it.
@@ -192,11 +243,6 @@ impl<'a> Checker<'a> {
         self.fn_ctx.params.iter().find(|(sym, _)| sym == name).map(|(_, pos)| pos)
     }
 
-    /// The error for passing a mutable value where an immutable one is expected.
-    fn freeze_it_error(&self, callee: &HirId<HirExpr>, arg: &HirId<HirExpr>) -> anyhow::Error {
-        self.arg_cap_error(callee, arg, "immutable", "mutable")
-    }
-
     /// The error for passing an immutable value to a parameter that requires a mutable one.
     fn needs_mut_error(&self, callee: &HirId<HirExpr>, arg: &HirId<HirExpr>) -> anyhow::Error {
         self.arg_cap_error(callee, arg, "mutable", "immutable")
@@ -207,6 +253,14 @@ impl<'a> Checker<'a> {
         let (a, c) = (self.arg_name(arg), self.callee_name(callee));
         self.error_ctx(format!("expected {want} argument"), self.hir.pos(arg), format!("{a} is {got}"),
             self.hir.pos(callee), format!("{c} expects {a} to be {want}"))
+    }
+
+    /// Single-quoted name of a value node for a message subject, or "this value" when unnamed.
+    pub(super) fn quoted_subject(&self, node: &HirId<HirExpr>) -> String {
+        match self.hir.get(node) {
+            HirExpr::Identifier(name) => format!("'{}'", self.hir.text(*name)),
+            _ => "this value".to_string(),
+        }
     }
 
     /// Backtick-quoted name of an argument for a capability label.

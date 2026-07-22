@@ -213,3 +213,8 @@ fn mutability_move(resource: &str) -> Result<(), Failed> {
 fn mutability_traits(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
+
+#[test_resources("tests/res/mutability_borrow")]
+fn mutability_borrow(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
