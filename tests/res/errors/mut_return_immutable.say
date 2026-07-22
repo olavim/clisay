@@ -1,0 +1,14 @@
+fn make(): mut {
+  say x = mut {};
+  freeze(x);
+  return x;
+}
+// error(full):
+// error: invalid immutable return: expected mutable
+//  --> mut_return_immutable.say:4:10
+//   |
+// 1 | fn make(): mut {
+//   |            --- `make` expects a mutable return
+// ...
+// 4 |   return x;
+//   |          ^ `x` is immutable

@@ -1,0 +1,9 @@
+// A `: mut` satisfier of an immutable hole would leak a runtime-mutable value through an immutable slot.
+trait Source {
+    req fn read();
+}
+type File with Source {
+    pub fn read(): mut { return mut []; } // error: return is mutable but trait requires immutable
+    init() {}
+}
+print("unreachable");

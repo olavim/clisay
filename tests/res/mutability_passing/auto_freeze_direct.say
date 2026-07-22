@@ -2,4 +2,4 @@
 // an immutable value.
 fn make()! { return mut {}; }
 say r = make();
-r["k"] = 1; // error: 'r' is immutable and cannot be mutated
+r["k"] = 1; // error: cannot mutate an immutable value

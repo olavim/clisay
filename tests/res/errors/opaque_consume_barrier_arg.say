@@ -1,0 +1,16 @@
+fn cb(a: mut, b: *mut) { }
+fn apply(f, x: mut, y: mut) {
+  f(x, y);
+}
+say p = mut {};
+say q = mut {};
+apply(cb, p, q);
+// error(full):
+// error: cannot move a borrowed argument into a consuming callee
+//  --> opaque_consume_barrier_arg.say:3:8
+//   |
+// 2 | fn apply(f, x: mut, y: mut) {
+// 3 |   f(x, y);
+//   |        ^ the callee consumes `y`
+//   |
+// 	at apply (opaque_consume_barrier_arg.say:3)

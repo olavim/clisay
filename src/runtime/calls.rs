@@ -58,7 +58,8 @@ impl Vm {
         for _ in 0..count {
             let position = self.read_next() as usize;
             if self.callee_consumes(callee, position) {
-                return self.error(objects::CONSUMED_BORROW);
+                let label = format!("the callee consumes `{}`", self.get_source_position().snippet());
+                return self.error_labeled(objects::CONSUMED_BORROW, label);
             }
         }
         Ok(())

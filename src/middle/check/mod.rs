@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::frontend::lex::Diagnostic;
+use crate::frontend::lex::{Diagnostic, SourcePosition};
 
 use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
@@ -175,6 +175,25 @@ struct FlowSnapshot {
     narrowed: HashMap<NarrowKey, HashSet<Symbol>>,
 }
 
+/// The declared facts of the function currently being checked.
+#[derive(Default)]
+struct FnContext {
+    /// The declared return shape. `Inferred` marks a lambda or the program root.
+    return_shape: ReturnShape,
+    /// Whether the return declares any obligation.
+    return_owes: bool,
+    /// Whether the function has no return marker.
+    return_unmarked: bool,
+    /// Whether the return is declared `: mut`.
+    return_mut: bool,
+    /// The function's name.
+    name: Option<Symbol>,
+    /// The return-clause span.
+    return_clause: Option<SourcePosition>,
+    /// The parameters as `(name, span)`.
+    params: Vec<(Symbol, SourcePosition)>,
+}
+
 struct Checker<'a> {
     hir: &'a Hir,
     bindings: &'a Bindings,
@@ -190,13 +209,8 @@ struct Checker<'a> {
     /// The construction seal while checking a type's `init`.
     seal: Seal,
     current_trait_surface: Option<HashSet<Symbol>>,
-    current_return: Option<ReturnShape>,
-    /// Whether the current function's return declares any obligation.
-    current_return_owes: bool,
-    /// Whether the current function has no return marker.
-    current_return_unmarked: bool,
-    /// Whether the current function's return is declared `: mut`.
-    current_return_mut: bool,
+    /// The function currently being checked.
+    fn_ctx: FnContext,
     /// The null fast path: a `!` operand owing only `opt`, needing just the null assertion.
     barriers: HashSet<HirId<HirExpr>>,
     /// Nodes where an unknown value needs the boundary guard: a slot crossing or a `!` operand.
@@ -220,10 +234,7 @@ impl<'a> Checker<'a> {
             narrowed: HashMap::new(),
             seal: Seal::default(),
             current_trait_surface: None,
-            current_return: None,
-            current_return_owes: false,
-            current_return_unmarked: false,
-            current_return_mut: false,
+            fn_ctx: FnContext::default(),
             barriers: HashSet::new(),
             boundary_barriers: HashMap::new(),
             witness_tests: HashMap::new(),
@@ -245,6 +256,26 @@ impl<'a> Checker<'a> {
         anyhow!("{}", Diagnostic::new(msg, self.hir.pos(primary).clone())
             .with_label(primary_label)
             .with_span(self.hir.pos(other).clone(), other_label)
+            .with_help(help))
+    }
+
+    /// An error with a label on its own caret.
+    fn error_labeled<T>(&self, msg: String, node: &HirId<T>, label: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node).clone()).with_label(label))
+    }
+
+    /// An error with a primary caret at `primary` and a context caret at `site`.
+    fn error_ctx(&self, msg: impl Into<String>, primary: &SourcePosition, label: impl Into<String>, site: &SourcePosition, site_label: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, primary.clone())
+            .with_label(label)
+            .with_context_span(site.clone(), site_label))
+    }
+
+    /// A context-caret error that also carries a `help:` note.
+    fn error_ctx_help(&self, msg: impl Into<String>, primary: &SourcePosition, label: impl Into<String>, site: &SourcePosition, site_label: impl Into<String>, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, primary.clone())
+            .with_label(label)
+            .with_context_span(site.clone(), site_label)
             .with_help(help))
     }
 
@@ -342,14 +373,12 @@ impl<'a> Checker<'a> {
                     let typed = self.expr(e)?;
                     self.check_return_mutability(&typed, e)?;
                     self.check_return_field_move(e)?;
-                    if let Some(shape) = self.current_return {
-                        self.check_return(&typed.flow, shape, e)?;
-                    }
+                    self.check_return(&typed.flow, self.fn_ctx.return_shape, e)?;
                     // Returning a mutable value moves it out to the caller.
                     self.move_source(e);
                 },
                 // A `!` function falls back to null on a bare return, which it may not.
-                None if self.current_return == Some(ReturnShape::NonNull) => {
+                None if self.fn_ctx.return_shape == ReturnShape::NonNull => {
                     return Err(self.error("A '!' function must return a value, but this 'return' yields null".to_string(), stmt));
                 },
                 None => {},
@@ -662,25 +691,25 @@ impl<'a> Checker<'a> {
         }
         let saved_seal = self.seal.suspend();
         // A lambda's shape is inferred, so it is not checked against a declaration.
-        let saved_return = std::mem::replace(&mut self.current_return, match decl.ret {
-            ReturnShape::Inferred => None,
-            ret => Some(ret),
-        });
-        let prev_owes = std::mem::replace(&mut self.current_return_owes, !decl.clause.names.is_empty());
-        let prev_unmarked = std::mem::replace(&mut self.current_return_unmarked, unmarked);
-        let prev_mut = std::mem::replace(&mut self.current_return_mut, decl.clause.capability.is_mut());
+        let ctx = FnContext {
+            return_shape: decl.ret,
+            return_owes: !decl.clause.names.is_empty(),
+            return_unmarked: unmarked,
+            return_mut: decl.clause.capability.is_mut(),
+            name: Some(decl.name),
+            return_clause: decl.clause.pos.clone(),
+            params: decl.params.iter().map(|p| (self.ident_sym(&p.name), p.pos.clone())).collect(),
+        };
+        let saved = std::mem::replace(&mut self.fn_ctx, ctx);
         let result = self.with_frame(&decl.params, |c| {
             c.expr(&decl.body)?;
             // A non-null return must be produced on every path.
-            if c.current_return == Some(ReturnShape::NonNull) && !c.hir.definitely_returns(&decl.body) {
+            if c.fn_ctx.return_shape == ReturnShape::NonNull && !c.hir.definitely_returns(&decl.body) {
                 return Err(c.error("This function can finish without returning a value; a '!' return must produce one on every path".to_string(), &decl.body));
             }
             Ok(())
         });
-        self.current_return = saved_return;
-        self.current_return_owes = prev_owes;
-        self.current_return_unmarked = prev_unmarked;
-        self.current_return_mut = prev_mut;
+        self.fn_ctx = saved;
         self.seal.restore(saved_seal);
         result
     }

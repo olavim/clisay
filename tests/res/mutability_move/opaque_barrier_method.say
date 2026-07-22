@@ -1,7 +1,7 @@
 // The opaque-call barrier reaches a consuming `*mut` parameter through a bound method too.
 type Box { pub fn eat(x: *mut) { } }
 fn apply(cb, val: mut) {
-  cb(val); // error: This argument must survive the call, but the callee would consume it
+  cb(val); // error: cannot move a borrowed argument into a consuming callee
 }
 say b = Box();
 say v = mut {};

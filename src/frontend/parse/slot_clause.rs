@@ -18,9 +18,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 "name at least one obligation after the ':'",
             ));
         }
+        let start = self.tokens.peek(0).pos.clone();
         while self.at_clause_atom() {
             self.parse_clause_atom(&mut clause, slot)?;
         }
+        clause.pos = Some(start.to(&self.tokens.previous().pos));
 
         Ok(clause)
     }

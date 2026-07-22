@@ -8,11 +8,11 @@ use super::host::Host;
 use super::value::{Value, ValueKind};
 
 /// The runtime diagnostic raised when a mutation hits an immutable value.
-pub const IMMUTABLE_MUTATION: &str = "Cannot mutate an immutable value";
+pub const IMMUTABLE_MUTATION: &str = "cannot mutate an immutable value";
 
 /// The runtime diagnostic raised when an opaque call must keep its argument but the callee would
 /// consume it.
-pub const CONSUMED_BORROW: &str = "This argument must survive the call, but the callee would consume it";
+pub const CONSUMED_BORROW: &str = "cannot move a borrowed argument into a consuming callee";
 
 /// Marks a value immutable, then its container children.
 pub fn freeze_value(value: Value) {

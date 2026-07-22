@@ -1,0 +1,18 @@
+trait Sink {
+    req fn accept(x: *mut);
+}
+type Db with Sink {
+    pub fn accept(x: mut) { }
+    init() {}
+}
+// error(full):
+// error: parameter is less permissive than the trait requires
+//  --> help_trait_param_not_move.say:5:19
+//   |
+// 2 |     req fn accept(x: *mut);
+//   |                   ------- `Sink.accept` requires ownership of `x` (`*mut`)
+// ...
+// 5 |     pub fn accept(x: mut) { }
+//   |                   ^^^^^^ `Db.accept` only borrows `x` here (`mut`)
+//   |
+//   = help: take ownership of `x` to match the trait: `x: *mut`

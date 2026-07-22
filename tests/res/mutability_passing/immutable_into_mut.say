@@ -2,4 +2,4 @@
 fn fill(x: mut) { x["k"] = 1; }
 say m = mut {};
 freeze(m);
-fill(m); // error: 'm' is immutable but this parameter requires a mutable value; pass a value minted with 'mut'
+fill(m); // error: expected mutable argument

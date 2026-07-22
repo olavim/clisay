@@ -4,4 +4,4 @@ say outer = mut {};
 outer["inner"] = inner;
 freeze(outer);
 print(outer["inner"]["x"]); // expect: 1
-inner["x"] = 2; // error: Cannot mutate an immutable value
+inner["x"] = 2; // error: cannot mutate an immutable value

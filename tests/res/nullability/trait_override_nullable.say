@@ -5,7 +5,7 @@ trait Powered {
     }
 }
 type Car with Powered {
-    pub fn start()? { // error: Method 'start' overrides trait 'Powered' but its return is more nullable than the trait declares
+    pub fn start()? { // error: override is more nullable than the trait allows
         return null;
     }
 }

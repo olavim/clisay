@@ -2,4 +2,4 @@
 // error, the same as a value handed back by a `: mut` return.
 fn store(cfg) { cfg["k"] = 1; }
 say m = mut {};
-store(m); // error: 'm' is mutable and cannot be passed where an immutable value is expected; freeze it first
+store(m); // error: expected immutable argument

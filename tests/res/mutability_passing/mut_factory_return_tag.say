@@ -2,4 +2,4 @@
 // its result still runs the callee's argument checks.
 type Foo { pub fn take(x) { } }
 fn make(): mut { return mut Foo(); }
-make().take(null); // error: Cannot pass null as argument 1; the parameter is non-null
+make().take(null); // error: expected non-null argument

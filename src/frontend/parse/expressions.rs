@@ -7,9 +7,22 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let name = self.ast.intern("lambda");
         // Lambda parameters take no markers. The return shape is inferred from the body.
         let params = params.into_iter()
-            .map(|name| Param { name, nullable: false, mutable: false, clause: SlotClause::default() })
+            .map(|name| Param {
+                pos: self.ast.pos(&name).clone(),
+                name,
+                nullable: false,
+                mutable: false,
+                clause: SlotClause::default()
+            })
             .collect();
-        Expr::Literal(Literal::Lambda(FnDecl { name, params, body, ret: ReturnShape::Inferred, clause: SlotClause::default() }))
+        Expr::Literal(Literal::Lambda(FnDecl {
+            name,
+            sig_pos: self.ast.pos(&body).clone(),
+            params,
+            body,
+            ret: ReturnShape::Inferred,
+            clause: SlotClause::default()
+        }))
     }
 
     pub(super) fn parse_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {

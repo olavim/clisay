@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::{paint, render_spans, SourcePosition};
+use super::{paint, rail, render_spans, SourcePosition, Span, SpanKind, BOLD, COLOR_BOLD_RED, COLOR_BRIGHT_CYAN, COLOR_CYAN};
 
 /// One render shape for every stage's errors, so diagnostics look the same everywhere.
 pub struct Diagnostic {
@@ -8,13 +8,22 @@ pub struct Diagnostic {
     pos: SourcePosition,
     label: Option<String>,
     opener: Option<(SourcePosition, String)>,
-    spans: Vec<(SourcePosition, String)>,
+    spans: Vec<Span>,
     help: Vec<String>,
+    trace: Option<String>,
 }
 
 impl Diagnostic {
     pub fn new(message: impl Into<String>, pos: SourcePosition) -> Diagnostic {
-        return Diagnostic { message: message.into(), pos, label: None, opener: None, spans: Vec::new(), help: Vec::new() };
+        return Diagnostic {
+            message: message.into(),
+            pos,
+            label: None,
+            opener: None,
+            spans: Vec::new(),
+            help: Vec::new(),
+            trace: None,
+        };
     }
 
     pub fn with_label(mut self, label: impl Into<String>) -> Diagnostic {
@@ -30,7 +39,13 @@ impl Diagnostic {
 
     /// Adds a second labeled span, caretted alongside the primary in one frame.
     pub fn with_span(mut self, pos: SourcePosition, label: impl Into<String>) -> Diagnostic {
-        self.spans.push((pos, label.into()));
+        self.spans.push(Span { pos, label: label.into(), kind: SpanKind::Primary });
+        return self;
+    }
+
+    /// Adds a labeled context span, underlined alongside the primary to point at a related site.
+    pub fn with_context_span(mut self, pos: SourcePosition, label: impl Into<String>) -> Diagnostic {
+        self.spans.push(Span { pos, label: label.into(), kind: SpanKind::Context });
         return self;
     }
 
@@ -39,15 +54,25 @@ impl Diagnostic {
         self.help.push(help.into());
         return self;
     }
+
+    /// Attaches a runtime call trace, shown below the frame.
+    pub fn with_trace(mut self, trace: impl Into<String>) -> Diagnostic {
+        self.trace = Some(trace.into());
+        return self;
+    }
 }
 
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let frame = if !self.spans.is_empty() {
             // Combine the primary and its extra spans, ordered by position, into one frame.
-            let mut all = vec![(self.pos.clone(), self.label.clone().unwrap_or_default())];
+            let mut all = vec![Span {
+                pos: self.pos.clone(),
+                label: self.label.clone().unwrap_or_default(),
+                kind: SpanKind::Primary
+            }];
             all.extend(self.spans.iter().cloned());
-            all.sort_by_key(|(pos, _)| pos.start);
+            all.sort_by_key(|s| s.pos.start);
             render_spans(&all, &self.help)
         } else {
             match &self.opener {
@@ -55,7 +80,20 @@ impl fmt::Display for Diagnostic {
                 None => self.pos.render_snippet(self.label.as_deref(), &self.help),
             }
         };
-        return write!(f, "{} {}\n {} {}:{}\n{}",
-            paint("error:", "1;31"), paint(&self.message, "1"), paint("-->", "96"), self.pos, self.pos.column(), frame);
+        write!(f, "{} {}\n {} {}:{}\n{}",
+            paint("error:", COLOR_BOLD_RED),
+            paint(&self.message, BOLD),
+            paint("-->", COLOR_BRIGHT_CYAN),
+            self.pos,
+            self.pos.column(),
+            frame)?;
+
+        if let Some(trace) = &self.trace {
+            if self.label.is_some() && self.help.is_empty() {
+                write!(f, "\n{}", rail("", self.pos.line.to_string().len()))?;
+            }
+            write!(f, "\n{}", paint(trace, COLOR_CYAN))?;
+        }
+        return Ok(());
     }
 }

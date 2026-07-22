@@ -228,7 +228,7 @@ impl<'a> Lowerer<'a> {
                 let lowered = self.expr(inner)?;
                 Ok(self.hir.add(HirExpr::Mut(lowered), self.ast.pos(node).clone()))
             },
-            _ => Err(self.error("`mut` marks a mutable value; it can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`", node)),
+            _ => Err(self.error_help_at("invalid operand of `mut`", self.ast.pos(node), "`mut` can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`")),
         }
     }
 
@@ -358,7 +358,13 @@ impl<'a> Lowerer<'a> {
         if marker_nullable && !names.contains(&self.opt) {
             names.push(self.opt);
         }
-        HirSlotClause { capability: clause.capability, names, container: clause.container, void: clause.void }
+        HirSlotClause {
+            capability: clause.capability,
+            names,
+            container: clause.container,
+            void: clause.void,
+            pos: clause.pos.clone()
+        }
     }
 
     pub(super) fn return_clause(&self, decl: &FnDecl) -> (ReturnShape, HirSlotClause) {
@@ -381,6 +387,7 @@ impl<'a> Lowerer<'a> {
             let clause = self.slot_clause(p.nullable, &p.clause);
             Ok(HirParam {
                 name: self.expr(&p.name)?,
+                pos: p.pos.clone(),
                 nullable: clause.names.contains(&self.opt),
                 mutable: p.mutable,
                 clause,
@@ -392,6 +399,7 @@ impl<'a> Lowerer<'a> {
         let (ret, clause) = self.return_clause(decl);
         Ok(HirFnDecl {
             name: decl.name,
+            sig_pos: decl.sig_pos.clone(),
             params: self.params(&decl.params)?,
             body: self.expr(&decl.body)?,
             ret,
