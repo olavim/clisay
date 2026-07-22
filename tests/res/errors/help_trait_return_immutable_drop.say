@@ -15,4 +15,4 @@ type File with Source {
 // 5 |     pub fn read(): mut { return mut []; }
 //   |            ^^^^^^^^^^^ `File.read` returns a mutable value
 //   |
-//   = help: drop `mut` from the return clause of `File.read`
+//   = help: return an immutable value from `File.read`
