@@ -273,6 +273,16 @@ impl Vm {
     }
 
     fn error(&self, message: impl Into<String>) -> Result<(), anyhow::Error> {
+        self.raise(Diagnostic::new(message, self.get_source_position().clone()))
+    }
+
+    /// A runtime error whose caret carries a label.
+    fn error_labeled(&self, message: impl Into<String>, label: impl Into<String>) -> Result<(), anyhow::Error> {
+        self.raise(Diagnostic::new(message, self.get_source_position().clone()).with_label(label))
+    }
+
+    /// Attaches the call trace to a diagnostic and raises it.
+    fn raise(&self, diagnostic: Diagnostic) -> Result<(), anyhow::Error> {
         // Each frame is paused on one instruction: the current `ip` for the top frame, and each
         // caller's saved `return_ip` for the frames below it. The base frame has no closure.
         let frames: Vec<CallFrame> = self.frames.iter().collect();
@@ -284,11 +294,10 @@ impl Vm {
         }
         let trace = lines.join("\n");
 
-        let pos = self.get_source_position();
         if trace.is_empty() {
-            bail!("{}", Diagnostic::new(message, pos.clone()))
+            bail!("{}", diagnostic)
         }
-        bail!("{}\n{}", Diagnostic::new(message, pos.clone()), trace)
+        bail!("{}", diagnostic.with_trace(trace))
     }
 
     fn intern(&mut self, name: impl Into<String>) -> *mut ObjString {

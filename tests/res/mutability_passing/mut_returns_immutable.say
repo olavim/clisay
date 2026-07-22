@@ -1,5 +1,5 @@
 fn make(): mut {
   say x = mut {};
   freeze(x);
-  return x; // error: this function is declared ': mut' but returns an immutable value
+  return x; // error: invalid immutable return: expected mutable
 }

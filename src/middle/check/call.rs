@@ -2,6 +2,9 @@
 
 use std::collections::HashSet;
 
+use anyhow::anyhow;
+
+use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::middle::hir::{Capability, HirExpr, HirId, HirStmt};
 use crate::middle::signatures::RetSig;
 
@@ -22,13 +25,13 @@ impl<'a> Checker<'a> {
                     return Ok(Typed::of(self.fails_flow(), TypeTag::Unknown));
                 }
                 if let Some(stmt) = self.func_of(name) {
-                    self.check_call_args(stmt, &arg_types, args)?;
+                    self.check_call_args(callee, stmt, &arg_types, args)?;
                     return Ok(self.call_result(stmt, &TypeTag::Unknown));
                 }
                 // A built-in global resolves by name when no local or function shadows it.
                 if self.frame_index_of(name).is_none() {
                     if let Some(sig) = native::builtin(self.hir.text(name)) {
-                        self.check_native_args(&sig, &arg_types, args)?;
+                        self.check_native_args(callee, &sig, &arg_types, args)?;
                         let result = Typed::of(self.native_ret_flow(sig.ret), TypeTag::Unknown);
                         // `freeze(x)` also discharges the mutation capability, handing its
                         // argument back immutable.
@@ -90,13 +93,13 @@ impl<'a> Checker<'a> {
         }
         if let (TypeTag::Concrete(type_name), Some(method)) = (&receiver_typed.tag, self.hir.symbol_of(name)) {
             if let Some(stmt) = self.sigs.methods_by_type.get(&(*type_name, method)).copied() {
-                self.check_call_args(stmt, arg_types, args)?;
+                self.check_call_args(callee, stmt, arg_types, args)?;
                 return Ok(self.call_result(stmt, &receiver_typed.tag));
             }
         }
         // A native-type method resolves by name when no user method matches the receiver.
         if let Some(sig) = native::native_method(name) {
-            self.check_native_args(&sig, arg_types, args)?;
+            self.check_native_args(callee, &sig, arg_types, args)?;
             if sig.container == Container::Preserves {
                 for (typed, arg) in arg_types.iter().zip(args) {
                     self.store_into_container(&typed.flow, arg)?;
@@ -112,10 +115,7 @@ impl<'a> Checker<'a> {
     fn indirect_call(&mut self, callee: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let callee_typed = self.expr(callee)?;
         if let Some(witness) = self.confirmed_witness_name(&callee_typed) {
-            let subject = match self.hir.get(callee) {
-                HirExpr::Identifier(name) => format!("`{}`", self.hir.text(*name)),
-                _ => "this value".to_string(),
-            };
+            let subject = self.arg_name(callee);
             return Err(self.confirmed_use_error(format!("{subject} is not callable"), callee, witness));
         }
         self.require_usable_value(&callee_typed, callee)?;
@@ -131,13 +131,13 @@ impl<'a> Checker<'a> {
     }
 
     /// Checks a user call's arguments against the resolved function's declared parameters.
-    fn check_call_args(&mut self, stmt: HirId<HirStmt>, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+    fn check_call_args(&mut self, callee: &HirId<HirExpr>, stmt: HirId<HirStmt>, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         // Read the params through the shared signatures borrow so the later check can take &mut self.
         let sigs = self.sigs;
         let Some(sig) = sigs.fns.get(&stmt) else { return Ok(()) };
         let nullable: Vec<bool> = sig.param_clauses.iter().map(|p| p.contains(&sigs.opt)).collect();
-        self.check_arg_mutability(&sig.param_markers, arg_types, args)?;
-        self.check_args(&nullable, arg_types, args)?;
+        self.check_arg_mutability(callee, &sig.param_markers, arg_types, args)?;
+        self.check_args(callee, &nullable, arg_types, args)?;
         self.consume_move_args(&sig.param_markers, args);
         Ok(())
     }
@@ -153,66 +153,95 @@ impl<'a> Checker<'a> {
     }
 
     /// Matches each argument's mutability against its parameter marker.
-    fn check_arg_mutability(&self, markers: &[Capability], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+    fn check_arg_mutability(&self, callee: &HirId<HirExpr>, markers: &[Capability], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         for (i, &marker) in markers.iter().enumerate() {
             let Some(typed) = arg_types.get(i) else { break };
             if marker.is_mut() {
                 if typed.mutability == Mutability::Immutable {
-                    return Err(self.needs_mut_error(&args[i]));
+                    return Err(self.needs_mut_error(callee, &args[i]));
                 }
                 // A borrow cannot be given away, so it may not feed a consuming parameter.
                 if marker.is_move() && self.arg_is_borrowed(&args[i]) {
-                    return Err(self.consumes_borrow_error(&args[i]));
+                    return Err(self.consumes_borrow_error(callee, &args[i]));
                 }
             } else if typed.mutability == Mutability::Mutable {
-                return Err(self.freeze_it_error(&args[i]));
+                return Err(self.freeze_it_error(callee, &args[i]));
             }
         }
         Ok(())
     }
 
     /// The error for handing a borrowed value to a parameter that consumes it.
-    fn consumes_borrow_error(&self, arg: &HirId<HirExpr>) -> anyhow::Error {
-        let subject = self.arg_subject(arg);
-        self.error(format!("{subject} is borrowed and cannot be moved into a parameter that consumes it"), arg)
+    fn consumes_borrow_error(&self, callee: &HirId<HirExpr>, arg: &HirId<HirExpr>) -> anyhow::Error {
+        let (a, c) = (self.arg_name(arg), self.callee_name(callee));
+        let mut diag = Diagnostic::new(format!("cannot move borrowed value {a}"), self.hir.pos(arg).clone())
+            .with_label(format!("{a} is moved here"));
+        if let Some(param_pos) = self.borrowed_param_pos(arg) {
+            let fname = self.fn_ctx.name.map_or("this function".to_string(), |s| format!("`{}`", self.hir.text(s)));
+            diag = diag.with_context_span(param_pos.clone(), format!("{fname} only borrows {a} here; it does not own it"));
+        }
+        diag = diag
+            .with_context_span(self.hir.pos(callee).clone(), format!("{c} consumes {a}"))
+            .with_help(format!("take ownership of {a} with `*mut` to move it into {c}"));
+        anyhow!("{}", diag)
+    }
+
+    /// The declaration span of the current function's parameter named by `arg`.
+    fn borrowed_param_pos(&self, arg: &HirId<HirExpr>) -> Option<&SourcePosition> {
+        let HirExpr::Identifier(name) = self.hir.get(arg) else { return None };
+        self.fn_ctx.params.iter().find(|(sym, _)| sym == name).map(|(_, pos)| pos)
     }
 
     /// The error for passing a mutable value where an immutable one is expected.
-    fn freeze_it_error(&self, arg: &HirId<HirExpr>) -> anyhow::Error {
-        let subject = self.arg_subject(arg);
-        self.error(format!("{subject} is mutable and cannot be passed where an immutable value is expected; freeze it first"), arg)
+    fn freeze_it_error(&self, callee: &HirId<HirExpr>, arg: &HirId<HirExpr>) -> anyhow::Error {
+        self.arg_cap_error(callee, arg, "immutable", "mutable")
     }
 
     /// The error for passing an immutable value to a parameter that requires a mutable one.
-    fn needs_mut_error(&self, arg: &HirId<HirExpr>) -> anyhow::Error {
-        let subject = self.arg_subject(arg);
-        self.error(format!("{subject} is immutable but this parameter requires a mutable value; pass a value minted with 'mut'"), arg)
+    fn needs_mut_error(&self, callee: &HirId<HirExpr>, arg: &HirId<HirExpr>) -> anyhow::Error {
+        self.arg_cap_error(callee, arg, "mutable", "immutable")
     }
 
-    /// Names an argument for a capability error.
-    fn arg_subject(&self, arg: &HirId<HirExpr>) -> String {
+    /// A capability-mismatch error: the parameter wants a `want` argument but got a `got` one.
+    fn arg_cap_error(&self, callee: &HirId<HirExpr>, arg: &HirId<HirExpr>, want: &str, got: &str) -> anyhow::Error {
+        let (a, c) = (self.arg_name(arg), self.callee_name(callee));
+        self.error_ctx(format!("expected {want} argument"), self.hir.pos(arg), format!("{a} is {got}"),
+            self.hir.pos(callee), format!("{c} expects {a} to be {want}"))
+    }
+
+    /// Backtick-quoted name of an argument for a capability label.
+    pub(super) fn arg_name(&self, arg: &HirId<HirExpr>) -> String {
         match self.hir.get(arg) {
-            HirExpr::Identifier(name) => format!("'{}'", self.hir.text(*name)),
+            HirExpr::Identifier(name) => format!("`{}`", self.hir.text(*name)),
             _ => "this value".to_string(),
         }
     }
 
+    /// Backtick-quoted name of a call's callee for a capability label.
+    fn callee_name(&self, callee: &HirId<HirExpr>) -> String {
+        match self.hir.get(callee) {
+            HirExpr::Identifier(name) => format!("`{}`", self.hir.text(*name)),
+            HirExpr::Index(_, member, true) => self.member_text(member).map_or_else(|| "this function".to_string(), |m| format!("`{m}`")),
+            _ => "this function".to_string(),
+        }
+    }
+
     /// Checks each argument against a callee's per-parameter nullability.
-    fn check_args(&mut self, params: &[bool], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+    fn check_args(&mut self, callee: &HirId<HirExpr>, params: &[bool], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         for (i, &param_nullable) in params.iter().enumerate() {
             if param_nullable {
                 continue;
             }
             let Some(typed) = arg_types.get(i) else { break };
-            self.check_arg(&typed.flow, i, &args[i])?;
+            self.check_arg(callee, &typed.flow, i, &args[i])?;
         }
         Ok(())
     }
 
     /// Checks each argument against a native's per-parameter accepted obligation set.
-    fn check_native_args(&mut self, sig: &NativeSig, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+    fn check_native_args(&mut self, callee: &HirId<HirExpr>, sig: &NativeSig, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         let nullable: Vec<bool> = sig.params.iter().map(|p| p.opt).collect();
-        self.check_args(&nullable, arg_types, args)
+        self.check_args(callee, &nullable, arg_types, args)
     }
 
     /// Flows a stored argument's obligations onto the receiver container, so pushing a pending
@@ -234,13 +263,14 @@ impl<'a> Checker<'a> {
     }
 
     /// Checks a single argument value against a non-null parameter slot.
-    fn check_arg(&mut self, flow: &Flow, position: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn check_arg(&mut self, callee: &HirId<HirExpr>, flow: &Flow, position: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let n = position + 1;
+        let site_label = format!("{} requires a non-null value here", self.callee_name(callee));
         match self.non_null_violation(flow, node) {
             None => Ok(()),
             Some(Violation::Void) => Err(self.error(format!("Argument {n} is a void result; the call returns no value"), node)),
-            Some(Violation::Null) => Err(self.error(format!("Cannot pass null as argument {n}; the parameter is non-null"), node)),
-            Some(Violation::Nullable) => Err(self.error(format!("Argument {n} may be null but the parameter is non-null; narrow it before the call"), node)),
+            Some(Violation::Null) => Err(self.error_ctx("expected non-null argument", self.hir.pos(node), "this argument is null", self.hir.pos(callee), site_label)),
+            Some(Violation::Nullable) => Err(self.error_ctx_help("expected non-null argument", self.hir.pos(node), "this argument may be null", self.hir.pos(callee), site_label, "narrow it before the call")),
         }
     }
 

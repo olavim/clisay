@@ -9,7 +9,7 @@ print(v["k"]); // expect: 1
 // A borrowed argument handed to a consuming callee is rejected at the boundary.
 fn consumes(x: *mut) { }
 fn apply(cb, val: mut) {
-  cb(val); // error: This argument must survive the call, but the callee would consume it
+  cb(val); // error: cannot move a borrowed argument into a consuming callee
 }
 say v = mut {};
 apply(consumes, v);

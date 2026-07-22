@@ -126,8 +126,8 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             let positions = ir.survive_positions(idx);
             chunk.write(arg_count, pos);
             chunk.write(positions.len() as u8, pos);
-            for &p in positions {
-                chunk.write(p, pos);
+            for (p, arg_pos) in positions {
+                chunk.write(*p, arg_pos);
             }
         }
 

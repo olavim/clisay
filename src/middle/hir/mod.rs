@@ -192,6 +192,7 @@ pub struct HirSlotClause {
     pub names: Vec<Symbol>,
     pub container: bool,
     pub void: bool,
+    pub pos: Option<SourcePosition>,
 }
 
 pub struct HirFieldInit {
@@ -208,6 +209,8 @@ pub struct HirFieldInit {
 /// nullability and mutability markers (`fn f(mut x?)`).
 pub struct HirParam {
     pub name: HirId<HirExpr>,
+    /// The `name[: clause]` span.
+    pub pos: SourcePosition,
     pub nullable: bool,
     pub mutable: bool,
     pub clause: HirSlotClause,
@@ -215,6 +218,8 @@ pub struct HirParam {
 
 pub struct HirFnDecl {
     pub name: Symbol,
+    /// The `name(params): clause` signature span.
+    pub sig_pos: SourcePosition,
     pub params: Vec<HirParam>,
     pub body: HirId<HirExpr>,
     /// The declared return shape (the postfix marker after the parameter list).
@@ -232,10 +237,20 @@ impl HirFnDecl {
 /// A `req fn` hole's obligation signature: the contract a composer's satisfying method must meet.
 pub struct HirReqFn {
     pub name: Symbol,
-    /// What each parameter passes in. A satisfier must accept at least these obligations.
-    pub param_clauses: Vec<HirSlotClause>,
+    /// The trait that declares this hole.
+    pub trait_name: Symbol,
+    /// The `name(params): clause` span in the trait.
+    pub pos: SourcePosition,
+    /// Each parameter's clause and `name: clause` span.
+    pub params: Vec<HirReqParam>,
     /// What the return may carry. A satisfier may promise fewer obligations.
     pub ret: HirSlotClause,
+}
+
+/// A `req fn` parameter hole.
+pub struct HirReqParam {
+    pub pos: SourcePosition,
+    pub clause: HirSlotClause,
 }
 
 /// A `catch (param) { … }` clause of a try statement.

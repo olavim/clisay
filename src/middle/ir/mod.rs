@@ -142,7 +142,7 @@ pub struct Ir {
     /// Brace-construction field-id lists.
     construct_fields: Vec<Vec<u8>>,
     barrier_allows: Vec<BarrierAllow>,
-    survive_positions: Vec<Vec<u8>>,
+    survive_positions: Vec<Vec<(u8, SourcePosition)>>,
     witness_names: Vec<Value>,
 }
 
@@ -174,7 +174,8 @@ impl Ir {
         &self.construct_fields[idx as usize]
     }
 
-    pub fn add_survive_positions(&mut self, positions: Vec<u8>) -> Result<u16, anyhow::Error> {
+    /// Records a barrier's guarded argument positions.
+    pub fn add_survive_positions(&mut self, positions: Vec<(u8, SourcePosition)>) -> Result<u16, anyhow::Error> {
         if self.survive_positions.len() >= u16::MAX as usize {
             bail!("Too many opaque-call barriers");
         }
@@ -182,7 +183,7 @@ impl Ir {
         Ok((self.survive_positions.len() - 1) as u16)
     }
 
-    pub fn survive_positions(&self, idx: u16) -> &[u8] {
+    pub fn survive_positions(&self, idx: u16) -> &[(u8, SourcePosition)] {
         &self.survive_positions[idx as usize]
     }
 

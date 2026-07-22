@@ -3,7 +3,7 @@ trait Sink {
     req fn accept(x: [fails]);
 }
 type Db with Sink {
-    pub fn accept(x: fails) { } // error: Method 'accept' satisfies 'req fn accept' but parameter 1 is not a container, which the requirement declares
+    pub fn accept(x: fails) { } // error: parameter shape does not match the trait
     init() {}
 }
 print("unreachable");

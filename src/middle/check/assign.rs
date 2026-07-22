@@ -66,7 +66,7 @@ impl<'a> Checker<'a> {
 
         // A frozen value rejects mutation at compile time.
         if let Some(name) = self.immutable_target(target) {
-            return Err(self.error(format!("'{}' is immutable and cannot be mutated", self.hir.text(name)), lhs));
+            return Err(self.error_labeled("cannot mutate an immutable value".to_string(), target, format!("`{}` is immutable", self.hir.text(name))));
         }
 
         // A bracket index `obj[expr] = ...` is the dynamic data path. It bypasses the field rules.

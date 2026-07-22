@@ -208,3 +208,8 @@ fn mutability_passing(resource: &str) -> Result<(), Failed> {
 fn mutability_move(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
+
+#[test_resources("tests/res/mutability_traits")]
+fn mutability_traits(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}

@@ -166,6 +166,8 @@ pub struct SlotClause {
     pub names: Vec<Symbol>,
     pub container: bool,
     pub void: bool,
+    /// The span of each of the clause's atoms.
+    pub pos: Option<SourcePosition>,
 }
 
 pub struct FieldInit {
@@ -182,13 +184,15 @@ pub struct FieldInit {
 /// A function/method/lambda parameter.
 pub struct Param {
     pub name: AstId<Expr>,
+    /// The `name[: clause]` span.
+    pub pos: SourcePosition,
     pub nullable: bool,
     pub mutable: bool,
     pub clause: SlotClause,
 }
 
 // TODO: fold into SlotClause
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ReturnShape {
     /// `fn f()!` returns a non-null value.
     NonNull,
@@ -196,12 +200,16 @@ pub enum ReturnShape {
     Nullable,
     /// `fn f()` returns no value.
     Void,
-    /// A lambda, whose return shape is inferred from its body.
+    /// A lambda, whose return shape is inferred from its body. Also the neutral value for a
+    /// context with no declared return, so it is checked against nothing.
+    #[default]
     Inferred,
 }
 
 pub struct FnDecl {
     pub name: Symbol,
+    /// The `name(params): clause` signature span.
+    pub sig_pos: SourcePosition,
     pub params: Vec<Param>,
     pub body: AstId<Expr>,
     pub ret: ReturnShape,
@@ -211,6 +219,8 @@ pub struct FnDecl {
 /// A `req fn f(params): clause;` method hole.
 pub struct ReqFn {
     pub name: Symbol,
+    /// The `name(params): clause` span.
+    pub pos: SourcePosition,
     pub params: Vec<Param>,
     pub ret: ReturnShape,
     pub clause: SlotClause,

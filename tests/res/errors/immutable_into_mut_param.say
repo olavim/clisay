@@ -1,0 +1,12 @@
+fn fill(x: mut) { x["k"] = 1; }
+say m = mut {};
+freeze(m);
+fill(m);
+// error(full):
+// error: expected mutable argument
+//  --> immutable_into_mut_param.say:4:6
+//   |
+// 4 | fill(m);
+//   | ---- ^ `m` is immutable
+//   | |
+//   | `fill` expects `m` to be mutable

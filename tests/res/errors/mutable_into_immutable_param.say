@@ -1,0 +1,12 @@
+fn make(): mut { return mut {}; }
+fn store(cfg) { cfg["k"] = 1; }
+say m = make();
+store(m);
+// error(full):
+// error: expected immutable argument
+//  --> mutable_into_immutable_param.say:4:7
+//   |
+// 4 | store(m);
+//   | ----- ^ `m` is mutable
+//   | |
+//   | `store` expects `m` to be immutable

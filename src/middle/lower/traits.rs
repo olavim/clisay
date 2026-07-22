@@ -6,7 +6,7 @@ use anyhow::anyhow;
 
 use crate::ast::{AstId, Expr, Literal, ReqFn, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirStmt, HirTypeDecl};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqParam, HirStmt, HirTypeDecl};
 
 use super::Lowerer;
 
@@ -85,9 +85,9 @@ impl<'a> Lowerer<'a> {
         let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
 
         // The `req fn` holes this type must satisfy: its own and those of every `with` trait.
-        let mut req_fns: Vec<HirReqFn> = decl.req_fns.iter().map(|rf| self.lower_req_fn(rf)).collect();
-        for (_, td) in &traits {
-            req_fns.extend(td.req_fns.iter().map(|rf| self.lower_req_fn(rf)));
+        let mut req_fns: Vec<HirReqFn> = decl.req_fns.iter().map(|rf| self.lower_req_fn(rf, decl.name)).collect();
+        for (trait_sym, td) in &traits {
+            req_fns.extend(td.req_fns.iter().map(|rf| self.lower_req_fn(rf, *trait_sym)));
         }
 
         // Restore the previous composer context so sibling types in the same scope
@@ -281,6 +281,7 @@ impl<'a> Lowerer<'a> {
             let psym = self.hir.intern(&format!("$g{i}"));
             params.push(HirParam {
                 name: self.hir.add(HirExpr::Identifier(psym), pos.clone()),
+                pos: pos.clone(),
                 nullable: false,
                 mutable: false,
                 clause: HirSlotClause::default(),
@@ -296,18 +297,18 @@ impl<'a> Lowerer<'a> {
         let call = self.hir.add(HirExpr::Call(method_access, args), pos.clone());
         let ret_stmt = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
         let body = self.hir.add(HirExpr::Block(vec![ret_stmt]), pos.clone());
-        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, params, body, ret, clause: HirSlotClause::default() }), pos.clone())
+        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), params, body, ret, clause: HirSlotClause::default() }), pos.clone())
     }
 
     /// Lowers a `req fn` hole to its per-slot clauses, folding each `?` marker into the clause the
     /// same way a declared parameter or return does. The `[obl]` container flag rides along so the
     /// variance check can keep container and bare shapes distinct.
-    fn lower_req_fn(&self, rf: &ReqFn) -> HirReqFn {
-        let param_clauses = rf.params.iter()
-            .map(|p| self.slot_clause(p.nullable, &p.clause))
+    fn lower_req_fn(&self, rf: &ReqFn, trait_name: Symbol) -> HirReqFn {
+        let params = rf.params.iter()
+            .map(|p| HirReqParam { pos: p.pos.clone(), clause: self.slot_clause(p.nullable, &p.clause) })
             .collect();
         let ret = self.slot_clause(rf.ret == ReturnShape::Nullable, &rf.clause);
-        HirReqFn { name: rf.name, param_clauses, ret }
+        HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), params, ret }
     }
 
     /// At an instantiable type, every `req T`, `req fn`, and `req <member>` of the flattened trait
@@ -435,10 +436,11 @@ impl<'a> Lowerer<'a> {
     fn lower_method_named(&mut self, fn_stmt: &AstId<Stmt>, name: Symbol) -> Result<HirId<HirStmt>, anyhow::Error> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
+        let sig_pos = decl.sig_pos.clone();
         let params = self.params(&decl.params)?;
         let (ret, clause) = self.return_clause(decl);
         let body = self.expr(&decl.body)?;
-        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, params, body, ret, clause }), pos))
+        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, sig_pos, params, body, ret, clause }), pos))
     }
 
     pub(super) fn as_qualified_method_call(&self, callee: &AstId<Expr>) -> Option<(Symbol, String)> {

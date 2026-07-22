@@ -4,7 +4,7 @@ trait Loader {
     req fn load();
 }
 type App with Loader {
-    pub fn load() { return risky()?!; } // error: Method 'load' satisfies 'req fn load' but its return owes 'fails', which the requirement does not permit
+    pub fn load() { return risky()?!; } // error: return owes an obligation the trait forbids
     init() {}
 }
 print("unreachable");

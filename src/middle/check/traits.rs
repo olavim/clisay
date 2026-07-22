@@ -24,7 +24,8 @@ impl<'a> Checker<'a> {
             let (Some(host), Some(trait_ret)) = (host, self.sigs.fns.get(method).map(|f| &f.ret)) else { continue };
             let Some(host_ret) = self.sigs.fns.get(&host).map(|f| &f.ret) else { continue };
             if !self.ret_conforms(host_ret, trait_ret) {
-                return Err(self.error(format!("Method '{}' overrides trait '{}' but its return is more nullable than the trait declares", base, trait_name), &host));
+                return Err(self.error_labeled("override is more nullable than the trait allows".to_string(),
+                    &host, format!("`{base}` may return null where trait '{trait_name}' declares non-null")));
             }
         }
         Ok(())
@@ -38,42 +39,70 @@ impl<'a> Checker<'a> {
             let Some(method) = self.satisfying_method(decl, req.name) else { continue };
             let (Some(sig), HirStmt::Fn(sat)) = (self.sigs.fns.get(&method), self.hir.get(&method)) else { continue };
             let name = self.hir.text(req.name);
+            let type_name = self.hir.text(decl.name);
+            let trait_name = self.hir.text(req.trait_name);
 
             // The `[obl]` container shape is invariant: a bare value and a container are not
             // interchangeable, since the trait body reads one by index and the other directly.
             if req.ret.container != sat.clause.container {
-                return Err(self.error(self.container_mismatch(name, "its return", req.ret.container), &method));
+                let (mine, theirs) = shape_words(req.ret.container);
+                return Err(self.error_ctx("return shape does not match the trait",
+                    self.hir.pos(&method), format!("`{type_name}.{name}` returns {mine}"),
+                    &req.pos, format!("`{trait_name}.{name}` declares {theirs} return")));
+            }
+
+            // The capability axis is invariant.
+            if req.ret.capability.is_mut() && !sat.clause.capability.is_mut() {
+                return Err(self.error_ctx_help("return is immutable but trait requires mutable",
+                    &sat.sig_pos, format!("`{type_name}.{name}` returns an immutable value"),
+                    &req.pos, format!("`{trait_name}.{name}` requires a mutable return"),
+                    format!("add `mut` to the return clause of `{type_name}.{name}`")));
+            }
+            if !req.ret.capability.is_mut() && sat.clause.capability.is_mut() {
+                return Err(self.error_ctx_help("return is mutable but trait requires immutable",
+                    &sat.sig_pos, format!("`{type_name}.{name}` returns a mutable value"),
+                    &req.pos, format!("`{trait_name}.{name}` requires an immutable return"),
+                    format!("drop `mut` from the return clause of `{type_name}.{name}`")));
             }
 
             // A satisfier may not owe a return obligation the requirement does not permit.
             let diff = self.sorted_difference(&sig.ret.obligations, &self.clause_owed(&req.ret));
             if !diff.is_empty() {
-                return Err(self.error(format!("Method '{name}' satisfies 'req fn {name}' but its return owes {}, which the requirement does not permit", quote_list(&diff)), &method));
+                return Err(self.error_ctx("return owes an obligation the trait forbids",
+                    self.hir.pos(&method), format!("`{type_name}.{name}` returns a value owing {}", quote_list(&diff)),
+                    &req.pos, format!("`{trait_name}.{name}` forbids {}", quote_list(&diff))));
             }
 
             // A satisfier's parameter must accept at least the obligations the hole passes it.
-            for (i, hole) in req.param_clauses.iter().enumerate() {
+            for (i, hole) in req.params.iter().enumerate() {
                 let Some(sat_param) = sat.params.get(i) else { continue };
-                if hole.container != sat_param.clause.container {
-                    return Err(self.error(self.container_mismatch(name, &format!("parameter {}", i + 1), hole.container), &method));
+                if hole.clause.container != sat_param.clause.container {
+                    let (mine, theirs) = shape_words(hole.clause.container);
+                    return Err(self.error_ctx("parameter shape does not match the trait",
+                        self.hir.pos(&sat_param.name), format!("`{type_name}.{name}` takes {mine}"),
+                        &req.pos, format!("`{trait_name}.{name}` declares {theirs} parameter")));
                 }
+
+                // A `*mut` hole only accepts a `*mut` satisfier. A borrow hole accepts either.
+                if hole.clause.capability.is_move() && !sat_param.clause.capability.is_move() {
+                    let param = self.hir.text(self.ident_sym(&sat_param.name));
+                    return Err(self.error_ctx_help("parameter is less permissive than the trait requires",
+                        &sat_param.pos, format!("`{type_name}.{name}` only borrows `{param}` here (`mut`)"),
+                        &hole.pos, format!("`{trait_name}.{name}` requires ownership of `{param}` (`*mut`)"),
+                        format!("take ownership of `{param}` to match the trait: `{param}: *mut`")));
+                }
+
                 let Some(accepted) = sig.param_clauses.get(i) else { continue };
-                let missing = self.sorted_difference(&self.clause_owed(hole), accepted);
+                let missing = self.sorted_difference(&self.clause_owed(&hole.clause), accepted);
                 if !missing.is_empty() {
-                    return Err(self.error(format!("Method '{name}' satisfies 'req fn {name}' but parameter {} does not accept {}, which the requirement passes", i + 1, quote_list(&missing)), &method));
+                    let param = self.hir.text(self.ident_sym(&sat_param.name));
+                    return Err(self.error_ctx("parameter rejects an obligation the trait passes",
+                        self.hir.pos(&sat_param.name), format!("`{type_name}.{name}` does not accept {} for `{param}`", quote_list(&missing)),
+                        &req.pos, format!("`{trait_name}.{name}` passes {}", quote_list(&missing))));
                 }
             }
         }
         Ok(())
-    }
-
-    /// The message for a slot whose `[obl]` container shape does not match the requirement.
-    fn container_mismatch(&self, name: &str, slot: &str, hole_is_container: bool) -> String {
-        if hole_is_container {
-            format!("Method '{name}' satisfies 'req fn {name}' but {slot} is not a container, which the requirement declares")
-        } else {
-            format!("Method '{name}' satisfies 'req fn {name}' but {slot} is a container, which the requirement does not declare")
-        }
     }
 
     /// The exposed method that fills a `req fn` hole, matched by its plain name.
@@ -113,6 +142,10 @@ impl<'a> Checker<'a> {
 /// an overridden trait method under this dotted name.
 fn split_trait_alias(name: &str) -> Option<(&str, &str)> {
     name.split_once('.')
+}
+
+fn shape_words(container: bool) -> (&'static str, &'static str) {
+    if container { ("a bare value", "a container") } else { ("a container", "a bare") }
 }
 
 /// Quotes each name and joins them, like `'fails', 'opt'`.
