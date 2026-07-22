@@ -1,5 +1,0 @@
-// An untagged function that returns a directly-minted mutable auto-freezes it, so the caller gets
-// an immutable value.
-fn make()! { return mut {}; }
-say r = make();
-r["k"] = 1; // error: cannot mutate an immutable value

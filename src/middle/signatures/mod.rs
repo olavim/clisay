@@ -376,10 +376,17 @@ impl<'a> Collector<'a> {
 
     fn infer_ret_mut(&mut self) {
         let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
-        for stmt in stmts {
-            let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
-            let mutability = self.ret_mut_of(decl, &self.returns[&stmt]);
-            self.sigs.ret_mut.insert(stmt, mutability);
+        for stmt in &stmts {
+            self.sigs.ret_mut.insert(*stmt, Mutability::Unknown);
+        }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for stmt in &stmts {
+                let HirStmt::Fn(decl) = self.hir.get(stmt) else { continue };
+                let mutability = self.ret_mut_of(decl, &self.returns[stmt]);
+                changed |= self.sigs.ret_mut.insert(*stmt, mutability) != Some(mutability);
+            }
         }
     }
 
@@ -394,29 +401,27 @@ impl<'a> Collector<'a> {
         }
     }
 
-    /// A function's return capability. A `: mut` grant hands back a mutable. An untagged body
-    /// freezes any mutable it returns, so its result is immutable when every return is a value the
-    /// pass can prove mutable.
+    /// A function's return mutability, inferred from its body.
     fn ret_mut_of(&self, decl: &HirFnDecl, returns: &[HirId<HirExpr>]) -> Mutability {
         if decl.clause.capability.is_mut() {
             return Mutability::Mutable;
         }
         if !returns.is_empty() && returns.iter().all(|r| self.returns_mutable(r)) {
-            Mutability::Immutable
+            Mutability::Mutable
         } else {
             Mutability::Unknown
         }
     }
 
     /// Whether a return hands back a statically-mutable value: a `mut`-minted construction or a call
-    /// to a `: mut` function. These are the returns an untagged body auto-freezes.
+    /// to a function inferred to return a mutable.
     fn returns_mutable(&self, expr: &HirId<HirExpr>) -> bool {
         match self.hir.get(expr) {
             HirExpr::Mut(_) => true,
             HirExpr::Call(callee, _) => {
                 let HirExpr::Identifier(name) = self.hir.get(callee) else { return false };
                 let Some(stmt) = self.sigs.fns_by_name.get(name) else { return false };
-                matches!(self.hir.get(stmt), HirStmt::Fn(d) if d.clause.capability.is_mut())
+                self.sigs.ret_mut.get(stmt) == Some(&Mutability::Mutable)
             },
             _ => false,
         }

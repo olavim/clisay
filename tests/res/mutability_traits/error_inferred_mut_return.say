@@ -1,0 +1,9 @@
+// Trait conformance depends on the satisfier's inferred return capability, not just an explicit tag.
+trait Source {
+    req fn read(): opt;
+}
+type File with Source {
+    pub fn read() { return mut []; } // error: return is mutable but trait requires immutable
+    init() {}
+}
+print("unreachable");

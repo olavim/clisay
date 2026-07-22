@@ -1,0 +1,5 @@
+// An untagged function returning a directly-minted mutable is inferred mutable-returning.
+fn make()! { return mut {}; }
+say r = make();
+r["k"] = 1;
+print(r["k"]); // expect: 1

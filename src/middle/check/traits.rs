@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::middle::hir::{HirExpr, HirId, HirStmt, HirTypeDecl, Symbol};
-use crate::middle::signatures::RetSig;
+use crate::middle::signatures::{Mutability, RetSig};
 
 use super::{Checker, Typed};
 
@@ -51,18 +51,20 @@ impl<'a> Checker<'a> {
                     &req.pos, format!("`{trait_name}.{name}` declares {theirs} return")));
             }
 
-            // The capability axis is invariant.
-            if req.ret.capability.is_mut() && !sat.clause.capability.is_mut() {
+            // The capability axis is invariant: the satisfier's inferred return capability must
+            // match the hole's declared one.
+            let sat_mut = self.sigs.ret_mut.get(&method) == Some(&Mutability::Mutable);
+            if req.ret.capability.is_mut() && !sat_mut {
                 return Err(self.error_ctx_help("return is immutable but trait requires mutable",
                     &sat.sig_pos, format!("`{type_name}.{name}` returns an immutable value"),
                     &req.pos, format!("`{trait_name}.{name}` requires a mutable return"),
-                    format!("add `mut` to the return clause of `{type_name}.{name}`")));
+                    format!("return a mutable value from `{type_name}.{name}`")));
             }
-            if !req.ret.capability.is_mut() && sat.clause.capability.is_mut() {
+            if !req.ret.capability.is_mut() && sat_mut {
                 return Err(self.error_ctx_help("return is mutable but trait requires immutable",
                     &sat.sig_pos, format!("`{type_name}.{name}` returns a mutable value"),
                     &req.pos, format!("`{trait_name}.{name}` requires an immutable return"),
-                    format!("drop `mut` from the return clause of `{type_name}.{name}`")));
+                    format!("return an immutable value from `{type_name}.{name}`")));
             }
 
             // A satisfier may not owe a return obligation the requirement does not permit.

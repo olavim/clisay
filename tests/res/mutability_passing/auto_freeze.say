@@ -1,5 +1,0 @@
-// An untagged return auto-freezes the mutable it hands back, so the caller gets an immutable value.
-fn inner(): mut { return mut {}; }
-fn make()! { return inner(); }
-say r = make();
-r["k"] = 1; // error: cannot mutate an immutable value
