@@ -284,8 +284,8 @@ pub struct MatchArm {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ObligationRule {
     ToUse,
-    ToEscape,
-    BeforeDrop,
+    NoPersist,
+    NoDrop,
 }
 
 pub enum Stmt {

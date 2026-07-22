@@ -1,5 +1,5 @@
-// A trait's exposed method cannot carry a `discharge to escape` obligation out; the return is the ordinary escape error.
-obligation borrowed: discharge to escape;
+// A trait's exposed method cannot carry a `no persist` obligation out; the return is the ordinary escape error.
+obligation borrowed: no persist;
 trait View {
     pub fn get(x: borrowed) { return x; } // error: 'x' owes 'borrowed'; it cannot be stored or escape its scope
 }

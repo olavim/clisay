@@ -168,7 +168,7 @@ impl<'a> Checker<'a> {
 
     /// Checks a value moving into a field per the field's nullability.
     fn check_into_field(&mut self, flow: &Flow, field_nullable: bool, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        // Storing into a field persists the value, which a `discharge to escape` value forbids.
+        // Storing into a field persists the value, which a `no persist` value forbids.
         self.reject_escape(flow, node)?;
         let text = self.hir.text(field);
         let void = || format!("Cannot assign a void result to field '{text}'; the call returns no value");

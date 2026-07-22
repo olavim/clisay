@@ -219,9 +219,9 @@ impl<'a> Resolver<'a> {
             Stmt::Block(body) => self.visit_expr(body)?,
             Stmt::Say(field) => if let Some(value) = &field.value { self.visit_expr(value)?; },
             Stmt::Obligation { witness, rule, .. } => {
-                if matches!(rule, ObligationRule::BeforeDrop) {
-                    return Err(self.error_help("'discharge before drop' is not available yet", stmt,
-                        "obligations discharged at drop are not implemented yet"));
+                if matches!(rule, ObligationRule::NoDrop) {
+                    return Err(self.error_help("'no drop' is not available yet", stmt,
+                        "the 'no drop' rule is not implemented yet"));
                 }
                 if let Some(witness) = witness {
                     if !self.is_type_or_trait(*witness) {

@@ -311,7 +311,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Stores a value into a container. The value persists there, so a `discharge to escape` value
+    /// Stores a value into a container. The value persists there, so a `no persist` value
     /// is rejected, and a mutable value moves in as the container becomes its owner.
     fn store_into_container(&mut self, flow: &Flow, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.reject_escape(flow, expr)?;
@@ -601,7 +601,7 @@ impl<'a> Checker<'a> {
             HirExpr::Propagate(operand) => {
                 let typed = self.expr(operand)?;
                 if self.owes_object_witness(&typed.flow) { self.record_witness_test(expr, &typed.flow); }
-                Typed::of(Flow::Clean, typed.tag)
+                Typed::of(self.discharged_flow(&typed.flow), typed.tag)
             },
             // `a ?? p => h` binds the caught bad value to `p`, which still owes what `a` owed. A
             // single type witness narrows `p`'s tag, so a caught `Err` is usable as one.
@@ -634,7 +634,7 @@ impl<'a> Checker<'a> {
                 } else if !matches!(typed.flow, Flow::Clean) {
                     self.add_barrier(expr);
                 }
-                Typed::of(Flow::Clean, typed.tag)
+                Typed::of(self.discharged_flow(&typed.flow), typed.tag)
             },
         })
     }

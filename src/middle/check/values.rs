@@ -26,7 +26,7 @@ impl<'a> Checker<'a> {
 
         let Flow::Bad { obligations, .. } = &typed.flow else { return Ok(()) };
 
-        let blocking: HashSet<Symbol> = obligations.iter().copied().filter(|o| !self.sigs.is_to_escape(*o)).collect();
+        let blocking: HashSet<Symbol> = obligations.iter().copied().filter(|o| !self.sigs.is_no_persist(*o)).collect();
         if blocking.is_empty() {
             return Ok(());
         }
@@ -60,19 +60,31 @@ impl<'a> Checker<'a> {
         Err(anyhow!("{}", diagnostic))
     }
 
-    /// Rejects persisting a value that owes a `discharge to escape` obligation.
+    /// Rejects persisting a value that owes a `no persist` obligation.
     pub(super) fn reject_escape(&self, flow: &Flow, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
-        if !obligations.iter().any(|o| self.sigs.is_to_escape(*o)) {
+        if !obligations.iter().any(|o| self.sigs.is_no_persist(*o)) {
             return Ok(());
         }
-        let escaping: HashSet<Symbol> = obligations.iter().copied().filter(|o| self.sigs.is_to_escape(*o)).collect();
+        let escaping: HashSet<Symbol> = obligations.iter().copied().filter(|o| self.sigs.is_no_persist(*o)).collect();
         let subject = match self.hir.get(node) {
             HirExpr::Identifier(name) => format!("'{}'", self.hir.text(*name)),
             _ => "this value".to_string(),
         };
         let owed = self.quoted_obligation_list(&escaping);
         Err(self.error(format!("{subject} owes {owed}; it cannot be stored or escape its scope"), node))
+    }
+
+    /// The flow after a discharge operator. A witnessed obligation is cleared by proof, but a
+    /// `no persist` obligation has no witness to prove, so it stays.
+    pub(super) fn discharged_flow(&self, flow: &Flow) -> Flow {
+        let Flow::Bad { obligations, .. } = flow else { return Flow::Clean };
+        let kept: HashSet<Symbol> = obligations.iter().copied().filter(|o| self.sigs.is_no_persist(*o)).collect();
+        if kept.is_empty() {
+            Flow::Clean
+        } else {
+            Flow::Bad { obligations: kept, definite: false, container: false }
+        }
     }
 
     pub(super) fn invalid_operands(&self, op: BinOp, l: &HirId<HirExpr>, ln: &Typed, r: &HirId<HirExpr>, rn: &Typed) -> anyhow::Error {

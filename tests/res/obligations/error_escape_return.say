@@ -1,4 +1,4 @@
-obligation borrowed: discharge to escape;
+obligation borrowed: no persist;
 fn leak(x: borrowed) {
     return x;
 }

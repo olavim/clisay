@@ -42,7 +42,7 @@ impl<'a> Checker<'a> {
         if shape == ReturnShape::Inferred {
             return Ok(());
         }
-        // A `discharge to escape` value may not leave its scope, so it cannot be returned.
+        // A `no persist` value may not leave its scope, so it cannot be returned.
         self.reject_escape(flow, node)?;
         
         // An unmarked function infers its obligations from what it returns. A bad value is a legal
