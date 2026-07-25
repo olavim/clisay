@@ -28,6 +28,7 @@ pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
         opt,
         provided_traits: HashSet::new(),
         emitted_aliases: HashSet::new(),
+        in_factory: None,
     };
     lowerer.stmt(&root)?;
     Ok(lowerer.hir)
@@ -42,6 +43,9 @@ struct Lowerer<'a> {
     /// The traits the composer currently being lowered provides.
     provided_traits: HashSet<Symbol>,
     emitted_aliases: HashSet<String>,
+    /// While lowering a factory body or its field defaults, the enclosing type's field names. Inside
+    /// a factory `this` is not a value, so it may only name one of these and nothing else.
+    in_factory: Option<HashSet<Symbol>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -157,6 +161,19 @@ impl<'a> Lowerer<'a> {
                         if name.contains('.') {
                             return Err(self.error(format!("Invalid member access: '{name}' is not a member"), expr_id));
                         }
+                        // Inside a factory `this` is not a value, so `this.<field>` names a field and
+                        // nothing else.
+                        if let Some(fields) = &self.in_factory {
+                            if self.hir.symbol_of(name).is_some_and(|sym| fields.contains(&sym)) {
+                                let this = self.hir.add(HirExpr::This, self.ast.pos(target).clone());
+                                let member = self.expr(member)?;
+                                return Ok(self.hir.add(HirExpr::Index(this, member, *is_dot), pos));
+                            }
+                            return Err(self.error_help_at(format!("cannot access `this.{name}` in a factory: `this` is not a value there, only its fields"), &pos,
+                                "compute the value and assign it to a field with `this.<field> = ...`"));
+                        }
+                    } else if self.in_factory.is_some() {
+                        return Err(self.error("`this` is not a value in a factory; index only its fields by name".to_string(), expr_id));
                     }
                 }
                 HirExpr::Index(self.expr(target)?, self.expr(member)?, *is_dot)
@@ -183,7 +200,15 @@ impl<'a> Lowerer<'a> {
                 HirExpr::Construct(callee, args, brace)
             },
             Expr::Mut(inner) => return self.lower_value_mut(expr_id, inner),
-            Expr::This => HirExpr::This,
+            Expr::This => {
+                // A `this.<field>` access is handled in the `Index` arm above. Reaching here means
+                // `this` is used as a value, which a factory forbids.
+                if self.in_factory.is_some() {
+                    return Err(self.error_help_at("the partially-constructed 'this' is not a value in a factory", &pos,
+                        "assign or read its fields with `this.<field>`"));
+                }
+                HirExpr::This
+            },
             Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
             Expr::SafeCall(callee, args) => HirExpr::SafeCall(self.expr(callee)?, self.exprs(args)?),
             Expr::Propagate(operand) => HirExpr::Propagate(self.expr(operand)?),

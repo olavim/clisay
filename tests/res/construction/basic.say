@@ -4,13 +4,13 @@ say p = Point { x: 1, y: 2 };
 print(p.x); // expect: 1
 print(p.y); // expect: 2
 
-// The paren part feeds init; the brace sets a pub field the init does not assign.
+// A factory call sets every field through init.
 type Tagged {
     pub tag;
     pub count;
-    init(c) { this.count = c; }
+    init(c, t) { this.count = c; this.tag = t; }
 }
-say t = Tagged(5) { tag: "hi" };
+say t = Tagged(5, "hi");
 print(t.tag);   // expect: hi
 print(t.count); // expect: 5
 

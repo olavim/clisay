@@ -282,6 +282,8 @@ pub struct HirTypeDecl {
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
     pub surface: HashSet<Symbol>,
     pub provides: Vec<Symbol>,
+    /// The `gives` delegations, `(field, trait)`. A construction verifies each field provides its trait.
+    pub gives: Vec<(Symbol, Symbol)>,
 }
 
 /// One arm of a `match`.

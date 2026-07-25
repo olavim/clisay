@@ -446,6 +446,14 @@ impl<'a> Checker<'a> {
         Some(decl.init)
     }
 
+    /// Whether a type has a factory. A factory-less type (not all-defaulted, no `init`) is built
+    /// only by brace, so `T(..)` cannot construct it.
+    fn type_has_factory(&self, name: Symbol) -> bool {
+        self.sigs.types_by_name.get(&name).is_some_and(|stmt| {
+            matches!(self.hir.get(stmt), HirStmt::Type(decl) if matches!(self.hir.get(&decl.init), HirStmt::Fn(_)))
+        })
+    }
+
     /// Marks every mutable-value holder a moved value reaches as moved out, so a later read is
     /// use-after-move. Returns those holders, so a caller that also records provenance reuses the walk.
     fn move_source(&mut self, node: &HirId<HirExpr>) -> Vec<usize> {
@@ -720,6 +728,10 @@ impl<'a> Checker<'a> {
             HirExpr::Assign(lhs, rhs) => self.assign(lhs, rhs)?,
             HirExpr::Call(callee, args) => self.call(expr, callee, args)?,
             HirExpr::Construct(callee, args, brace) => {
+                // A construction is a factory call or a brace, never both.
+                if !args.is_empty() && !brace.is_empty() {
+                    return Err(self.error("cannot mix constructor arguments and brace fields; use `K(..)` or `K { .. }`".to_string(), expr));
+                }
                 // A plain construction seals into an immutable object; a `mut` one does not. Capture
                 // it before checking children, which reset the flag for their own constructions.
                 let immutable = !std::mem::take(&mut self.mut_construction);
@@ -733,7 +745,7 @@ impl<'a> Checker<'a> {
                 }
                 if let TypeTag::Concrete(type_name) = &tag {
                     let braced: HashSet<Symbol> = brace.iter().map(|(name, _)| *name).collect();
-                    self.check_construction(*type_name, &braced, callee)?;
+                    self.check_construction(*type_name, &braced, true, callee)?;
                 }
                 // A plain construction is immutable by default. A `mut Ctor()` overrides it above.
                 if immutable { self.record_deep_seal(expr); }

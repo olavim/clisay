@@ -1,0 +1,3 @@
+// A partially-defaulted type earns no synthesized factory, so it cannot be built with `T()`.
+type T { pub x = 0; pub y; }
+say t = T(); // error: cannot construct 'T' with 'T(..)': 'T' has no factory

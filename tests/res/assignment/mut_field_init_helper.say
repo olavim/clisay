@@ -1,10 +1,7 @@
-// A mutable and nullable field may be assigned from a method called during init.
+// A mutable and nullable field is assigned directly in init.
 type T {
     mut value?;
     init() {
-        this.setup();
-    }
-    fn setup() {
         this.value = 1;
     }
 }

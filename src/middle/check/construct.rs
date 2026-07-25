@@ -159,12 +159,17 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// A construction must supply every non-null public field the `init` does not assign.
-    pub(super) fn check_construction(&self, type_name: Symbol, braced: &HashSet<Symbol>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        for field in self.fields(type_name) {
-            if field.non_null && field.public && !field.init_assigned && !braced.contains(&field.name) {
-                return Err(self.error(format!("Construction of '{}' is missing non-null field '{}'", self.hir.text(type_name), self.hir.text(field.name)), node));
-            }
+    /// A construction must supply every non-null public field it does not otherwise fill. A brace
+    /// runs no `init`, so it must supply them all. A paren call may lean on `init`'s assignments.
+    pub(super) fn check_construction(&self, type_name: Symbol, braced: &HashSet<Symbol>, is_brace: bool, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let mut missing: Vec<Symbol> = self.fields(type_name)
+            .filter(|field| field.non_null && field.public && !braced.contains(&field.name) && (is_brace || !field.init_assigned))
+            .map(|field| field.name)
+            .collect();
+        // The field set iterates in a nondeterministic hash order, so report a stable one.
+        missing.sort_by_key(|field| self.hir.text(*field));
+        if let Some(field) = missing.first() {
+            return Err(self.error(format!("Construction of '{}' is missing non-null field '{}'", self.hir.text(type_name), self.hir.text(*field)), node));
         }
         Ok(())
     }

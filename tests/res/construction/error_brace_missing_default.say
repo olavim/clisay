@@ -1,0 +1,3 @@
+// A brace ignores field defaults, so it must supply every non-opt field.
+type A { pub x = 5; pub y; }
+say a = A{y: 1}; // error: Construction of 'A' is missing non-null field 'x'

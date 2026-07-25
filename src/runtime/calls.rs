@@ -163,45 +163,47 @@ impl Vm {
         for slot in field_ids.iter_mut().take(field_count) {
             *slot = self.read_next();
         }
-        let arg_count = self.read_next() as usize;
+        // The combined `K(args){fields}` form is retired, so a brace carries no init args.
+        let _arg_count = self.read_next() as usize;
 
-        let type_val = self.stack.peek(field_count + arg_count);
+        let type_val = self.stack.peek(field_count);
         if !type_val.is_object() || type_val.as_object().tag() != objects::TAG_TYPE {
             return self.error(format!("Cannot construct: {} is not a type", type_val.fmt()));
         }
         let type_ptr = type_val.as_object().as_type_ptr();
         let ty = unsafe { &*type_ptr };
-        let init_obj = ty.initializer().unwrap();
-        if init_obj.tag() != objects::TAG_FUNCTION {
-            return self.error("Cannot brace-construct this type");
-        }
-        let init_ref = init_obj.as_function_ptr();
-        let init = unsafe { &*init_ref };
-        check_arity!(self, arg_count, init.arity, init.name);
 
-        // Allocate, rooting the init closure across the allocation (it can trigger GC).
-        let closure = self.create_closure(init_ref);
-        self.stack.push(Value::from(closure));
         let instance_ptr = self.alloc(ObjInstance::new(type_ptr));
-        self.stack.pop();
-
-        // Brace values sit on top of the stack in field order; set them before init runs. A brace
-        // persists its value into the instance, so a borrowed one may not escape here.
         let instance = unsafe { &mut *instance_ptr };
         for j in 0..field_count {
             let value = self.stack.peek(field_count - 1 - j);
             self.ensure_not_borrowed(value)?;
             instance.set(field_ids[j], value);
         }
-        // Drop the brace values, then run init on the instance (it returns `this`).
-        self.stack.truncate(field_count);
-        let stack_start = self.stack.set(arg_count, Value::from(instance_ptr));
-        self.push_frame(closure.as_closure_ptr(), stack_start, init.ip_start)
+
+        // A construction verifies each `gives` delegate actually provides its trait.
+        for &(field_id, field_name, trait_name) in ty.gives.iter() {
+            let value = instance.get(field_id);
+            let provides = matches!(value.kind(), ValueKind::Object(ObjectKind::Instance))
+                && unsafe { &*(*value.as_object().as_instance_ptr()).ty }.provided.contains(&trait_name);
+            if !provides {
+                let msg = format!("Delegate field '{}' does not provide trait '{}'",
+                    unsafe { &(*field_name).value }, unsafe { &(*trait_name).value });
+                return self.error(msg);
+            }
+        }
+
+        self.stack.truncate(field_count + 1);
+        self.stack.push(Value::from(instance_ptr));
+        Ok(())
     }
 
     fn call_type(&mut self, arg_count: usize, type_ptr: *mut ObjType) -> Result<(), anyhow::Error> {
         let ty = unsafe { &*type_ptr };
-        let init_method_obj = ty.initializer().unwrap();
+        let Some(init_method_obj) = ty.initializer() else {
+            let name = unsafe { &(*ty.name).value };
+            return self.error(format!("'{name}' has no factory; construct it with a brace like '{name}{{ .. }}'"));
+        };
         match init_method_obj.tag() {
             objects::TAG_FUNCTION => {
                 let init_method_ref = init_method_obj.as_function_ptr();
