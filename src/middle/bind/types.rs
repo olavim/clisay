@@ -176,12 +176,13 @@ impl<'a> Resolver<'a> {
         layout.member_count = next_member_id;
 
         // Construction facts: the init's arity, and the fields it assigns (defaults + body), which
-        // a brace construction may not also provide.
-        let init = self.fn_decl(&decl.init);
-        layout.init_arity = init.params.len() as u8;
-        let mut assigned = HashSet::new();
-        self.collect_assigned_fields(&init.body, &mut assigned);
-        layout.init_assigned = assigned;
+        // a brace construction may not also provide. A factory-less type has neither.
+        if let HirStmt::Fn(init) = self.hir.get(&decl.init) {
+            layout.init_arity = init.params.len() as u8;
+            let mut assigned = HashSet::new();
+            self.collect_assigned_fields(&init.body, &mut assigned);
+            layout.init_assigned = assigned;
+        }
 
         layout
     }
@@ -273,8 +274,10 @@ impl<'a> Resolver<'a> {
         // Save/restore around the whole type so a nested type declaration doesn't leak its scope.
         let outer_trait = self.current_trait.take();
 
-        let init = self.fn_decl(&decl.init);
-        self.function(init, FnKind::Initializer)?;
+        // A factory-less type has no factory body to resolve.
+        if let HirStmt::Fn(init) = self.hir.get(&decl.init) {
+            self.function(init, FnKind::Initializer)?;
+        }
 
         for (stmt_id, trait_sym) in decl.methods.iter().zip(&decl.method_traits) {
             self.current_trait = *trait_sym;

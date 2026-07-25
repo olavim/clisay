@@ -489,7 +489,10 @@ pub struct ObjType {
     /// `None` for native types, which have no initializer.
     pub init_id: Option<MemberId>,
     /// Prebuilt initial instance values (method slots filled, fields `NULL`).
-    pub template: Box<[Value]>
+    pub template: Box<[Value]>,
+    /// The `gives` delegations, `(field id, field name, trait name)`. A construction verifies each
+    /// field provides its trait.
+    pub gives: Box<[(MemberId, *mut ObjString, *mut ObjString)]>
 }
 
 impl ObjType {
@@ -505,7 +508,8 @@ impl ObjType {
             getter_id: None,
             setter_id: None,
             init_id: None,
-            template: Box::new([])
+            template: Box::new([]),
+            gives: Box::new([])
         }
     }
 
@@ -563,6 +567,10 @@ impl GcTraceable for ObjType {
         for &name in &self.provided {
             gc.mark_object(name);
         }
+        for &(_, field_name, trait_name) in &self.gives {
+            gc.mark_object(field_name);
+            gc.mark_object(trait_name);
+        }
     }
 
     fn size(&self) -> usize {
@@ -570,6 +578,7 @@ impl GcTraceable for ObjType {
             + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<TypeMember>())
             + self.provided.capacity() * mem::size_of::<*mut ObjString>()
             + self.template.len() * mem::size_of::<Value>()
+            + self.gives.len() * mem::size_of::<(MemberId, *mut ObjString, *mut ObjString)>()
     }
 }
 

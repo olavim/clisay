@@ -1,0 +1,8 @@
+// A nullable field counts as defaulted for the synthesized init.
+type T {
+    pub x = 5;
+    pub y?;
+}
+say t = T();
+print(t.x); // expect: 5
+print(t.y); // expect: null

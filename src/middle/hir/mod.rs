@@ -297,6 +297,8 @@ pub struct HirTypeDecl {
     /// The trait/type names this type **provides** for `x is T`: its own name plus every
     /// transitively `with`-mixed trait.
     pub provides: Vec<Symbol>,
+    /// The `gives` delegations, `(field, trait)`. A construction verifies each field provides its trait.
+    pub gives: Vec<(Symbol, Symbol)>,
 }
 
 /// One arm of a `match`.

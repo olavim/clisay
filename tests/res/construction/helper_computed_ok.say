@@ -1,12 +1,9 @@
-// An init may call a helper to compute a value and assign it directly to a field.
+// An init computes a field value inline from another field; `this.<field>` reads are allowed.
 type A {
     knob = 10;
     pub value;
     init(n) {
-        this.value = this.compute(n);
-    }
-    fn compute(n)! {
-        return this.knob + n;
+        this.value = this.knob + n;
     }
 }
 say a = A(5);

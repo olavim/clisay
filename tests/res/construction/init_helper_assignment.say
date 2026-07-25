@@ -1,10 +1,10 @@
-// Delegating field assignment to a helper does not establish the field; it stays uninitialized.
+// Calling a method on the half-built `this` is illegal because `this` is not a value in a factory.
 type T {
-    value;
+    pub mut value = 0;
     init() {
-        this.setup();
+        this.setup(); // error: cannot access `this.setup` in a factory: `this` is not a value there, only its fields
     }
     fn setup() {
-        this.value = 1; // error: Field 'value' must be initialized directly in init or by a default
+        this.value = 1;
     }
 }

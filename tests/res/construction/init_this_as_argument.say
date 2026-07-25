@@ -5,6 +5,6 @@ type T {
     pub x;
     init() {
         this.x = 1;
-        keep(this); // error: the partially-constructed 'this' cannot be used as a value here; inside init it may only assign or read its own fields
+        keep(this); // error: the partially-constructed 'this' is not a value in a factory
     }
 }

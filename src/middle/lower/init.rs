@@ -8,7 +8,8 @@ use super::Lowerer;
 
 impl<'a> Lowerer<'a> {
     /// Lowers a `type`'s initializer: field defaults, then the declared body, then `gives`
-    /// delegate verification.
+    /// delegate verification. A type with no user `init` that cannot fill every non-null field
+    /// from defaults gets no factory at all, lowered to a `Nop`.
     pub(super) fn lower_type_init(&mut self, composer_id: AstId<Stmt>, decl: &TypeDecl, field_inits: &[(Symbol, AstId<Expr>)], type_pos: &SourcePosition) -> Result<HirId<HirStmt>, anyhow::Error> {
         let (params, body_stmts, init_pos): (_, &[AstId<Stmt>], _) = match &decl.init {
             Some(init_id) => {
@@ -18,10 +19,16 @@ impl<'a> Lowerer<'a> {
                 let stmts = self.ast_block(&fn_decl.body);
                 (params, stmts, init_pos)
             },
+            None if !self.all_defaulted_or_opt(decl, field_inits) => {
+                return Ok(self.hir.add(HirStmt::Nop, type_pos.clone()));
+            },
             None => (Vec::new(), &[], type_pos.clone()),
         };
 
         let mut body = Vec::new();
+
+        // A factory body and its field defaults may name `this` only as `this.<field>`.
+        let saved_in_factory = self.in_factory.replace(decl.fields.clone());
 
         // Field initializers, spliced ahead of everything. The target is an explicit `this.<field>`
         // member store so the default always lands on the field, never on a same-named outer local.
@@ -36,11 +43,22 @@ impl<'a> Lowerer<'a> {
         for stmt_id in body_stmts {
             body.push(self.stmt(stmt_id)?);
         }
+
+        self.in_factory = saved_in_factory;
+
         // `gives` delegate verification: once construction has run, each delegate field must
         // actually provide its trait, else construction fails.
         body.extend(self.synthesize_gives_verifications(composer_id, &init_pos)?);
 
         Ok(self.make_init_fn(decl.init_name, params, body, &init_pos))
+    }
+
+    /// Whether every field can be filled without a factory: it has a default or is nullable (so it
+    /// defaults to null). Such a type synthesizes a parameterless factory. Any other type does not.
+    fn all_defaulted_or_opt(&self, decl: &TypeDecl, field_inits: &[(Symbol, AstId<Expr>)]) -> bool {
+        decl.fields.iter().all(|field| {
+            decl.nullable_fields.contains(field) || field_inits.iter().any(|(f, _)| f == field)
+        })
     }
 
     /// Builds the construction-time verification for each `gives` delegate:

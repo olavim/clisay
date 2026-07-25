@@ -21,7 +21,15 @@ impl<'a> Checker<'a> {
             HirExpr::Identifier(name) => {
                 let name = *name;
                 if self.sigs.is_type(name) {
-                    self.check_construction(name, &HashSet::new(), callee)?;
+                    // A factory-less type is built only by brace, so a paren call has nothing to run.
+                    if !self.type_has_factory(name) {
+                        let t = self.hir.text(name);
+                        return Err(self.error_help(
+                            format!("cannot construct '{t}' with '{t}(..)': '{t}' has no factory"),
+                            callee,
+                            format!("build it with a brace like '{t}{{ .. }}', or give every field a default or add an 'init'")));
+                    }
+                    self.check_construction(name, &HashSet::new(), false, callee)?;
                     if let Some(init) = self.constructor_init(callee) {
                         self.check_call_args(callee, init, &arg_types, args)?;
                     }

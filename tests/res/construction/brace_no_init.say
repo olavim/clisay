@@ -1,0 +1,4 @@
+// A brace does not run the type's init.
+type A { pub x; init() { print("init ran"); } }
+say a = A{x: 1};
+print(a.x); // expect: 1
