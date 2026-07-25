@@ -1,0 +1,4 @@
+say d = mut {};
+d["a"] = 1;
+freeze(d);
+d["a"] = 2; // error: cannot mutate an immutable value

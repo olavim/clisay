@@ -1,4 +1,4 @@
-obligation borrowed: discharge to escape;
+obligation borrowed: no persist;
 type Box {
     pub mut item;
     init() { this.item = 0; }

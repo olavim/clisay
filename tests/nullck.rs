@@ -66,6 +66,6 @@ fn unknown_user_arg_records_barrier() {
 // An unknown value stored into a non-null field is guarded by a barrier.
 #[test]
 fn unknown_into_non_null_field_records_barrier() {
-    let barriers = nullck("type T { pub mut v; init() { this.v = 1; } } say t = T(); say d = { k: 1 }; t.v = d[\"k\"];");
+    let barriers = nullck("type T { pub mut v; init() { this.v = 1; } } say t = mut T(); say d = { k: 1 }; t.v = d[\"k\"];");
     assert_eq!(barriers.len(), 1);
 }

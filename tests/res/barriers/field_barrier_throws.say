@@ -3,6 +3,6 @@ type T {
     pub mut value;
     init() { this.value = 1; }
 }
-say t = T();
+say t = mut T();
 say d = { k: null };
 t.value = d["k"]; // error: unexpected null

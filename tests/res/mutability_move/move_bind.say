@@ -1,0 +1,16 @@
+// Binding a mutable value moves it: the new owner is live, the source is dead.
+say a = mut [1, 2];
+say b = a;
+print(b[0]); // expect: 1
+
+// @split
+say a = mut [1, 2];
+say b = a;
+print(a[0]); // error: value used after it was moved
+
+
+// @split
+// A block-scoped move returns ownership when the block-local dies, so the source stays live.
+say a = mut [1, 2];
+{ say b = a; }
+print(a[0]); // expect: 1

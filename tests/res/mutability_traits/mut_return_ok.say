@@ -1,0 +1,10 @@
+// A `: mut` `req fn` return is satisfied by a `: mut` method.
+trait Source {
+    req fn read(): mut;
+}
+type File with Source {
+    pub fn read(): mut { return mut []; }
+    init() {}
+}
+say f = File();
+print("ok"); // expect: ok

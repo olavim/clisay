@@ -60,6 +60,7 @@ pub enum ContextualKeyword {
     Inner,
     Mut,
     Discharge,
+    No,
     Void,
 }
 
@@ -73,6 +74,7 @@ impl ContextualKeyword {
             "inner" => ContextualKeyword::Inner,
             "mut" => ContextualKeyword::Mut,
             "discharge" => ContextualKeyword::Discharge,
+            "no" => ContextualKeyword::No,
             "void" => ContextualKeyword::Void,
             _ => return None,
         })
@@ -89,6 +91,7 @@ impl fmt::Display for ContextualKeyword {
             ContextualKeyword::Inner => "inner",
             ContextualKeyword::Mut => "mut",
             ContextualKeyword::Discharge => "discharge",
+            ContextualKeyword::No => "no",
             ContextualKeyword::Void => "void",
         })
     }
@@ -215,5 +218,6 @@ tokens! {
     AmpAmpEqual => "&&=",
     PipePipeEqual => "||=",
     QuestionQuestion => "??",
-    QuestionBang => "?!"
+    QuestionBang => "?!",
+    StarMut => "*mut"
 }

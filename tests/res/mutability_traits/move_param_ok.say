@@ -1,0 +1,10 @@
+// A `*mut` hole is satisfied by a `*mut` param.
+trait Sink {
+    req fn accept(x: *mut);
+}
+type Db with Sink {
+    pub fn accept(x: *mut) { }
+    init() {}
+}
+say d = Db();
+print("ok"); // expect: ok

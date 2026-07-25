@@ -1,0 +1,5 @@
+// A parameter wrapped in a container literal and persisted escapes with the container.
+type Box { pub mut item; init() { this.item = 0; } pub fn keep(x) { this.item = [x]; } }
+say b = Box();
+say m = mut [1, 2];
+b.keep(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'

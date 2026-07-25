@@ -1,0 +1,9 @@
+// A `*mut` hole cannot be satisfied by a borrow.
+trait Sink {
+    req fn accept(x: *mut);
+}
+type Db with Sink {
+    pub fn accept(x: mut) { } // error: parameter is less permissive than the trait requires
+    init() {}
+}
+print("unreachable");

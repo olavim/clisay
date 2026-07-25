@@ -8,6 +8,6 @@ type T {
         this.value = 2;
     }
 }
-say t = T();
+say t = mut T();
 t.set();
 print(t.value); // expect: 2

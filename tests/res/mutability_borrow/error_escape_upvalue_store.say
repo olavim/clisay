@@ -1,0 +1,5 @@
+// A borrow forwarded to an opaque callback that stores it into a captured variable traps at runtime.
+say mut kept? = null;
+fn relay(x, cb) { cb(x); }
+say m = mut [1, 2];
+relay(m, v => kept = v); // error: cannot persist a borrowed value

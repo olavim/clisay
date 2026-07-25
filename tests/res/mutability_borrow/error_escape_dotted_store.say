@@ -1,0 +1,6 @@
+// A borrow forwarded to an opaque callback that persists it via a dotted field store traps at runtime.
+type Box { pub mut item?; init() { } }
+say bx = mut Box();
+fn relay(x, cb) { cb(x); }
+say m = mut [1, 2];
+relay(m, v => bx.item = v); // error: cannot persist a borrowed value

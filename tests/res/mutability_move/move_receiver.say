@@ -1,0 +1,11 @@
+// The receiver is a borrowed argument, so two method calls are two borrows, not a move.
+type Box {
+  pub mut v;
+  init() { this.v = 0; }
+  pub fn setV(x)! { this.v = x; return this; }
+  pub fn get()! { return this.v; }
+}
+say b = mut Box();
+b.setV(1);
+b.setV(2);
+print(b.get()); // expect: 2

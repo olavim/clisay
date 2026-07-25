@@ -1,0 +1,8 @@
+obligation held: no drop;
+// error(full):
+// error: 'no drop' is not available yet
+//  --> error_no_drop_reserved.say:1:1
+//   |
+// 1 | obligation held: no drop;
+//   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+//   = help: the 'no drop' rule is not implemented yet

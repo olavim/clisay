@@ -18,9 +18,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 "name at least one obligation after the ':'",
             ));
         }
+        let start = self.tokens.peek(0).pos.clone();
         while self.at_clause_atom() {
             self.parse_clause_atom(&mut clause, slot)?;
         }
+        clause.pos = Some(start.to(&self.tokens.previous().pos));
 
         Ok(clause)
     }
@@ -30,17 +32,44 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             self.parse_obligation_container(clause)
         } else if self.at_void_marker() {
             self.parse_void_marker(clause, slot)
+        } else if self.at_mut_marker() {
+            self.parse_mut_marker(clause, slot)
         } else {
             self.push_obligation_name(clause)
         }
     }
 
     fn at_clause_atom(&self) -> bool {
-        self.tokens.matches(TokenType::LeftBracket) || self.at_void_marker() || self.at_obligation_name()
+        self.tokens.matches(TokenType::LeftBracket) || self.at_void_marker() || self.at_mut_marker() || self.at_obligation_name()
     }
 
     fn at_void_marker(&self) -> bool {
         self.tokens.peek(0).contextual() == Some(ContextualKeyword::Void)
+    }
+
+    fn at_mut_marker(&self) -> bool {
+        self.tokens.matches(TokenType::StarMut)
+            || self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut)
+    }
+
+    fn parse_mut_marker(&mut self, clause: &mut SlotClause, slot: SlotKind) -> Result<(), anyhow::Error> {
+        let pos = self.tokens.peek(0).pos.clone();
+
+        if !slot.allows_capability() {
+            return Err(self.error_help(format!("A {} cannot carry a mutability capability", slot.label()), &pos, "'mut' / '*mut' are parameter or return facts"));
+        }
+        if clause.capability != Capability::None {
+            parse_error!(self, &pos, "Repeated mutability capability");
+        }
+
+        // `*mut` transfers ownership; plain `mut` borrows.
+        clause.capability = if self.tokens.next_if(TokenType::StarMut).is_some() {
+            Capability::MoveMut
+        } else {
+            self.tokens.next();
+            Capability::Mut
+        };
+        Ok(())
     }
 
     fn at_obligation_name(&self) -> bool {

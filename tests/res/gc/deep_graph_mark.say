@@ -5,7 +5,7 @@
 // counting proves every node survived the collection.
 type Node {
     pub next?;
-    init(n) {
+    init(n?) {
         this.next = n;
     }
 }

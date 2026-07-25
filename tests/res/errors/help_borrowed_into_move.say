@@ -1,0 +1,16 @@
+fn sink(xs: *mut) { }
+fn launder(ys: mut) {
+  sink(ys);
+}
+// error(full):
+// error: cannot move borrowed value `ys`
+//  --> help_borrowed_into_move.say:3:8
+//   |
+// 2 | fn launder(ys: mut) {
+//   |            ------- `launder` only borrows `ys` here; it does not own it
+// 3 |   sink(ys);
+//   |   ---- ^^ `ys` is moved here
+//   |   |
+//   |   `sink` consumes `ys`
+//   |
+//   = help: take ownership of `ys` with `*mut` to move it into `sink`

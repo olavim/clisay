@@ -1,4 +1,4 @@
-say d = {};
+say d = mut {};
 d[5] = "num";
 d["5"] = "str";
 d[true] = "bool";

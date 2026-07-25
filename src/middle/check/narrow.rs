@@ -2,7 +2,7 @@
 
 use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, HirMatcher, Symbol, UnOp};
 
-use super::{Checker, FlowSnapshot, LocalFlow, NarrowFact, NarrowKey, TypeTag};
+use super::{Mutability, Checker, FlowSnapshot, LocalFlow, NarrowFact, NarrowKey, TypeTag};
 
 impl<'a> Checker<'a> {
     /// A reassignment drops the binding's narrowing facts. The slot is non-null again only if
@@ -146,17 +146,48 @@ impl<'a> Checker<'a> {
 
     pub(super) fn snapshot(&self) -> FlowSnapshot {
         FlowSnapshot {
-            locals: self.locals.iter().map(|l| LocalFlow { assigned: l.assigned, tag: l.tag.clone() }).collect(),
+            locals: self.locals.iter().map(|l| LocalFlow {
+                assigned: l.assigned,
+                tag: l.tag.clone(),
+                mutability: l.mutability,
+                move_site: l.move_site,
+                provenance: l.provenance.clone(),
+            }).collect(),
             narrowed: self.narrowed.clone(),
         }
     }
 
     pub(super) fn restore(&mut self, flow: &FlowSnapshot) {
+        self.restore_keeping_moves(flow);
+        for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
+            local.move_site = snap.move_site;
+            local.provenance = snap.provenance.clone();
+        }
+    }
+
+    /// Restores flow but keeps each local's move site and give-back sources. A loop body's moves
+    /// persist to the next iteration and past the loop, while its narrowings and assignments do not
+    /// survive zero runs. A value moved before the loop stays moved on the zero-run path, so its
+    /// pre-loop move merges back in rather than being masked by an in-body rebind.
+    pub(super) fn restore_keeping_moves(&mut self, flow: &FlowSnapshot) {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             local.assigned = snap.assigned;
             local.tag = snap.tag.clone();
+            local.mutability = snap.mutability;
+            local.move_site = local.move_site.or(snap.move_site);
         }
         self.narrowed = flow.narrowed.clone();
+    }
+
+    /// Merges another branch's end state into the current local flow.
+    pub(super) fn join_in(&mut self, other: &FlowSnapshot) {
+        for (local, o) in self.locals.iter_mut().zip(&other.locals) {
+            local.assigned = local.assigned && o.assigned;
+            local.tag = if local.tag == o.tag { local.tag.clone() } else { TypeTag::Unknown };
+            local.mutability = if local.mutability == o.mutability { local.mutability } else { Mutability::Unknown };
+            local.move_site = local.move_site.or(o.move_site);
+            local.provenance.retain(|s| o.provenance.contains(s));
+        }
     }
 
     /// Merges two branch snapshots.
@@ -166,6 +197,11 @@ impl<'a> Checker<'a> {
             let (then_local, else_local) = (&then_snap.locals[i], &else_snap.locals[i]);
             local.assigned = then_local.assigned && else_local.assigned;
             local.tag = if then_local.tag == else_local.tag { then_local.tag.clone() } else { TypeTag::Unknown };
+            local.mutability = if then_local.mutability == else_local.mutability
+                { then_local.mutability } else
+                { Mutability::Unknown };
+            local.move_site = then_local.move_site.or(else_local.move_site);
+            local.provenance = then_local.provenance.iter().copied().filter(|s| else_local.provenance.contains(s)).collect();
         }
     }
 }

@@ -30,13 +30,12 @@ fn say_flags_survive_lowering() {
 
 #[test]
 fn fn_param_and_return_flags_survive_lowering() {
-    let hir = lower("fn f(mut a?)! { return a; }");
+    let hir = lower("fn f(a?)! { return a; }");
     let stmts = top_stmts(&hir);
     let decl = nth_fn(&hir, &stmts, 0);
     assert_eq!(decl.ret, ReturnShape::NonNull);
     assert_eq!(decl.params.len(), 1);
     assert!(decl.params[0].nullable);
-    assert!(decl.params[0].mutable);
 }
 
 #[test]

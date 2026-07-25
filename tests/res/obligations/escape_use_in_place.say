@@ -1,5 +1,5 @@
-// A `discharge to escape` value may be used in place, just not persisted.
-obligation borrowed: discharge to escape;
+// A `no persist` value may be used in place, just not persisted.
+obligation borrowed: no persist;
 fn show(x: borrowed) {
     print(x + 1); // expect: 2
 }

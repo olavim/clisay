@@ -1,0 +1,6 @@
+// Rebinding a mutable slot drops the frozen fact, so the fresh value mutates.
+say mut d = mut {};
+freeze(d);
+d = mut {};
+d["a"] = 1;
+print(d["a"]); // expect: 1

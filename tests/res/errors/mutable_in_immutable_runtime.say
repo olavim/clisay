@@ -1,0 +1,14 @@
+fn make()! { return mut [0]; }
+say f = make;
+say bad = [f()];
+// An opaque call hides its return capability, so the checker admits the element and defers to a
+// runtime seal-check that traps the mutable value landing in the immutable container.
+// error(full):
+// error: cannot store a mutable value in an immutable container
+//  --> mutable_in_immutable_runtime.say:3:12
+//   |
+// 2 | say f = make;
+// 3 | say bad = [f()];
+//   |            ^^^^ this container is immutable
+//   |
+//   = help: an element is mutable; freeze it, or mark the container `mut`

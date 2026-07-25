@@ -1,0 +1,1 @@
+say d = {"k": mut [0]}; // error: cannot store a mutable value in an immutable container

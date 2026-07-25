@@ -100,9 +100,15 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::JUMP_IF_IS => vm.op_jump_if_is(),
         opcode::ASSERT_NON_NULL => vm.op_assert_non_null()?,
         opcode::BARRIER_GUARD => vm.op_barrier_guard()?,
+        opcode::ASSERT_BORROW => vm.op_assert_borrow()?,
+        opcode::MARK_BORROW => vm.op_mark_borrow(),
+        opcode::RELEASE_BORROW => vm.op_release_borrow(),
         opcode::CLOSE_UPVALUE => vm.op_close_upvalue(),
         opcode::ARRAY => vm.op_array(),
         opcode::DICT => vm.op_dict(),
+        opcode::MUT => vm.op_mut(),
+        opcode::SEAL_CHECK => vm.op_seal_check()?,
+        opcode::DEEP_SEAL => vm.op_deep_seal(),
         opcode::PUSH_CLOSURE => vm.op_push_closure()?,
         opcode::PUSH_TYPE => vm.op_push_type(),
         opcode::LOAD_GLOBAL => vm.op_load_global()?,
@@ -177,8 +183,14 @@ fn load_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Valu
 fn store_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut ip = ip;
     let idx = rb!(ip) as usize;
-    let upvalue = vm.get_upvalue(idx);
     let value = peek!(top, 0);
+    // A captured variable outlives the lending call, so a borrowed value may not be stored into one.
+    if value.is_borrowed() {
+        vm.stack.set_top(top);
+        vm.ip = ip;
+        vm.ensure_not_borrowed(value)?;
+    }
+    let upvalue = vm.get_upvalue(idx);
     unsafe { *(*upvalue).location = value };
     become dispatch(vm, ip, top, base)
 }
@@ -187,8 +199,13 @@ fn store_upvalue_pop(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut
     let mut ip = ip;
     let mut top = top;
     let idx = rb!(ip) as usize;
-    let upvalue = vm.get_upvalue(idx);
     let value = pop!(top);
+    if value.is_borrowed() {
+        vm.stack.set_top(top);
+        vm.ip = ip;
+        vm.ensure_not_borrowed(value)?;
+    }
+    let upvalue = vm.get_upvalue(idx);
     unsafe { *(*upvalue).location = value };
     become dispatch(vm, ip, top, base)
 }

@@ -13,6 +13,21 @@ pub use diagnostic::Diagnostic;
 pub use token::{ContextualKeyword, Token, TokenType};
 pub use token_stream::TokenStream;
 
+// Compile token patterns once on first use.
+static REGEX_STRING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"\\]|\\.)*""#).unwrap());
+static REGEX_NUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?").unwrap());
+static REGEX_ALPHANUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[a-zA-Z_][a-zA-Z0-9_]*").unwrap());
+static REGEX_STAR_MUT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*mut\b").unwrap());
+static REGEX_COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\/\/[^\n\r]*").unwrap());
+static REGEX_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\r\n|\r|\n)").unwrap());
+static REGEX_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\S\r\n]+").unwrap());
+
+pub(crate) static COLOR_RED: &str = "31";
+pub(crate) static COLOR_CYAN: &str = "36";
+pub(crate) static COLOR_BRIGHT_CYAN: &str = "96";
+pub(crate) static COLOR_BOLD_RED: &str = "1;31";
+pub(crate) static BOLD: &str = "1";
+
 thread_local! {
     /// Whether rendered diagnostics include ANSI color.
     static COLOR: Cell<bool> = const { Cell::new(false) };
@@ -21,6 +36,32 @@ thread_local! {
 /// Turns ANSI color in diagnostics on or off for the current thread.
 pub fn enable_color(on: bool) {
     COLOR.with(|c| c.set(on));
+}
+
+/// A caretted span's role in a frame. The primary points at the error; a context span points at
+/// a related site the message refers to.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum SpanKind {
+    Primary,
+    Context,
+}
+
+impl SpanKind {
+    /// The underline glyph and color a span of this kind draws with.
+    fn style(self) -> (char, &'static str) {
+        match self {
+            SpanKind::Primary => ('^', COLOR_RED),
+            SpanKind::Context => ('-', COLOR_CYAN),
+        }
+    }
+}
+
+/// A caretted source range with its label and role.
+#[derive(Clone)]
+pub(crate) struct Span {
+    pub pos: SourcePosition,
+    pub label: String,
+    pub kind: SpanKind,
 }
 
 /// Wraps `text` in an ANSI color code when color is on, otherwise returns it unchanged.
@@ -32,7 +73,7 @@ fn paint(text: &str, code: &str) -> String {
 }
 
 /// A gutter cell: a right-aligned line number and its ` |` rail. A blank label makes an empty rail.
-fn rail(label: &str, width: usize) -> String {
+pub(crate) fn rail(label: &str, width: usize) -> String {
     return paint(&format!("{label:>width$} |"), COLOR_CYAN);
 }
 
@@ -50,38 +91,46 @@ fn display_width(text: &str) -> usize {
 
 /// Renders several labeled spans in one frame, in source order. Spans are assumed sorted by
 /// position and to share one source. Spans on different lines each get their own caret row;
-/// spans on the same line share a caret row and stack their labels below it.
-fn render_spans(spans: &[(SourcePosition, String)], help: &[String]) -> String {
-    let content = &spans[0].0.source.content;
-    let width = spans.iter().map(|(p, _)| p.line).max().unwrap().to_string().len();
+/// spans on the same line share a caret row and stack their labels below it. A jump over
+/// unshown lines is marked with a `...` rail.
+fn render_spans(spans: &[Span], help: &[String]) -> String {
+    let content = &spans[0].pos.source.content;
+    let width = spans.iter().map(|s| s.pos.line).max().unwrap().to_string().len();
     let bar = rail("", width);
     let mut lines = vec![bar.clone()];
 
-    // Show the line before the first span for context, but skip a blank one.
-    let first = &spans[0].0;
-    let (first_start, _) = first.line_bounds(first.start);
-    if first_start > 0 {
+    // Show the line before the first span for context, but only when that span is the primary.
+    // A leading context span already introduces its own site, so the extra line is just noise.
+    let first = &spans[0];
+    let (first_start, _) = first.pos.line_bounds(first.pos.start);
+    if first.kind == SpanKind::Primary && first_start > 0 {
         let prev_start = content[..first_start - 1].rfind('\n').map_or(0, |i| i + 1);
         let prev = expand_tabs(&content[prev_start..first_start - 1]);
         if !prev.trim().is_empty() {
-            lines.push(format!("{} {prev}", rail(&(first.line - 1).to_string(), width)));
+            lines.push(format!("{} {prev}", rail(&(first.pos.line - 1).to_string(), width)));
         }
     }
 
-    // Draw one source line at a time, gathering all the spans that fall on it.
+    // Draw one source line at a time, gathering all the spans that fall on it. A gap between
+    // consecutive lines is elided with a `...` rail.
     let mut i = 0;
+    let mut prev_line: Option<usize> = None;
     while i < spans.len() {
-        let line = spans[i].0.line;
-        let end = spans[i..].iter().position(|(p, _)| p.line != line).map_or(spans.len(), |o| i + o);
+        let line = spans[i].pos.line;
+        let end = spans[i..].iter().position(|s| s.pos.line != line).map_or(spans.len(), |o| i + o);
+        if prev_line.is_some_and(|prev| line > prev + 1) {
+            lines.push(paint("...", COLOR_CYAN));
+        }
         render_span_line(&mut lines, &bar, width, &spans[i..end]);
+        prev_line = Some(line);
         i = end;
     }
 
     // A label on the final line runs into the help text, so part them with a blank rail. The line
     // lacks a label only when a lone span lands there with no label of its own.
     let last = spans.last().unwrap();
-    let alone = spans.iter().filter(|(p, _)| p.line == last.0.line).count() == 1;
-    if !help.is_empty() && !(alone && last.1.is_empty()) {
+    let alone = spans.iter().filter(|s| s.pos.line == last.pos.line).count() == 1;
+    if !help.is_empty() && !(alone && last.label.is_empty()) {
         lines.push(bar.clone());
     }
 
@@ -90,69 +139,68 @@ fn render_spans(spans: &[(SourcePosition, String)], help: &[String]) -> String {
 
 /// Renders one source line, then the carets for every span on it. The last span's label sits
 /// inline after its carets; earlier labels stack below, each joined to its carets by a `|`.
-fn render_span_line(lines: &mut Vec<String>, bar: &str, width: usize, group: &[(SourcePosition, String)]) {
-    let content = &group[0].0.source.content;
-    let (start, end) = group[0].0.line_bounds(group[0].0.start);
-    lines.push(format!("{} {}", rail(&group[0].0.line.to_string(), width), expand_tabs(&content[start..end])));
+fn render_span_line(lines: &mut Vec<String>, bar: &str, width: usize, group: &[Span]) {
+    let content = &group[0].pos.source.content;
+    let (start, end) = group[0].pos.line_bounds(group[0].pos.start);
+    lines.push(format!("{} {}", rail(&group[0].pos.line.to_string(), width), expand_tabs(&content[start..end])));
 
-    let cols: Vec<usize> = group.iter().map(|(p, _)| display_width(&content[start..p.start])).collect();
+    let cols: Vec<usize> = group.iter().map(|s| display_width(&content[start..s.pos.start])).collect();
 
-    // The caret row: every span's carets, then the last span's label inline.
+    // The caret row: every span's carets in its own glyph, then the last span's label inline.
     let mut row = String::new();
     let mut col = 0;
-    for (k, (pos, _)) in group.iter().enumerate() {
-        let carets = display_width(&content[pos.start..pos.end.min(end)]).max(1);
+    for (k, span) in group.iter().enumerate() {
+        let (glyph, color) = span.kind.style();
+        let carets = display_width(&content[span.pos.start..span.pos.end.min(end)]).max(1);
         row.push_str(&" ".repeat(cols[k] - col));
-        row.push_str(&paint(&"^".repeat(carets), COLOR_RED));
+        row.push_str(&paint(&glyph.to_string().repeat(carets), color));
         col = cols[k] + carets;
     }
-    lines.push(format!("{bar} {row} {}", paint(&group.last().unwrap().1, COLOR_RED)));
+    let last = group.last().unwrap();
+    lines.push(format!("{bar} {row} {}", paint(&last.label, last.kind.style().1)));
 
     // Earlier labels stack under their carets, joined to the caret row by `|` connectors.
     if group.len() > 1 {
-        lines.push(format!("{bar} {}", connector_row(&cols[..group.len() - 1], None)));
+        let bars: Vec<(usize, SpanKind)> = group[..group.len() - 1].iter().enumerate().map(|(k, s)| (cols[k], s.kind)).collect();
+        lines.push(format!("{bar} {}", connector_row(&bars, None)));
         for k in (0..group.len() - 1).rev() {
-            lines.push(format!("{bar} {}", connector_row(&cols[..k], Some((cols[k], &group[k].1)))));
+            lines.push(format!("{bar} {}", connector_row(&bars[..k], Some((cols[k], &group[k].label, group[k].kind)))));
         }
     }
 }
 
-/// A row with a `|` at each column in `bars`, then `label` placed at its column, if given.
-fn connector_row(bars: &[usize], label: Option<(usize, &str)>) -> String {
+/// A row with a `|` at each column in `bars`, then `label` placed at its column, if given. Each
+/// connector and the label take the color of the span they belong to.
+fn connector_row(bars: &[(usize, SpanKind)], label: Option<(usize, &str, SpanKind)>) -> String {
     let mut row = String::new();
     let mut col = 0;
-    for &at in bars {
+    for &(at, kind) in bars {
         row.push_str(&" ".repeat(at - col));
-        row.push_str(&paint("|", COLOR_RED));
+        row.push_str(&paint("|", kind.style().1));
         col = at + 1;
     }
-    if let Some((at, text)) = label {
+    if let Some((at, text, kind)) = label {
         row.push_str(&" ".repeat(at - col));
-        row.push_str(&paint(text, COLOR_RED));
+        row.push_str(&paint(text, kind.style().1));
     }
     return row;
 }
 
-/// The `help:` notes shown under a frame, each on its own gutter-aligned line.
+/// The `help:` notes shown under a frame, each on its own gutter-aligned line. A note may carry
+/// embedded newlines; continuation lines align under the note text, without a repeated `= help:`.
 fn render_help(width: usize, help: &[String]) -> String {
-    let prefix = format!("{} = help:", " ".repeat(width));
+    let prefix = paint(&format!("{} = help:", " ".repeat(width)), COLOR_CYAN);
+    let indent = " ".repeat(width + " = help: ".len());
     let mut out = String::new();
     for note in help {
-        out.push_str(&format!("\n{} {note}", paint(&prefix, COLOR_CYAN)));
+        let mut note_lines = note.split('\n');
+        out.push_str(&format!("\n{prefix} {}", note_lines.next().unwrap()));
+        for cont in note_lines {
+            out.push_str(&format!("\n{indent}{cont}"));
+        }
     }
     return out;
 }
-
-// Compile token patterns once on first use.
-static REGEX_STRING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""([^"\\]|\\.)*""#).unwrap());
-static REGEX_NUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?").unwrap());
-static REGEX_ALPHANUMERIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[a-zA-Z_][a-zA-Z0-9_]*").unwrap());
-static REGEX_COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\/\/[^\n\r]*").unwrap());
-static REGEX_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\r\n|\r|\n)").unwrap());
-static REGEX_WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\S\r\n]+").unwrap());
-
-static COLOR_RED: &str = "31";
-static COLOR_CYAN: &str = "36";
 
 pub struct SourceFile {
     pub name: String,
@@ -298,6 +346,10 @@ fn next_token(input: &str, input_index: usize, pos: &SourcePosition) -> Result<T
     
     if let Some(end) = find_at(&REGEX_STRING, input, input_index) {
         return Ok(Token::new(TokenType::StringLiteral, &input[input_index..end]));
+    }
+
+    if let Some(end) = find_at(&REGEX_STAR_MUT, input, input_index) {
+        return Ok(Token::new(TokenType::StarMut, &input[input_index..end]));
     }
 
     // Match the longest punctuation operator first, so `<<=` beats `<<` beats `<`.

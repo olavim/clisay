@@ -35,9 +35,21 @@ pub struct Barriers {
     pub(super) boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
     /// Discharge nodes (`??`, `?`, `!`) whose operand owes an object witness.
     pub(super) witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
+    /// Opaque calls whose argument must survive, keyed by callee node to the argument positions
+    /// the callee must borrow.
+    pub(super) survive_barriers: HashMap<HirId<HirExpr>, Vec<u8>>,
+    /// Calls that lend a mutable argument (callee node -> argument positions) to mark
+    /// as borrowed for the call.
+    pub(super) borrow_marks: HashMap<HirId<HirExpr>, Vec<u8>>,
     /// Every registered object witness name, the VM's registry for recognizing a crossing value
     /// as a witness at a boundary barrier.
     pub(super) witness_names: Vec<Symbol>,
+    /// Immutable container literals with an unknown-capability element, whose elements are checked
+    /// for mutability at construction so a mutable value cannot land in an immutable container.
+    pub(super) seal_checks: HashSet<HirId<HirExpr>>,
+    /// Plain (immutable) constructions, whose fields are deep-frozen once the object is sealed so an
+    /// immutable instance is immutable all the way down.
+    pub(super) deep_seals: HashSet<HirId<HirExpr>>,
 }
 
 impl Barriers {
@@ -61,6 +73,26 @@ impl Barriers {
         self.witness_tests.get(node)
     }
 
+    /// The argument positions an opaque call at this callee must assert the callee borrows.
+    pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[u8]> {
+        self.survive_barriers.get(callee).map(Vec::as_slice)
+    }
+
+    /// The argument positions a call at this callee lends, to mark as borrowed for the call.
+    pub fn borrow_marks(&self, callee: &HirId<HirExpr>) -> Option<&[u8]> {
+        self.borrow_marks.get(callee).map(Vec::as_slice)
+    }
+
+    /// Whether this container literal needs a runtime check that no element is mutable.
+    pub fn needs_seal_check(&self, node: &HirId<HirExpr>) -> bool {
+        self.seal_checks.contains(node)
+    }
+
+    /// Whether this construction seals into an immutable object whose fields need deep-freezing.
+    pub fn needs_deep_seal(&self, node: &HirId<HirExpr>) -> bool {
+        self.deep_seals.contains(node)
+    }
+
     pub fn len(&self) -> usize {
         self.null_barriers.len() + self.boundary_barriers.len()
     }
@@ -74,6 +106,28 @@ impl<'a> Checker<'a> {
     /// Marks a `!` operand owing only `opt`, whose null state is asserted at runtime.
     pub(super) fn add_barrier(&mut self, node: &HirId<HirExpr>) {
         self.barriers.insert(*node);
+    }
+
+    /// Records that an opaque call must assert its callee borrows the given argument positions.
+    pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<u8>) {
+        self.survive_barriers.insert(*callee, positions);
+    }
+
+    /// Records the argument positions a call lends, to mark as borrowed for its duration.
+    pub(super) fn record_borrow_marks(&mut self, callee: &HirId<HirExpr>, positions: Vec<u8>) {
+        if !positions.is_empty() {
+            self.borrow_marks.insert(*callee, positions);
+        }
+    }
+
+    /// Marks an immutable container literal whose elements must be checked for mutability at runtime.
+    pub(super) fn record_seal_check(&mut self, node: &HirId<HirExpr>) {
+        self.seal_checks.insert(*node);
+    }
+
+    /// Marks a plain construction whose fields deep-freeze once the object is sealed.
+    pub(super) fn record_deep_seal(&mut self, node: &HirId<HirExpr>) {
+        self.deep_seals.insert(*node);
     }
 
     /// Records the guard for an unknown value reaching a destination accepting `accepted`. The

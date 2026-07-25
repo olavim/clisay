@@ -100,6 +100,10 @@ impl Value {
         (self.0 & Self::OBJECT_MASK) == Self::OBJECT_MASK
     }
 
+    pub fn is_borrowed(self) -> bool {
+        self.is_object() && self.as_object().is_borrowed()
+    }
+
     pub fn as_number(self) -> f64 {
         f64::from_bits(self.0)
     }

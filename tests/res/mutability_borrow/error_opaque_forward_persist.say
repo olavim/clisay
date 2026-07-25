@@ -1,0 +1,7 @@
+// Forwarding a borrow to an opaque callback is allowed, but persisting the parameter is not.
+obligation borrowed: no persist;
+type Box {
+    pub mut item;
+    init() { this.item = 0; }
+    fn stash(x: borrowed, cb) { cb(x); this.item = x; } // error: 'x' owes 'borrowed'; it cannot be stored or escape its scope
+}

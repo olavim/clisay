@@ -7,6 +7,12 @@ extern crate test_collector;
 mod common;
 
 fn main() {
+    // The compiler passes recurse with expression depth, and debug frames are large, so a deeply
+    // nested program can exhaust a default test-thread stack. Widen it before any thread spawns.
+    if std::env::var_os("RUST_MIN_STACK").is_none() {
+        std::env::set_var("RUST_MIN_STACK", "67108864");
+    }
+
     let mut args = libtest_mimic::Arguments::from_args();
     args.filter = args.filter.map(|name| name.replace("_test_dummy", ""));
     if args.exact {
@@ -185,5 +191,30 @@ fn discharge(resource: &str) -> Result<(), Failed> {
 
 #[test_resources("tests/res/obligations_traits")]
 fn obligations_traits(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/mutability")]
+fn mutability(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/mutability_passing")]
+fn mutability_passing(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/mutability_move")]
+fn mutability_move(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/mutability_traits")]
+fn mutability_traits(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/mutability_borrow")]
+fn mutability_borrow(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }

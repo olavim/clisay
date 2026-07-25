@@ -1,0 +1,16 @@
+fn consumes(x: *mut) { }
+fn apply(cb, val: mut) {
+  cb(val);
+}
+say v = mut {};
+apply(consumes, v);
+// error(full):
+// error: cannot pass a borrowed argument to a callee that lets it escape
+//  --> opaque_consume_barrier.say:3:6
+//   |
+// 2 | fn apply(cb, val: mut) {
+// 3 |   cb(val);
+//   |      ^^^ the callee lets `val` escape
+//   |
+// 	at apply (opaque_consume_barrier.say:3)
+// 	at script (opaque_consume_barrier.say:6)

@@ -1,0 +1,6 @@
+// A conditionally-escaped block-local does not definitely own its value, so the source stays dead.
+fn escape(x: *mut) {}
+say cond = true;
+say a = mut [1];
+{ say b = a; if (cond) { escape(b); } }
+print(a[0]); // error: value used after it was moved

@@ -1,0 +1,12 @@
+say a = mut [1, 2];
+say b = a;
+print(a[0]);
+// error(full):
+// error: value used after it was moved
+//  --> use_after_move.say:3:7
+//   |
+// 1 | say a = mut [1, 2];
+// 2 | say b = a;
+//   |         ^ `a` moved here
+// 3 | print(a[0]);
+//   |       ^ `a` used here

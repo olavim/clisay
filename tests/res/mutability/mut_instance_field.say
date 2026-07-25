@@ -1,0 +1,5 @@
+// A `mut` construction keeps its fields mutable.
+type Box { pub data; init() { this.data = mut [0]; } }
+say b = mut Box();
+b.data[0] = 9;
+print(b.data[0]); // expect: 9

@@ -3,5 +3,5 @@ type A {
     pub x?;
 }
 
-say obj = A();
+say obj = mut A();
 obj.y = true; // error: Invalid index: A doesn't have member "y"

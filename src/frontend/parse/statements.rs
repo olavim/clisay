@@ -76,30 +76,34 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
 
         let pos = self.tokens.peek(0).pos.clone();
-        if self.tokens.peek(0).contextual() != Some(ContextualKeyword::Discharge) {
-            return Err(self.obligation_rule_error(&pos));
-        }
-        self.tokens.next();
-
-        match self.parse_identifier()?.as_str() {
-            "to" => match self.parse_identifier()?.as_str() {
-                "use" => {
-                    let witness = self.tokens.next_if(TokenType::Identifier).map(|tok| self.ast.intern(&tok.lexeme));
-                    Ok((ObligationRule::ToUse, witness))
+        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Discharge) {
+            self.tokens.next();
+            return match self.parse_identifier()?.as_str() {
+                "to" => match self.parse_identifier()?.as_str() {
+                    "use" => {
+                        let witness = self.tokens.next_if(TokenType::Identifier).map(|tok| self.ast.intern(&tok.lexeme));
+                        Ok((ObligationRule::ToUse, witness))
+                    },
+                    _ => Err(self.obligation_rule_error(&pos)),
                 },
-                "escape" => Ok((ObligationRule::ToEscape, None)),
                 _ => Err(self.obligation_rule_error(&pos)),
-            },
-            "before" => match self.parse_identifier()?.as_str() {
-                "drop" => Ok((ObligationRule::BeforeDrop, None)),
-                _ => Err(self.obligation_rule_error(&pos)),
-            },
-            _ => Err(self.obligation_rule_error(&pos)),
+            };
         }
+
+        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::No) {
+            self.tokens.next();
+            return match self.parse_identifier()?.as_str() {
+                "persist" => Ok((ObligationRule::NoPersist, None)),
+                "drop" => Ok((ObligationRule::NoDrop, None)),
+                _ => Err(self.obligation_rule_error(&pos)),
+            };
+        }
+
+        Err(self.obligation_rule_error(&pos))
     }
 
     fn obligation_rule_error(&self, pos: &SourcePosition) -> anyhow::Error {
-        self.error_help("Invalid obligation rule", pos, "a rule is `discharge to use`, `discharge to escape`, or `discharge before drop`")
+        self.error_help("Invalid obligation rule", pos, "a rule is `discharge to use`, `no persist`, or `no drop`")
     }
 
     pub(super) fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -136,17 +140,19 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = self.tokens.expect(TokenType::Try)?.pos.clone();
         let try_body = self.parse_block_or_stmt()?;
 
-        let catch = if let Some(catch_tok) = self.tokens.next_if(TokenType::Catch) {
-            let catch_pos = catch_tok.pos.clone();
+        let catch = if self.tokens.next_if(TokenType::Catch).is_some() {
             let (param, mutable) = match self.tokens.peek(0).kind {
                 TokenType::Identifier => (Some(self.parse_identifier_expr()?), false),
                 TokenType::LeftParen => {
-                    self.tokens.expect(TokenType::LeftParen)?;
-                    let params = self.parse_params(TokenType::RightParen)?;
-                    if params.len() != 1 {
-                        parse_error!(self, &catch_pos, "Expected one parameter in catch block")
-                    }
-                    (Some(params[0].name), params[0].mutable)
+                    let open = self.tokens.expect(TokenType::LeftParen)?.pos.clone();
+                    let mutable = self.parse_mut();
+                    let param = self.parse_identifier_expr()?;
+                    // A caught value is always nullable, so a marker or clause carries no meaning,
+                    // but accept the parameter surface so a catch binding parses like any other.
+                    self.parse_nullable();
+                    self.parse_slot_clause(SlotKind::Param)?;
+                    self.tokens.expect_close(TokenType::RightParen, &open)?;
+                    (Some(param), mutable)
                 },
                 _ => (None, false)
             };

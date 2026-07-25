@@ -1,0 +1,29 @@
+// A read-only capture borrows the value, so the enclosing binding stays live and mutable.
+say a = mut {};
+a["k"] = 1;
+say f = () => { print(a["k"]); };
+f(); // expect: 1
+a["k"] = 2;
+print(a["k"]); // expect: 2
+
+// @split
+// A capture that mutates the value moves it, so the enclosing binding then goes dead.
+say a = mut {};
+a["k"] = 1;
+say f = () => { a["k"] = 9; };
+print(a["k"]); // error: value used after it was moved into a closure
+
+// @split
+// A capture that persists the value moves it as well.
+say sink = mut [];
+say a = mut {};
+say f = () => { sink.push(a); };
+print(a["k"]); // error: value used after it was moved into a closure
+
+// @split
+// Freezing before the capture leaves the value immutable, so it is freely aliasable.
+say a = mut {};
+a["k"] = 1;
+freeze(a);
+say f = () => { print(a["k"]); };
+print(a["k"]); // expect: 1

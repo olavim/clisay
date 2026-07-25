@@ -1,0 +1,4 @@
+// A helper that returns its argument persists it, so a mutable value is rejected at the call.
+fn identity(x)! { return x; }
+say a = mut [1, 2];
+say b = identity(a); // error: 'a' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'

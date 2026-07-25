@@ -1,0 +1,8 @@
+// The opaque-call barrier reaches a consuming `*mut` parameter through a bound method too.
+type Box { pub fn eat(x: *mut) { } }
+fn apply(cb, val: mut) {
+  cb(val); // error: cannot pass a borrowed argument to a callee that lets it escape
+}
+say b = Box();
+say v = mut {};
+apply(b.eat, v);

@@ -13,3 +13,4 @@ A().run();
 // 	at lambda (frame_mixed_chain.say:3)
 // 	at apply (frame_mixed_chain.say:1)
 // 	at A.run (frame_mixed_chain.say:3)
+// 	at script (frame_mixed_chain.say:5)
