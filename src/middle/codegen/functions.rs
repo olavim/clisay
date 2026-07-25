@@ -62,6 +62,7 @@ impl<'a> Compiler<'a> {
     fn exit_function(&mut self, body_id: &HirId<HirExpr>, kind: FnKind) {
         if matches!(self.hir.get(body_id), HirExpr::Block(_)) {
             if !matches!(self.ir.code().last(), Some(Inst::Return)) {
+                // An initializer hands back `this`; a plain construction seals it at the call site.
                 if let FnKind::Initializer = kind {
                     self.emit(Inst::LoadLocal(0), body_id);
                 } else {

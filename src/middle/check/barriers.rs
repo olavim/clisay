@@ -44,6 +44,12 @@ pub struct Barriers {
     /// Every registered object witness name, the VM's registry for recognizing a crossing value
     /// as a witness at a boundary barrier.
     pub(super) witness_names: Vec<Symbol>,
+    /// Immutable container literals with an unknown-capability element, whose elements are checked
+    /// for mutability at construction so a mutable value cannot land in an immutable container.
+    pub(super) seal_checks: HashSet<HirId<HirExpr>>,
+    /// Plain (immutable) constructions, whose fields are deep-frozen once the object is sealed so an
+    /// immutable instance is immutable all the way down.
+    pub(super) deep_seals: HashSet<HirId<HirExpr>>,
 }
 
 impl Barriers {
@@ -77,6 +83,16 @@ impl Barriers {
         self.borrow_marks.get(callee).map(Vec::as_slice)
     }
 
+    /// Whether this container literal needs a runtime check that no element is mutable.
+    pub fn needs_seal_check(&self, node: &HirId<HirExpr>) -> bool {
+        self.seal_checks.contains(node)
+    }
+
+    /// Whether this construction seals into an immutable object whose fields need deep-freezing.
+    pub fn needs_deep_seal(&self, node: &HirId<HirExpr>) -> bool {
+        self.deep_seals.contains(node)
+    }
+
     pub fn len(&self) -> usize {
         self.null_barriers.len() + self.boundary_barriers.len()
     }
@@ -102,6 +118,16 @@ impl<'a> Checker<'a> {
         if !positions.is_empty() {
             self.borrow_marks.insert(*callee, positions);
         }
+    }
+
+    /// Marks an immutable container literal whose elements must be checked for mutability at runtime.
+    pub(super) fn record_seal_check(&mut self, node: &HirId<HirExpr>) {
+        self.seal_checks.insert(*node);
+    }
+
+    /// Marks a plain construction whose fields deep-freeze once the object is sealed.
+    pub(super) fn record_deep_seal(&mut self, node: &HirId<HirExpr>) {
+        self.deep_seals.insert(*node);
     }
 
     /// Records the guard for an unknown value reaching a destination accepting `accepted`. The

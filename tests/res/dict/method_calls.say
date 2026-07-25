@@ -1,4 +1,4 @@
-say d = { a: 1, b: 2 };
+say d = mut { a: 1, b: 2 };
 print(d.size());              // expect: 2
 print(d.containsKey("a"));    // expect: true
 print(d.containsKey("z"));    // expect: false

@@ -1,5 +1,5 @@
 // Escape is transitive: `outer` forwards its argument to `inner`, which returns it, so the call is rejected.
-fn inner(y): mut { return y; }
+fn inner(y)! { return y; }
 fn outer(x) {
     say alias = x;
     inner(alias);

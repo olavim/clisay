@@ -23,7 +23,10 @@ impl<'a> Compiler<'a> {
             HirExpr::Unary(op, operand) => self.unary_expression(*op, operand)?,
             HirExpr::Binary(op, left, right) => self.binary_expression(*op, left, right)?,
             HirExpr::Assign(left, right) => self.compile_assign(left, right, false)?,
-            HirExpr::Call(callee, args) => self.call_expression(callee, args)?,
+            HirExpr::Call(callee, args) => {
+                self.call_expression(callee, args)?;
+                self.deep_seal(expr);
+            },
             HirExpr::Index(target, member, is_dot) => self.index(target, member, *is_dot, IndexOp::Load)?,
             HirExpr::Literal(lit) => self.literal(expr, lit)?,
             HirExpr::Identifier(_) => {
@@ -37,7 +40,12 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::Is(idx), expr);
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
-            HirExpr::Mut(inner) => self.expression(inner)?,
+            // A `mut` construction is built immutable like any other, then opted out with `Mut`. This
+            // rides a generic call, so `mut t()` needs no static knowledge that `t` is a type.
+            HirExpr::Mut(inner) => {
+                self.expression(inner)?;
+                self.emit(Inst::Mut, expr);
+            },
             HirExpr::Has(left, matcher) => self.compile_has(left, matcher, expr)?,
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
@@ -246,6 +254,7 @@ impl<'a> Compiler<'a> {
         let field_ids = self.bindings.construct_fields(expr).to_vec();
         let fields_idx = self.ir.add_construct_fields(field_ids)?;
         self.emit(Inst::Construct(fields_idx, args.len() as u8), expr);
+        self.deep_seal(expr);
         Ok(())
     }
 
@@ -453,6 +462,21 @@ impl<'a> Compiler<'a> {
         return Ok(());
     }
 
+    /// Emits a runtime check that an immutable container holds no mutable element, when the checker
+    /// flagged the literal for it.
+    fn seal_check(&mut self, expr: &HirId<HirExpr>) {
+        if self.barriers.needs_seal_check(expr) {
+            self.emit(Inst::SealCheck, expr);
+        }
+    }
+
+    /// Deep-freezes a plain construction's fields once it is sealed, when the checker flagged it.
+    fn deep_seal(&mut self, expr: &HirId<HirExpr>) {
+        if self.barriers.needs_deep_seal(expr) {
+            self.emit(Inst::DeepSeal, expr);
+        }
+    }
+
     pub (super) fn literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral) -> Result<(), anyhow::Error> {
         match literal {
             HirLiteral::Number(num) => {
@@ -472,6 +496,7 @@ impl<'a> Compiler<'a> {
                     self.expression(element)?;
                 }
                 self.emit(Inst::Array(elements.len() as u8), expr);
+                self.seal_check(expr);
             },
             HirLiteral::Dict(pairs) => {
                 for (key, value) in pairs {
@@ -479,6 +504,7 @@ impl<'a> Compiler<'a> {
                     self.expression(value)?;
                 }
                 self.emit(Inst::Dict(pairs.len() as u8), expr);
+                self.seal_check(expr);
             },
             HirLiteral::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };

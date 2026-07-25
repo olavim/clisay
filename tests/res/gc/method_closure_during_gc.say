@@ -21,7 +21,7 @@ type Counter {
     }
 }
 
-say c = Counter();
+say c = mut Counter();
 say mut i = 0;
 while i < 100000 {
     c.inc();

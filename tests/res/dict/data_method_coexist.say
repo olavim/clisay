@@ -1,6 +1,6 @@
 // `.` is the method surface; `[]` is keyed data. They never collide, even when a
 // data key shares a method's name.
-say d = {};
+say d = mut {};
 d["has"] = "data-at-has";   // store DATA at key "has"
 d["size"] = 99;             // store DATA at key "size"
 

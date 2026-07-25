@@ -210,7 +210,13 @@ impl Vm {
         };
         let array = self.alloc(ObjArray::new(values));
         self.stack.truncate(len);
-        self.stack.push(Value::from(array));
+        self.push_immutable(Value::from(array));
+    }
+
+    /// Pushes a freshly built container, sealed immutable by default.
+    fn push_immutable(&mut self, value: Value) {
+        value.as_object().set_immutable(self.current_pos_index());
+        self.stack.push(value);
     }
 
     /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
@@ -225,7 +231,7 @@ impl Vm {
         };
         let slice = self.alloc(ObjArray::new(values));
         self.stack.truncate(1);
-        self.stack.push(Value::from(slice));
+        self.push_immutable(Value::from(slice));
     }
 
     pub(super) fn op_dict(&mut self) {
@@ -243,7 +249,39 @@ impl Vm {
         }
         let dict = self.alloc(ObjDict::new(entries));
         self.stack.truncate(n);
-        self.stack.push(Value::from(dict));
+        self.push_immutable(Value::from(dict));
+    }
+
+    /// Clears the immutable bit on the value on top of the stack.
+    pub(super) fn op_mut(&mut self) {
+        let value = self.stack.peek(0);
+        if value.is_object() {
+            value.as_object().set_mutable();
+        }
+    }
+
+    /// Seals a plain construction immutable all the way down, so no field stays mutable. The
+    /// instance is still mutable here, so freezing it walks into every field.
+    pub(super) fn op_deep_seal(&mut self) {
+        crate::core::objects::freeze_value(self.stack.peek(0), self.current_pos_index());
+    }
+
+    /// Traps a mutable element in the immutable container on top of the stack. The compile pass
+    /// rejects known-mutable elements, so this only fires for a value of unknown capability that
+    /// turns out mutable at runtime.
+    pub(super) fn op_seal_check(&mut self) -> Result<(), anyhow::Error> {
+        let container = self.stack.peek(0);
+        let mutable = match container.kind() {
+            ValueKind::Object(ObjectKind::Array) =>
+                unsafe { &(*container.as_object().as_array_ptr()).values }.iter().any(|v| crate::core::objects::is_mutable_container(*v)),
+            ValueKind::Object(ObjectKind::Dict) =>
+                unsafe { (*container.as_object().as_dict_ptr()).entries.values() }.any(|v| crate::core::objects::is_mutable_container(*v)),
+            _ => false,
+        };
+        if mutable {
+            return self.error_seal();
+        }
+        Ok(())
     }
 
     pub(super) fn op_push_type(&mut self) {

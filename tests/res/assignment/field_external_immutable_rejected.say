@@ -3,5 +3,5 @@ type T {
     pub value;
     init() { this.value = 1; }
 }
-say t = T();
+say t = mut T();
 t.value = 2; // error: Cannot assign immutable field `T.value`

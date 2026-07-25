@@ -5,7 +5,7 @@ type Point {
     pub y = 2;
 }
 
-say p = Point();
+say p = mut Point();
 print(p["x"]); // expect: 1
 print(p.x);    // expect: 1
 

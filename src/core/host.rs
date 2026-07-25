@@ -11,4 +11,6 @@ pub trait Host {
     fn collect(&mut self);
     /// Emit a line of program output (routed through the host's capture).
     fn print(&mut self, text: String);
+    /// The code index of the call site.
+    fn code_index(&self) -> u32;
 }

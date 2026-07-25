@@ -1,4 +1,4 @@
-say arr = [0, true, null, "foo", ["first"]];
+say arr = mut [0, true, null, "foo", mut ["first"]];
 arr[0] = 1;
 arr[1] = false;
 arr[2] = "bar";

@@ -7,7 +7,7 @@ type Counter {
     }
 }
 
-say c = Counter();
+say c = mut Counter();
 c.bump();
 c.bump();
 print(c.n); // expect: 2

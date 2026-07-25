@@ -1,0 +1,4 @@
+// A mutable grid needs `mut` at each level it should be mutable at.
+say a = mut [mut [0]];
+a[0][0] = 7;
+print(a[0][0]); // expect: 7

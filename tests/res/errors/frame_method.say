@@ -11,3 +11,4 @@ a.boom();
 // 2 |   pub fn boom()! { return 1 + true; }
 //   |                               ^^^^
 // 	at A.boom (frame_method.say:2)
+// 	at script (frame_method.say:5)

@@ -92,6 +92,14 @@ pub enum Inst {
     SetFieldPop(u8),
     Array(u8),
     Dict(u8),
+    /// Clears the immutable bit on the object on top of the stack.
+    Mut,
+    /// Asserts every element of the immutable container on top of the stack is immutable, so a
+    /// mutable value of unknown capability cannot land in an immutable container.
+    SealCheck,
+    /// Deep-freezes the fields of the immutable instance on top of the stack, so a plain
+    /// construction is immutable all the way down.
+    DeepSeal,
 
     // Arithmetic
     Add,

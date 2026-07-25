@@ -9,7 +9,7 @@ type Widget with Counter {
     init() {}
 }
 
-say w = Widget();
+say w = mut Widget();
 w.inc();
 w.inc();
 print(w.get());  // expect: 2

@@ -10,7 +10,7 @@ type T {
     pub fn read()! { return field; }
     pub fn bump() { field = field + 5; }
 }
-say t = T();
+say t = mut T();
 print(t.read()); // expect: 1
 t.bump();
 print(t.read()); // expect: 6

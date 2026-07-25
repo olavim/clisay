@@ -1,0 +1,4 @@
+// A plain brace construction freezes a mutable field value on seal.
+type Box { pub data; }
+say b = Box{data: mut [0]};
+b.data[0] = 9; // error: cannot mutate an immutable value
