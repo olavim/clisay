@@ -3,7 +3,7 @@ trait Source {
     req fn read(): [fails];
 }
 type File with Source {
-    pub fn read(): fails { return Err("x"); } // error: Method 'read' satisfies 'req fn read' but its return is not a container, which the requirement declares
+    pub fn read(): fails { return Err("x"); } // error: return shape does not match the trait
     init() {}
 }
 print("unreachable");

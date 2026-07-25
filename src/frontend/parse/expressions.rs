@@ -7,9 +7,22 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let name = self.ast.intern("lambda");
         // Lambda parameters take no markers. The return shape is inferred from the body.
         let params = params.into_iter()
-            .map(|name| Param { name, nullable: false, mutable: false, clause: SlotClause::default() })
+            .map(|name| Param {
+                pos: self.ast.pos(&name).clone(),
+                name,
+                nullable: false,
+                mutable: false,
+                clause: SlotClause::default()
+            })
             .collect();
-        Expr::Literal(Literal::Lambda(FnDecl { name, params, body, ret: ReturnShape::Inferred, clause: SlotClause::default() }))
+        Expr::Literal(Literal::Lambda(FnDecl {
+            name,
+            sig_pos: self.ast.pos(&body).clone(),
+            params,
+            body,
+            ret: ReturnShape::Inferred,
+            clause: SlotClause::default()
+        }))
     }
 
     pub(super) fn parse_expr(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
@@ -88,10 +101,20 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     /// Parses a primary expression: a literal, an array or dict literal, or an identifier.
     pub(super) fn parse_primary(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
+            return self.parse_value_mut();
+        }
         match Operator::parse_prefix(self.tokens, 0) {
             Some(op) => self.parse_expr_prefix(op),
             _ => self.parse_expr_atom(),
         }
+    }
+
+    /// Parses `mut <operand>`, the value-mutability marker on a construction.
+    fn parse_value_mut(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        let pos = self.tokens.next().pos.clone();
+        let inner = self.parse_expr_precedence(Operator::UNARY_PREFIX_PRECEDENCE)?;
+        Ok(self.node_expr(Expr::Mut(inner), pos))
     }
 
     pub(super) fn parse_expr_infix(&mut self, op: Operator, expr: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {

@@ -1,0 +1,14 @@
+// A constructor that only borrows its argument does not move it, so the source stays live.
+type Box { init(x) { } }
+say a = mut [1];
+say b = Box(a);
+a[0] = 9;
+print(a[0]); // expect: 9
+
+// @split
+// The brace form flows its init args through the same init, so a borrowed one stays live too.
+type Box { pub w?; init(x) { } }
+say a = mut [1];
+say b = Box(a) { w: 5 };
+a[0] = 9;
+print(a[0]); // expect: 9

@@ -1,0 +1,8 @@
+// A `mut` parameter accepts a mutable value and an unknown-capability value. Only a known-immutable
+// value is rejected (see error_immutable_into_mut).
+fn fill(x: mut) { x["k"] = 1; }
+say make = () => mut {};
+say m = mut {};
+fill(m);
+fill(make());
+print("ok"); // expect: ok

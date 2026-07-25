@@ -1,0 +1,5 @@
+// A directly-minted `mut` value handed to a parameter that persists it is the keeps-argument error.
+type Sink { pub mut item; init() { this.item = 0; } fn keep(x) { this.item = x; } }
+say s = Sink();
+say m = mut {};
+s.keep(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'

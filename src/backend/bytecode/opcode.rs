@@ -90,6 +90,9 @@ opcodes! {
     CloseUpvalue => CLOSE_UPVALUE(Byte),
     Array => ARRAY(Byte),
     Dict => DICT(Byte),
+    Mut => MUT,
+    SealCheck => SEAL_CHECK,
+    DeepSeal => DEEP_SEAL,
     Return => RETURN,
     Halt => HALT,
     Throw => THROW,
@@ -97,6 +100,9 @@ opcodes! {
     PopTry => POP_TRY,
     AssertNonNull => ASSERT_NON_NULL,
     BarrierGuard => BARRIER_GUARD(Byte, List),
+    AssertBorrow => ASSERT_BORROW(Byte, List),
+    MarkBorrow => MARK_BORROW(Byte, List),
+    ReleaseBorrow => RELEASE_BORROW(Byte),
 
     // Explicit stack manipulation
     Pop => POP,

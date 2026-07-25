@@ -1,0 +1,3 @@
+// Under a mutable outer, a plain inner literal is still immutable: `mut` is not transitive.
+say a = mut [[0]];
+a[0][0] = 1; // error: cannot mutate an immutable value

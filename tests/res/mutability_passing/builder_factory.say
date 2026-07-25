@@ -1,0 +1,15 @@
+// A `: mut` factory hands back a live mutable value built through fluent methods.
+type UserBuilder {
+  pub mut name;
+  init() { this.name = ""; }
+  pub fn setName(n)! { this.name = n; return this; }
+  pub fn build()! { return this.name; }
+}
+fn getBuilder(): mut {
+  say b = mut UserBuilder();
+  b.setName("default");
+  return b;
+}
+say builder = getBuilder();
+say user = builder.build();
+print(user); // expect: default

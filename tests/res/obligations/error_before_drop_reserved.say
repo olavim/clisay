@@ -1,8 +1,0 @@
-obligation held: discharge before drop;
-// error(full):
-// error: 'discharge before drop' is not available yet
-//  --> error_before_drop_reserved.say:1:1
-//   |
-// 1 | obligation held: discharge before drop;
-//   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-//   = help: obligations discharged at drop are not implemented yet

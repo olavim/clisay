@@ -5,17 +5,67 @@ use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
 use super::host::Host;
-use super::value::Value;
+use super::value::{Value, ValueKind};
+
+/// The runtime diagnostic raised when a mutation hits an immutable value.
+pub const IMMUTABLE_MUTATION: &str = "cannot mutate an immutable value";
+
+/// The runtime diagnostic raised when a mutable value of unknown capability lands in an immutable
+/// container at construction.
+pub const MUTABLE_IN_IMMUTABLE: &str = "cannot store a mutable value in an immutable container";
+
+/// Sentinel for `ObjectHeader::immutable_origin`: the value is mutable, or no site was recorded.
+pub const NO_ORIGIN: u32 = u32::MAX;
+
+/// The runtime diagnostic raised when an opaque call must keep its argument but the callee would
+/// consume it.
+pub const ESCAPED_BORROW: &str = "cannot pass a borrowed argument to a callee that lets it escape";
+
+/// The runtime diagnostic raised when a borrowed value is persisted at a store site.
+pub const PERSISTED_BORROW: &str = "cannot persist a borrowed value";
+
+/// Whether a value is a mutable container. Only Array, Dict, and Instance carry the immutable bit;
+/// every other object kind and every primitive is always an immutable value.
+pub fn is_mutable_container(value: Value) -> bool {
+    matches!(value.kind(), ValueKind::Object(ObjectKind::Array | ObjectKind::Dict | ObjectKind::Instance))
+        && !value.as_object().is_immutable()
+}
+
+/// Marks a value immutable, then its container children. `origin` is the code index of the freeze
+/// site, recorded on each newly-frozen value so a later mutation can point back at it.
+pub fn freeze_value(value: Value, origin: u32) {
+    let ValueKind::Object(kind) = value.kind() else { return };
+    let object = value.as_object();
+    if object.is_immutable() {
+        return;
+    }
+    object.set_immutable(origin);
+    match kind {
+        ObjectKind::Array => for &v in unsafe { &(*object.as_array_ptr()).values } { freeze_value(v, origin); },
+        ObjectKind::Dict => for &v in unsafe { (*object.as_dict_ptr()).entries.values() } { freeze_value(v, origin); },
+        ObjectKind::Instance => {
+            let instance = unsafe { &*object.as_instance_ptr() };
+            let ty = unsafe { &*instance.ty };
+            for &id in &ty.fields { freeze_value(instance.get(id), origin); }
+        },
+        _ => {},
+    }
+}
 
 #[repr(C)]
 pub struct ObjectHeader {
     pub kind: ObjectKind,
-    pub marked: bool
+    pub marked: bool,
+    pub immutable: bool,
+    /// Set while the value is lent as a borrow to an active call. A store of a borrowed value panics.
+    pub borrowed: bool,
+    /// Code index of the site that made this value immutable, or `NO_ORIGIN` while it is mutable.
+    pub immutable_origin: u32
 }
 
 impl ObjectHeader {
     pub fn new(kind: ObjectKind) -> ObjectHeader {
-        ObjectHeader { kind, marked: false }
+        ObjectHeader { kind, marked: false, immutable: false, borrowed: false, immutable_origin: NO_ORIGIN }
     }
 }
 
@@ -135,6 +185,44 @@ impl Object {
     }
 
     #[inline]
+    pub fn is_immutable(&self) -> bool {
+        unsafe { (*self.as_header_ptr()).immutable }
+    }
+
+    #[inline]
+    pub fn set_immutable(&self, origin: u32) {
+        let header = unsafe { &mut *self.as_header_ptr() };
+        header.immutable = true;
+        header.immutable_origin = origin;
+    }
+
+    #[inline]
+    pub fn set_mutable(&self) {
+        let header = unsafe { &mut *self.as_header_ptr() };
+        header.immutable = false;
+        header.immutable_origin = NO_ORIGIN;
+    }
+
+    /// The code index of the site that made this value immutable, if one was recorded.
+    #[inline]
+    pub fn immutable_origin(&self) -> Option<u32> {
+        match unsafe { (*self.as_header_ptr()).immutable_origin } {
+            NO_ORIGIN => None,
+            origin => Some(origin)
+        }
+    }
+
+    #[inline]
+    pub fn is_borrowed(&self) -> bool {
+        unsafe { (*self.as_header_ptr()).borrowed }
+    }
+
+    #[inline]
+    pub fn set_borrowed(&self, value: bool) {
+        unsafe { (*self.as_header_ptr()).borrowed = value; }
+    }
+
+    #[inline]
     pub fn as_string(&self) -> &String {
         unsafe { &(*self.as_string_ptr()).value }
     }
@@ -196,17 +284,27 @@ pub struct ObjFn {
     pub name: *mut ObjString,
     pub arity: u8,
     pub ip_start: usize,
-    pub upvalues: Vec<UpvalueLocation>
+    pub upvalues: Vec<UpvalueLocation>,
+    /// One bit per parameter, set where the parameter lets its argument escape: it takes it by
+    /// `*mut` or persists it. Parameters past 63 are read as borrowing.
+    pub escape_mask: u64
 }
 
 impl ObjFn {
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>) -> ObjFn {
+    /// Whether the parameter at `position` lets its argument escape, as opposed to borrowing it.
+    #[inline]
+    pub fn escapes(&self, position: usize) -> bool {
+        position < 64 && self.escape_mask & (1u64 << position) != 0
+    }
+
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
             arity,
             ip_start,
-            upvalues
+            upvalues,
+            escape_mask
         }
     }
 }
@@ -270,12 +368,19 @@ pub struct ObjClosure {
     pub name: *mut ObjString,
     pub arity: u8,
     pub upvalue_count: u8,
-    pub ip_start: usize
+    pub ip_start: usize,
+    pub escape_mask: u64
 }
 
 impl ObjClosure {
     /// Byte offset of the trailing upvalue array.
     const UPVALUES_OFFSET: usize = mem::size_of::<ObjClosure>();
+
+    /// Whether the parameter at `position` lets its argument escape, as opposed to borrowing it.
+    #[inline]
+    pub fn escapes(&self, position: usize) -> bool {
+        position < 64 && self.escape_mask & (1u64 << position) != 0
+    }
 
     #[inline]
     pub fn alloc_size(count: usize) -> usize {

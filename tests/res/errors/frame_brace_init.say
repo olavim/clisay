@@ -11,3 +11,4 @@ A() { x: 5 };
 // 3 |   init() { say y = 1 + true; }
 //   |                        ^^^^
 // 	at A.init (frame_brace_init.say:3)
+// 	at script (frame_brace_init.say:5)

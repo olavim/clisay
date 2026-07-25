@@ -1,0 +1,10 @@
+// An immutable hole is met by a satisfier that returns an auto-frozen mut value.
+trait Source {
+    req fn read(): opt;
+}
+type File with Source {
+    pub fn read(): opt { say x = mut []; return x; }
+    init() {}
+}
+say f = File();
+print("ok"); // expect: ok

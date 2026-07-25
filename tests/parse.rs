@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, ObligationRule, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Capability, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, ObligationRule, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 fn top_stmts(ast: &Ast) -> Vec<AstId<Stmt>> {
@@ -43,11 +43,83 @@ fn fn_return_shapes() {
 
 #[test]
 fn param_markers() {
-    let ast = parse("fn f(x, mut y, z?, mut w?) {}");
+    let ast = parse("fn f(x, y?) {}");
     let stmts = top_stmts(&ast);
     let params = &nth_fn(&ast, &stmts, 0).params;
-    let flags: Vec<(bool, bool)> = params.iter().map(|p| (p.mutable, p.nullable)).collect();
-    assert_eq!(flags, vec![(false, false), (true, false), (false, true), (true, true)]);
+    let flags: Vec<bool> = params.iter().map(|p| p.nullable).collect();
+    assert_eq!(flags, vec![false, true]);
+}
+
+#[test]
+fn param_capability_marker() {
+    // `mut` / `*mut` lead the clause, ahead of the obligation atoms.
+    let ast = parse("fn f(a: mut, b: *mut, c: mut opt) {}");
+    let stmts = top_stmts(&ast);
+    let params = &nth_fn(&ast, &stmts, 0).params;
+    assert_eq!(params[0].clause.capability, Capability::Mut);
+    assert!(params[0].clause.names.is_empty());
+    assert_eq!(params[1].clause.capability, Capability::MoveMut);
+    assert_eq!(params[2].clause.capability, Capability::Mut);
+    assert_eq!(ast.text(params[2].clause.names[0]), "opt");
+}
+
+#[test]
+fn fn_return_capability_marker() {
+    let ast = parse("fn f(): mut opt {}");
+    let decl = nth_fn(&ast, &top_stmts(&ast), 0);
+    assert_eq!(decl.clause.capability, Capability::Mut);
+    assert_eq!(ast.text(decl.clause.names[0]), "opt");
+}
+
+#[test]
+fn capability_marker_position_is_free() {
+    // Like `void`, the capability atom composes with obligations in any order.
+    for src in ["fn f(x: mut opt) {}", "fn f(x: opt mut) {}"] {
+        let ast = parse(src);
+        let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
+        assert_eq!(param.clause.capability, Capability::Mut, "{src}");
+        assert_eq!(ast.text(param.clause.names[0]), "opt", "{src}");
+    }
+
+    let ast = parse("fn f(x: opt *mut fails) {}");
+    let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
+    assert_eq!(param.clause.capability, Capability::MoveMut);
+    let names: Vec<&str> = param.clause.names.iter().map(|n| ast.text(*n)).collect();
+    assert_eq!(names, vec!["opt", "fails"]);
+}
+
+#[test]
+fn value_mut_construction() {
+    // `mut` before a literal or constructor wraps the construction in a value-mut marker.
+    let dict = parse("say d = mut {x: 1};");
+    let Expr::Mut(inner) = dict.get(&say_value(&dict)) else { panic!("dict not value-mut") };
+    assert!(matches!(dict.get(inner), Expr::Literal(Literal::Dict(_))));
+
+    let array = parse("say a = mut [1, 2];");
+    let Expr::Mut(inner) = array.get(&say_value(&array)) else { panic!("array not value-mut") };
+    assert!(matches!(array.get(inner), Expr::Literal(Literal::Array(_))));
+
+    let ctor = parse("say u = mut User();");
+    let Expr::Mut(inner) = ctor.get(&say_value(&ctor)) else { panic!("ctor not value-mut") };
+    assert!(matches!(ctor.get(inner), Expr::Call(_, _)));
+}
+
+#[test]
+fn value_mut_wraps_any_operand_optimistically() {
+    // A non-construction operand still parses into the marker, so lowering can name the mistake.
+    let ast = parse("say x = mut (1 + 2);");
+    let Expr::Mut(inner) = ast.get(&say_value(&ast)) else { panic!("not value-mut") };
+    assert!(matches!(ast.get(inner), Expr::Binary(Operator::Add, _, _)));
+}
+
+#[test]
+fn capability_marker_rejections() {
+    // `*mut` is one token, so a space between `*` and `mut` is not the move marker.
+    assert!(try_parse("fn f(x: * mut) {}").is_err());
+    assert!(try_parse("say x: mut;").is_err());
+    assert!(try_parse("type T { a: mut; }").is_err());
+    assert!(try_parse("fn f(x: mut mut) {}").is_err());
+    assert!(try_parse("fn f(x: mut *mut) {}").is_err());
 }
 
 #[test]
@@ -150,7 +222,7 @@ fn container_malformed_insides_get_targeted_errors() {
 
 #[test]
 fn obligation_declaration() {
-    let ast = parse("obligation tainted; obligation parsed: discharge to use Unparsed; obligation borrowed: discharge to escape; obligation held: discharge before drop;");
+    let ast = parse("obligation tainted; obligation parsed: discharge to use Unparsed; obligation borrowed: no persist; obligation held: no drop;");
     let stmts = top_stmts(&ast);
 
     let Stmt::Obligation { name, witness, rule } = ast.get(&stmts[0]) else { panic!("not an obligation") };
@@ -165,16 +237,17 @@ fn obligation_declaration() {
 
     let Stmt::Obligation { witness, rule, .. } = ast.get(&stmts[2]) else { panic!("not an obligation") };
     assert!(witness.is_none());
-    assert_eq!(*rule, ObligationRule::ToEscape);
+    assert_eq!(*rule, ObligationRule::NoPersist);
 
     let Stmt::Obligation { rule, .. } = ast.get(&stmts[3]) else { panic!("not an obligation") };
-    assert_eq!(*rule, ObligationRule::BeforeDrop);
+    assert_eq!(*rule, ObligationRule::NoDrop);
 }
 
 #[test]
 fn obligation_declaration_rejections() {
-    assert!(try_parse("obligation bad: discharge to escape Row;").is_err());
-    assert!(try_parse("obligation bad: discharge before drop Row;").is_err());
+    assert!(try_parse("obligation bad: discharge to escape;").is_err());
+    assert!(try_parse("obligation bad: discharge before drop;").is_err());
+    assert!(try_parse("obligation bad: no persist Row;").is_err());
     assert!(try_parse("obligation bad: discharge to use 0;").is_err());
     assert!(try_parse("obligation bad: discharge to sink;").is_err());
     assert!(try_parse("obligation bad: no use;").is_err());

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::core::objects::TypeMember;
 use crate::middle::hir::{HirExpr, HirId, Symbol};
 
-use super::{Checker, Flow, TypeTag, Typed, Violation};
+use super::{Mutability, Checker, Flow, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
     pub(super) fn assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
@@ -33,6 +33,12 @@ impl<'a> Checker<'a> {
                     self.check_into_slot(&typed.flow, &owed, name, lhs)?;
                     self.locals[i].assigned = true;
                     self.locals[i].tag = typed.tag.clone();
+                    // The mutability follows the value, so a rebind takes the new value's.
+                    self.locals[i].mutability = typed.mutability;
+                    // A rebind installs a fresh value, so any earlier move of the slot is undone.
+                    self.locals[i].move_site = None;
+                    // The slot takes on whatever sources the new value reaches.
+                    self.locals[i].provenance = self.provenance_of(rhs);
                     self.reset_narrowing(i, matches!(typed.flow, Flow::Clean));
                 } else if self.sigs.types_by_name.contains_key(&name) {
                     // A type binding names a declaration, not a reassignable slot.
@@ -45,7 +51,19 @@ impl<'a> Checker<'a> {
             HirExpr::Index(target, member, is_dot) => self.assign_index(target, member, *is_dot, &typed.flow, lhs, rhs)?,
             _ => {},
         }
+        // A store hands the value to a new holder, so a mutable right side moves.
+        self.move_source(rhs);
         Ok(typed)
+    }
+
+    /// Records that a local receiving a stored value takes on that value's sources, so the value
+    /// flows back to them when the local dies. A non-local receiver is left alone; the value is
+    /// still moved either way.
+    fn attach_field_provenance(&mut self, target: &HirId<HirExpr>, rhs: &HirId<HirExpr>) {
+        let HirExpr::Identifier(name) = self.hir.get(target) else { return };
+        let Some(i) = self.frame_index_of(*name) else { return };
+        let sources = self.source_indices(rhs);
+        self.locals[i].provenance.extend(sources);
     }
 
     /// Checks an assignment `target.member = value`.
@@ -57,16 +75,52 @@ impl<'a> Checker<'a> {
             }
             return Ok(());
         }
-        // A bracket index `obj[expr] = ...` is the dynamic data path. It bypasses the field rules.
+
+        // Storing into a local's field or element gives that local the value's sources, so the
+        // value flows back to them when it dies.
+        self.attach_field_provenance(target, rhs);
+
+        // An immutable value rejects mutation at compile time.
+        if let Some(i) = self.immutable_target(target) {
+            return Err(self.immutable_mutation_error(target, i));
+        }
+
+        // A bracket index `obj[expr] = ...` is the dynamic data path. It bypasses the field rules,
+        // but writing through the base still captures it, so an enclosing binding it names may move.
         if !is_dot {
+            if let HirExpr::Identifier(name) = self.hir.get(target) {
+                if self.frame_index_of(*name).is_none() {
+                    self.capture_enclosing(*name, target);
+                }
+            }
             return Ok(());
         }
+
         let receiver = self.receiver(target)?;
         let Some(field) = self.string_member(member) else { return Ok(()) };
         if let TypeTag::Concrete(type_name) = &receiver.tag {
             self.assign_field_external(*type_name, field, value, lhs, rhs)?;
         }
         Ok(())
+    }
+
+    /// The frame slot of a mutation target that is a provably immutable local, or `None`.
+    fn immutable_target(&self, target: &HirId<HirExpr>) -> Option<usize> {
+        let HirExpr::Identifier(name) = self.hir.get(target) else { return None };
+        let i = self.frame_index_of(*name)?;
+        (self.locals[i].mutability == Mutability::Immutable).then_some(i)
+    }
+
+    /// The compile error for mutating an immutable value. A read-only parameter points at the
+    /// `mut` fix. Any other immutable value reports that it cannot be mutated.
+    fn immutable_mutation_error(&self, target: &HirId<HirExpr>, i: usize) -> anyhow::Error {
+        let name = self.hir.text(self.locals[i].name);
+        if self.locals[i].param {
+            return self.error_help(
+                format!("cannot mutate `{name}`, a read-only parameter"), target,
+                format!("declare the parameter `mut` to let `{name}` be mutated"));
+        }
+        self.error_labeled("cannot mutate an immutable value".to_string(), target, format!("`{name}` is immutable"))
     }
 
     /// Checks an assignment `this.field = value`.
@@ -76,9 +130,11 @@ impl<'a> Checker<'a> {
             Some(layout) => (matches!(layout.members.get(&field), Some(TypeMember::Field(_))), layout.is_nullable(field), layout.is_mutable(field)),
             None => return Ok(()),
         };
+
         if !is_field {
             return Ok(());
         }
+
         if !mutable {
             if !self.seal.in_init() {
                 return Err(self.immutable_field_error(type_name, field, lhs));
@@ -90,6 +146,7 @@ impl<'a> Checker<'a> {
                 });
             }
         }
+
         self.check_into_field(flow, nullable, field, rhs)?;
         self.seal.mark_assigned(field, *lhs);
         Ok(())
@@ -145,7 +202,7 @@ impl<'a> Checker<'a> {
 
     /// Checks a value moving into a field per the field's nullability.
     fn check_into_field(&mut self, flow: &Flow, field_nullable: bool, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        // Storing into a field persists the value, which a `discharge to escape` value forbids.
+        // Storing into a field persists the value, which a `no persist` value forbids.
         self.reject_escape(flow, node)?;
         let text = self.hir.text(field);
         let void = || format!("Cannot assign a void result to field '{text}'; the call returns no value");

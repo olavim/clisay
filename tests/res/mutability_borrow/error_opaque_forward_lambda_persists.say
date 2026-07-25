@@ -1,0 +1,6 @@
+// A `no persist` parameter's borrow forwarded to a persisting lambda traps at the store site.
+obligation borrowed: no persist;
+say sink = mut [];
+fn each(xs: borrowed, cb) { cb(xs); }
+say m = mut [1, 2];
+each(m, v => sink.push(v)); // error: cannot persist a borrowed value

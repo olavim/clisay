@@ -2,7 +2,7 @@ use anyhow::bail;
 
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
-use crate::core::objects::{NativeFn, ObjNativeFn, ObjString};
+use crate::core::objects::{NativeFn, ObjNativeFn, ObjString, IMMUTABLE_MUTATION, PERSISTED_BORROW};
 use crate::core::value::{Value, ValueKind};
 
 use super::NativeType;
@@ -37,6 +37,9 @@ impl NativeArray {
     }
 
     fn set(host: &mut dyn Host, target: Value, index: Value, value: Value) -> Result<(), anyhow::Error> {
+        if value.is_borrowed() {
+            bail!("{PERSISTED_BORROW}");
+        }
         let array = unsafe { &mut *target.as_object().as_array_ptr() };
         let i = Self::checked_index(index, array.values.len())?;
         array.values[i] = value;
@@ -51,6 +54,12 @@ impl NativeArray {
     }
 
     fn push(host: &mut dyn Host, target: Value, value: Value) -> Result<(), anyhow::Error> {
+        if target.as_object().is_immutable() {
+            bail!("{IMMUTABLE_MUTATION}");
+        }
+        if value.is_borrowed() {
+            bail!("{PERSISTED_BORROW}");
+        }
         let array = unsafe { &mut *target.as_object().as_array_ptr() };
         array.values.push(value);
         host.push(Value::NULL);

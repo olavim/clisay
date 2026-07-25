@@ -3,7 +3,7 @@ trait Mover {
     req fn onMove(x: opt);
 }
 type Player with Mover {
-    pub fn onMove(x) { } // error: Method 'onMove' satisfies 'req fn onMove' but parameter 1 does not accept 'opt', which the requirement passes
+    pub fn onMove(x) { } // error: parameter rejects an obligation the trait passes
     init() {}
 }
 say p = Player();

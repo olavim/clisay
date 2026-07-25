@@ -1,0 +1,10 @@
+say x = 1;
+say y = mut x;
+// error(full):
+// error: invalid operand of `mut`
+//  --> help_mut_nonconstruction.say:2:9
+//   |
+// 1 | say x = 1;
+// 2 | say y = mut x;
+//   |         ^^^^^
+//   = help: `mut` can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`

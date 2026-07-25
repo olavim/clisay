@@ -23,7 +23,10 @@ impl<'a> Compiler<'a> {
             HirExpr::Unary(op, operand) => self.unary_expression(*op, operand)?,
             HirExpr::Binary(op, left, right) => self.binary_expression(*op, left, right)?,
             HirExpr::Assign(left, right) => self.compile_assign(left, right, false)?,
-            HirExpr::Call(callee, args) => self.call_expression(callee, args)?,
+            HirExpr::Call(callee, args) => {
+                self.call_expression(callee, args)?;
+                self.deep_seal(expr);
+            },
             HirExpr::Index(target, member, is_dot) => self.index(target, member, *is_dot, IndexOp::Load)?,
             HirExpr::Literal(lit) => self.literal(expr, lit)?,
             HirExpr::Identifier(_) => {
@@ -37,6 +40,12 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::Is(idx), expr);
             },
             HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
+            // A `mut` construction is built immutable like any other, then opted out with `Mut`. This
+            // rides a generic call, so `mut t()` needs no static knowledge that `t` is a type.
+            HirExpr::Mut(inner) => {
+                self.expression(inner)?;
+                self.emit(Inst::Mut, expr);
+            },
             HirExpr::Has(left, matcher) => self.compile_has(left, matcher, expr)?,
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
@@ -245,6 +254,7 @@ impl<'a> Compiler<'a> {
         let field_ids = self.bindings.construct_fields(expr).to_vec();
         let fields_idx = self.ir.add_construct_fields(field_ids)?;
         self.emit(Inst::Construct(fields_idx, args.len() as u8), expr);
+        self.deep_seal(expr);
         Ok(())
     }
 
@@ -385,7 +395,9 @@ impl<'a> Compiler<'a> {
             }
             let name_ref = self.gc.intern(name);
             let idx = self.ir.add_constant(Value::from(name_ref))?;
+            let marked = self.emit_mark_borrow(callee, args)?;
             self.emit(Inst::Invoke(idx, args.len() as u8), callee);
+            self.emit_release_borrow(marked, callee);
             return Ok(());
         }
 
@@ -394,9 +406,38 @@ impl<'a> Compiler<'a> {
         for arg in args {
             self.expression(arg)?;
         }
+
+        // An opaque call that must keep an argument asserts the callee borrows it, not consumes it.
+        if let Some(positions) = self.barriers.survive(callee) {
+            let entries = positions.iter()
+                .map(|&p| (p, self.hir.pos(&args[p as usize]).clone()))
+                .collect();
+            let idx = self.ir.add_survive_positions(entries)?;
+            self.emit(Inst::AssertBorrow(args.len() as u8, idx), callee);
+        }
+
+        let marked = self.emit_mark_borrow(callee, args)?;
         self.emit(Inst::Call(args.len() as u8), callee);
+        self.emit_release_borrow(marked, callee);
 
         Ok(())
+    }
+
+    /// Emits a `MARK_BORROW` before a call when it lends a mutable argument. Returns the count to
+    /// release after the call.
+    fn emit_mark_borrow(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<u8, anyhow::Error> {
+        let Some(positions) = self.barriers.borrow_marks(callee) else { return Ok(0) };
+        let entries: Vec<_> = positions.iter().map(|&p| (p, self.hir.pos(&args[p as usize]).clone())).collect();
+        let count = entries.len() as u8;
+        let idx = self.ir.add_survive_positions(entries)?;
+        self.emit(Inst::MarkBorrow(args.len() as u8, idx), callee);
+        Ok(count)
+    }
+
+    fn emit_release_borrow(&mut self, count: u8, callee: &HirId<HirExpr>) {
+        if count > 0 {
+            self.emit(Inst::ReleaseBorrow(count), callee);
+        }
     }
 
     /// If `callee` is `recv.name` where `recv` is not `this` and `name` is
@@ -415,9 +456,25 @@ impl<'a> Compiler<'a> {
     }
 
     fn lambda(&mut self, expr: &HirId<HirExpr>, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
-        let const_idx = self.function(expr, decl, kind)?;
+        let persist_mask = self.lambda_persist_mask(expr, decl.params.len());
+        let const_idx = self.function(expr, decl, kind, persist_mask)?;
         self.emit(Inst::PushClosure(const_idx), expr);
         return Ok(());
+    }
+
+    /// Emits a runtime check that an immutable container holds no mutable element, when the checker
+    /// flagged the literal for it.
+    fn seal_check(&mut self, expr: &HirId<HirExpr>) {
+        if self.barriers.needs_seal_check(expr) {
+            self.emit(Inst::SealCheck, expr);
+        }
+    }
+
+    /// Deep-freezes a plain construction's fields once it is sealed, when the checker flagged it.
+    fn deep_seal(&mut self, expr: &HirId<HirExpr>) {
+        if self.barriers.needs_deep_seal(expr) {
+            self.emit(Inst::DeepSeal, expr);
+        }
     }
 
     pub (super) fn literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral) -> Result<(), anyhow::Error> {
@@ -439,6 +496,7 @@ impl<'a> Compiler<'a> {
                     self.expression(element)?;
                 }
                 self.emit(Inst::Array(elements.len() as u8), expr);
+                self.seal_check(expr);
             },
             HirLiteral::Dict(pairs) => {
                 for (key, value) in pairs {
@@ -446,6 +504,7 @@ impl<'a> Compiler<'a> {
                     self.expression(value)?;
                 }
                 self.emit(Inst::Dict(pairs.len() as u8), expr);
+                self.seal_check(expr);
             },
             HirLiteral::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };

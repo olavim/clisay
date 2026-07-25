@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 
-pub use crate::frontend::ast::{ObligationRule, ReturnShape, Symbol};
+pub use crate::frontend::ast::{Capability, ObligationRule, ReturnShape, Symbol};
 use crate::frontend::lex::{SourcePosition, TokenType};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -99,6 +99,8 @@ pub enum HirExpr {
     /// Brace construction `C(args) { field: value, ... }`: the callee type expression, the
     /// `init` args, then the brace field initializers.
     Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
+    /// A `mut`-minted construction (`mut {}`, `mut []`, `mut Ctor()`).
+    Mut(HirId<HirExpr>),
     This,
     /// Coalesce `a ?? b`: discharges `a`'s obligation set, yielding `a` when it is clean, else `b`.
     /// Short-circuit lowering is deferred to codegen.
@@ -162,6 +164,17 @@ impl HirMatcher {
         out
     }
 
+    /// Whether this matcher accepts every value, so a guardless arm using it is a catch-all.
+    pub fn is_irrefutable(&self) -> bool {
+        match self {
+            HirMatcher::Wildcard | HirMatcher::Binder(_) => true,
+            HirMatcher::As(_, inner) => inner.is_irrefutable(),
+            HirMatcher::And(parts) => parts.iter().all(HirMatcher::is_irrefutable),
+            HirMatcher::Or(alternatives) => alternatives.iter().any(HirMatcher::is_irrefutable),
+            _ => false,
+        }
+    }
+
     fn collect_binders(&self, out: &mut Vec<Symbol>) {
         match self {
             HirMatcher::Wildcard | HirMatcher::Literal(_) => {},
@@ -186,9 +199,11 @@ impl HirMatcher {
 /// A slot's lowered `:` clause.
 #[derive(Default, Clone)]
 pub struct HirSlotClause {
+    pub capability: Capability,
     pub names: Vec<Symbol>,
     pub container: bool,
     pub void: bool,
+    pub pos: Option<SourcePosition>,
 }
 
 pub struct HirFieldInit {
@@ -205,6 +220,8 @@ pub struct HirFieldInit {
 /// nullability and mutability markers (`fn f(mut x?)`).
 pub struct HirParam {
     pub name: HirId<HirExpr>,
+    /// The `name[: clause]` span.
+    pub pos: SourcePosition,
     pub nullable: bool,
     pub mutable: bool,
     pub clause: HirSlotClause,
@@ -212,6 +229,8 @@ pub struct HirParam {
 
 pub struct HirFnDecl {
     pub name: Symbol,
+    /// The `name(params): clause` signature span.
+    pub sig_pos: SourcePosition,
     pub params: Vec<HirParam>,
     pub body: HirId<HirExpr>,
     /// The declared return shape (the postfix marker after the parameter list).
@@ -229,10 +248,20 @@ impl HirFnDecl {
 /// A `req fn` hole's obligation signature: the contract a composer's satisfying method must meet.
 pub struct HirReqFn {
     pub name: Symbol,
-    /// What each parameter passes in. A satisfier must accept at least these obligations.
-    pub param_clauses: Vec<HirSlotClause>,
+    /// The trait that declares this hole.
+    pub trait_name: Symbol,
+    /// The `name(params): clause` span in the trait.
+    pub pos: SourcePosition,
+    /// Each parameter's clause and `name: clause` span.
+    pub params: Vec<HirReqParam>,
     /// What the return may carry. A satisfier may promise fewer obligations.
     pub ret: HirSlotClause,
+}
+
+/// A `req fn` parameter hole.
+pub struct HirReqParam {
+    pub pos: SourcePosition,
+    pub clause: HirSlotClause,
 }
 
 /// A `catch (param) { … }` clause of a try statement.
@@ -415,6 +444,14 @@ impl Hir {
         HirId { id: self.nodes.len() - 1, _marker: PhantomData }
     }
 
+    /// Every lambda literal's expression id.
+    pub(crate) fn lambda_ids(&self) -> Vec<HirId<HirExpr>> {
+        self.nodes.iter().enumerate()
+            .filter(|(_, n)| matches!(&n.kind, HirNodeKind::Expr(HirExpr::Literal(HirLiteral::Lambda(_)))))
+            .map(|(i, _)| HirId { id: i, _marker: PhantomData })
+            .collect()
+    }
+
     /// The binder names a condition makes live in its true branch, in store order. `&&` unions
     /// both sides. An `||` contributes a name only when both sides bind the identical set.
     pub fn condition_binders(&self, cond: &HirId<HirExpr>) -> Vec<Symbol> {
@@ -435,6 +472,17 @@ impl Hir {
         }
     }
 
+    /// The child expressions a value's ownership flows through.
+    pub(crate) fn ownership_children(&self, value: &HirId<HirExpr>) -> Vec<HirId<HirExpr>> {
+        match self.get(value) {
+            HirExpr::Mut(x) | HirExpr::Assert(x) | HirExpr::Propagate(x) => vec![*x],
+            HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r) => vec![*l, *r],
+            HirExpr::Literal(HirLiteral::Array(elems)) => elems.clone(),
+            HirExpr::Literal(HirLiteral::Dict(pairs)) => pairs.iter().flat_map(|(k, v)| [*k, *v]).collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// Whether every path through a function body ends in a `return` or `throw`.
     pub(crate) fn definitely_returns(&self, body: &HirId<HirExpr>) -> bool {
         match self.get(body) {
@@ -443,7 +491,7 @@ impl Hir {
         }
     }
 
-    fn stmt_returns(&self, stmt: &HirId<HirStmt>) -> bool {
+    pub(crate) fn stmt_returns(&self, stmt: &HirId<HirStmt>) -> bool {
         match self.get(stmt) {
             HirStmt::Return(_) | HirStmt::Throw(_) => true,
             HirStmt::Block(body) => self.definitely_returns(body),
@@ -455,6 +503,12 @@ impl Hir {
                     return true;
                 }
                 self.definitely_returns(body) && catch.as_ref().map_or(true, |c| self.definitely_returns(&c.body))
+            },
+            // A match returns on every path when it cannot fall through: some guardless arm is a
+            // catch-all, and every arm returns.
+            HirStmt::Match(_, arms) => {
+                arms.iter().any(|a| a.guard.is_none() && a.matcher.is_irrefutable())
+                    && arms.iter().all(|a| self.definitely_returns(&a.body))
             },
             _ => false,
         }

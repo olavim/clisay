@@ -1,0 +1,4 @@
+// A field built mutable in init is readable after the plain construction freezes it.
+type L { pub data; init() { this.data = mut [0]; } }
+say x = L();
+print(x.data[0]); // expect: 0

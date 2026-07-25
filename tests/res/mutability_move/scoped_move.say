@@ -1,0 +1,20 @@
+// A block-local that dies still owning a moved value returns it to its source.
+say a = mut [1];
+{ say b = a; }
+print(a[0]); // expect: 1
+
+// @split
+// The return follows the provenance chain through nested scopes.
+say a = mut [1];
+{
+  say b = a;
+  { say c = b; }
+  print(b[0]); // expect: 1
+}
+print(a[0]); // expect: 1
+
+// @split
+// Rebinding the source before the block ends keeps the new value; the return is suppressed.
+say mut a = mut [1];
+{ say b = a; a = mut [2]; }
+print(a[0]); // expect: 2

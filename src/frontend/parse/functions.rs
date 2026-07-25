@@ -5,20 +5,23 @@ use super::*;
 impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub(super) fn parse_fn(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Fn)?.pos.clone();
+        let name_pos = self.tokens.peek(0).pos.clone();
         let name = self.parse_identifier()?;
         let name = self.ast.intern(&name);
-        let fn_decl = self.parse_fn_decl(name)?;
+        let fn_decl = self.parse_fn_decl(name, name_pos)?;
         Ok(self.node_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    pub(super) fn parse_fn_decl(&mut self, name: Symbol) -> Result<FnDecl, anyhow::Error> {
+    pub(super) fn parse_fn_decl(&mut self, name: Symbol, name_pos: SourcePosition) -> Result<FnDecl, anyhow::Error> {
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
         let ret = self.parse_return_shape();
         let clause = self.parse_slot_clause(SlotKind::Return)?;
+        let sig_pos = name_pos.to(&self.tokens.previous().pos);
         let body = self.parse_block()?;
         Ok(FnDecl {
             name,
+            sig_pos,
             params,
             body,
             ret,
@@ -36,6 +39,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let name = self.init_name();
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
+        let sig_pos = pos.to(&self.tokens.previous().pos);
         let open = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
 
         let stmts = self.parse_stmts()?;
@@ -43,11 +47,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let body = self.node_expr(Expr::Block(stmts), pos.clone());
         // An `init` takes no return marker. It produces no value.
-        let fn_decl = FnDecl { name, params, body, ret: ReturnShape::Void, clause: SlotClause::default() };
+        let fn_decl = FnDecl { name, sig_pos, params, body, ret: ReturnShape::Void, clause: SlotClause::default() };
         Ok(self.node_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    /// Parses a parameter list up to `end_token`. Each parameter is `[mut] name [?]`.
+    /// Parses a parameter list up to `end_token`. Each parameter is `name [?] [: clause]`.
     pub(super) fn parse_params(&mut self, end_token: TokenType) -> Result<Vec<Param>, anyhow::Error> {
         let params = match self.tokens.next_if(end_token) {
             Some(_) => Vec::new(),
@@ -57,11 +61,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     if params.len() > 0 {
                         self.tokens.expect(TokenType::Comma)?;
                     }
-                    let mutable = self.parse_mut();
+                    let start = self.tokens.peek(0).pos.clone();
                     let name = self.parse_identifier_expr()?;
                     let nullable = self.parse_nullable();
                     let clause = self.parse_slot_clause(SlotKind::Param)?;
-                    params.push(Param { name, nullable, mutable, clause });
+                    let pos = start.to(&self.tokens.previous().pos);
+                    params.push(Param { name, pos, nullable, mutable: false, clause });
                 }
                 self.tokens.expect(end_token)?;
                 params

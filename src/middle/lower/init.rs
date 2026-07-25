@@ -77,7 +77,7 @@ impl<'a> Lowerer<'a> {
 
     fn make_init_fn(&mut self, name: Symbol, params: Vec<HirParam>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
         let body = self.hir.add(HirExpr::Block(body), pos.clone());
-        let fn_decl = HirFnDecl { name, params, body, ret: ReturnShape::NonNull, clause: HirSlotClause::default() };
+        let fn_decl = HirFnDecl { name, sig_pos: pos.clone(), params, body, ret: ReturnShape::NonNull, clause: HirSlotClause::default() };
         self.hir.add(HirStmt::Fn(fn_decl), pos.clone())
     }
 }

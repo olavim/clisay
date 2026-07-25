@@ -1,0 +1,4 @@
+// An unmarked parameter is read-only, so mutating it in place is rejected in the callee's body.
+fn store(cfg) { cfg["k"] = 1; } // error: cannot mutate `cfg`, a read-only parameter
+say m = mut {};
+store(m);

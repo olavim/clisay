@@ -1,0 +1,2 @@
+say x = 1;
+say y = mut x; // error: invalid operand of `mut`

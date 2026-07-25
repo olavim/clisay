@@ -1,0 +1,13 @@
+type Sink { pub mut item; init() { this.item = 0; } fn keep(x) { this.item = x; } }
+fn make(): mut { return mut {}; }
+say s = Sink();
+say m = make();
+s.keep(m);
+// error(full):
+// error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+//  --> mutable_into_immutable_param.say:5:8
+//   |
+// 5 | s.keep(m);
+//   | ------ ^ 'm' is mutable
+//   | |
+//   | `keep` keeps its argument

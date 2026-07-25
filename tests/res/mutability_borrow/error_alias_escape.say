@@ -1,0 +1,8 @@
+// Escape is transitive: `outer` forwards its argument to `inner`, which returns it, so the call is rejected.
+fn inner(y)! { return y; }
+fn outer(x) {
+    say alias = x;
+    inner(alias);
+}
+say a = mut [1, 2];
+outer(a); // error: 'a' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'

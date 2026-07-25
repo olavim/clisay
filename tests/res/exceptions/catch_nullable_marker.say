@@ -1,0 +1,6 @@
+// A catch binding accepts a nullable marker, matching the parameter surface.
+try {
+    throw "boom";
+} catch (e?) {
+    print("caught"); // expect: caught
+}

@@ -82,6 +82,9 @@ pub enum Expr {
     Handle(AstId<Expr>, Symbol, AstId<Expr>),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(AstId<Expr>),
+    /// Value mutability minted at a construction: `mut {}`, `mut []`, `mut Ctor()`.
+    /// Not an actual expression, but parsed as one for mechanical convenience.
+    Mut(AstId<Expr>),
     /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean.
     Has(AstId<Expr>, AstId<Matcher>),
     /// The `scrutinee ~ matcher` one-liner. Yields a boolean and, on success, publishes the
@@ -132,12 +135,39 @@ pub enum Matcher {
     And(Vec<AstId<Matcher>>),
 }
 
+/// The value-mutability capability leading a slot clause.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Capability {
+    /// An immutable value.
+    #[default]
+    None,
+    /// `mut`: a borrowed mutable value.
+    Mut,
+    /// `*mut`: a moved mutable value.
+    MoveMut,
+}
+
+impl Capability {
+    /// Whether the marker grants mutability.
+    pub fn is_mut(self) -> bool {
+        matches!(self, Capability::Mut | Capability::MoveMut)
+    }
+
+    /// Whether the marker consumes its argument, as opposed to borrowing it.
+    pub fn is_move(self) -> bool {
+        matches!(self, Capability::MoveMut)
+    }
+}
+
 /// A parsed `:` clause on a slot (a variable, parameter, field, or return).
 #[derive(Default)]
 pub struct SlotClause {
+    pub capability: Capability,
     pub names: Vec<Symbol>,
     pub container: bool,
     pub void: bool,
+    /// The span of each of the clause's atoms.
+    pub pos: Option<SourcePosition>,
 }
 
 pub struct FieldInit {
@@ -151,17 +181,18 @@ pub struct FieldInit {
     pub clause: SlotClause,
 }
 
-/// A function/method/lambda parameter: the bound identifier plus its declared
-/// nullability and mutability markers (`fn f(mut x?)`).
+/// A function/method/lambda parameter.
 pub struct Param {
     pub name: AstId<Expr>,
+    /// The `name[: clause]` span.
+    pub pos: SourcePosition,
     pub nullable: bool,
     pub mutable: bool,
     pub clause: SlotClause,
 }
 
 // TODO: fold into SlotClause
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ReturnShape {
     /// `fn f()!` returns a non-null value.
     NonNull,
@@ -169,12 +200,16 @@ pub enum ReturnShape {
     Nullable,
     /// `fn f()` returns no value.
     Void,
-    /// A lambda, whose return shape is inferred from its body.
+    /// A lambda, whose return shape is inferred from its body. Also the neutral value for a
+    /// context with no declared return, so it is checked against nothing.
+    #[default]
     Inferred,
 }
 
 pub struct FnDecl {
     pub name: Symbol,
+    /// The `name(params): clause` signature span.
+    pub sig_pos: SourcePosition,
     pub params: Vec<Param>,
     pub body: AstId<Expr>,
     pub ret: ReturnShape,
@@ -184,6 +219,8 @@ pub struct FnDecl {
 /// A `req fn f(params): clause;` method hole.
 pub struct ReqFn {
     pub name: Symbol,
+    /// The `name(params): clause` span.
+    pub pos: SourcePosition,
     pub params: Vec<Param>,
     pub ret: ReturnShape,
     pub clause: SlotClause,
@@ -247,8 +284,8 @@ pub struct MatchArm {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ObligationRule {
     ToUse,
-    ToEscape,
-    BeforeDrop,
+    NoPersist,
+    NoDrop,
 }
 
 pub enum Stmt {

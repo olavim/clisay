@@ -1,0 +1,16 @@
+fn mutate(x: mut) { x["k"] = 1; }
+say make = () => { return {}; };
+mutate(make());
+// A plain literal is born immutable. When it crosses a dynamic boundary into a `mut` parameter, the
+// runtime trap points the context caret back at the literal, not a freeze call.
+// error(full):
+// error: cannot mutate an immutable value
+//  --> immutable_born_runtime.say:1:21
+//   |
+// 1 | fn mutate(x: mut) { x["k"] = 1; }
+//   |                     ^ this value is immutable
+// 2 | say make = () => { return {}; };
+//   |                            - value made immutable here
+//   |
+// 	at mutate (immutable_born_runtime.say:1)
+// 	at script (immutable_born_runtime.say:3)

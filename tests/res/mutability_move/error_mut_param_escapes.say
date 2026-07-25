@@ -1,0 +1,5 @@
+// A `mut` parameter is a borrow: persisting its argument into a known container is a compile error.
+say sink = mut [];
+fn borrows(x: mut) { sink.push(x); } // error: cannot persist a borrowed value
+say m = mut [1, 2];
+borrows(m);

@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::core::objects::TypeMember;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt, Symbol};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt, ReturnShape, Symbol};
 
 use super::{Checker, FieldInfo, TypeTag};
 
@@ -126,7 +126,7 @@ impl<'a> Checker<'a> {
     pub(super) fn check_init(&mut self, stmt: &HirId<HirStmt>, type_name: Symbol) -> Result<(), anyhow::Error> {
         let HirStmt::Fn(decl) = self.hir.get(stmt) else { return Ok(()) };
         // An init yields the instance, not a declared value, so its returns are not checked.
-        let saved_return = self.current_return.take();
+        let saved_return = std::mem::replace(&mut self.fn_ctx.return_shape, ReturnShape::Inferred);
         let result = self.with_frame(&decl.params, |c| {
             // Brace-provided fields are assigned before the init body runs.
             let saved_seal = c.seal.enter(c.brace_provided_fields(type_name));
@@ -134,7 +134,7 @@ impl<'a> Checker<'a> {
             c.seal.restore(saved_seal);
             Ok(())
         });
-        self.current_return = saved_return;
+        self.fn_ctx.return_shape = saved_return;
         result
     }
 
@@ -150,7 +150,7 @@ impl<'a> Checker<'a> {
     pub(super) fn lambda(&mut self, decl: &HirFnDecl, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let in_init = self.seal.in_init();
         let outer_seen = self.seal.take_this_seen();
-        self.function(None, decl)?;
+        self.function(None, self.sigs.lambda_writes.get(node), decl)?;
         let captured_this = self.seal.this_seen();
         self.seal.set_this_seen(outer_seen);
         if in_init && captured_this {

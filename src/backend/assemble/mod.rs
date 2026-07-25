@@ -45,7 +45,9 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
             None => match *inst {
                 Inst::Construct(fields_idx, _) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
                 Inst::BarrierGuard(idx) => len += 1 + ir.barrier_allow(idx).names.len(), // count byte + name indices
-                _ => unreachable!("only Construct and BarrierGuard have a List operand"),
+                Inst::AssertBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
+                Inst::MarkBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
+                _ => unreachable!("only Construct, BarrierGuard, AssertBorrow, and MarkBorrow have a List operand"),
             },
         }
     }
@@ -76,7 +78,8 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Add | Subtract | Multiply | Divide | Negate | Not
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
         | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
-        | IsShaped | ArrayLen => {}
+        | IsShaped | ArrayLen
+        | Mut | SealCheck | DeepSeal => {}
 
         Call(b)
         | Array(b)
@@ -85,6 +88,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
         | CloseUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
         | GetField(b) | SetField(b) | SetFieldPop(b)
+        | ReleaseBorrow(b)
         | Is(b) | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
 
         Jump(l)
@@ -119,6 +123,15 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         ArrayMiddle(prefix, suffix) => {
             chunk.write(prefix, pos);
             chunk.write(suffix, pos);
+        }
+
+        AssertBorrow(arg_count, idx) | MarkBorrow(arg_count, idx) => {
+            let positions = ir.survive_positions(idx);
+            chunk.write(arg_count, pos);
+            chunk.write(positions.len() as u8, pos);
+            for (p, arg_pos) in positions {
+                chunk.write(*p, arg_pos);
+            }
         }
 
         Invoke(name, arg_count) => {

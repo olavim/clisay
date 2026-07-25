@@ -77,7 +77,9 @@ pub struct CallFrame {
 pub struct TryFrame {
     origin: *mut CallFrame,
     handler_ip: *const OpCode,
-    stack_start: *mut Value
+    stack_start: *mut Value,
+    /// The borrow-stack depth when the `try` began, restored on an unwind to this handler.
+    borrow_depth: usize
 }
 
 pub struct Vm {
@@ -88,6 +90,8 @@ pub struct Vm {
     pub(crate) stack: Stack<Value, MAX_STACK>,
     frames: CachedStack<CallFrame, MAX_FRAMES>,
     try_frames: Vec<TryFrame>,
+    /// Values marked borrowed for an active call, each with its prior bit for nesting.
+    borrows: Vec<(Value, bool)>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     /// Every registered object witness name. A boundary barrier throws a crossing value when it
@@ -127,6 +131,8 @@ fn build_err_type(gc: &mut Gc) -> *mut ObjType {
     let init = ObjNativeFn::new(gc.intern("Err"), 1, |vm, target, args| {
         let instance = target.as_object().as_instance_ptr();
         unsafe { (*instance).set(0, args[0]) };
+        // An Err is a plain construction, so it hands back an immutable value like any other.
+        target.as_object().set_immutable(vm.code_index());
         vm.push(target);
         Ok(())
     });
@@ -160,6 +166,10 @@ impl Host for Vm {
         self.out.push(text.clone());
         Output::println(text);
     }
+
+    fn code_index(&self) -> u32 {
+        self.current_pos_index()
+    }
 }
 
 impl Vm {
@@ -186,6 +196,7 @@ impl Vm {
             stack: Stack::new(),
             frames: CachedStack::new(),
             try_frames: Vec::new(),
+            borrows: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
             witnesses,
@@ -242,6 +253,12 @@ impl Vm {
             Ok(())
         });
 
+        vm.define_native("freeze", 1, |vm, _target, args| {
+            objects::freeze_value(args[0], vm.code_index());
+            vm.push(args[0]);
+            Ok(())
+        });
+
         let err_name = vm.gc.intern("Err");
         vm.globals.insert(err_name, Value::from(vm.native_types.err));
 
@@ -259,14 +276,54 @@ impl Vm {
 
     fn stringify_frame(&self, frame: &CallFrame, ip: *const OpCode) -> String {
         let name = unsafe { &(*(*frame.closure).name).value };
-        let pos = unsafe {
-            let idx = ip.offset_from(self.chunk.code.as_ptr()) as usize - 1;
-            &self.chunk.code_pos[idx]
-        };
-        format!("\tat {} ({})", name, pos)
+        format!("\tat {} ({})", name, self.pos_at(ip))
+    }
+
+    /// The top-level script frame, shown as the base of a call chain.
+    fn stringify_base(&self, ip: *const OpCode) -> String {
+        format!("\tat script ({})", self.pos_at(ip))
+    }
+
+    /// The code index of the instruction whose opcode sits just before `ip`.
+    fn code_index_at(&self, ip: *const OpCode) -> usize {
+        unsafe { ip.offset_from(self.chunk.code.as_ptr()) as usize - 1 }
+    }
+
+    /// The source position of the instruction whose opcode sits just before `ip`.
+    fn pos_at(&self, ip: *const OpCode) -> &SourcePosition {
+        &self.chunk.code_pos[self.code_index_at(ip)]
     }
 
     fn error(&self, message: impl Into<String>) -> Result<(), anyhow::Error> {
+        self.raise(Diagnostic::new(message, self.get_source_position().clone()))
+    }
+
+    /// A runtime error whose caret carries a label.
+    fn error_labeled(&self, message: impl Into<String>, label: impl Into<String>) -> Result<(), anyhow::Error> {
+        self.raise(Diagnostic::new(message, self.get_source_position().clone()).with_label(label))
+    }
+
+    /// Traps a mutation of an immutable value. The primary caret marks the mutation site, and a
+    /// context caret points back at where the value became immutable when that site is known.
+    fn error_immutable(&self, target: Value) -> Result<(), anyhow::Error> {
+        let mut diagnostic = Diagnostic::new(objects::IMMUTABLE_MUTATION, self.get_source_position().clone())
+            .with_label("this value is immutable");
+        if let Some(origin) = target.as_object().immutable_origin() {
+            let pos = self.chunk.code_pos[origin as usize].clone();
+            diagnostic = diagnostic.with_context_span(pos, "value made immutable here");
+        }
+        self.raise(diagnostic)
+    }
+
+    /// Traps a mutable element landing in an immutable container at construction.
+    fn error_seal(&self) -> Result<(), anyhow::Error> {
+        self.raise(Diagnostic::new(objects::MUTABLE_IN_IMMUTABLE, self.get_source_position().clone())
+            .with_label("this container is immutable")
+            .with_help("an element is mutable; freeze it, or mark the container `mut`"))
+    }
+
+    /// Attaches the call trace to a diagnostic and raises it.
+    fn raise(&self, diagnostic: Diagnostic) -> Result<(), anyhow::Error> {
         // Each frame is paused on one instruction: the current `ip` for the top frame, and each
         // caller's saved `return_ip` for the frames below it. The base frame has no closure.
         let frames: Vec<CallFrame> = self.frames.iter().collect();
@@ -276,13 +333,17 @@ impl Vm {
             lines.push(self.stringify_frame(&frames[i], ip));
             ip = frames[i].return_ip;
         }
+        // Show the top-level script as the base of the chain, but only when a function frame sits
+        // above it. At top level the primary caret already marks the site.
+        if frames.len() > 1 {
+            lines.push(self.stringify_base(ip));
+        }
         let trace = lines.join("\n");
 
-        let pos = self.get_source_position();
         if trace.is_empty() {
-            bail!("{}", Diagnostic::new(message, pos.clone()))
+            bail!("{}", diagnostic)
         }
-        bail!("{}\n{}", Diagnostic::new(message, pos.clone()), trace)
+        bail!("{}", diagnostic.with_trace(trace))
     }
 
     fn intern(&mut self, name: impl Into<String>) -> *mut ObjString {
@@ -327,6 +388,12 @@ impl Vm {
             value.mark(&mut self.gc);
         }
 
+        // A borrowed value may leave the stack while the call runs, so keep it alive until its
+        // matching release restores the borrowed bit on its header.
+        for (value, _) in &self.borrows {
+            value.mark(&mut self.gc);
+        }
+
         for entry in self.call_cache.iter_mut() {
             entry.callee = Value::NULL;
         }
@@ -342,10 +409,12 @@ impl Vm {
     }
 
     pub fn get_source_position(&self) -> &SourcePosition {
-        unsafe { 
-            let idx = self.ip.offset_from(self.chunk.code.as_ptr()) as usize - 1;
-            &self.chunk.code_pos[idx]
-        }
+        self.pos_at(self.ip)
+    }
+
+    /// The code index of the instruction currently executing, for recording where a value was frozen.
+    pub fn current_pos_index(&self) -> u32 {
+        self.code_index_at(self.ip) as u32
     }
 
 }

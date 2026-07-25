@@ -1,0 +1,33 @@
+// A loop body that only reads a value moves nothing, so it stays live across iterations.
+say mut n = 0;
+say a = mut [1];
+while n < 3 {
+  say x = a[0];
+  n = n + 1;
+}
+print(a[0]); // expect: 1
+
+// @split
+// A loop that moves then rebinds its source each pass is move-neutral, so it is accepted.
+fn consume(x: *mut) {}
+say mut n = 0;
+say mut a = mut [1];
+while n < 3 {
+  consume(a);
+  a = mut [2];
+  n = n + 1;
+}
+print(a[0]); // expect: 2
+
+// @split
+// Rebinding at the top of the body before the move makes each pass consume a fresh value, so the
+// move is not a cross-iteration use.
+fn consume(x: *mut) {}
+say mut n = 0;
+say mut a = mut [1];
+while n < 3 {
+  a = mut [2];
+  consume(a);
+  n = n + 1;
+}
+print("ok"); // expect: ok

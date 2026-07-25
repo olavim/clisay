@@ -9,7 +9,7 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
-use crate::ast::{MatchArm, Ast, AstId, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
+use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
     BinOp, Hir, HirSlotClause, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
 };
@@ -191,6 +191,7 @@ impl<'a> Lowerer<'a> {
                 }
                 HirExpr::Construct(callee, args, brace)
             },
+            Expr::Mut(inner) => return self.lower_value_mut(expr_id, inner),
             Expr::This => HirExpr::This,
             Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
             Expr::SafeCall(callee, args) => HirExpr::SafeCall(self.expr(callee)?, self.exprs(args)?),
@@ -228,6 +229,16 @@ impl<'a> Lowerer<'a> {
             _ => HirExpr::Binary(lower_binop(op), self.expr(left)?, self.expr(right)?),
         };
         Ok(self.hir.add(kind, pos))
+    }
+
+    fn lower_value_mut(&mut self, node: &AstId<Expr>, inner: &AstId<Expr>) -> Result<HirId<HirExpr>, anyhow::Error> {
+        match self.ast.get(inner) {
+            Expr::Literal(Literal::Array(_)) | Expr::Literal(Literal::Dict(_)) | Expr::Construct(..) | Expr::Call(..) => {
+                let lowered = self.expr(inner)?;
+                Ok(self.hir.add(HirExpr::Mut(lowered), self.ast.pos(node).clone()))
+            },
+            _ => Err(self.error_help_at("invalid operand of `mut`", self.ast.pos(node), "`mut` can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`")),
+        }
     }
 
     fn exprs(&mut self, exprs: &[AstId<Expr>]) -> Result<Vec<HirId<HirExpr>>, anyhow::Error> {
@@ -356,7 +367,13 @@ impl<'a> Lowerer<'a> {
         if marker_nullable && !names.contains(&self.opt) {
             names.push(self.opt);
         }
-        HirSlotClause { names, container: clause.container, void: clause.void }
+        HirSlotClause {
+            capability: clause.capability,
+            names,
+            container: clause.container,
+            void: clause.void,
+            pos: clause.pos.clone()
+        }
     }
 
     pub(super) fn return_clause(&self, decl: &FnDecl) -> (ReturnShape, HirSlotClause) {
@@ -365,7 +382,7 @@ impl<'a> Lowerer<'a> {
             ReturnShape::Void
         } else if clause.names.contains(&self.opt) {
             ReturnShape::Nullable
-        } else if !decl.clause.names.is_empty() {
+        } else if !decl.clause.names.is_empty() || decl.clause.capability != Capability::None {
             ReturnShape::Inferred
         } else {
             decl.ret
@@ -379,6 +396,7 @@ impl<'a> Lowerer<'a> {
             let clause = self.slot_clause(p.nullable, &p.clause);
             Ok(HirParam {
                 name: self.expr(&p.name)?,
+                pos: p.pos.clone(),
                 nullable: clause.names.contains(&self.opt),
                 mutable: p.mutable,
                 clause,
@@ -390,6 +408,7 @@ impl<'a> Lowerer<'a> {
         let (ret, clause) = self.return_clause(decl);
         Ok(HirFnDecl {
             name: decl.name,
+            sig_pos: decl.sig_pos.clone(),
             params: self.params(&decl.params)?,
             body: self.expr(&decl.body)?,
             ret,

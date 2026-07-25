@@ -3,7 +3,7 @@ trait Source {
     req fn read(): opt;
 }
 type File with Source {
-    pub fn read(): opt fails { return Err("x"); } // error: Method 'read' satisfies 'req fn read' but its return owes 'fails', which the requirement does not permit
+    pub fn read(): opt fails { return Err("x"); } // error: return owes an obligation the trait forbids
     init() {}
 }
 print("unreachable");

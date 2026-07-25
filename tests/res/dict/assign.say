@@ -1,4 +1,4 @@
-say d = { a: 1 };
+say d = mut { a: 1 };
 d["a"] = 2;        // overwrite existing key
 print(d["a"]);     // expect: 2
 

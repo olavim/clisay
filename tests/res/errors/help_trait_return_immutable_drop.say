@@ -1,0 +1,18 @@
+trait Source {
+    req fn read(): opt;
+}
+type File with Source {
+    pub fn read(): mut { return mut []; }
+    init() {}
+}
+// error(full):
+// error: return is mutable but trait requires immutable
+//  --> help_trait_return_immutable_drop.say:5:12
+//   |
+// 2 |     req fn read(): opt;
+//   |            ----------- `Source.read` requires an immutable return
+// ...
+// 5 |     pub fn read(): mut { return mut []; }
+//   |            ^^^^^^^^^^^ `File.read` returns a mutable value
+//   |
+//   = help: return an immutable value from `File.read`

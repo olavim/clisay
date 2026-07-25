@@ -1,4 +1,6 @@
-//! Fixed obligation signatures for built-in globals and native-type methods.
+//! Fixed signatures for built-in globals and native-type methods. This is the compile-time view of
+//! the native types whose runtime definitions live in `src/core/native/`. The check pass reads the
+//! obligation and return facts; the escape pass reads the effect facts.
 
 /// The obligation set a native slot ranges over. Builtins touch only `opt` and `fails`.
 #[derive(Clone, Copy)]
@@ -34,16 +36,27 @@ pub enum Container {
     Preserves,
 }
 
-/// A native's per-parameter accepted obligation set, its return, and container preservation.
+/// What a native call does to the values it touches, for the escape and capture analysis. A read-only
+/// call has neither flag set, so a borrowed value handed to it is not written.
+#[derive(Clone, Copy, Default)]
+pub struct Effect {
+    /// Mutates or extends the receiver in place.
+    pub mutates_receiver: bool,
+    /// Persists or mutates an argument, so a value passed in is written.
+    pub writes_args: bool,
+}
+
+/// A native's per-parameter accepted obligation set, its return, container preservation, and effect.
 pub struct NativeSig {
     pub params: &'static [ObSet],
     pub ret: RetSig,
     pub container: Container,
+    pub effect: Effect,
 }
 
 impl NativeSig {
     const fn new(params: &'static [ObSet], ret: RetSig) -> NativeSig {
-        NativeSig { params, ret, container: Container::None }
+        NativeSig { params, ret, container: Container::None, effect: Effect { mutates_receiver: false, writes_args: false } }
     }
 }
 
@@ -56,20 +69,24 @@ pub fn builtin(name: &str) -> Option<NativeSig> {
         "gcHeapSize" => NativeSig::new(&[], RetSig::CLEAN),
         "gcCollect" => NativeSig::new(&[], RetSig::VOID),
         "gcStress" => NativeSig::new(&[ObSet::CLEAN], RetSig::VOID),
+        // `freeze` downgrades its argument to immutable, which writes the value's capability.
+        "freeze" => NativeSig { effect: Effect { mutates_receiver: false, writes_args: true }, ..NativeSig::new(&[ObSet::ANY], RetSig::CLEAN) },
         _ => return None,
     };
     Some(sig)
 }
 
-/// The signature of a native-type method, or `None` when the name is not a native method.
+/// The signature of a native-type method, or `None` when the name is not a native method. Array and
+/// dict methods share one table because native container types are not tracked in the type system,
+/// so a call site cannot tell them apart. Splitting this per type needs native type tags first.
 pub fn native_method(name: &str) -> Option<NativeSig> {
     let sig = match name {
         "length" => NativeSig::new(&[], RetSig::CLEAN),
         "size" => NativeSig::new(&[], RetSig::CLEAN),
         "has" => NativeSig::new(&[ObSet::ANY], RetSig::CLEAN),
-        "remove" => NativeSig::new(&[ObSet::ANY], RetSig::OPT),
+        "remove" => NativeSig { effect: Effect { mutates_receiver: true, writes_args: false }, ..NativeSig::new(&[ObSet::ANY], RetSig::OPT) },
         // `push` stores its argument, so a pending element flows onto the array.
-        "push" => NativeSig { params: &[ObSet::ANY], ret: RetSig::VOID, container: Container::Preserves },
+        "push" => NativeSig { container: Container::Preserves, effect: Effect { mutates_receiver: true, writes_args: true }, ..NativeSig::new(&[ObSet::ANY], RetSig::VOID) },
         _ => return None,
     };
     Some(sig)

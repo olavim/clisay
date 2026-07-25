@@ -10,3 +10,4 @@ A();
 // 2 |   init() { say x = 1 + true; }
 //   |                        ^^^^
 // 	at A.init (frame_init.say:2)
+// 	at script (frame_init.say:4)

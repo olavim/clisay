@@ -1,0 +1,6 @@
+// A factory that returns another factory's mutable is itself inferred mutable-returning.
+fn inner(): mut { return mut {}; }
+fn make()! { return inner(); }
+say r = make();
+r["k"] = 1;
+print(r["k"]); // expect: 1

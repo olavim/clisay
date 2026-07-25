@@ -9,3 +9,4 @@ run(() => 1 + true);
 //   |               ^^^^
 // 	at lambda (frame_lambda.say:2)
 // 	at run (frame_lambda.say:1)
+// 	at script (frame_lambda.say:2)

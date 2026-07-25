@@ -1,0 +1,14 @@
+fn consume(x: *mut) {}
+say mut n = 0;
+say a = mut [1];
+while n < 3 {
+  consume(a);
+  n = n + 1;
+}
+// error(full):
+// error: value used after it was moved
+//  --> use_after_move_loop.say:5:11
+//   |
+// 4 | while n < 3 {
+// 5 |   consume(a);
+//   |           ^ `a` is moved here, then read again on the next loop iteration

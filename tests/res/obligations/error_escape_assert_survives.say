@@ -1,0 +1,5 @@
+// `!` clears a witnessed obligation, not `no persist`, so it cannot launder a borrowed value out.
+obligation borrowed: no persist;
+fn forward(x: borrowed) {
+    return x!; // error: this value owes 'borrowed'; it cannot be stored or escape its scope
+}

@@ -1,4 +1,4 @@
-say d = { a: "a" };
+say d = mut { a: "a" };
 d["c"] = { c: "c" };          // a dict value inside a dict
 print(d["c"]["c"]);           // expect: c
 

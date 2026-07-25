@@ -1,0 +1,8 @@
+// A loop body that moves a value consumes it every pass, so the next pass reads a moved value.
+fn consume(x: *mut) {}
+say mut n = 0;
+say a = mut [1];
+while n < 3 {
+  consume(a); // error: value used after it was moved
+  n = n + 1;
+}

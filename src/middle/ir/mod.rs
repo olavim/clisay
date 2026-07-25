@@ -50,6 +50,14 @@ pub enum Inst {
     /// Guards an unknown value at a destination: throws any registered witness the destination
     /// does not allow.
     BarrierGuard(u16),
+    /// Asserts an opaque callee borrows the guarded argument positions. Operands are the argument
+    /// count (the callee's stack depth) and an index into the barrier's position list.
+    AssertBorrow(u8, u16),
+    /// Marks the listed argument positions borrowed for the call that follows. Operands are the
+    /// argument count and an index into the position list.
+    MarkBorrow(u8, u16),
+    /// Releases the last `count` marked borrows.
+    ReleaseBorrow(u8),
 
     // Stack / constants
     Pop,
@@ -84,6 +92,14 @@ pub enum Inst {
     SetFieldPop(u8),
     Array(u8),
     Dict(u8),
+    /// Clears the immutable bit on the object on top of the stack.
+    Mut,
+    /// Asserts every element of the immutable container on top of the stack is immutable, so a
+    /// mutable value of unknown capability cannot land in an immutable container.
+    SealCheck,
+    /// Deep-freezes the fields of the immutable instance on top of the stack, so a plain
+    /// construction is immutable all the way down.
+    DeepSeal,
 
     // Arithmetic
     Add,
@@ -139,6 +155,7 @@ pub struct Ir {
     /// Brace-construction field-id lists.
     construct_fields: Vec<Vec<u8>>,
     barrier_allows: Vec<BarrierAllow>,
+    survive_positions: Vec<Vec<(u8, SourcePosition)>>,
     witness_names: Vec<Value>,
 }
 
@@ -153,6 +170,7 @@ impl Ir {
             fn_entries: Vec::new(),
             construct_fields: Vec::new(),
             barrier_allows: Vec::new(),
+            survive_positions: Vec::new(),
             witness_names: Vec::new(),
         }
     }
@@ -167,6 +185,19 @@ impl Ir {
 
     pub fn construct_fields(&self, idx: u16) -> &[u8] {
         &self.construct_fields[idx as usize]
+    }
+
+    /// Records a barrier's guarded argument positions.
+    pub fn add_survive_positions(&mut self, positions: Vec<(u8, SourcePosition)>) -> Result<u16, anyhow::Error> {
+        if self.survive_positions.len() >= u16::MAX as usize {
+            bail!("Too many opaque-call barriers");
+        }
+        self.survive_positions.push(positions);
+        Ok((self.survive_positions.len() - 1) as u16)
+    }
+
+    pub fn survive_positions(&self, idx: u16) -> &[(u8, SourcePosition)] {
+        &self.survive_positions[idx as usize]
     }
 
     pub fn add_barrier_allow(&mut self, allow: BarrierAllow) -> Result<u16, anyhow::Error> {
@@ -282,6 +313,7 @@ impl Ir {
             fn_entries: self.fn_entries,
             construct_fields: self.construct_fields,
             barrier_allows: self.barrier_allows,
+            survive_positions: self.survive_positions,
             witness_names: self.witness_names
         }
     }
