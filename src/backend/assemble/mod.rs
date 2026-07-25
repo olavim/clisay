@@ -66,7 +66,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
     };
 
     match *inst {
-        Return
+        Return | ReturnFac
         | Halt
         | Throw
         | PopTry
@@ -79,11 +79,10 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
         | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
         | IsShaped | ArrayLen
-        | Mut | SealCheck | DeepSeal => {}
+        | Mut | SealCheck => {}
 
-        Call(b)
-        | Array(b)
-        | Dict(b)
+        Call(b) | CallMut(b)
+        | Array(b) | Dict(b)
         | PushConstant(b) | PushClosure(b) | PushType(b)
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
         | CloseUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
@@ -139,13 +138,13 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(arg_count, pos);
         }
 
-        Construct(fields_idx, arg_count) => {
+        Construct(fields_idx, seal) => {
             let fields = ir.construct_fields(fields_idx);
             chunk.write(fields.len() as u8, pos);
             for &id in fields {
                 chunk.write(id, pos);
             }
-            chunk.write(arg_count, pos);
+            chunk.write(seal, pos);
         }
 
         BarrierGuard(idx) => {

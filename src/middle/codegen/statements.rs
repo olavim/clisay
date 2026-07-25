@@ -26,19 +26,22 @@ impl<'a> Compiler<'a> {
                     self.try_frames[idx].position = pos;
                 }
 
-                if let FnKind::Initializer = *self.fn_kinds.last().unwrap() {
+                // A factory populates the pre-allocated `this` and hands it back via `RETURN_FAC`,
+                // which seals it per the frame bit.
+                if let FnKind::Factory = *self.fn_kinds.last().unwrap() {
                     if expr.is_some() {
-                        compiler_error!(self, stmt_id, "Cannot return a value from a type initializer");
+                        compiler_error!(self, stmt_id, "Cannot return a value from a factory");
                     }
-
                     self.emit(Inst::LoadLocal(0), stmt_id);
-                } else if let Some(expr) = expr {
-                    self.expression(expr)?;
+                    self.emit(Inst::ReturnFac, stmt_id);
                 } else {
-                    self.emit(Inst::PushNull, stmt_id);
+                    if let Some(expr) = expr {
+                        self.expression(expr)?;
+                    } else {
+                        self.emit(Inst::PushNull, stmt_id);
+                    }
+                    self.emit(Inst::Return, stmt_id);
                 }
-
-                self.emit(Inst::Return, stmt_id);
             },
             HirStmt::Throw(expr) => {
                 if let Some(TryFrame {

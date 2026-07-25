@@ -96,8 +96,8 @@ pub enum HirExpr {
     Literal(HirLiteral),
     Identifier(Symbol),
     Is(HirId<HirExpr>, Symbol),
-    /// Brace construction `C(args) { field: value, ... }`: the callee type expression, the
-    /// `init` args, then the brace field initializers.
+    /// Brace construction `C { field: value, ... }`: the callee type expression, an unused args
+    /// slot (the combined form is retired), then the brace fields.
     Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
     /// A `mut`-minted construction (`mut {}`, `mut []`, `mut Ctor()`).
     Mut(HirId<HirExpr>),

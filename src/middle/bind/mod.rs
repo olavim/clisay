@@ -40,7 +40,7 @@ pub enum Cleanup {
 pub enum FnKind {
     Function,
     Method,
-    Initializer,
+    Factory,
 }
 
 #[derive(Clone)]
@@ -58,12 +58,8 @@ pub struct TypeLayout {
     pub mutable: IntSet<u8>,
     pub inner: IntSet<u8>,
     pub member_count: u8,
-    /// Member id of the initializer function.
-    pub init_id: u8,
-    /// The initializer's arity.
-    pub init_arity: u8,
-    /// Field names the initializer assigns.
-    pub init_assigned: HashSet<Symbol>,
+    /// Member id of the factory function.
+    pub factory_id: u8,
 }
 
 impl TypeLayout {
@@ -76,10 +72,8 @@ impl TypeLayout {
             nullable: IntSet::default(),
             mutable: IntSet::default(),
             inner: IntSet::default(),
-            init_id: 0,
+            factory_id: 0,
             member_count: 0,
-            init_arity: 0,
-            init_assigned: HashSet::new(),
         }
     }
 
@@ -200,7 +194,7 @@ impl Bindings {
 }
 
 struct Local {
-    /// `None` for the callee/`this` slot of a method or initializer: it's
+    /// `None` for the callee/`this` slot of a method or factory: it's
     /// addressed positionally (slot 0), never resolved by name.
     name: Option<Symbol>,
     depth: u8,

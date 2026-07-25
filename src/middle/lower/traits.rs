@@ -82,7 +82,7 @@ impl<'a> Lowerer<'a> {
         // same name are overrides and keep their own definition).
         self.lower_gives(type_id, &host_methods, type_pos, &mut composed)?;
 
-        let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
+        let init = self.lower_factory(type_id, decl, &composed.field_inits, type_pos)?;
 
         // The `req fn` holes this type must satisfy: its own and those of every `with` trait.
         let mut req_fns: Vec<HirReqFn> = decl.req_fns.iter().map(|rf| self.lower_req_fn(rf, decl.name)).collect();

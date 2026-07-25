@@ -1,4 +1,4 @@
-//! Function, initializer, and parameter-list parsing.
+//! Function, factory, and parameter-list parsing.
 
 use super::*;
 

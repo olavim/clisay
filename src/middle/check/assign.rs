@@ -9,7 +9,15 @@ use super::{Mutability, Checker, Flow, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
     pub(super) fn assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
-        self.reject_this_store(rhs)?;
+        // A factory's epilogue copies each field-local onto `this` with `this.<field> = $<field>`.
+        // When the factory forgets a field, that local is never assigned, so report the copy as the
+        // missing field rather than the synthetic local used before assignment.
+        if self.checking_factory {
+            if let Some(field) = self.uninitialized_epilogue_field(lhs, rhs) {
+                return Err(self.error_help(format!("Non-null field '{}' is never initialized", self.hir.text(field)), lhs,
+                    "assign it in the factory, or give the field a default"));
+            }
+        }
         let typed = self.expr(rhs)?;
         match self.hir.get(lhs) {
             HirExpr::Identifier(name) => {
@@ -54,6 +62,25 @@ impl<'a> Checker<'a> {
         // A store hands the value to a new holder, so a mutable right side moves.
         self.move_source(rhs);
         Ok(typed)
+    }
+
+    /// If `lhs = rhs` is a factory epilogue copy `this.<field> = $<field>` whose field-local is
+    /// still unassigned, returns the field. An unassigned field-local is always a non-null field
+    /// with no default, so this is exactly the "field never initialized" case.
+    fn uninitialized_epilogue_field(&self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Option<Symbol> {
+        let HirExpr::Identifier(local) = self.hir.get(rhs) else { return None };
+        if !self.is_field_local(*local) {
+            return None;
+        }
+        let HirExpr::Index(target, member, _) = self.hir.get(lhs) else { return None };
+        if !matches!(self.hir.get(target), HirExpr::This) {
+            return None;
+        }
+        let i = self.frame_index_of(*local)?;
+        if self.locals[i].assigned {
+            return None;
+        }
+        self.string_member(member)
     }
 
     /// Records that a local receiving a stored value takes on that value's sources, so the value
@@ -135,21 +162,13 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
 
-        if !mutable {
-            if !self.seal.in_init() {
-                return Err(self.immutable_field_error(type_name, field, lhs));
-            }
-            if self.seal.is_assigned(field) {
-                return Err(match self.seal.first_assign(field) {
-                    Some(first) => self.double_init_error(type_name, field, first, *lhs),
-                    None => self.immutable_field_error(type_name, field, lhs),
-                });
-            }
+        // Writing an immutable field in a factory is its initialization. Elsewhere it is a method
+        // mutating a finished value, which an immutable field rejects.
+        if !mutable && !self.checking_factory {
+            return Err(self.immutable_field_error(type_name, field, lhs));
         }
 
-        self.check_into_field(flow, nullable, field, rhs)?;
-        self.seal.mark_assigned(field, *lhs);
-        Ok(())
+        self.check_into_field(flow, nullable, field, rhs)
     }
 
     /// Checks an external write `obj.field = value` on a known type.
@@ -176,14 +195,6 @@ impl<'a> Checker<'a> {
         let name = self.qualified_field(type_name, field);
         self.error_help(format!("Cannot assign immutable field `{name}`"), lhs,
             format!("you can make `{name}` mutable by declaring it as `{};`", self.mut_decl_hint(type_name, field)))
-    }
-
-    fn double_init_error(&self, type_name: Symbol, field: Symbol, first: HirId<HirExpr>, second: HirId<HirExpr>) -> anyhow::Error {
-        let name = self.qualified_field(type_name, field);
-        self.error_two_spans(
-            format!("Immutable field `{name}` is initialized more than once"),
-            &second, "and a second time here", &first, "first initialized here",
-            format!("keep only one, or make `{name}` mutable by declaring it as `{};`", self.mut_decl_hint(type_name, field)))
     }
 
     /// The `Type.field` name shown in field diagnostics.

@@ -1,98 +1,16 @@
-//! Construction checks: the init-body seal and non-null field completeness.
+//! Construction checks: non-null field completeness at a brace.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::core::objects::TypeMember;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt, ReturnShape, Symbol};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, Symbol};
 
 use super::{Checker, FieldInfo, TypeTag};
 
-/// State of the construction seal. Inside an `init` body the partially-built `this` may assign
-/// and read its own fields. It may not otherwise escape.
-#[derive(Default)]
-pub(super) struct Seal {
-    /// Fields assigned so far, mapped to the node of its first assignment.
-    assigned: Option<HashMap<Symbol, Option<HirId<HirExpr>>>>,
-    /// Whether `this` was used since the flag was last reset.
-    this_seen: bool,
-}
-
-impl Seal {
-    /// Whether checking is currently inside an init body.
-    pub(super) fn in_init(&self) -> bool {
-        self.assigned.is_some()
-    }
-
-    /// Enters an init body seeded with the fields already provided. Returns the previous state
-    /// to hand back to `restore` on exit.
-    pub(super) fn enter(&mut self, seed: HashSet<Symbol>) -> Option<HashMap<Symbol, Option<HirId<HirExpr>>>> {
-        self.assigned.replace(seed.into_iter().map(|s| (s, None)).collect())
-    }
-
-    /// Suspends the seal for a nested function body so it is not seen as inside the init.
-    pub(super) fn suspend(&mut self) -> Option<HashMap<Symbol, Option<HirId<HirExpr>>>> {
-        self.assigned.take()
-    }
-
-    /// Restores the assigned-set state saved by `enter` or `suspend`.
-    pub(super) fn restore(&mut self, saved: Option<HashMap<Symbol, Option<HirId<HirExpr>>>>) {
-        self.assigned = saved;
-    }
-
-    /// Records an assignment to `field` at `node`, keeping the first if already assigned.
-    pub(super) fn mark_assigned(&mut self, field: Symbol, node: HirId<HirExpr>) {
-        if let Some(assigned) = self.assigned.as_mut() {
-            assigned.entry(field).or_insert(Some(node));
-        }
-    }
-
-    pub(super) fn is_assigned(&self, field: Symbol) -> bool {
-        self.assigned.as_ref().is_some_and(|a| a.contains_key(&field))
-    }
-
-    /// The node of `field`'s first assignment in this init, if it has one.
-    pub(super) fn first_assign(&self, field: Symbol) -> Option<HirId<HirExpr>> {
-        self.assigned.as_ref().and_then(|a| a.get(&field).copied()).flatten()
-    }
-
-    /// Whether `field` is read in the current init before it is assigned.
-    pub(super) fn reads_before_assign(&self, field: Symbol) -> bool {
-        self.assigned.as_ref().is_some_and(|a| !a.contains_key(&field))
-    }
-
-    /// Resets the `this`-seen flag for a nested body, returning the previous value.
-    pub(super) fn take_this_seen(&mut self) -> bool {
-        std::mem::replace(&mut self.this_seen, false)
-    }
-
-    pub(super) fn this_seen(&self) -> bool {
-        self.this_seen
-    }
-
-    pub(super) fn set_this_seen(&mut self, seen: bool) {
-        self.this_seen = seen;
-    }
-}
-
 impl<'a> Checker<'a> {
-    /// During init, binding or assigning `this` would let a half-built object outlive the
-    /// init. Rejecting it here gives a clearer message than the generic value-use check.
-    pub(super) fn reject_this_store(&self, value: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if self.seal.in_init() && matches!(self.hir.get(value), HirExpr::This) {
-            return Err(self.this_seal_error(value, "cannot be stored"));
-        }
-        Ok(())
-    }
-
-    /// Construction-seal error for a disallowed use of `this` in init.
-    pub(super) fn this_seal_error(&self, node: &HirId<HirExpr>, action: &str) -> anyhow::Error {
-        self.error(format!("the partially-constructed 'this' {action}; inside init it may only assign or read its own fields"), node)
-    }
-
-    /// Iterates a type's fields with the facts the definition and construction checks need.
+    /// Iterates a type's fields with the facts the construction check needs.
     fn fields(&self, type_name: Symbol) -> impl Iterator<Item = FieldInfo> + 'a {
         let layout = self.layout_of(type_name);
-        let assigned = self.sigs.init_fields.get(&type_name);
         layout.into_iter().flat_map(move |layout| {
             layout.members.iter().filter_map(move |(name, member)| {
                 if !matches!(member, TypeMember::Field(_)) {
@@ -102,68 +20,20 @@ impl<'a> Checker<'a> {
                     name: *name,
                     non_null: !layout.is_nullable(*name),
                     public: layout.is_public(*name),
-                    init_assigned: assigned.is_some_and(|a| a.contains(name)),
                 })
             })
         })
     }
 
-    /// Every non-null private field must be initialized by the type's `init` or a default.
-    pub(super) fn check_field_definitions(&self, type_name: Symbol, node: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
-        for field in self.fields(type_name) {
-            if field.non_null && !field.public && !field.init_assigned {
-                if let Some(assign) = self.sigs.method_field_assigns.get(&type_name).and_then(|m| m.get(&field.name)) {
-                    return Err(self.error(format!("Field '{}' must be initialized directly in init or by a default", self.hir.text(field.name)), assign));
-                }
-                return Err(self.error(format!("Non-null field '{}' is never initialized; give it a default or assign it in init", self.hir.text(field.name)), node));
-            }
-        }
-        Ok(())
-    }
-
-    /// Checks a type's `init` under the construction seal: the bare `this` may assign its own
-    /// fields, read assigned fields, and call helpers, but may not escape.
-    pub(super) fn check_init(&mut self, stmt: &HirId<HirStmt>, type_name: Symbol) -> Result<(), anyhow::Error> {
-        let HirStmt::Fn(decl) = self.hir.get(stmt) else { return Ok(()) };
-        // An init yields the instance, not a declared value, so its returns are not checked.
-        let saved_return = std::mem::replace(&mut self.fn_ctx.return_shape, ReturnShape::Inferred);
-        let result = self.with_frame(&decl.params, |c| {
-            // Brace-provided fields are assigned before the init body runs.
-            let saved_seal = c.seal.enter(c.brace_provided_fields(type_name));
-            c.expr(&decl.body)?;
-            c.seal.restore(saved_seal);
-            Ok(())
-        });
-        self.fn_ctx.return_shape = saved_return;
-        result
-    }
-
-    /// Returns the public fields of a type that its init does not assign.
-    fn brace_provided_fields(&self, type_name: Symbol) -> HashSet<Symbol> {
-        self.fields(type_name)
-            .filter(|f| f.public && !f.init_assigned)
-            .map(|f| f.name)
-            .collect()
-    }
-
-    /// Checks a lambda body. A closure defined in `init` may not capture the partially-built `this`.
+    /// Checks a lambda body.
     pub(super) fn lambda(&mut self, decl: &HirFnDecl, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let in_init = self.seal.in_init();
-        let outer_seen = self.seal.take_this_seen();
-        self.function(None, self.sigs.lambda_writes.get(node), decl)?;
-        let captured_this = self.seal.this_seen();
-        self.seal.set_this_seen(outer_seen);
-        if in_init && captured_this {
-            return Err(self.error("a closure in init cannot capture the partially-constructed 'this'".to_string(), node));
-        }
-        Ok(())
+        self.function(None, self.sigs.lambda_writes.get(node), decl)
     }
 
-    /// A construction must supply every non-null public field it does not otherwise fill. A brace
-    /// runs no `init`, so it must supply them all. A paren call may lean on `init`'s assignments.
-    pub(super) fn check_construction(&self, type_name: Symbol, braced: &HashSet<Symbol>, is_brace: bool, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    /// A brace must supply every non-null public field.
+    pub(super) fn check_construction(&self, type_name: Symbol, braced: &HashSet<Symbol>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let mut missing: Vec<Symbol> = self.fields(type_name)
-            .filter(|field| field.non_null && field.public && !braced.contains(&field.name) && (is_brace || !field.init_assigned))
+            .filter(|field| field.non_null && field.public && !braced.contains(&field.name))
             .map(|field| field.name)
             .collect();
         // The field set iterates in a nondeterministic hash order, so report a stable one.

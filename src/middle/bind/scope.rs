@@ -138,7 +138,7 @@ impl<'a> Resolver<'a> {
     }
 
     pub(super) fn function(&mut self, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
-        // A function's callee slot is named for recursion; a method/initializer's
+        // A function's callee slot is named for recursion; a method/factory's
         // slot 0 is `this`, addressed positionally and never resolved by name.
         let self_name = match kind {
             FnKind::Function => Some(decl.name),

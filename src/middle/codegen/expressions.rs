@@ -23,10 +23,7 @@ impl<'a> Compiler<'a> {
             HirExpr::Unary(op, operand) => self.unary_expression(*op, operand)?,
             HirExpr::Binary(op, left, right) => self.binary_expression(*op, left, right)?,
             HirExpr::Assign(left, right) => self.compile_assign(left, right, false)?,
-            HirExpr::Call(callee, args) => {
-                self.call_expression(callee, args)?;
-                self.deep_seal(expr);
-            },
+            HirExpr::Call(callee, args) => self.call_expression(callee, args, false)?,
             HirExpr::Index(target, member, is_dot) => self.index(target, member, *is_dot, IndexOp::Load)?,
             HirExpr::Literal(lit) => self.literal(expr, lit)?,
             HirExpr::Identifier(_) => {
@@ -39,13 +36,9 @@ impl<'a> Compiler<'a> {
                 let idx = self.ir.add_constant(Value::from(name_ref))?;
                 self.emit(Inst::Is(idx), expr);
             },
-            HirExpr::Construct(callee, args, brace) => self.construct_expression(expr, callee, args, brace)?,
-            // A `mut` construction is built immutable like any other, then opted out with `Mut`. This
-            // rides a generic call, so `mut t()` needs no static knowledge that `t` is a type.
-            HirExpr::Mut(inner) => {
-                self.expression(inner)?;
-                self.emit(Inst::Mut, expr);
-            },
+            // A plain brace seals inline (seal flag 1).
+            HirExpr::Construct(..) => self.construct_expression(expr, 1)?,
+            HirExpr::Mut(inner) => self.mut_expression(expr, inner)?,
             HirExpr::Has(left, matcher) => self.compile_has(left, matcher, expr)?,
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
@@ -241,20 +234,31 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles a brace construction. Source order: push the type, the `init` args, then the
-    /// brace values; the `Construct` op allocates, sets the brace fields, and runs `init`.
-    fn construct_expression(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
-        self.expression(callee)?;
-        for arg in args {
-            self.expression(arg)?;
-        }
-        for (_, value) in brace {
+    /// Compiles a brace construction. Source order: push the type, then the brace values.
+    fn construct_expression(&mut self, expr: &HirId<HirExpr>, seal: u8) -> Result<(), anyhow::Error> {
+        let HirExpr::Construct(callee, _, brace) = self.hir.get(expr) else { unreachable!("construct_expression on a non-Construct") };
+        let (callee, brace) = (*callee, brace.clone());
+        self.expression(&callee)?;
+        for (_, value) in &brace {
             self.expression(value)?;
         }
         let field_ids = self.bindings.construct_fields(expr).to_vec();
         let fields_idx = self.ir.add_construct_fields(field_ids)?;
-        self.emit(Inst::Construct(fields_idx, args.len() as u8), expr);
-        self.deep_seal(expr);
+        self.emit(Inst::Construct(fields_idx, seal), expr);
+        Ok(())
+    }
+
+    fn mut_expression(&mut self, expr: &HirId<HirExpr>, inner: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if matches!(self.hir.get(inner), HirExpr::Construct(..)) {
+            return self.construct_expression(inner, 0);
+        }
+        if matches!(self.hir.get(inner), HirExpr::Call(..)) && self.barriers.is_construction(inner) {
+            let HirExpr::Call(callee, args) = self.hir.get(inner) else { unreachable!() };
+            let (callee, args) = (*callee, args.clone());
+            return self.call_expression(&callee, &args, true);
+        }
+        self.expression(inner)?;
+        self.emit(Inst::Mut, expr);
         Ok(())
     }
 
@@ -384,7 +388,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &Vec<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
+    fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], mutable: bool) -> Result<(), anyhow::Error> {
         // Fuse `recv.name(args)` into a single INVOKE when the receiver is an
         // arbitrary expression (not `this`/`super`, which have their own member
         // resolution) and the member is a literal name.
@@ -417,7 +421,8 @@ impl<'a> Compiler<'a> {
         }
 
         let marked = self.emit_mark_borrow(callee, args)?;
-        self.emit(Inst::Call(args.len() as u8), callee);
+        let n = args.len() as u8;
+        self.emit(if mutable { Inst::CallMut(n) } else { Inst::Call(n) }, callee);
         self.emit_release_borrow(marked, callee);
 
         Ok(())
@@ -470,12 +475,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Deep-freezes a plain construction's fields once it is sealed, when the checker flagged it.
-    fn deep_seal(&mut self, expr: &HirId<HirExpr>) {
-        if self.barriers.needs_deep_seal(expr) {
-            self.emit(Inst::DeepSeal, expr);
-        }
-    }
 
     pub (super) fn literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral) -> Result<(), anyhow::Error> {
         match literal {

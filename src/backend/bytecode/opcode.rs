@@ -66,6 +66,7 @@ macro_rules! opcodes {
 
 opcodes! {
     Call => CALL(Byte),
+    CallMut => CALL_MUT(Byte),
     Construct => CONSTRUCT(List, Byte),
     Invoke => INVOKE(Const, Byte),
     Jump => JUMP(Jump),
@@ -92,8 +93,8 @@ opcodes! {
     Dict => DICT(Byte),
     Mut => MUT,
     SealCheck => SEAL_CHECK,
-    DeepSeal => DEEP_SEAL,
     Return => RETURN,
+    ReturnFac => RETURN_FAC,
     Halt => HALT,
     Throw => THROW,
     PushTry => PUSH_TRY(Jump),
