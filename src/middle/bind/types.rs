@@ -34,9 +34,8 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// Resolves and validates a brace construction `C(args) { field: value, ... }`: the type must
-    /// be known, the paren args must match its `init` arity, and each brace field must be a `pub`
-    /// field the `init` does not assign, with no duplicates.
+    /// Resolves and validates a brace construction `C { field: value, ... }`: the type must be
+    /// known, and each brace field must be a distinct `pub` field.
     pub(super) fn construct(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
         self.expression(callee)?;
         for a in args { self.expression(a)?; }
@@ -50,11 +49,8 @@ impl<'a> Resolver<'a> {
             compiler_error!(self, callee, "'{}' is not a type", self.hir.text(type_name));
         };
 
-        if args.len() != layout.init_arity as usize {
-            compiler_error!(self, expr, "'{}' is constructed with {} argument(s), but its init takes {}",
-                self.hir.text(type_name), args.len(), layout.init_arity);
-        }
-
+        // A brace does not run the factory, so the factory's arity does not gate it. `args` is a
+        // retired combined-form slot, always empty at a brace.
         let mut seen: HashSet<Symbol> = HashSet::new();
         let mut ids = Vec::with_capacity(brace.len());
         for (field, _) in brace {
@@ -65,9 +61,6 @@ impl<'a> Resolver<'a> {
                 Some(TypeMember::Field(id)) => {
                     if layout.non_public.contains(&id) {
                         compiler_error!(self, expr, "Field '{}' of '{}' is not public", self.hir.text(*field), self.hir.text(type_name));
-                    }
-                    if layout.init_assigned.contains(field) {
-                        compiler_error!(self, expr, "Field '{}' of '{}' is set by its init and cannot be brace-provided", self.hir.text(*field), self.hir.text(type_name));
                     }
                     ids.push(id);
                 },
@@ -136,7 +129,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Builds a type's runtime [`TypeLayout`], assigning each member its id: own fields,
-    /// methods, then the initializer.
+    /// methods, then the factory.
     fn build_layout(&self, decl: &HirTypeDecl) -> TypeLayout {
         let mut layout = TypeLayout::empty(decl.name);
 
@@ -170,85 +163,12 @@ impl<'a> Resolver<'a> {
             }
             next_member_id += 1;
         }
-        // Every type has its own initializer (declared or virtual).
-        layout.init_id = next_member_id;
+        // A member id is reserved for the factory whether or not the type declares one.
+        layout.factory_id = next_member_id;
         next_member_id += 1;
         layout.member_count = next_member_id;
 
-        // Construction facts: the init's arity, and the fields it assigns (defaults + body), which
-        // a brace construction may not also provide. A factory-less type has neither.
-        if let HirStmt::Fn(init) = self.hir.get(&decl.init) {
-            layout.init_arity = init.params.len() as u8;
-            let mut assigned = HashSet::new();
-            self.collect_assigned_fields(&init.body, &mut assigned);
-            layout.init_assigned = assigned;
-        }
-
         layout
-    }
-
-    /// Collects the field names a body assigns through `this.<field> = ...`, walking control flow
-    /// but not nested functions/lambdas (whose execution isn't guaranteed).
-    fn collect_assigned_fields(&self, expr: &HirId<HirExpr>, out: &mut HashSet<Symbol>) {
-        match self.hir.get(expr) {
-            HirExpr::Assign(target, value) => {
-                if let HirExpr::Index(obj, member, true) = self.hir.get(target) {
-                    if matches!(self.hir.get(obj), HirExpr::This) {
-                        if let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) {
-                            if let Some(sym) = self.hir.symbol_of(name) { out.insert(sym); }
-                        }
-                    }
-                }
-                self.collect_assigned_fields(value, out);
-            },
-            HirExpr::Block(stmts) => for s in stmts { self.collect_assigned_fields_stmt(s, out); },
-            HirExpr::Unary(_, x) | HirExpr::Is(x, _) | HirExpr::Has(x, _) | HirExpr::Match(x, _) => self.collect_assigned_fields(x, out),
-            HirExpr::Binary(_, l, r) => { self.collect_assigned_fields(l, out); self.collect_assigned_fields(r, out); },
-            HirExpr::Call(c, args) | HirExpr::SafeCall(c, args) => {
-                self.collect_assigned_fields(c, out);
-                for a in args { self.collect_assigned_fields(a, out); }
-            },
-            HirExpr::Index(t, m, _) => { self.collect_assigned_fields(t, out); self.collect_assigned_fields(m, out); },
-            HirExpr::Construct(c, args, brace) => {
-                self.collect_assigned_fields(c, out);
-                for a in args { self.collect_assigned_fields(a, out); }
-                for (_, v) in brace { self.collect_assigned_fields(v, out); }
-            },
-            HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r) | HirExpr::SafeAccess(l, r, _) => {
-                self.collect_assigned_fields(l, out);
-                self.collect_assigned_fields(r, out);
-            },
-            HirExpr::Assert(x) | HirExpr::Propagate(x) => self.collect_assigned_fields(x, out),
-            _ => {},
-        }
-    }
-
-    fn collect_assigned_fields_stmt(&self, stmt: &HirId<HirStmt>, out: &mut HashSet<Symbol>) {
-        match self.hir.get(stmt) {
-            HirStmt::Expression(e) | HirStmt::Throw(e) | HirStmt::Block(e) => self.collect_assigned_fields(e, out),
-            HirStmt::Return(opt) => if let Some(e) = opt { self.collect_assigned_fields(e, out); },
-            HirStmt::While(c, b) => { self.collect_assigned_fields(c, out); self.collect_assigned_fields(b, out); },
-            HirStmt::If(c, then, otherwise) => {
-                self.collect_assigned_fields(c, out);
-                self.collect_assigned_fields(then, out);
-                if let Some(s) = otherwise { self.collect_assigned_fields_stmt(s, out); }
-            },
-            HirStmt::Try(body, catch, finally) => {
-                self.collect_assigned_fields(body, out);
-                if let Some(c) = catch { self.collect_assigned_fields(&c.body, out); }
-                if let Some(f) = finally { self.collect_assigned_fields(f, out); }
-            },
-            HirStmt::Say(field) => if let Some(v) = &field.value { self.collect_assigned_fields(v, out); },
-            HirStmt::Match(scrutinee, arms) => {
-                self.collect_assigned_fields(scrutinee, out);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard { self.collect_assigned_fields(guard, out); }
-                    self.collect_assigned_fields(&arm.body, out);
-                }
-            },
-            // Nested functions/types do not establish init assignment in this body.
-            HirStmt::Fn(_) | HirStmt::Type(_) | HirStmt::Trait(_) | HirStmt::Nop => {},
-        }
     }
 
     /// Pushes the type frame that method bodies resolve against, deriving the private-name set
@@ -276,7 +196,7 @@ impl<'a> Resolver<'a> {
 
         // A factory-less type has no factory body to resolve.
         if let HirStmt::Fn(init) = self.hir.get(&decl.init) {
-            self.function(init, FnKind::Initializer)?;
+            self.function(init, FnKind::Factory)?;
         }
 
         for (stmt_id, trait_sym) in decl.methods.iter().zip(&decl.method_traits) {

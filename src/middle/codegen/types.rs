@@ -39,12 +39,12 @@ impl<'a> Compiler<'a> {
             ty.provided.insert(name_ref);
         }
 
-        // Compile the factory into its slot. A factory-less type has none, so its `init_id`
+        // Compile the factory into its slot. A factory-less type has none, so its `factory_id`
         // stays None and `K()` on it finds no factory to call.
         if let HirStmt::Fn(_) = self.hir.get(&decl.init) {
-            ty.init_id = Some(layout.init_id);
-            let init_ptr = self.compile_fn(&decl.init, FnKind::Initializer)?;
-            ty.methods.insert(layout.init_id, init_ptr.into());
+            ty.factory_id = Some(layout.factory_id);
+            let init_ptr = self.compile_fn(&decl.init, FnKind::Factory)?;
+            ty.methods.insert(layout.factory_id, init_ptr.into());
         }
 
         // Methods carry a `Type.method` display name so stack traces and arity errors

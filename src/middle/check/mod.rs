@@ -20,7 +20,6 @@ use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::signatures::{Mutability, Signatures, TypeTag};
-use self::construct::Seal;
 use self::matching::whole_value_binders;
 use crate::middle::hir::{BinOp, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
@@ -38,7 +37,7 @@ pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barrie
         borrow_marks: checker.borrow_marks,
         witness_names,
         seal_checks: checker.seal_checks,
-        deep_seals: checker.deep_seals,
+        constructions: checker.constructions,
     })
 }
 
@@ -84,13 +83,11 @@ impl Typed {
     fn with_mutability(mut self, mutability: Mutability) -> Typed { self.mutability = mutability; self }
 }
 
-/// A type's field with the facts the definition and construction checks need.
+/// A type's field with the facts the construction check needs.
 struct FieldInfo {
     name: Symbol,
     non_null: bool,
     public: bool,
-    /// Whether the type's `init` assigns this field directly.
-    init_assigned: bool,
 }
 
 /// Why a mutable binding was moved.
@@ -231,10 +228,11 @@ struct Checker<'a> {
     frame_start: usize,
     /// The enclosing type's name while checking its methods, for `this` typing and field layout.
     current_type: Option<Symbol>,
+    /// While checking a factory body, where writing an immutable field is its initialization, not
+    /// a mutation.
+    checking_factory: bool,
     /// The obligations discharged per place on the current path.
     narrowed: HashMap<NarrowKey, HashSet<Symbol>>,
-    /// The construction seal while checking a type's `init`.
-    seal: Seal,
     current_trait_surface: Option<HashSet<Symbol>>,
     /// The function currently being checked.
     fn_ctx: FnContext<'a>,
@@ -251,11 +249,8 @@ struct Checker<'a> {
     borrow_marks: HashMap<HirId<HirExpr>, Vec<u8>>,
     /// Immutable container literals with an unknown-capability element, needing a runtime seal-check.
     seal_checks: HashSet<HirId<HirExpr>>,
-    /// Plain constructions whose fields deep-freeze once sealed.
-    deep_seals: HashSet<HirId<HirExpr>>,
-    /// Set while checking the construction directly under a `mut`, so it is not recorded as a plain
-    /// (deep-sealing) construction.
-    mut_construction: bool,
+    /// Paren-construction `Call` nodes, so codegen tells `mut K(args)` from `mut f()`.
+    constructions: HashSet<HirId<HirExpr>>,
 }
 
 impl<'a> Checker<'a> {
@@ -267,8 +262,8 @@ impl<'a> Checker<'a> {
             locals: Vec::new(),
             frame_start: 0,
             current_type: None,
+            checking_factory: false,
             narrowed: HashMap::new(),
-            seal: Seal::default(),
             current_trait_surface: None,
             fn_ctx: FnContext::default(),
             barriers: HashSet::new(),
@@ -277,8 +272,7 @@ impl<'a> Checker<'a> {
             survive_barriers: HashMap::new(),
             borrow_marks: HashMap::new(),
             seal_checks: HashSet::new(),
-            deep_seals: HashSet::new(),
-            mut_construction: false,
+            constructions: HashSet::new(),
         }
     }
 
@@ -289,14 +283,6 @@ impl<'a> Checker<'a> {
     /// An error carrying a `help:` note on how to fix it.
     fn error_help<T>(&self, msg: String, node: &HirId<T>, help: impl Into<String>) -> anyhow::Error {
         anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node).clone()).with_help(help))
-    }
-
-    /// An error caretting two nodes, each with its own label.
-    fn error_two_spans<T, U>(&self, msg: String, primary: &HirId<T>, primary_label: &str, other: &HirId<U>, other_label: &str, help: String) -> anyhow::Error {
-        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(primary).clone())
-            .with_label(primary_label)
-            .with_span(self.hir.pos(other).clone(), other_label)
-            .with_help(help))
     }
 
     /// An error with a label on its own caret.
@@ -510,6 +496,19 @@ impl<'a> Checker<'a> {
         self.locals.iter().rev().find(|l| l.name == name).and_then(|l| l.func)
     }
 
+    /// A binding's display name, hiding the `$` prefix of a synthetic field-local. A source name
+    /// cannot start with `$`, so only a field-local is affected.
+    fn binding_text(&self, name: Symbol) -> String {
+        let text = self.hir.text(name);
+        text.strip_prefix('$').unwrap_or(text).to_string()
+    }
+
+    /// Whether a binding is a factory's synthetic field-local. Its `$` prefix cannot occur in a
+    /// source name, so a diagnostic can present it as the field it stands for.
+    fn is_field_local(&self, name: Symbol) -> bool {
+        self.hir.text(name).starts_with('$')
+    }
+
     /// The layout of a tracked concrete type.
     fn layout_of(&self, name: Symbol) -> Option<&'a TypeLayout> {
         self.sigs.types_by_name.get(&name).map(|stmt| self.bindings.type_layout(stmt))
@@ -718,13 +717,7 @@ impl<'a> Checker<'a> {
                 Typed::nonnull().with_mutability(Mutability::Immutable)
             },
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
-            HirExpr::This => {
-                self.seal.set_this_seen(true);
-                if self.seal.in_init() {
-                    return Err(self.this_seal_error(expr, "cannot be used as a value here"));
-                }
-                self.this_typed()
-            },
+            HirExpr::This => self.this_typed(),
             HirExpr::Assign(lhs, rhs) => self.assign(lhs, rhs)?,
             HirExpr::Call(callee, args) => self.call(expr, callee, args)?,
             HirExpr::Construct(callee, args, brace) => {
@@ -732,9 +725,8 @@ impl<'a> Checker<'a> {
                 if !args.is_empty() && !brace.is_empty() {
                     return Err(self.error("cannot mix constructor arguments and brace fields; use `K(..)` or `K { .. }`".to_string(), expr));
                 }
-                // A plain construction seals into an immutable object; a `mut` one does not. Capture
-                // it before checking children, which reset the flag for their own constructions.
-                let immutable = !std::mem::take(&mut self.mut_construction);
+
+                // A plain brace is immutable. A `mut K{..}` overrides that in the `Mut` arm.
                 let tag = self.construct_tag(callee);
                 for a in args { self.expr(a)?; }
                 for (name, v) in brace {
@@ -743,12 +735,12 @@ impl<'a> Checker<'a> {
                         self.check_brace_field(*type_name, *name, &typed.flow, v)?;
                     }
                 }
+
                 if let TypeTag::Concrete(type_name) = &tag {
                     let braced: HashSet<Symbol> = brace.iter().map(|(name, _)| *name).collect();
-                    self.check_construction(*type_name, &braced, true, callee)?;
+                    self.check_construction(*type_name, &braced, callee)?;
                 }
-                // A plain construction is immutable by default. A `mut Ctor()` overrides it above.
-                if immutable { self.record_deep_seal(expr); }
+
                 Typed::of(Flow::Clean, tag).with_mutability(Mutability::Immutable)
             },
             HirExpr::Mut(inner) => {
@@ -759,13 +751,7 @@ impl<'a> Checker<'a> {
                         self.literal_children(lit, inner, false)?;
                         Typed::nonnull().with_mutability(Mutability::Mutable)
                     },
-                    _ => {
-                        // The inner construction is mutable, so it does not deep-seal its fields.
-                        self.mut_construction = true;
-                        let typed = self.expr(inner)?;
-                        self.mut_construction = false;
-                        typed.with_mutability(Mutability::Mutable)
-                    },
+                    _ => self.expr(inner)?.with_mutability(Mutability::Mutable),
                 }
             },
             HirExpr::Index(target, member, _) => self.member_access(target, member)?,
@@ -862,7 +848,6 @@ impl<'a> Checker<'a> {
     fn say(&mut self, name: Symbol, clause: &HirSlotClause, mutable: bool, value: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
         let owed = self.clause_owed(clause);
         let (assigned, tag, mutability, provenance) = if let Some(value) = value {
-            self.reject_this_store(value)?;
             let typed = self.expr(value)?;
             self.check_into_slot(&typed.flow, &owed, name, value)?;
             // The move records the sources feeding the value, so the slot reuses that walk for its
@@ -928,7 +913,6 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        let saved_seal = self.seal.suspend();
         // A lambda's shape is inferred, so it is not checked against a declaration.
         let ctx = FnContext {
             return_shape: decl.ret,
@@ -950,7 +934,6 @@ impl<'a> Checker<'a> {
             Ok(())
         });
         self.fn_ctx = saved;
-        self.seal.restore(saved_seal);
         result
     }
 
@@ -977,15 +960,18 @@ impl<'a> Checker<'a> {
         names.iter().map(|o| format!("'{o}'")).collect::<Vec<_>>().join(", ")
     }
 
-    fn type_decl(&mut self, node: &HirId<HirStmt>, type_name: Option<Symbol>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+    fn type_decl(&mut self, _node: &HirId<HirStmt>, type_name: Option<Symbol>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         let saved_type = self.current_type;
         let saved_surface = self.current_trait_surface.take();
         self.current_type = type_name;
-        if let Some(type_name) = type_name {
-            self.check_field_definitions(type_name, node)?;
+        if let Some(_type_name) = type_name {
             self.check_method_overrides(decl)?;
             self.check_req_conformance(decl)?;
-            self.check_init(&decl.init, type_name)?;
+            // The factory's field-locals carry definite assignment, and writing an immutable field
+            // in it is initialization. A factory-less type has a `Nop` init to skip.
+            self.checking_factory = true;
+            self.function_stmt(&decl.init)?;
+            self.checking_factory = false;
         } else {
             // A trait method reaches only the trait's declared surface through `this`.
             self.current_trait_surface = Some(decl.surface.clone());
@@ -1064,7 +1050,9 @@ impl<'a> Checker<'a> {
         }
 
         if !self.locals[i].assigned && !self.locals[i].owed.contains(&self.sigs.opt) {
-            return Err(self.error(format!("'{}' is used before it is assigned", self.hir.text(name)), expr));
+            let text = self.binding_text(name);
+            let subject = if self.is_field_local(name) { format!("Field '{text}'") } else { format!("'{text}'") };
+            return Err(self.error(format!("{subject} is used before it is assigned"), expr));
         }
 
         let owed: HashSet<Symbol> = match self.narrowed.get(&NarrowKey::Local(i)) {
@@ -1098,17 +1086,12 @@ impl<'a> Checker<'a> {
         }
         // A member name never interned as an identifier names no declared member.
         let Some(field) = self.hir.symbol_of(name) else { return Ok(Typed::unknown()) };
-        let on_this = matches!(self.hir.get(target), HirExpr::This);
         let key = self.narrowable_field_key(target, field);
         if let TypeTag::Concrete(type_name) = &receiver.tag {
             if let Some(layout) = self.layout_of(*type_name) {
                 if let Some(member_kind) = layout.members.get(&field).copied() {
                     let flow = match member_kind {
                         TypeMember::Field(_) => {
-                            // Inside init, a non-null field read before its assignment is unsound.
-                            if on_this && !layout.is_nullable(field) && self.seal.reads_before_assign(field) {
-                                return Err(self.error(format!("Field '{}' is read before it is assigned in init", self.hir.text(field)), member));
-                            }
                             let narrowed = key.is_some_and(|k| self.discharged(&k, self.sigs.opt));
                             if layout.is_nullable(field) && !narrowed { self.opt_flow(false) } else { Flow::Clean }
                         },
@@ -1125,7 +1108,6 @@ impl<'a> Checker<'a> {
     /// Evaluates a receiver, requiring it to be non-null.
     fn receiver(&mut self, receiver: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         if matches!(self.hir.get(receiver), HirExpr::This) {
-            self.seal.set_this_seen(true);
             return Ok(self.this_typed());
         }
         let typed = self.expr(receiver)?;

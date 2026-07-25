@@ -3,7 +3,6 @@
 
 mod collect;
 mod escape;
-mod fields;
 mod propagate;
 mod returns;
 mod walk;
@@ -103,12 +102,6 @@ pub struct Signatures {
     pub(crate) methods_by_type: HashMap<(Symbol, Symbol), HirId<HirStmt>>,
     /// The type each method belongs to.
     pub(crate) method_owner: HashMap<HirId<HirStmt>, Symbol>,
-
-    // Per-type field facts.
-    /// Type name to the fields its `init` assigns directly.
-    pub(crate) init_fields: HashMap<Symbol, HashSet<Symbol>>,
-    /// Type name to the fields its methods assign, each mapped to the assigning node.
-    pub(crate) method_field_assigns: HashMap<Symbol, HashMap<Symbol, HirId<HirExpr>>>,
 }
 
 impl Signatures {
@@ -130,8 +123,6 @@ impl Signatures {
             fns_by_name: HashMap::new(),
             methods_by_type: HashMap::new(),
             method_owner: HashMap::new(),
-            init_fields: HashMap::new(),
-            method_field_assigns: HashMap::new(),
         }
     }
 
