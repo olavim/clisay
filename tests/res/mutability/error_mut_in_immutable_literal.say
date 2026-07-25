@@ -1,0 +1,2 @@
+// A `mut` construction may not appear inside an immutable container.
+say a = [mut [0]]; // error: cannot store a mutable value in an immutable container

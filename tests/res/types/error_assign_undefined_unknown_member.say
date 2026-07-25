@@ -3,8 +3,8 @@ type A {
     pub x?;
 }
 
-say obj = A();
-fn setY(o, v) {
+say obj = mut A();
+fn setY(o: mut, v) {
     o.y = v; // error: Invalid index: A doesn't have member "y"
 }
 setY(obj, true);

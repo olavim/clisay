@@ -1,12 +1,17 @@
-fn mutate(x) { x["k"] = 1; }
-say m = mut {};
-freeze(m);
-mutate(m);
+fn mutate(x: mut) { x["k"] = 1; }
+say make = () => { say d = mut {}; freeze(d); return d; };
+mutate(make());
+// A frozen value crossing a dynamic boundary keeps only the runtime bit: the checker admits an
+// unknown-capability argument at a `mut` parameter, so the immutable mutation is caught at runtime.
+// The trap points at the mutation, marks where the value was frozen, and traces back to the caller.
 // error(full):
 // error: cannot mutate an immutable value
-//  --> immutable_mutation_runtime.say:1:16
+//  --> immutable_mutation_runtime.say:1:21
 //   |
-// 1 | fn mutate(x) { x["k"] = 1; }
-//   |                ^ `x` is immutable
+// 1 | fn mutate(x: mut) { x["k"] = 1; }
+//   |                     ^ this value is immutable
+// 2 | say make = () => { say d = mut {}; freeze(d); return d; };
+//   |                                    ------ value made immutable here
 //   |
 // 	at mutate (immutable_mutation_runtime.say:1)
+// 	at script (immutable_mutation_runtime.say:3)

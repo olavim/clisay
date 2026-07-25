@@ -1,6 +1,6 @@
 // A value moved into a scope-local through an array literal returns when the array dies.
 say a = mut [1];
-{ say b = [a]; }
+{ say b = mut [a]; }
 print(a[0]); // expect: 1
 
 // @split
@@ -33,7 +33,7 @@ print(a[0]); // expect: 1
 // Through a field store on a block-local receiver.
 type Box { pub mut item; init() { this.item = 0; } }
 say a = mut [1];
-{ say b = Box(); b.item = a; }
+{ say b = mut Box(); b.item = a; }
 print(a[0]); // expect: 1
 
 // @split

@@ -80,9 +80,9 @@ impl<'a> Checker<'a> {
         // value flows back to them when it dies.
         self.attach_field_provenance(target, rhs);
 
-        // A frozen value rejects mutation at compile time.
-        if let Some(name) = self.immutable_target(target) {
-            return Err(self.error_labeled("cannot mutate an immutable value".to_string(), target, format!("`{}` is immutable", self.hir.text(name))));
+        // An immutable value rejects mutation at compile time.
+        if let Some(i) = self.immutable_target(target) {
+            return Err(self.immutable_mutation_error(target, i));
         }
 
         // A bracket index `obj[expr] = ...` is the dynamic data path. It bypasses the field rules,
@@ -104,11 +104,23 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// The name of a mutation target that is a provably immutable local, or `None`.
-    fn immutable_target(&self, target: &HirId<HirExpr>) -> Option<Symbol> {
+    /// The frame slot of a mutation target that is a provably immutable local, or `None`.
+    fn immutable_target(&self, target: &HirId<HirExpr>) -> Option<usize> {
         let HirExpr::Identifier(name) = self.hir.get(target) else { return None };
         let i = self.frame_index_of(*name)?;
-        (self.locals[i].mutability == Mutability::Immutable).then_some(*name)
+        (self.locals[i].mutability == Mutability::Immutable).then_some(i)
+    }
+
+    /// The compile error for mutating an immutable value. A read-only parameter points at the
+    /// `mut` fix. Any other immutable value reports that it cannot be mutated.
+    fn immutable_mutation_error(&self, target: &HirId<HirExpr>, i: usize) -> anyhow::Error {
+        let name = self.hir.text(self.locals[i].name);
+        if self.locals[i].param {
+            return self.error_help(
+                format!("cannot mutate `{name}`, a read-only parameter"), target,
+                format!("declare the parameter `mut` to let `{name}` be mutated"));
+        }
+        self.error_labeled("cannot mutate an immutable value".to_string(), target, format!("`{name}` is immutable"))
     }
 
     /// Checks an assignment `this.field = value`.

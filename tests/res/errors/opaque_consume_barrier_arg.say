@@ -14,3 +14,4 @@ apply(cb, p, q);
 //   |        ^ the callee lets `y` escape
 //   |
 // 	at apply (opaque_consume_barrier_arg.say:3)
+// 	at script (opaque_consume_barrier_arg.say:7)

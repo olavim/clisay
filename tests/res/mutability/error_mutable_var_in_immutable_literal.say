@@ -1,0 +1,3 @@
+// A known-mutable value may not be stored in an immutable container.
+say m = mut [0];
+say a = [m]; // error: cannot store a mutable value in an immutable container

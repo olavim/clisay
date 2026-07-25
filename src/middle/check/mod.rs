@@ -37,6 +37,8 @@ pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barrie
         survive_barriers: checker.survive_barriers,
         borrow_marks: checker.borrow_marks,
         witness_names,
+        seal_checks: checker.seal_checks,
+        deep_seals: checker.deep_seals,
     })
 }
 
@@ -122,6 +124,8 @@ struct Local {
     container: bool,
     /// The value-mutability of the value in the slot.
     mutability: Mutability,
+    /// Whether the binding is a function parameter.
+    param: bool,
     borrowed: bool,
     /// Where the mutable value was moved out, or `None` while the binding is live.
     move_site: Option<MovedAt>,
@@ -135,7 +139,7 @@ impl Local {
     /// A binding with every fact at its neutral default. Each named constructor overrides only the
     /// fields that distinguish it, so a new field is added here once.
     fn base(name: Symbol) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, borrowed: false, move_site: None, provenance: Vec::new() }
+        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, param: false, borrowed: false, move_site: None, provenance: Vec::new() }
     }
 
     fn param(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
@@ -245,6 +249,13 @@ struct Checker<'a> {
     survive_barriers: HashMap<HirId<HirExpr>, Vec<u8>>,
     /// Calls that lend a mutable argument, keyed by callee node to the param positions to mark as borrowed.
     borrow_marks: HashMap<HirId<HirExpr>, Vec<u8>>,
+    /// Immutable container literals with an unknown-capability element, needing a runtime seal-check.
+    seal_checks: HashSet<HirId<HirExpr>>,
+    /// Plain constructions whose fields deep-freeze once sealed.
+    deep_seals: HashSet<HirId<HirExpr>>,
+    /// Set while checking the construction directly under a `mut`, so it is not recorded as a plain
+    /// (deep-sealing) construction.
+    mut_construction: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -265,6 +276,9 @@ impl<'a> Checker<'a> {
             witness_tests: HashMap::new(),
             survive_barriers: HashMap::new(),
             borrow_marks: HashMap::new(),
+            seal_checks: HashSet::new(),
+            deep_seals: HashSet::new(),
+            mut_construction: false,
         }
     }
 
@@ -688,8 +702,13 @@ impl<'a> Checker<'a> {
 
     fn expr(&mut self, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         Ok(match self.hir.get(expr) {
-            HirExpr::Literal(HirLiteral::Null) => Typed::of(self.opt_flow(true), TypeTag::Unknown),
-            HirExpr::Literal(lit) => { self.literal_children(lit, expr)?; Typed::nonnull() },
+            HirExpr::Literal(HirLiteral::Null) => Typed::of(self.opt_flow(true), TypeTag::Unknown).with_mutability(Mutability::Immutable),
+            HirExpr::Literal(lit) => {
+                // A plain container literal is immutable by default, so its children are checked
+                // for deep immutability. Every literal is an immutable value.
+                self.literal_children(lit, expr, true)?;
+                Typed::nonnull().with_mutability(Mutability::Immutable)
+            },
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
             HirExpr::This => {
                 self.seal.set_this_seen(true);
@@ -699,8 +718,11 @@ impl<'a> Checker<'a> {
                 self.this_typed()
             },
             HirExpr::Assign(lhs, rhs) => self.assign(lhs, rhs)?,
-            HirExpr::Call(callee, args) => self.call(callee, args)?,
+            HirExpr::Call(callee, args) => self.call(expr, callee, args)?,
             HirExpr::Construct(callee, args, brace) => {
+                // A plain construction seals into an immutable object; a `mut` one does not. Capture
+                // it before checking children, which reset the flag for their own constructions.
+                let immutable = !std::mem::take(&mut self.mut_construction);
                 let tag = self.construct_tag(callee);
                 for a in args { self.expr(a)?; }
                 for (name, v) in brace {
@@ -713,9 +735,27 @@ impl<'a> Checker<'a> {
                     let braced: HashSet<Symbol> = brace.iter().map(|(name, _)| *name).collect();
                     self.check_construction(*type_name, &braced, callee)?;
                 }
-                Typed::of(Flow::Clean, tag)
+                // A plain construction is immutable by default. A `mut Ctor()` overrides it above.
+                if immutable { self.record_deep_seal(expr); }
+                Typed::of(Flow::Clean, tag).with_mutability(Mutability::Immutable)
             },
-            HirExpr::Mut(inner) => self.expr(inner)?.with_mutability(Mutability::Mutable),
+            HirExpr::Mut(inner) => {
+                // A mutable container may hold mutable elements, so its children skip the
+                // immutable-container check that a plain literal applies.
+                match self.hir.get(inner) {
+                    HirExpr::Literal(lit @ (HirLiteral::Array(_) | HirLiteral::Dict(_))) => {
+                        self.literal_children(lit, inner, false)?;
+                        Typed::nonnull().with_mutability(Mutability::Mutable)
+                    },
+                    _ => {
+                        // The inner construction is mutable, so it does not deep-seal its fields.
+                        self.mut_construction = true;
+                        let typed = self.expr(inner)?;
+                        self.mut_construction = false;
+                        typed.with_mutability(Mutability::Mutable)
+                    },
+                }
+            },
             HirExpr::Index(target, member, _) => self.member_access(target, member)?,
             HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
             HirExpr::Unary(op, x) => self.unary(*op, x)?,
@@ -839,6 +879,7 @@ impl<'a> Checker<'a> {
             let name = self.ident_sym(&param.name);
             let mut local = Local::param(name, self.clause_owed(&param.clause), param.mutable);
             local.container = param.clause.container;
+            local.param = true;
             local.mutability = Mutability::param(param.clause.capability);
             // A plain `mut` parameter borrows its argument; `*mut` owns it.
             local.borrowed = param.clause.capability == Capability::Mut;
@@ -952,21 +993,47 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    fn literal_children(&mut self, lit: &HirLiteral, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    /// Checks a literal's children. `immutable` is set for a plain container literal: an immutable
+    /// container is immutable all the way down, so a mutable element is rejected, and an element of
+    /// unknown capability records a runtime seal-check.
+    fn literal_children(&mut self, lit: &HirLiteral, node: &HirId<HirExpr>, immutable: bool) -> Result<(), anyhow::Error> {
         match lit {
             HirLiteral::Array(elems) => for e in elems {
                 let t = self.expr(e)?;
+                self.check_container_element(immutable, &t, e, node)?;
                 self.store_into_container(&t.flow, e)?;
             },
             HirLiteral::Dict(pairs) => for (k, v) in pairs {
                 self.expr(k)?;
                 let t = self.expr(v)?;
+                self.check_container_element(immutable, &t, v, node)?;
                 self.store_into_container(&t.flow, v)?;
             },
             HirLiteral::Lambda(decl) => self.lambda(decl, node)?,
             _ => {},
         }
         Ok(())
+    }
+
+    /// Enforces deep immutability at a container element. A known-mutable element in an immutable
+    /// container is a compile error; an unknown-capability one defers to a runtime seal-check.
+    fn check_container_element(&mut self, immutable: bool, elem: &Typed, elem_node: &HirId<HirExpr>, container: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if !immutable {
+            return Ok(());
+        }
+        match elem.mutability {
+            Mutability::Mutable => Err(self.mutable_in_immutable_error(elem_node)),
+            Mutability::Unknown => { self.record_seal_check(container); Ok(()) },
+            Mutability::Immutable => Ok(()),
+        }
+    }
+
+    fn mutable_in_immutable_error(&self, node: &HirId<HirExpr>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(
+            "cannot store a mutable value in an immutable container".to_string(),
+            self.hir.pos(node).clone())
+            .with_label("this value is mutable")
+            .with_help("freeze the value, or mark the container `mut`"))
     }
 
     fn identifier(&mut self, name: Symbol, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {

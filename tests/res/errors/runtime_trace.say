@@ -14,3 +14,4 @@ a();
 //   |                ^^^^
 // 	at b (runtime_trace.say:2)
 // 	at a (runtime_trace.say:5)
+// 	at script (runtime_trace.say:7)

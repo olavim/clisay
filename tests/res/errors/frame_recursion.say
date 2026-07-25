@@ -13,3 +13,4 @@ f(2);
 // 	at f (frame_recursion.say:2)
 // 	at f (frame_recursion.say:3)
 // 	at f (frame_recursion.say:3)
+// 	at script (frame_recursion.say:5)

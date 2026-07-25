@@ -1,0 +1,4 @@
+// A plain construction seals its instance immutable all the way down, freezing a field built mutable in init.
+type Box { pub data; init() { this.data = mut [0]; } }
+say b = Box();
+b.data[0] = 9; // error: cannot mutate an immutable value

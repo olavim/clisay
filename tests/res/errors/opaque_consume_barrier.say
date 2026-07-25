@@ -13,3 +13,4 @@ apply(consumes, v);
 //   |      ^^^ the callee lets `val` escape
 //   |
 // 	at apply (opaque_consume_barrier.say:3)
+// 	at script (opaque_consume_barrier.say:6)

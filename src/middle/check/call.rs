@@ -12,7 +12,10 @@ use crate::middle::native::{self, Container, NativeSig};
 use super::{Mutability, Checker, Flow, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
-    pub(super) fn call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<Typed, anyhow::Error> {
+    pub(super) fn call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<Typed, anyhow::Error> {
+        // A plain construction seals into an immutable object; a `mut` one does not. Capture it
+        // before the arguments, whose own constructions reset the flag.
+        let immutable = !std::mem::take(&mut self.mut_construction);
         let arg_types: Vec<Typed> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
         match self.hir.get(callee) {
             HirExpr::Identifier(name) => {
@@ -22,7 +25,9 @@ impl<'a> Checker<'a> {
                     if let Some(init) = self.constructor_init(callee) {
                         self.check_call_args(callee, init, &arg_types, args)?;
                     }
-                    return Ok(Typed::of(Flow::Clean, TypeTag::Concrete(name)));
+                    // A plain `A(..)` construction is immutable by default, like `A{..}`.
+                    if immutable { self.record_deep_seal(expr); }
+                    return Ok(Typed::of(Flow::Clean, TypeTag::Concrete(name)).with_mutability(Mutability::Immutable));
                 }
                 if self.hir.text(name) == "Err" && self.frame_index_of(name).is_none() {
                     return Ok(Typed::of(self.fails_flow(), TypeTag::Unknown));
@@ -187,12 +192,10 @@ impl<'a> Checker<'a> {
                 }
             } else if typed.mutability == Mutability::Mutable {
                 // A read-only helper borrows the mutable, so it is admitted only where the callee
-                // neither persists nor mutates it.
+                // does not persist it. A callee that mutates it is rejected in its own body, since
+                // an unmarked parameter is read-only.
                 if self.sigs.param_escapes_at(&callee_fn, i) {
                     return Err(self.keeps_argument_error(callee, &args[i]));
-                }
-                if self.sigs.param_mutates_at(&callee_fn, i) {
-                    return Err(self.mutates_argument_error(callee, &args[i]));
                 }
             }
         }
@@ -207,19 +210,6 @@ impl<'a> Checker<'a> {
             format!("{subject} is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'"),
             self.hir.pos(arg), format!("{subject} is mutable"),
             self.hir.pos(callee), format!("{c} keeps its argument"))
-    }
-
-    /// The error for passing a mutable value to a parameter the callee mutates in place. The fix is
-    /// on the callee's parameter, so the help leads there. Freezing is no help, since the callee
-    /// needs to write the value.
-    fn mutates_argument_error(&self, callee: &HirId<HirExpr>, arg: &HirId<HirExpr>) -> anyhow::Error {
-        let subject = self.quoted_subject(arg);
-        let c = self.callee_name(callee);
-        self.error_ctx_help(
-            "mutable value lent to a parameter that mutates it".to_string(),
-            self.hir.pos(arg), format!("{subject} is mutable"),
-            self.hir.pos(callee), format!("{c} mutates its argument"),
-            format!("declare the parameter `mut` to let it mutate the borrow, or pass a `copy` to leave {subject} unchanged"))
     }
 
     /// The error for handing a borrowed value to a parameter that consumes it.

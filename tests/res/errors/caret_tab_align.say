@@ -10,3 +10,4 @@ a();
 // 2 |     return 1 + true;
 //   |                ^^^^
 // 	at a (caret_tab_align.say:2)
+// 	at script (caret_tab_align.say:4)

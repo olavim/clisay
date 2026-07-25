@@ -18,7 +18,7 @@ fn describe(b?)! {
     return "a box";
 }
 
-say b = makeBox(10);
+say b = mut makeBox(10);
 b.value = 20;
 print(b.get()); // expect: 20
 print(describe(b)); // expect: a box

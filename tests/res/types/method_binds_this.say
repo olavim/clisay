@@ -5,7 +5,7 @@ type A {
     }
 }
 
-say obj = A();
+say obj = mut A();
 print(obj.a); // expect: a
 print(obj.get()); // expect: a
 say get = obj.get;

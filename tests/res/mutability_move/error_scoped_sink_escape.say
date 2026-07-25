@@ -1,5 +1,5 @@
 // A container that escapes the block carries its contents, so the source stays dead.
 say sink = mut [];
 say a = mut [1];
-{ say b = [a]; sink.push(b); }
+{ say b = mut [a]; sink.push(b); }
 print(a[0]); // error: value used after it was moved

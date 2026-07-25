@@ -12,3 +12,4 @@ m();
 // 2 |   pub fn boom()! { return 1 + true; }
 //   |                               ^^^^
 // 	at A.boom (frame_bound_method.say:2)
+// 	at script (frame_bound_method.say:6)

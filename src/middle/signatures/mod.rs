@@ -40,9 +40,9 @@ pub enum Mutability {
 }
 
 impl Mutability {
-    /// The capability a parameter's clause marker grants its binding.
+    /// The mutability a parameter's clause marker grants its binding.
     pub fn param(capability: Capability) -> Mutability {
-        if capability.is_mut() { Mutability::Mutable } else { Mutability::Unknown }
+        if capability.is_mut() { Mutability::Mutable } else { Mutability::Immutable }
     }
 }
 
