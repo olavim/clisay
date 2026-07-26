@@ -158,7 +158,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             self.tokens.expect(TokenType::Semicolon)?;
                             fields.insert(field);
 
-                            if nullable { nullable_fields.insert(field); }
+                            let clause_opt = clause.names.iter().any(|n| self.ast.text(*n) == "opt");
+                            if nullable || clause_opt { nullable_fields.insert(field); }
                             if mutable { mut_fields.insert(field); }
 
                             if !clause.names.is_empty() || clause.void {

@@ -1,0 +1,6 @@
+// A `gives` delegate must be a plain, non-null field: a null delegate provides no trait.
+trait Powered { pub fn go()! { return "v"; } }
+type Engine with Powered { init() {} }
+type Car {
+    pub engine? gives Powered; // error: `gives` delegate field 'engine' cannot carry obligations
+}
