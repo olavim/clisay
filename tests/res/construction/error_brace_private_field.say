@@ -1,0 +1,4 @@
+// A brace only sets public fields and never applies defaults, so a non-null non-public field
+// cannot be initialized this way. Such a type is not brace-constructible.
+type T { secret; pub name; }
+say t = T{name: "a"}; // error: 'T' cannot be brace-constructed: non-null field 'secret' is not public, so a brace cannot set it

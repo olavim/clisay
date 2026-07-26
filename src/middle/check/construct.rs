@@ -32,11 +32,24 @@ impl<'a> Checker<'a> {
 
     /// A brace must supply every non-null public field.
     pub(super) fn check_construction(&self, type_name: Symbol, braced: &HashSet<Symbol>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        // A non-null field a brace cannot set would be left null, breaking the non-null guarantee.
+        let mut unreachable: Vec<Symbol> = self.fields(type_name)
+            .filter(|field| field.non_null && !field.public)
+            .map(|field| field.name)
+            .collect();
+        // The field set iterates in a nondeterministic hash order, so report a stable one.
+        unreachable.sort_by_key(|field| self.hir.text(*field));
+        if let Some(field) = unreachable.first() {
+            return Err(self.error_help(
+                format!("'{}' cannot be brace-constructed: non-null field '{}' is not public, so a brace cannot set it", self.hir.text(type_name), self.hir.text(*field)),
+                node,
+                format!("make '{}' public, give it the `opt` obligation (`{}: opt`), or construct with a factory `{}(..)`", self.hir.text(*field), self.hir.text(*field), self.hir.text(type_name))));
+        }
+
         let mut missing: Vec<Symbol> = self.fields(type_name)
             .filter(|field| field.non_null && field.public && !braced.contains(&field.name))
             .map(|field| field.name)
             .collect();
-        // The field set iterates in a nondeterministic hash order, so report a stable one.
         missing.sort_by_key(|field| self.hir.text(*field));
         if let Some(field) = missing.first() {
             return Err(self.error(format!("Construction of '{}' is missing non-null field '{}'", self.hir.text(type_name), self.hir.text(*field)), node));

@@ -56,6 +56,7 @@ impl<'a> Lowerer<'a> {
         let traits = self.flattened_with(type_id);
         self.check_provide_require_exclusive(decl, type_pos)?;
         self.check_provide_once(type_id, decl, type_pos)?;
+        self.check_gives_no_obligations(decl, type_pos)?;
         // Traits provided by delegation (`field gives Trait`): they satisfy `req T` and `is T`.
         let gives_traits: Vec<Symbol> = self.names.gives_traits(&type_id).iter().map(|(_, t, _)| *t).collect();
         self.check_requirements(decl, &traits, &gives_traits, type_pos)?;
@@ -223,6 +224,21 @@ impl<'a> Lowerer<'a> {
             if !given.insert(*trait_sym) {
                 return Err(self.dup_trait_error(decl, *trait_sym, &[TraitClause::Gives],
                     format!("Trait '{}' appears in `gives` more than once", self.hir.text(*trait_sym)), pos));
+            }
+        }
+        Ok(())
+    }
+
+    /// A `gives` delegate must be a plain, non-null field.
+    fn check_gives_no_obligations(&self, decl: &TypeDecl, pos: &SourcePosition) -> Result<(), anyhow::Error> {
+        for (field, trait_sym) in &decl.gives {
+            if decl.nullable_fields.contains(field) || decl.field_clauses.iter().any(|(f, _)| f == field) {
+                let ref_pos = decl.trait_refs.iter()
+                    .find(|r| r.clause == TraitClause::Gives && r.trait_sym == *trait_sym)
+                    .map_or(pos, |r| &r.pos);
+                return Err(self.error_help_at(
+                    format!("`gives` delegate field '{}' cannot carry obligations", self.hir.text(*field)),
+                    ref_pos, "make it a plain, non-null field"));
             }
         }
         Ok(())
