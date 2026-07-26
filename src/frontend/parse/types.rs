@@ -130,7 +130,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     match name.as_str() {
                         "init" => {
                             if is_trait { return Err(self.error_help("A trait cannot declare an `init`", &member_pos, "put initialization on the host type")); }
-                            if visibility != Visibility::Private { parse_error!(self, &member_pos, "An initializer cannot have a visibility modifier"); }
+                            if visibility != Visibility::Private { parse_error!(self, &member_pos, "A factory cannot have a visibility modifier"); }
                             if mutable { parse_error!(self, &member_pos, "Only fields can be `mut`"); }
                             init = Some(self.parse_init()?);
                         },

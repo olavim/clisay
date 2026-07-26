@@ -1,0 +1,5 @@
+// A mut brace keeps its fields mutable.
+type Box { pub items; }
+say b = mut Box{items: mut [0]};
+b.items[0] = 5;
+print(b.items[0]); // expect: 5

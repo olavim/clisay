@@ -51,7 +51,22 @@ impl Vm {
         self.stack.push(value);
         Ok(true)
     }
-    
+
+    /// A factory's return: like `op_return`, but deep-freezes the returned instance when the frame's
+    /// seal bit is set.
+    pub(super) fn op_return_fac(&mut self) {
+        let frame = self.frames.pop();
+        self.ip = frame.return_ip;
+        self.close_upvalues(frame.stack_start);
+
+        let value = self.stack.pop();
+        if frame.seal {
+            crate::core::objects::freeze_value(value, self.current_pos_index());
+        }
+        self.stack.set_top(frame.stack_start);
+        self.stack.push(value);
+    }
+
     pub(super) fn op_throw(&mut self) -> Result<(), anyhow::Error> {
         let value = self.stack.pop();
         self.throw_value(value)
@@ -258,12 +273,6 @@ impl Vm {
         if value.is_object() {
             value.as_object().set_mutable();
         }
-    }
-
-    /// Seals a plain construction immutable all the way down, so no field stays mutable. The
-    /// instance is still mutable here, so freezing it walks into every field.
-    pub(super) fn op_deep_seal(&mut self) {
-        crate::core::objects::freeze_value(self.stack.peek(0), self.current_pos_index());
     }
 
     /// Traps a mutable element in the immutable container on top of the stack. The compile pass

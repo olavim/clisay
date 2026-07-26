@@ -96,8 +96,8 @@ pub enum HirExpr {
     Literal(HirLiteral),
     Identifier(Symbol),
     Is(HirId<HirExpr>, Symbol),
-    /// Brace construction `C(args) { field: value, ... }`: the callee type expression, the
-    /// `init` args, then the brace field initializers.
+    /// Brace construction `C { field: value, ... }`: the callee type expression, an unused args
+    /// slot (the combined form is retired), then the brace fields.
     Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
     /// A `mut`-minted construction (`mut {}`, `mut []`, `mut Ctor()`).
     Mut(HirId<HirExpr>),
@@ -297,6 +297,8 @@ pub struct HirTypeDecl {
     /// The trait/type names this type **provides** for `x is T`: its own name plus every
     /// transitively `with`-mixed trait.
     pub provides: Vec<Symbol>,
+    /// The `gives` delegations, `(field, trait)`. A construction verifies each field provides its trait.
+    pub gives: Vec<(Symbol, Symbol)>,
 }
 
 /// One arm of a `match`.

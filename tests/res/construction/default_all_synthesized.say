@@ -1,0 +1,8 @@
+// An all-defaulted type synthesizes a parameterless init that applies the defaults.
+type T {
+    pub a = 1;
+    pub b = 2;
+}
+say t = T();
+print(t.a); // expect: 1
+print(t.b); // expect: 2

@@ -45,7 +45,7 @@ pub struct Compiler<'a> {
     /// Nodes whose value needs a runtime null-barrier, from the check pass. Empty when checking is off.
     barriers: &'a Barriers,
     sigs: &'a Signatures,
-    /// The kind of each enclosing function, for initializer return handling.
+    /// The kind of each enclosing function, for factory return handling.
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
     types: FnvHashMap<*mut ObjString, *mut ObjType>

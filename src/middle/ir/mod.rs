@@ -17,7 +17,10 @@ pub struct Label(usize);
 pub enum Inst {
     // Control flow
     Call(u8),
-    /// Brace construction `C(args) { f: v, ... }`.
+    /// `mut K(args)`: a factory call whose frame is left unsealed, so the result stays mutable.
+    CallMut(u8),
+    /// Brace construction `C { f: v, ... }`. The second operand is the seal flag: 1 freezes the
+    /// instance in place, 0 leaves it mutable (`mut K{..}`).
     Construct(u16, u8),
     /// Fused method call `recv.name(args)`.
     Invoke(u8, u8),
@@ -41,6 +44,8 @@ pub enum Inst {
     JumpIfLeLocalConst(Label, u8, u8),
     JumpIfLtLocalConst(Label, u8, u8),
     Return,
+    /// A factory's return: deep-freezes the returned instance if the call frame's seal bit is set.
+    ReturnFac,
     Halt,
     Throw,
     PushTry(Label),
@@ -97,9 +102,6 @@ pub enum Inst {
     /// Asserts every element of the immutable container on top of the stack is immutable, so a
     /// mutable value of unknown capability cannot land in an immutable container.
     SealCheck,
-    /// Deep-freezes the fields of the immutable instance on top of the stack, so a plain
-    /// construction is immutable all the way down.
-    DeepSeal,
 
     // Arithmetic
     Add,

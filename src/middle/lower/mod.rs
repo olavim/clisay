@@ -28,6 +28,7 @@ pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
         opt,
         provided_traits: HashSet::new(),
         emitted_aliases: HashSet::new(),
+        in_factory: None,
     };
     lowerer.stmt(&root)?;
     Ok(lowerer.hir)
@@ -43,6 +44,10 @@ struct Lowerer<'a> {
     provided_traits: HashSet<Symbol>,
     /// Qualified-call alias method names (`"<Trait>.<method>"`) emitted for the current composer.
     emitted_aliases: HashSet<String>,
+    /// While lowering a factory body or its field defaults, the enclosing type's field names and the
+    /// factory's param names. Inside a factory `this` is not a value, and each `this.<field>` or bare
+    /// field name (not shadowed by a param) is the field's synthetic local.
+    in_factory: Option<(HashSet<Symbol>, HashSet<Symbol>)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -166,6 +171,19 @@ impl<'a> Lowerer<'a> {
                         if name.contains('.') {
                             return Err(self.error(format!("Invalid member access: '{name}' is not a member"), expr_id));
                         }
+                        // Inside a factory `this` is not a value, so `this.<field>` names a field and
+                        // nothing else. It desugars to the field's synthetic local.
+                        if self.in_factory.is_some() {
+                            let field = self.hir.symbol_of(name).filter(|sym| self.in_factory.as_ref().unwrap().0.contains(sym));
+                            if let Some(field) = field {
+                                let local = self.field_local_sym(field);
+                                return Ok(self.hir.add(HirExpr::Identifier(local), pos));
+                            }
+                            return Err(self.error_help_at(format!("cannot access `this.{name}` in a factory: `this` is not a value there, only its fields"), &pos,
+                                "compute the value and assign it to a field with `this.<field> = ...`"));
+                        }
+                    } else if self.in_factory.is_some() {
+                        return Err(self.error("`this` is not a value in a factory; index only its fields by name".to_string(), expr_id));
                     }
                 }
                 HirExpr::Index(self.expr(target)?, self.expr(member)?, *is_dot)
@@ -175,7 +193,14 @@ impl<'a> Lowerer<'a> {
                 if self.names.trait_ref(*expr_id).is_some() {
                     return Err(self.error(format!("'{}' is a trait and cannot be used as a value (traits are not instantiable)", self.hir.text(*name)), expr_id));
                 }
-                HirExpr::Identifier(*name)
+                // In a factory a bare field name is an implicit `this.<field>`, so it is the field's
+                // synthetic local. A param of the same name shadows it.
+                let is_field = self.in_factory.as_ref().is_some_and(|(fields, params)| fields.contains(name) && !params.contains(name));
+                if is_field {
+                    HirExpr::Identifier(self.field_local_sym(*name))
+                } else {
+                    HirExpr::Identifier(*name)
+                }
             },
             Expr::Is(target, name) => HirExpr::Is(self.expr(target)?, *name),
             Expr::Construct(callee, fields) => {
@@ -192,7 +217,15 @@ impl<'a> Lowerer<'a> {
                 HirExpr::Construct(callee, args, brace)
             },
             Expr::Mut(inner) => return self.lower_value_mut(expr_id, inner),
-            Expr::This => HirExpr::This,
+            Expr::This => {
+                // A `this.<field>` access is handled in the `Index` arm above. Reaching here means
+                // `this` is used as a value, which a factory forbids.
+                if self.in_factory.is_some() {
+                    return Err(self.error_help_at("the partially-constructed 'this' is not a value in a factory", &pos,
+                        "assign or read its fields with `this.<field>`"));
+                }
+                HirExpr::This
+            },
             Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
             Expr::SafeCall(callee, args) => HirExpr::SafeCall(self.expr(callee)?, self.exprs(args)?),
             Expr::Propagate(operand) => HirExpr::Propagate(self.expr(operand)?),
@@ -414,6 +447,13 @@ impl<'a> Lowerer<'a> {
             ret,
             clause,
         })
+    }
+
+    /// The synthetic local a factory's `this.<field>` desugars to. A source name cannot start with
+    /// `$`, so it never collides with a user binding.
+    pub(super) fn field_local_sym(&mut self, field: Symbol) -> Symbol {
+        let name = format!("${}", self.hir.text(field));
+        self.hir.intern(&name)
     }
 
     fn field_init(&mut self, field: &FieldInit) -> Result<HirFieldInit, anyhow::Error> {

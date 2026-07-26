@@ -1,0 +1,3 @@
+// A construction is a factory call or a brace, never both.
+type T { pub x; pub y; init(a) { this.x = a; this.y = a; } }
+say t = T(1) { y: 2 }; // error: cannot mix constructor arguments and brace fields; use `K(..)` or `K { .. }`

@@ -47,9 +47,8 @@ pub struct Barriers {
     /// Immutable container literals with an unknown-capability element, whose elements are checked
     /// for mutability at construction so a mutable value cannot land in an immutable container.
     pub(super) seal_checks: HashSet<HirId<HirExpr>>,
-    /// Plain (immutable) constructions, whose fields are deep-frozen once the object is sealed so an
-    /// immutable instance is immutable all the way down.
-    pub(super) deep_seals: HashSet<HirId<HirExpr>>,
+    /// Paren-construction `Call` nodes (`K(args)`).
+    pub(super) constructions: HashSet<HirId<HirExpr>>,
 }
 
 impl Barriers {
@@ -88,9 +87,9 @@ impl Barriers {
         self.seal_checks.contains(node)
     }
 
-    /// Whether this construction seals into an immutable object whose fields need deep-freezing.
-    pub fn needs_deep_seal(&self, node: &HirId<HirExpr>) -> bool {
-        self.deep_seals.contains(node)
+    /// Whether this `Call` node is a paren construction `K(args)`.
+    pub fn is_construction(&self, node: &HirId<HirExpr>) -> bool {
+        self.constructions.contains(node)
     }
 
     pub fn len(&self) -> usize {
@@ -125,9 +124,9 @@ impl<'a> Checker<'a> {
         self.seal_checks.insert(*node);
     }
 
-    /// Marks a plain construction whose fields deep-freeze once the object is sealed.
-    pub(super) fn record_deep_seal(&mut self, node: &HirId<HirExpr>) {
-        self.deep_seals.insert(*node);
+    /// Marks a `Call` node as a paren construction `K(args)`.
+    pub(super) fn record_construction(&mut self, node: &HirId<HirExpr>) {
+        self.constructions.insert(*node);
     }
 
     /// Records the guard for an unknown value reaching a destination accepting `accepted`. The
@@ -159,7 +158,9 @@ impl<'a> Checker<'a> {
 
     /// Checks a value entering a slot against the obligations the slot accepts.
     pub(super) fn check_into_slot(&mut self, flow: &Flow, accepted: &HashSet<Symbol>, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let text = self.hir.text(name);
+        let text = self.binding_text(name);
+        // A field-local stands for its field, so present the slot as a field there.
+        let noun = if self.is_field_local(name) { "field" } else { "binding" };
         let void = || format!("Cannot assign a void result to '{text}'; the call returns no value");
         if flow.is_void() {
             return Err(self.error(void(), node));
@@ -175,8 +176,8 @@ impl<'a> Checker<'a> {
         match self.non_null_violation(flow, node) {
             None => Ok(()),
             Some(Violation::Void) => Err(self.error(void(), node)),
-            Some(Violation::Null) => Err(self.error(format!("Cannot assign null to non-null binding '{text}'"), node)),
-            Some(Violation::Nullable) => Err(self.error(format!("Cannot assign a nullable value to non-null binding '{text}'"), node)),
+            Some(Violation::Null) => Err(self.error(format!("Cannot assign null to non-null {noun} '{text}'"), node)),
+            Some(Violation::Nullable) => Err(self.error(format!("Cannot assign a nullable value to non-null {noun} '{text}'"), node)),
         }
     }
 }

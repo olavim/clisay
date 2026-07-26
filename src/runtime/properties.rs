@@ -56,7 +56,7 @@ impl Vm {
         }
         let ip_start = func.ip_start;
         let closure = self.create_closure(func_ptr);
-        self.push_frame(closure.as_closure_ptr(), self.stack.offset(arg_count), ip_start)
+        self.push_frame(closure.as_closure_ptr(), self.stack.offset(arg_count), ip_start, true)
     }
 
     fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize) -> Result<(), anyhow::Error> {
@@ -75,7 +75,7 @@ impl Vm {
         for arg in args {
             self.stack.push(arg);
         }
-        self.call(arg_count, callable)
+        self.call(arg_count, callable, true)
     }
 
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {

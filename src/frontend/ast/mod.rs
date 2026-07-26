@@ -268,7 +268,7 @@ pub struct TypeDecl {
     pub nullable_fields: HashSet<Symbol>,
     pub mut_fields: HashSet<Symbol>,
     pub field_clauses: Vec<(Symbol, SlotClause)>,
-    /// Field initializers (`field = value`), spliced into the init during lowering.
+    /// Field defaults (`field = value`), applied by the factory during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,
     pub pub_members: HashSet<Symbol>,

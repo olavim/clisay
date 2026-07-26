@@ -1,8 +1,9 @@
-// An immutable field may be assigned only once, even within init.
+// A factory may assign a field more than once; the last write wins.
 type T {
     pub value;
     init() {
         this.value = 1;
-        this.value = 2; // error: Immutable field `T.value` is initialized more than once
+        this.value = 2;
     }
 }
+print(T().value); // expect: 2

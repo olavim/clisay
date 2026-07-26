@@ -474,7 +474,7 @@ pub enum TypeMember {
 pub struct ObjType {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
-    /// Field and regular-method names. The accessors/initializer are *not* here;
+    /// Field and regular-method names. The accessors/factory are *not* here;
     /// they're addressed structurally via the id fields below.
     pub members: FnvHashMap<*mut ObjString, TypeMember>,
     pub fields: IntSet<MemberId>,
@@ -486,10 +486,13 @@ pub struct ObjType {
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
-    /// `None` for native types, which have no initializer.
-    pub init_id: Option<MemberId>,
+    /// `None` for a factory-less type, or a native type.
+    pub factory_id: Option<MemberId>,
     /// Prebuilt initial instance values (method slots filled, fields `NULL`).
-    pub template: Box<[Value]>
+    pub template: Box<[Value]>,
+    /// The `gives` delegations, `(field id, field name, trait name)`. A construction verifies each
+    /// field provides its trait.
+    pub gives: Box<[(MemberId, *mut ObjString, *mut ObjString)]>
 }
 
 impl ObjType {
@@ -504,8 +507,9 @@ impl ObjType {
             member_count: 0,
             getter_id: None,
             setter_id: None,
-            init_id: None,
-            template: Box::new([])
+            factory_id: None,
+            template: Box::new([]),
+            gives: Box::new([])
         }
     }
 
@@ -542,8 +546,8 @@ impl ObjType {
         self.setter_id.map(|id| self.methods[&id])
     }
 
-    pub fn initializer(&self) -> Option<Object> {
-        self.init_id.map(|id| self.methods[&id])
+    pub fn factory(&self) -> Option<Object> {
+        self.factory_id.map(|id| self.methods[&id])
     }
 }
 
@@ -563,6 +567,10 @@ impl GcTraceable for ObjType {
         for &name in &self.provided {
             gc.mark_object(name);
         }
+        for &(_, field_name, trait_name) in &self.gives {
+            gc.mark_object(field_name);
+            gc.mark_object(trait_name);
+        }
     }
 
     fn size(&self) -> usize {
@@ -570,6 +578,7 @@ impl GcTraceable for ObjType {
             + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<TypeMember>())
             + self.provided.capacity() * mem::size_of::<*mut ObjString>()
             + self.template.len() * mem::size_of::<Value>()
+            + self.gives.len() * mem::size_of::<(MemberId, *mut ObjString, *mut ObjString)>()
     }
 }
 

@@ -19,20 +19,28 @@ impl Vm {
         self.error("Stack overflow").unwrap_err()
     }
 
-    pub(super) fn push_frame(&mut self, closure: *mut ObjClosure, stack_start: *mut Value, ip_start: usize) -> Result<(), anyhow::Error> {
+    pub(super) fn push_frame(&mut self, closure: *mut ObjClosure, stack_start: *mut Value, ip_start: usize, seal: bool) -> Result<(), anyhow::Error> {
         if self.frames.is_full() {
             return Err(self.stack_overflow());
         }
         self.frames.push(CallFrame {
             closure,
             return_ip: self.ip,
-            stack_start
+            stack_start,
+            seal,
         });
         self.ip = unsafe { self.chunk.code.as_ptr().offset(ip_start as isize) };
         Ok(())
     }
 
-    pub(crate) fn call(&mut self, arg_count: usize, value: Value) -> Result<(), anyhow::Error> {
+    pub(super) fn op_call_mut(&mut self) -> Result<(), anyhow::Error> {
+        let arg_count = self.read_next() as usize;
+        let value = self.stack.peek(arg_count);
+        self.call(arg_count, value, false)
+    }
+
+    /// `seal` rides onto the pushed frame so a factory's `RETURN_FAC` knows whether to freeze.
+    pub(crate) fn call(&mut self, arg_count: usize, value: Value, seal: bool) -> Result<(), anyhow::Error> {
         if !value.is_callable() {
             return self.error(format!("{} is not callable", value.fmt()));
         }
@@ -41,10 +49,10 @@ impl Vm {
         let tag = object.tag();
 
         match tag {
-            objects::TAG_CLOSURE => self.call_closure(arg_count, object.as_closure_ptr()),
+            objects::TAG_CLOSURE => self.call_closure(arg_count, object.as_closure_ptr(), seal),
             objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, object.as_native_function_ptr()),
-            objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object.as_bound_method_ptr()),
-            objects::TAG_TYPE => self.call_type(arg_count, object.as_type_ptr()),
+            objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object.as_bound_method_ptr(), seal),
+            objects::TAG_TYPE => self.call_type(arg_count, object.as_type_ptr(), seal),
             _ => unsafe { std::hint::unreachable_unchecked() }
         }
     }
@@ -108,7 +116,7 @@ impl Vm {
                 method.tag() == objects::TAG_CLOSURE && unsafe { &*method.as_closure_ptr() }.escapes(position)
             },
             objects::TAG_TYPE => {
-                let init = unsafe { &*object.as_type_ptr() }.initializer();
+                let init = unsafe { &*object.as_type_ptr() }.factory();
                 matches!(init, Some(obj) if obj.tag() == objects::TAG_FUNCTION
                     && unsafe { &*obj.as_function_ptr() }.escapes(position))
             },
@@ -128,13 +136,13 @@ impl Vm {
         }
     }
 
-    fn call_closure(&mut self, arg_count: usize, closure_ptr: *mut ObjClosure) -> Result<(), anyhow::Error> {
+    fn call_closure(&mut self, arg_count: usize, closure_ptr: *mut ObjClosure, seal: bool) -> Result<(), anyhow::Error> {
         let closure = unsafe { &*closure_ptr };
         check_arity!(self, arg_count, closure.arity, closure.name);
-        self.push_frame(closure_ptr, self.stack.offset(arg_count), closure.ip_start)
+        self.push_frame(closure_ptr, self.stack.offset(arg_count), closure.ip_start, seal)
     }
 
-    fn call_bound_method(&mut self, arg_count: usize, bound_method_ptr: *mut ObjBoundMethod) -> Result<(), anyhow::Error> {
+    fn call_bound_method(&mut self, arg_count: usize, bound_method_ptr: *mut ObjBoundMethod, seal: bool) -> Result<(), anyhow::Error> {
         let bound_method = unsafe { &*bound_method_ptr };
         let method = bound_method.method;
         match method.tag() {
@@ -143,7 +151,7 @@ impl Vm {
                 let closure = unsafe { &*closure_ptr };
                 check_arity!(self, arg_count, closure.arity, closure.name);
                 let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
-                self.push_frame(closure_ptr, stack_start, closure.ip_start)?;
+                self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
             },
             objects::TAG_NATIVE_FUNCTION => {
                 self.stack.set(arg_count, Value::from(bound_method.target));
@@ -154,75 +162,81 @@ impl Vm {
         Ok(())
     }
 
-    /// Brace construction `C(args) { f: v, ... }`. Reads the brace field ids then the init arg
-    /// count, allocates the instance, sets the brace fields from the stack, then runs `init`.
-    /// The stack holds `[C, args.., brace values..]` in source order.
+    /// Brace construction `C { f: v, ... }`. Reads the brace field ids, allocates the instance,
+    /// sets the brace fields from the stack, then verifies `gives`. The stack holds
+    /// `[C, brace values..]` in source order. A brace does not run the factory.
     pub(super) fn op_construct(&mut self) -> Result<(), anyhow::Error> {
         let field_count = self.read_next() as usize;
         let mut field_ids = [0u8; u8::MAX as usize + 1];
         for slot in field_ids.iter_mut().take(field_count) {
             *slot = self.read_next();
         }
-        let arg_count = self.read_next() as usize;
 
-        let type_val = self.stack.peek(field_count + arg_count);
+        // A plain brace freezes the instance in place; `mut K{..}` (seal 0) leaves it mutable.
+        let seal = self.read_next() != 0;
+
+        let type_val = self.stack.peek(field_count);
         if !type_val.is_object() || type_val.as_object().tag() != objects::TAG_TYPE {
             return self.error(format!("Cannot construct: {} is not a type", type_val.fmt()));
         }
         let type_ptr = type_val.as_object().as_type_ptr();
         let ty = unsafe { &*type_ptr };
-        let init_obj = ty.initializer().unwrap();
-        if init_obj.tag() != objects::TAG_FUNCTION {
-            return self.error("Cannot brace-construct this type");
-        }
-        let init_ref = init_obj.as_function_ptr();
-        let init = unsafe { &*init_ref };
-        check_arity!(self, arg_count, init.arity, init.name);
 
-        // Allocate, rooting the init closure across the allocation (it can trigger GC).
-        let closure = self.create_closure(init_ref);
-        self.stack.push(Value::from(closure));
         let instance_ptr = self.alloc(ObjInstance::new(type_ptr));
-        self.stack.pop();
-
-        // Brace values sit on top of the stack in field order; set them before init runs. A brace
-        // persists its value into the instance, so a borrowed one may not escape here.
         let instance = unsafe { &mut *instance_ptr };
         for j in 0..field_count {
             let value = self.stack.peek(field_count - 1 - j);
             self.ensure_not_borrowed(value)?;
             instance.set(field_ids[j], value);
         }
-        // Drop the brace values, then run init on the instance (it returns `this`).
-        self.stack.truncate(field_count);
-        let stack_start = self.stack.set(arg_count, Value::from(instance_ptr));
-        self.push_frame(closure.as_closure_ptr(), stack_start, init.ip_start)
+
+        // A construction verifies each `gives` delegate actually provides its trait.
+        for &(field_id, field_name, trait_name) in ty.gives.iter() {
+            let value = instance.get(field_id);
+            let provides = matches!(value.kind(), ValueKind::Object(ObjectKind::Instance))
+                && unsafe { &*(*value.as_object().as_instance_ptr()).ty }.provided.contains(&trait_name);
+            if !provides {
+                let msg = format!("Delegate field '{}' does not provide trait '{}'",
+                    unsafe { &(*field_name).value }, unsafe { &(*trait_name).value });
+                return self.error(msg);
+            }
+        }
+
+        if seal {
+            crate::core::objects::freeze_value(Value::from(instance_ptr), self.current_pos_index());
+        }
+        self.stack.truncate(field_count + 1);
+        self.stack.push(Value::from(instance_ptr));
+        Ok(())
     }
 
-    fn call_type(&mut self, arg_count: usize, type_ptr: *mut ObjType) -> Result<(), anyhow::Error> {
+    fn call_type(&mut self, arg_count: usize, type_ptr: *mut ObjType, seal: bool) -> Result<(), anyhow::Error> {
         let ty = unsafe { &*type_ptr };
-        let init_method_obj = ty.initializer().unwrap();
-        match init_method_obj.tag() {
+        let Some(factory_obj) = ty.factory() else {
+            let name = unsafe { &(*ty.name).value };
+            return self.error(format!("'{name}' has no factory; construct it with a brace like '{name}{{ .. }}'"));
+        };
+        match factory_obj.tag() {
             objects::TAG_FUNCTION => {
-                let init_method_ref = init_method_obj.as_function_ptr();
-                let init_method = unsafe { &*init_method_ref };
-                check_arity!(self, arg_count, init_method.arity, init_method.name);
+                let factory_ref = factory_obj.as_function_ptr();
+                let factory = unsafe { &*factory_ref };
+                check_arity!(self, arg_count, factory.arity, factory.name);
 
-                let closure = self.create_closure(init_method_ref);
+                let closure = self.create_closure(factory_ref);
                 // Root the fresh closure on the value stack: it isn't reachable yet and
                 // the instance allocation below can trigger GC.
                 self.stack.push(Value::from(closure));
                 let instance = self.alloc(ObjInstance::new(type_ptr));
                 self.stack.pop();
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
-                self.push_frame(closure.as_closure_ptr(), stack_start, init_method.ip_start)
+                self.push_frame(closure.as_closure_ptr(), stack_start, factory.ip_start, seal)
             },
-            // A native initializer receives the fresh instance as its target and fills its fields.
+            // A native factory receives the fresh instance as its target and fills its fields.
             objects::TAG_NATIVE_FUNCTION => {
-                let init_native_ref = init_method_obj.as_native_function_ptr();
+                let factory_native = factory_obj.as_native_function_ptr();
                 let instance = self.alloc(ObjInstance::new(type_ptr));
                 self.stack.set(arg_count, Value::from(instance));
-                self.call_native(arg_count, init_native_ref)
+                self.call_native(arg_count, factory_native)
             },
             _ => unsafe { std::hint::unreachable_unchecked() }
         }

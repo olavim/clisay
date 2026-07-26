@@ -1,0 +1,6 @@
+// A brace does not run the factory, so the factory's arity does not gate it. Both forms construct.
+type Tagged { pub tag; init(c) { this.tag = c; } }
+say t = Tagged { tag: "hi" };
+print(t.tag); // expect: hi
+say u = Tagged("yo");
+print(u.tag); // expect: yo

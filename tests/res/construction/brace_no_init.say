@@ -1,0 +1,4 @@
+// A brace does not run the factory: no side effect, and the braced value wins over the default.
+type A { pub x; init() { print("init ran"); this.x = 0; } }
+say a = A{x: 1};
+print(a.x); // expect: 1
