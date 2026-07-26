@@ -22,7 +22,16 @@ impl<'a> Compiler<'a> {
             ty.fields.insert(field_id);
         }
         ty.member_count = layout.member_count;
-        ty.init_id = Some(layout.init_id);
+
+        // Each `gives` delegate is verified at construction, so carry its field id and trait name.
+        let mut gives = Vec::with_capacity(decl.gives.len());
+        for &(field, trait_sym) in &decl.gives {
+            let TypeMember::Field(id) = layout.members[&field] else { unreachable!("gives delegate is a field") };
+            let field_ref = self.gc.intern(self.hir.text(field));
+            let trait_ref = self.gc.intern(self.hir.text(trait_sym));
+            gives.push((id, field_ref, trait_ref));
+        }
+        ty.gives = gives.into_boxed_slice();
 
         // `x is T`: this type provides its own name and every transitively `with`-mixed trait.
         for name in &decl.provides {
@@ -30,9 +39,13 @@ impl<'a> Compiler<'a> {
             ty.provided.insert(name_ref);
         }
 
-        // Compile the initializer/method bodies into their slots.
-        let init_ptr = self.compile_fn(&decl.init, FnKind::Initializer)?;
-        ty.methods.insert(ty.init_id.unwrap(), init_ptr.into());
+        // Compile the factory into its slot. A factory-less type has none, so its `factory_id`
+        // stays None and `K()` on it finds no factory to call.
+        if let HirStmt::Fn(_) = self.hir.get(&decl.init) {
+            ty.factory_id = Some(layout.factory_id);
+            let init_ptr = self.compile_fn(&decl.init, FnKind::Factory)?;
+            ty.methods.insert(layout.factory_id, init_ptr.into());
+        }
 
         // Methods carry a `Type.method` display name so stack traces and arity errors
         // can name the owning type,.

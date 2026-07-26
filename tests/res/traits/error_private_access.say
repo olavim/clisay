@@ -1,5 +1,5 @@
 trait Logger { fn log(m) { print(m); } }
-type Service with Logger { init() { this.log("hello"); } } // error: Member 'log' is private
+type Service with Logger { init() { this.log("hello"); } } // error: cannot access `this.log` in a factory: `this` is not a value there, only its fields
 
 // @split
 

@@ -19,10 +19,6 @@ impl<'a> Collector<'a> {
             },
             HirStmt::Type(decl) => {
                 self.sigs.types_by_name.insert(decl.name, *stmt);
-                let init_fields = self.init_fields(decl);
-                self.sigs.init_fields.insert(decl.name, init_fields);
-                let method_field_assigns = self.method_field_assigns(decl);
-                self.sigs.method_field_assigns.insert(decl.name, method_field_assigns);
                 self.collect_sig(&decl.init);
                 for method in &decl.methods {
                     if let HirStmt::Fn(m) = self.hir.get(method) {
@@ -72,7 +68,7 @@ impl<'a> Collector<'a> {
         }
     }
 
-    /// Records a method's or initializer's signature and recurses into its body.
+    /// Records a method's or factory's signature and recurses into its body.
     fn collect_sig(&mut self, stmt: &HirId<HirStmt>) {
         if let HirStmt::Fn(decl) = self.hir.get(stmt) {
             let sig = self.fn_sig(decl);

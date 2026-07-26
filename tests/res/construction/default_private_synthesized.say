@@ -1,0 +1,7 @@
+// A private all-defaulted type stays constructible because its synthesized init reaches private fields.
+type T {
+    x = 0;
+    pub fn get()! { return this.x; }
+}
+say t = T();
+print(t.get()); // expect: 0

@@ -1,0 +1,5 @@
+// A fully-public type with no defaults synthesizes no factory. It builds by brace only.
+type Point { pub x; pub y; }
+say p = Point{x: 1, y: 2};
+print(p.x); // expect: 1
+print(p.y); // expect: 2

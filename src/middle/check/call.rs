@@ -13,20 +13,26 @@ use super::{Mutability, Checker, Flow, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
     pub(super) fn call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<Typed, anyhow::Error> {
-        // A plain construction seals into an immutable object; a `mut` one does not. Capture it
-        // before the arguments, whose own constructions reset the flag.
-        let immutable = !std::mem::take(&mut self.mut_construction);
         let arg_types: Vec<Typed> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
         match self.hir.get(callee) {
             HirExpr::Identifier(name) => {
                 let name = *name;
                 if self.sigs.is_type(name) {
-                    self.check_construction(name, &HashSet::new(), callee)?;
+                    // A factory-less type is built only by brace, so a paren call has nothing to run.
+                    if !self.type_has_factory(name) {
+                        let t = self.hir.text(name);
+                        return Err(self.error_help(
+                            format!("cannot construct '{t}' with '{t}(..)': '{t}' has no factory"),
+                            callee,
+                            format!("build it with a brace like '{t}{{ .. }}', or give every field a default or add an 'init'")));
+                    }
+
                     if let Some(init) = self.constructor_init(callee) {
                         self.check_call_args(callee, init, &arg_types, args)?;
                     }
-                    // A plain `A(..)` construction is immutable by default, like `A{..}`.
-                    if immutable { self.record_deep_seal(expr); }
+
+                    // Record the construction so codegen tells `mut K(..)` (CALL_MUT) from `mut f()`.
+                    self.record_construction(expr);
                     return Ok(Typed::of(Flow::Clean, TypeTag::Concrete(name)).with_mutability(Mutability::Immutable));
                 }
                 if self.hir.text(name) == "Err" && self.frame_index_of(name).is_none() {

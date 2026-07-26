@@ -70,7 +70,7 @@ impl<'a> Lowerer<'a> {
         }
         self.lower_gives(type_id, &host_methods, type_pos, &mut composed)?;
 
-        let init = self.lower_type_init(type_id, decl, &composed.field_inits, type_pos)?;
+        let init = self.lower_factory(type_id, decl, &composed.field_inits, type_pos)?;
 
         let mut req_fns: Vec<HirReqFn> = decl.req_fns.iter().map(|rf| self.lower_req_fn(rf, decl.name)).collect();
         for (trait_sym, td) in &traits {
@@ -99,6 +99,7 @@ impl<'a> Lowerer<'a> {
             trait_privates: composed.trait_privates,
             surface: HashSet::new(), // gating applies to standalone traits, not composed types
             provides,
+            gives: self.names.gives_traits(&type_id).iter().map(|(f, t, _)| (*f, *t)).collect(),
         })
     }
 
@@ -122,7 +123,8 @@ impl<'a> Lowerer<'a> {
             inner_members: decl.inner_members.clone(),
             trait_privates: composed.trait_privates,
             surface,
-            provides: Vec::new(), // a standalone trait emits no runtime type
+            gives: Vec::new(),
+            provides: Vec::new(),
         })
     }
 

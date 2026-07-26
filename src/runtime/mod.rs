@@ -70,7 +70,9 @@ impl GcTraceable for NativeTypes {
 pub struct CallFrame {
     closure: *mut ObjClosure,
     return_ip: *const OpCode,
-    stack_start: *mut Value
+    stack_start: *mut Value,
+    /// Whether a factory returning from this frame should seal (deep-freeze) its instance.
+    seal: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -137,7 +139,7 @@ fn build_err_type(gc: &mut Gc) -> *mut ObjType {
         Ok(())
     });
     ty.methods.insert(1, gc.alloc(init).into());
-    ty.init_id = Some(1);
+    ty.factory_id = Some(1);
     ty.member_count = 2;
     ty.provided.insert(gc.intern("Err"));
     ty.build_template();
@@ -212,7 +214,8 @@ impl Vm {
         vm.frames.push(CallFrame {
             closure: std::ptr::null_mut(),
             return_ip: std::ptr::null(),
-            stack_start: vm.stack.top()
+            stack_start: vm.stack.top(),
+            seal: false,
         });
 
         vm.define_native("print", 1, |vm, _target, args| {

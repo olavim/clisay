@@ -88,6 +88,8 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     vm.ip = ip;
     match op {
         opcode::CONSTRUCT => vm.op_construct()?,
+        opcode::CALL_MUT => vm.op_call_mut()?,
+        opcode::RETURN_FAC => vm.op_return_fac(),
         opcode::THROW => vm.op_throw()?,
         opcode::PUSH_TRY => vm.op_push_try(),
         opcode::POP_TRY => vm.op_pop_try(),
@@ -108,7 +110,6 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::DICT => vm.op_dict(),
         opcode::MUT => vm.op_mut(),
         opcode::SEAL_CHECK => vm.op_seal_check()?,
-        opcode::DEEP_SEAL => vm.op_deep_seal(),
         opcode::PUSH_CLOSURE => vm.op_push_closure()?,
         opcode::PUSH_TYPE => vm.op_push_type(),
         opcode::LOAD_GLOBAL => vm.op_load_global()?,
@@ -501,7 +502,7 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     } else {
         vm.stack.set_top(top);
         vm.ip = ip;
-        vm.call(arg_count, value)?;
+        vm.call(arg_count, value, true)?;
         let top = vm.stack.top();
         let base = unsafe { (*vm.frames.top()).stack_start };
         become dispatch(vm, vm.ip, top, base);
@@ -514,7 +515,7 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     }
 
     let stack_start = unsafe { top.sub(arg_count + 1) };
-    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start });
+    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true });
     become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
 }
 

@@ -1,0 +1,9 @@
+// An init may leave a defaulted field to its default and override a mutable defaulted field.
+type T {
+    pub x = 1;
+    pub mut y = 2;
+    init() { this.y = 3; }
+}
+say t = T();
+print(t.x); // expect: 1
+print(t.y); // expect: 3

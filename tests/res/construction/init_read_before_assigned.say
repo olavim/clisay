@@ -3,7 +3,7 @@ type T {
     a;
     b;
     init() {
-        this.a = this.b; // error: Field 'b' is read before it is assigned in init
+        this.a = this.b; // error: Field 'b' is used before it is assigned
         this.b = 5;
     }
 }

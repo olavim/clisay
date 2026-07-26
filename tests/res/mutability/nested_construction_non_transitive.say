@@ -1,0 +1,14 @@
+// A `mut` construction keeps a `mut` inner construction mutable, but a plain inner stays immutable.
+// `mut` is not transitive: the outer marker seals nothing below the node it fronts.
+type J { pub mut v; }
+type K { pub inner; }
+say k = mut K { inner: mut J{v: 1} };
+k.inner.v = 9;
+print(k.inner.v); // expect: 9
+
+// @split
+
+type J { pub mut v; }
+type K { pub inner; }
+say k = mut K { inner: J{v: 1} };
+k.inner.v = 8; // error: cannot mutate an immutable value
