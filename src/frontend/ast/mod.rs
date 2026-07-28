@@ -181,14 +181,26 @@ pub struct FieldInit {
     pub clause: SlotClause,
 }
 
-/// A function/method/lambda parameter.
+/// A function/method/lambda parameter: one pattern over its positional slot, plus a slot clause.
+/// A lone binder is the ordinary parameter, `_` discards the slot, and any other pattern is a
+/// precondition on the argument.
 pub struct Param {
-    pub name: AstId<Expr>,
-    /// The `name[: clause]` span.
+    pub pattern: AstId<Matcher>,
+    /// The `pattern[: clause]` span.
     pub pos: SourcePosition,
     pub nullable: bool,
     pub mutable: bool,
     pub clause: SlotClause,
+}
+
+impl Param {
+    /// The name the whole argument binds to, when the pattern is one. A test or `_` names nothing.
+    pub fn binder(&self, ast: &Ast) -> Option<Symbol> {
+        match ast.get(&self.pattern) {
+            Matcher::Binder(name) | Matcher::As(name, _) => Some(*name),
+            _ => None,
+        }
+    }
 }
 
 // TODO: fold into SlotClause

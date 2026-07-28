@@ -3,7 +3,7 @@
 use anyhow::bail;
 
 use crate::core::objects::UpvalueLocation;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, Symbol};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirMatcher, Symbol};
 
 use super::{FnFrame, FnKind, Local, Place, Resolver};
 
@@ -48,6 +48,15 @@ impl<'a> Resolver<'a> {
         self.locals.push(Local { name: None, depth: self.scope_depth, is_captured: false });
         let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
         Ok((self.locals.len() - 1) as u8 - local_offset)
+    }
+
+    /// Declares a matcher's binders as locals, pairing each with the slot it stores into.
+    pub(super) fn declare_binders(&mut self, matcher: &HirMatcher) -> Result<Vec<(Symbol, u8)>, anyhow::Error> {
+        let mut binders = Vec::new();
+        for name in matcher.binders() {
+            binders.push((name, self.declare_local(name)?));
+        }
+        Ok(binders)
     }
 
     pub(super) fn resolve_local(&self, name: Symbol) -> Option<u8> {
@@ -155,11 +164,26 @@ impl<'a> Resolver<'a> {
             body: decl.body,
         });
 
+        // A pattern's binders have to sit after every parameter slot so the frame's arguments stay
+        // contiguous, so the patterns wait for a second pass.
+        let mut patterned = Vec::new();
         for param in &decl.params {
             let HirExpr::Identifier(param_name) = self.hir.get(&param.name) else {
                 unreachable!("parser guarantees parameters are identifiers");
             };
-            self.declare_local(*param_name)?;
+            let slot = self.declare_local(*param_name)?;
+            if param.pattern.is_some() {
+                // The entry step loads the parameter by name, like any other identifier.
+                self.bindings.places.insert(param.name, Place::Local(slot));
+                patterned.push(param);
+            }
+        }
+
+        // The binders live for the whole body. The frame teardown reclaims them.
+        for param in patterned {
+            let pattern = param.pattern.as_ref().expect("only patterned parameters were collected");
+            let binders = self.declare_binders(pattern)?;
+            self.bindings.match_binders.insert(param.name, binders);
         }
 
         self.expression(&decl.body)?;

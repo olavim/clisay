@@ -241,6 +241,8 @@ pub struct HirFieldInit {
 /// nullability and mutability markers (`fn f(mut x?)`).
 pub struct HirParam {
     pub name: HirId<HirExpr>,
+    /// The parameter's pattern, when it does more than name its slot.
+    pub pattern: Option<Box<HirMatcher>>,
     /// The `name[: clause]` span.
     pub pos: SourcePosition,
     pub nullable: bool,

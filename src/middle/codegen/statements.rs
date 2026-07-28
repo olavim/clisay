@@ -205,7 +205,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Pushes `count` null placeholders to reserve a slot for each live binder.
-    fn reserve_slots(&mut self, count: usize, node: &HirId<HirStmt>) {
+    pub(super) fn reserve_slots<T: 'static>(&mut self, count: usize, node: &HirId<T>) {
         for _ in 0..count {
             self.emit(Inst::PushNull, node);
         }

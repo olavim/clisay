@@ -1,0 +1,23 @@
+// An immutable slot cannot be rebound, so a discharge made before the capture still holds inside it.
+// A discharge inside the nested body works too, and a slot assigned after the capture stays legal.
+fn narrowedOutside(v: opt) {
+    say x: opt = v;
+    if (x == null) { return; }
+    say b = () => print(x + 1); // expect: 6
+    b();
+}
+narrowedOutside(5);
+
+fn dischargedInside(x: opt) {
+    say b = () => print(x ?? "none"); // expect: none
+    b();
+}
+dischargedInside(null);
+
+fn assignedAfter() {
+    say x;
+    say g = () => print(x); // expect: 3
+    x = 3;
+    g();
+}
+assignedAfter();

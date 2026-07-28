@@ -247,8 +247,11 @@ impl<'a> Resolver<'a> {
     fn visit_fn(&mut self, decl: &FnDecl) -> Result<(), anyhow::Error> {
         self.push_scope();
         for param in &decl.params {
-            let Expr::Identifier(name) = self.ast.get(&param.name) else { unreachable!("a parameter is an identifier") };
-            self.declare(*name, DeclKind::Param, &param.name)?;
+            // Every name a pattern binds is a parameter name, so they share one scope and the same
+            // duplicate rule. A `_` or a bare test binds nothing and declares nothing.
+            for name in self.collect_matcher_binders(&param.pattern)? {
+                self.declare(name, DeclKind::Param, &param.pattern)?;
+            }
         }
         self.visit_expr(&decl.body)?;
         self.pop_scope();

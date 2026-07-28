@@ -1,0 +1,29 @@
+// Each parameter pattern publishes its binders into the body.
+type Node { pub next; init(n) { this.next = n; } }
+
+fn destructure(x @ Node { next }) {
+    print(x.next); // expect: 7
+    print(next);   // expect: 7
+}
+destructure(Node(7));
+
+fn bare(Err { value: e }) {
+    print(e); // expect: boom
+}
+bare(Err("boom"));
+
+fn discards(_, y @ Node, _) {
+    print(y.next); // expect: 9
+}
+discards(1, Node(9), 3);
+
+fn array([a, b]) {
+    print(a); // expect: 4
+    print(b); // expect: 5
+}
+array([4, 5]);
+
+fn nested(outer @ Node { next: Node { next: inner } }) {
+    print(inner); // expect: 2
+}
+nested(Node(Node(2)));

@@ -1,0 +1,18 @@
+// A witness alternative is the real obligation: it lands on the whole value and flows to the
+// binders under it, and a discharge clears it just as a `:` clause obligation would.
+type Node { pub next; init(n) { this.next = n; } }
+
+fn whole(x @ Node | null) {
+    print(x ?? "none"); // expect: none
+}
+whole(null);
+
+fn flowed(x @ Node { next } | null) {
+    print(next ?? "none"); // expect: 7
+}
+flowed(Node(7));
+
+fn nested(x @ Node { next: y @ Node | Err } | null) {
+    print(y ?? "none"); // expect: none
+}
+nested(Node(Err("boom")));

@@ -1,5 +1,7 @@
 //! Flow-sensitive narrowing.
 
+use std::collections::HashSet;
+
 use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, HirMatcher, Symbol, UnOp};
 
 use super::{Mutability, Checker, FlowSnapshot, LocalFlow, NarrowFact, NarrowKey, TypeTag};
@@ -16,7 +18,23 @@ impl<'a> Checker<'a> {
 
     /// Whether `obligation` is discharged for a place on the current path.
     pub(super) fn discharged(&self, key: &NarrowKey, obligation: Symbol) -> bool {
-        self.narrowed.get(key).is_some_and(|set| set.contains(&obligation))
+        self.narrowed_set(key).is_some_and(|set| set.contains(&obligation))
+    }
+
+    /// A place's discharged obligations.
+    fn narrowed_set(&self, key: &NarrowKey) -> Option<&HashSet<Symbol>> {
+        match key {
+            NarrowKey::ThisField(field) => self.this_narrowed.get(field),
+            _ => self.narrowed.get(key),
+        }
+    }
+
+    /// A place's discharged set, created empty if the place has none yet.
+    fn narrowed_set_or_default(&mut self, key: NarrowKey) -> &mut HashSet<Symbol> {
+        match key {
+            NarrowKey::ThisField(field) => self.this_narrowed.entry(field).or_default(),
+            _ => self.narrowed.entry(key).or_default(),
+        }
     }
 
     /// The narrow key for `target.field` when the place can be narrowed: a `this` field, or a
@@ -128,7 +146,7 @@ impl<'a> Checker<'a> {
     pub(super) fn apply_narrowings(&mut self, narrowings: &[NarrowFact]) {
         for fact in narrowings {
             match fact {
-                NarrowFact::Discharge(key, obligation) => { self.narrowed.entry(key.clone()).or_default().insert(*obligation); },
+                NarrowFact::Discharge(key, obligation) => { self.narrowed_set_or_default(key.clone()).insert(*obligation); },
                 NarrowFact::Tag(i, tag) => self.locals[*i].tag = tag.clone(),
             }
         }
@@ -154,6 +172,7 @@ impl<'a> Checker<'a> {
                 provenance: l.provenance.clone(),
             }).collect(),
             narrowed: self.narrowed.clone(),
+            this_narrowed: self.this_narrowed.clone(),
         }
     }
 
@@ -177,6 +196,7 @@ impl<'a> Checker<'a> {
             local.move_site = local.move_site.or(snap.move_site);
         }
         self.narrowed = flow.narrowed.clone();
+        self.this_narrowed = flow.this_narrowed.clone();
     }
 
     /// Merges another branch's end state into the current local flow.

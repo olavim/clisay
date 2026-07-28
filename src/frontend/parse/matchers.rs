@@ -70,6 +70,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// A bare name classifies by case: an uppercase name is a nominal type test, a lowercase name
     /// binds the whole value.
     pub(super) fn parse_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
+        // `_` names nothing, so `_ @ P` is a longer spelling of `P`.
+        if self.tokens.peek(0).lexeme == "_" && self.tokens.peek(1).kind == TokenType::At {
+            return Err(self.error_help("redundant `_ @`", &self.tokens.peek(0).pos,
+                "`_` names nothing, so the pattern alone is the same test"));
+        }
         // An as-binding is a lowercase name (a binder) immediately followed by `@`.
         if self.tokens.peek(0).kind == TokenType::Identifier
             && !spells_type(&self.tokens.peek(0).lexeme)

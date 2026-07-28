@@ -43,10 +43,7 @@ impl<'a> Compiler<'a> {
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
                 match self.bindings.match_binders(expr) {
-                    Some(slots) => {
-                        let binders: Vec<(Symbol, u8)> = matcher.binders().into_iter().zip(slots.iter().copied()).collect();
-                        self.compile_binding_matcher(matcher, &binders, expr)?;
-                    },
+                    Some(binders) => self.compile_binding_matcher(matcher, binders, expr)?,
                     None => self.compile_matcher_test(matcher, expr)?,
                 }
             },

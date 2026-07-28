@@ -34,7 +34,7 @@ impl<'a> Lowerer<'a> {
         // access desugars to the field's local. A param shadows a same-named field's bare access.
         let params_set: HashSet<Symbol> = match &decl.init {
             Some(init_id) => self.ast_fn(init_id).params.iter()
-                .filter_map(|p| match self.ast.get(&p.name) { Expr::Identifier(s) => Some(*s), _ => None })
+                .filter_map(|p| p.binder(self.ast))
                 .collect(),
             None => HashSet::new(),
         };

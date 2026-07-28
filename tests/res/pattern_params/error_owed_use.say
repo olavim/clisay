@@ -1,0 +1,5 @@
+// A witness alternative owes for real, so an undischarged use is rejected like `x: opt`.
+type Node { pub next; init(n) { this.next = n; } }
+fn f(x @ Node | null) {
+    print(x + 1); // error: unchecked value owes 'opt'
+}

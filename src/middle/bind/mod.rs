@@ -124,8 +124,9 @@ pub struct Bindings {
     cleanups: FnvHashMap<usize, Vec<Cleanup>>,
     /// Brace-construction expressions => the resolved member ids of their brace fields.
     construct_fields: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
-    /// Binding `match` nodes => the local slot of each binder.
-    match_binders: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
+    /// Nodes that publish matcher binders (a binding `match`, a pattern parameter) => each
+    /// binder's name and the local slot it stores into.
+    match_binders: FnvHashMap<HirId<HirExpr>, Vec<(Symbol, u8)>>,
     /// `match` statements => their scrutinee temp and per-arm binder slots.
     match_info: FnvHashMap<HirId<HirStmt>, MatchInfo>,
     /// `e ?? p => h` handler nodes => the local slot binding the bad value.
@@ -180,7 +181,7 @@ impl Bindings {
         &self.construct_fields[id]
     }
 
-    pub fn match_binders(&self, id: &HirId<HirExpr>) -> Option<&[u8]> {
+    pub fn match_binders(&self, id: &HirId<HirExpr>) -> Option<&[(Symbol, u8)]> {
         self.match_binders.get(id).map(Vec::as_slice)
     }
 
@@ -396,12 +397,9 @@ impl<'a> Resolver<'a> {
             },
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
-                let mut slots = Vec::new();
-                for name in matcher.binders() {
-                    slots.push(self.declare_local(name)?);
-                }
-                if record && !slots.is_empty() {
-                    self.bindings.match_binders.insert(*cond, slots);
+                let binders = self.declare_binders(matcher)?;
+                if record && !binders.is_empty() {
+                    self.bindings.match_binders.insert(*cond, binders);
                 }
             },
             _ => self.expression(cond)?,

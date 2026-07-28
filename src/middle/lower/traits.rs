@@ -299,6 +299,7 @@ impl<'a> Lowerer<'a> {
             let psym = self.hir.intern(&format!("$g{i}"));
             params.push(HirParam {
                 name: self.hir.add(HirExpr::Identifier(psym), pos.clone()),
+                pattern: None,
                 pos: pos.clone(),
                 nullable: false,
                 mutable: false,

@@ -423,16 +423,34 @@ impl<'a> Lowerer<'a> {
 
     /// Lowers a parameter list, desugaring each param's `?` marker and `:` clause into one clause.
     pub(super) fn params(&mut self, params: &[Param]) -> Result<Vec<HirParam>, anyhow::Error> {
-        params.iter().map(|p| {
+        params.iter().enumerate().map(|(i, p)| {
             let clause = self.slot_clause(p.nullable, &p.clause);
+            let (sym, pattern) = self.param_slot(p, i)?;
             Ok(HirParam {
-                name: self.expr(&p.name)?,
+                name: self.hir.add(HirExpr::Identifier(sym), p.pos.clone()),
+                pattern,
                 pos: p.pos.clone(),
                 nullable: clause.names.contains(&self.opt),
                 mutable: p.mutable,
                 clause,
             })
         }).collect()
+    }
+
+    /// A parameter's slot name and the pattern its entry step matches, decided together.
+    fn param_slot(&mut self, param: &Param, index: usize) -> Result<(Symbol, Option<Box<HirMatcher>>), anyhow::Error> {
+        let name = match param.binder(self.ast) {
+            Some(name) => name,
+            None => self.hir.intern(&format!("$p{index}")),
+        };
+        let pattern = match self.ast.get(&param.pattern) {
+            // A lone binder and `_` are fully served by the slot itself.
+            Matcher::Binder(_) | Matcher::Wildcard => None,
+            // `x @ p` named the slot above, so only `p` is left to match.
+            Matcher::As(_, inner) => Some(Box::new(self.lower_matcher(&(*inner))?)),
+            _ => Some(Box::new(self.lower_matcher(&param.pattern)?)),
+        };
+        Ok((name, pattern))
     }
 
     fn fn_decl(&mut self, decl: &FnDecl) -> Result<HirFnDecl, anyhow::Error> {

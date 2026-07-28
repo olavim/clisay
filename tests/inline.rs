@@ -33,6 +33,12 @@ fn ops() {
 }
 
 #[test]
+fn discard_params_take_their_slot_without_a_name() {
+    // A `_` reserves no name, so repeating it is not a duplicate declaration.
+    assert_inline("fn f(_, x, _) { print(x); } f(1, 2, 3);", Ok(["2"]));
+}
+
+#[test]
 fn runtime_error_shows_call_stack_trace() {
     // A runtime error lists each active call frame beneath the source frame.
     let src = "fn b()! { return 1 + true; }\nfn a()! { return b(); }\na();";
