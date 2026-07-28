@@ -17,7 +17,7 @@ fn viaOr(v?) {
 }
 
 fn viaAnd(p?) {
-    if p ~ is P & { n } {
+    if p ~ P & { n } {
         say g = p;
         print(g.n);
     }

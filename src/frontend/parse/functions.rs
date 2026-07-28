@@ -7,6 +7,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = self.tokens.expect(TokenType::Fn)?.pos.clone();
         let name_pos = self.tokens.peek(0).pos.clone();
         let name = self.parse_identifier()?;
+        self.check_name_case(&name, NameKind::Fn, &name_pos)?;
         let name = self.ast.intern(&name);
         let fn_decl = self.parse_fn_decl(name, name_pos)?;
         Ok(self.node_stmt(Stmt::Fn(fn_decl), pos))
@@ -62,7 +63,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                         self.tokens.expect(TokenType::Comma)?;
                     }
                     let start = self.tokens.peek(0).pos.clone();
+                    let name_lexeme = self.tokens.peek(0).lexeme.clone();
                     let name = self.parse_identifier_expr()?;
+                    self.check_name_case(&name_lexeme, NameKind::Parameter, &start)?;
                     let nullable = self.parse_nullable();
                     let clause = self.parse_slot_clause(SlotKind::Param)?;
                     let pos = start.to(&self.tokens.previous().pos);

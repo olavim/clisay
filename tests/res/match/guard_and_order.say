@@ -3,8 +3,8 @@ type Point { pub x; pub y; init(a, b) { this.x = a; this.y = b; } }
 
 fn classify(p) {
     match p {
-        is Point { x, y } if x == y => print("diagonal"),
-        is Point { x, y } => { print("point"); print(x); },
+        Point { x, y } if x == y => print("diagonal"),
+        Point { x, y } => { print("point"); print(x); },
         _ => print("other"),
     }
 }

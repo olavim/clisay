@@ -8,7 +8,7 @@ fn get(flag)? {
 fn run(cond) {
     match get(3) {
         null if cond => print("null"),
-        is Err { value: e } => print(e),
+        Err { value: e } => print(e),
         v => print(v + 5), // error: unchecked value owes 'opt'
     }
 }

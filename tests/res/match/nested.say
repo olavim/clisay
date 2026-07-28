@@ -1,7 +1,7 @@
 type Move { pub from; pub to; init(a, b) { this.from = a; this.to = b; } }
 fn h(e) {
     match e {
-        is Move { from: { x, y }, to } => { print(x); print(y); print(to); },
+        Move { from: { x, y }, to } => { print(x); print(y); print(to); },
         { items: [first, ..rest] } => { print(first); print(rest.length()); },
         { wrap: { v } } => print(v),
         _ => print("none"),

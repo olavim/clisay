@@ -2,6 +2,6 @@
 type P { pub x; init(a) { this.x = a; } }
 say v = { x: 1 };
 match v {
-    is P { x } | { y } => print(x), // error: or-matcher alternatives must bind the same names
+    P { x } | { y } => print(x), // error: or-matcher alternatives must bind the same names
     _ => print("no"),
 }

@@ -88,8 +88,8 @@ fn collect_whole_value_binders(matcher: &HirMatcher, out: &mut Vec<Symbol>) {
         HirMatcher::Binder(name) => out.push(*name),
         HirMatcher::As(name, inner) => { out.push(*name); collect_whole_value_binders(inner, out); },
         HirMatcher::And(parts) => for part in parts { collect_whole_value_binders(part, out); },
-        // Alternatives bind the same names, so the first one stands for all.
-        HirMatcher::Or(alternatives) => if let Some(first) = alternatives.first() { collect_whole_value_binders(first, out); },
+        // Binding alternatives agree on their names, so the first that binds stands for all.
+        HirMatcher::Or(alternatives) => if let Some(binding) = alternatives.iter().find(|a| a.binds_anything()) { collect_whole_value_binders(binding, out); },
         _ => {},
     }
 }

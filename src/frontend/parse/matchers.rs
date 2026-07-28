@@ -66,15 +66,19 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     /// matcher := IDENT "@" matcher | or_matcher
+    ///
+    /// A bare name classifies by case: an uppercase name is a nominal type test, a lowercase name
+    /// binds the whole value.
     pub(super) fn parse_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
-        // An as-binding is a bare name immediately followed by `@`. The right side is a full matcher.
-        if self.tokens.peek(0).kind == TokenType::Identifier && self.tokens.peek(1).kind == TokenType::At {
+        // An as-binding is a lowercase name (a binder) immediately followed by `@`.
+        if self.tokens.peek(0).kind == TokenType::Identifier
+            && !spells_type(&self.tokens.peek(0).lexeme)
+            && self.tokens.peek(1).kind == TokenType::At {
             let token = self.tokens.next().clone();
-            let pos = token.pos.clone();
             let name = self.ast.intern(&token.lexeme);
             self.tokens.next();
             let inner = self.parse_matcher()?;
-            return Ok(self.node_matcher(Matcher::As(name, inner), pos));
+            return Ok(self.node_matcher(Matcher::As(name, inner), token.pos));
         }
         self.parse_or_matcher()
     }
@@ -113,17 +117,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.node_matcher(Matcher::And(parts), pos))
     }
 
-    /// A bare name binds the whole value, so as an `&`/`|` operand it is pointless and usually a
-    /// mistaken type test.
+    /// A lowercase bare name binds the whole value, so as an `&`/`|` operand it is pointless.
     fn reject_combinator_binder(&self, id: &AstId<Matcher>) -> Result<(), anyhow::Error> {
-        if let Matcher::Binder(sym) = self.ast.get(id) {
-            let name = self.ast.text(*sym).to_string();
+        if let Matcher::Binder(_) = self.ast.get(id) {
             let pos = self.ast.pos(id).clone();
-            return Err(self.error_help(
-                "a bare name cannot be an operand of `&` or `|`",
-                &pos,
-                format!("write `is {name}` or `has {name}` to test its type, or `{name} @ ...` to bind it"),
-            ));
+            return Err(self.error("a bare name cannot be an operand of `&` or `|`", &pos));
         }
         Ok(())
     }
@@ -131,17 +129,21 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub(super) fn parse_primary_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
         let token = self.tokens.peek(0).clone();
         let pos = token.pos.clone();
+
         match token.kind {
             TokenType::Identifier if token.lexeme == "_" => {
                 self.tokens.next();
                 Ok(self.node_matcher(Matcher::Wildcard, pos))
             },
+            TokenType::Identifier if spells_type(&token.lexeme) => self.parse_typed_matcher(true, pos),
             TokenType::Identifier => {
                 self.tokens.next();
                 let name = self.ast.intern(&token.lexeme);
                 Ok(self.node_matcher(Matcher::Binder(name), pos))
             },
-            TokenType::Is => self.parse_is_matcher(),
+            // A bare uppercase name is already the nominal test, so matcher `is` is retired.
+            TokenType::Is => Err(self.error_help("redundant `is`", &pos,
+                "a bare type name is already the test here")),
             TokenType::Has => self.parse_has_matcher(),
             TokenType::LeftBrace => self.parse_shape_matcher(),
             TokenType::LeftBracket => self.parse_array_matcher(),
@@ -158,15 +160,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             },
             _ => parse_error!(self, &pos, "Expected a matcher but found '{token}'"),
         }
-    }
-
-    /// `is` type_ref shape?.
-    pub(super) fn parse_is_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
-        let pos = self.tokens.next().pos.clone();
-        if self.tokens.peek(0).kind != TokenType::Identifier {
-            return Err(self.is_needs_type_error(&pos));
-        }
-        self.parse_typed_matcher(true, pos)
     }
 
     /// The error for an `is` with no type name. A literal operand reads as a value comparison; any
@@ -289,7 +282,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     return Ok(MatchField { key, value });
                 }
 
-                // `{ x }` binds x.
+                // `{ x }` binds x. A shorthand binds, so its name is a lowercase value.
+                if spells_type(&token.lexeme) {
+                    return Err(self.error_help("a field shorthand binds, so it needs a lowercase name",
+                        &pos, format!("write `{0}: {0}` to test the field against the type `{0}`", token.lexeme)));
+                }
+
                 let sym = self.ast.intern(&token.lexeme);
                 let value = self.ast.add_matcher(Matcher::Binder(sym), pos);
                 Ok(MatchField { key, value })
@@ -319,8 +317,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     parse_error!(self, &rest_pos, "An array matcher allows at most one rest `..`");
                 }
                 seen_rest = true;
+                // A `..name` rest binds, so its name is a lowercase value.
                 let name = match self.tokens.next_if(TokenType::Identifier) {
-                    Some(token) => Some(self.ast.intern(&token.lexeme)),
+                    Some(token) => {
+                        self.check_name_case(&token.lexeme, NameKind::Binder, &token.pos)?;
+                        Some(self.ast.intern(&token.lexeme))
+                    },
                     None => None
                 };
                 elements.push(MatchElem::Rest(name));

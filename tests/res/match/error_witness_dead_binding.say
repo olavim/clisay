@@ -1,0 +1,7 @@
+// A bindingless non-witness alternative beside a destructure leaves the binder dead.
+type Node { pub next; init(n) { this.next = n; } }
+type Foo { init() { } }
+match Node(1) { // error: a non-witness alternative beside a destructure is a dead binding
+    Node { next } | Foo => print(next),
+    _ => print("no"),
+}

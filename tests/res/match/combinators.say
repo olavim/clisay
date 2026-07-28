@@ -9,13 +9,13 @@ viaAsOr(2); // expect: 2
 viaAsOr(9); // expect: no
 
 fn viaAsAnd(v?) {
-    if v ~ w @ is A & { n } { print(w.n); print(n); }
+    if v ~ w @ A & { n } { print(w.n); print(n); }
 }
 viaAsAnd(A(7)); // expect: 7
 // expect: 7
 
 fn mixAxes(v?) {
-    if v ~ is A { n } | has B { n } { print(n); } else { print("no"); }
+    if v ~ A { n } | has B { n } { print(n); } else { print("no"); }
 }
 mixAxes(A(1)); // expect: 1
 mixAxes(B(2)); // expect: 2
