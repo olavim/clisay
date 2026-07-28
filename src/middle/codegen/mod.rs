@@ -19,7 +19,7 @@ use crate::middle::hir::HirStmt;
 
 mod expressions;
 mod statements;
-mod matching;
+pub mod matching;
 mod functions;
 mod types;
 
