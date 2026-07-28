@@ -408,16 +408,21 @@ impl<'a> Resolver<'a> {
                 }
                 Ok(binders)
             },
-            // Alternatives are parallel, so each is checked on its own and all must agree on the bound set.
+            // Alternatives that bind names must agree on the set. A bindingless alternative may sit
+            // beside a destructure if it's an obligation witness.
             Matcher::Or(alternatives) => {
-                let mut alts = alternatives.iter();
-                let first = self.collect_matcher_binders(alts.next().unwrap())?;
-                for alt in alts {
-                    if self.collect_matcher_binders(alt)? != first {
-                        return Err(self.error("or-matcher alternatives must bind the same names", id));
+                let mut binders: Option<HashSet<Symbol>> = None;
+                for alt in alternatives {
+                    let set = self.collect_matcher_binders(alt)?;
+                    if set.is_empty() { continue; }
+                    match &binders {
+                        Some(first) if *first != set =>
+                            return Err(self.error("or-matcher alternatives must bind the same names", id)),
+                        None => binders = Some(set),
+                        _ => {},
                     }
                 }
-                Ok(first)
+                Ok(binders.unwrap_or_default())
             },
         }
     }

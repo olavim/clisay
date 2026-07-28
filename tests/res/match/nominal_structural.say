@@ -6,8 +6,8 @@ type Console with Logger { init() { } pub fn log() { print("logged"); } }
 
 fn handle(event) {
     match event {
-        is Move { from: { x, y }, to } => { print(x); print(y); print(to); },
-        { handler: is Logger } => print("has logger"),
+        Move { from: { x, y }, to } => { print(x); print(y); print(to); },
+        { handler: Logger } => print("has logger"),
         _ => print("none"),
     }
 }

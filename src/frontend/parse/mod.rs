@@ -38,6 +38,48 @@ impl SlotKind {
     }
 }
 
+/// A name is a type or trait spelling when it begins with an uppercase ASCII letter. Casing is
+/// grammatical, so a bare matcher name classifies by case with no resolution.
+pub(super) fn spells_type(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_uppercase())
+}
+
+/// A declared name's kind, used to phrase its casing error and require the right case.
+#[derive(Clone, Copy)]
+pub(super) enum NameKind {
+    Type,
+    Trait,
+    Fn,
+    Variable,
+    Parameter,
+    Field,
+    Member,
+    Obligation,
+    Binder,
+}
+
+impl NameKind {
+    /// The article-and-noun phrase naming this kind in a diagnostic.
+    fn noun(self) -> &'static str {
+        match self {
+            NameKind::Type => "a type",
+            NameKind::Trait => "a trait",
+            NameKind::Fn => "an fn",
+            NameKind::Variable => "a variable",
+            NameKind::Parameter => "a parameter",
+            NameKind::Field => "a field",
+            NameKind::Member => "a member",
+            NameKind::Obligation => "an obligation",
+            NameKind::Binder => "a binder",
+        }
+    }
+
+    /// Types and traits are uppercase; every other kind is lowercase.
+    fn is_type(self) -> bool {
+        matches!(self, NameKind::Type | NameKind::Trait)
+    }
+}
+
 /// The modes that decide how the current expression position is parsed.
 #[derive(Clone, Copy, Default)]
 struct ExprCtx {
@@ -123,6 +165,19 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// An error carrying a `help:` note on how to fix it.
     fn error_help(&self, message: impl Into<String>, pos: &SourcePosition, help: impl Into<String>) -> anyhow::Error {
         anyhow!("{}", Diagnostic::new(message, pos.clone()).with_help(help))
+    }
+
+    /// Enforces the casing convention at a declaration: a type or trait is uppercase-initial, every
+    /// other kind is lowercase- or `_`-initial.
+    fn check_name_case(&self, name: &str, kind: NameKind, pos: &SourcePosition) -> Result<(), anyhow::Error> {
+        let noun = kind.noun();
+        match (kind.is_type(), spells_type(name)) {
+            (true, false) => Err(self.error_help(format!("{noun} name must start with an uppercase letter"),
+                pos, format!("rename `{name}` to start with an uppercase letter"))),
+            (false, true) => Err(self.error_help(format!("{noun} name must start with a lowercase letter"),
+                pos, format!("rename `{name}` to start with a lowercase letter"))),
+            _ => Ok(()),
+        }
     }
 
     /// Consumes a leading `mut` modifier if present, reporting whether it was there.

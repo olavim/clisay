@@ -100,7 +100,7 @@ fn array_rest_lowers() {
 
 #[test]
 fn combinators_lower() {
-    let hir = lower("match v { has A & is B => 0 }\ntype A { }\ntype B { }");
+    let hir = lower("match v { has A & B => 0 }\ntype A { }\ntype B { }");
     let HirMatcher::And(parts) = first_arm_matcher(&hir) else { panic!("not an and matcher") };
     assert_eq!(parts.len(), 2);
     assert!(matches!(parts[0], HirMatcher::Type { nominal: false, .. }));
@@ -109,7 +109,7 @@ fn combinators_lower() {
 
 #[test]
 fn match_statement_lowers_to_arms() {
-    let hir = lower("match v { is A => 1, _ => 0 }\ntype A { }");
+    let hir = lower("match v { A => 1, _ => 0 }\ntype A { }");
     let stmts = top_stmts(&hir);
     let HirStmt::Match(_, arms) = hir.get(&stmts[0]) else { panic!("first statement is not a match dispatch") };
     assert_eq!(arms.len(), 2);

@@ -4,7 +4,7 @@ const POINT: &str = "type Point { pub x; pub y; init(a, b) { this.x = a; this.y 
 
 #[test]
 fn matcher_unknown_type_ref_errors() {
-    let err = try_resolve("match v { is foo { x } => 0 }").unwrap_err();
+    let err = try_resolve("match v { Foo { x } => 0 }").unwrap_err();
     assert!(err.contains("not a type or trait"), "{err}");
 }
 
@@ -22,14 +22,21 @@ fn duplicate_binder_across_as_errors() {
 
 #[test]
 fn or_matcher_differing_binders_errors() {
-    let src = format!("{POINT} match v {{ is Point {{ x }} | {{ y }} => 0 }}");
+    let src = format!("{POINT} match v {{ Point {{ x }} | {{ y }} => 0 }}");
     let err = try_resolve(&src).unwrap_err();
     assert!(err.contains("same names"), "{err}");
 }
 
 #[test]
 fn or_matcher_same_binders_resolves() {
-    let src = format!("{POINT} match v {{ is Point {{ x }} | {{ x }} => 0 }}");
+    let src = format!("{POINT} match v {{ Point {{ x }} | {{ x }} => 0 }}");
+    assert!(try_resolve(&src).is_ok());
+}
+
+#[test]
+fn or_matcher_bindingless_alternative_resolves() {
+    // A destructure may sit beside a bindingless alternative; only binding alternatives must agree.
+    let src = format!("{POINT} match v {{ Point {{ x }} | null => 0, _ => 0 }}");
     assert!(try_resolve(&src).is_ok());
 }
 
@@ -47,6 +54,6 @@ fn binding_one_liner_in_a_condition_resolves() {
 
 #[test]
 fn binderless_one_liner_outside_a_condition_resolves() {
-    let src = format!("{POINT} say b = d ~ is Point | is Point;");
+    let src = format!("{POINT} say b = d ~ Point | Point;");
     assert!(try_resolve(&src).is_ok());
 }

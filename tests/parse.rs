@@ -334,9 +334,9 @@ fn matcher(src: &str) -> (Ast, AstId<Matcher>) {
 
 #[test]
 fn parse_error_renders_a_caret() {
-    let err = try_parse("if x ~ y { }").err().expect("expected a parse error");
-    // A numbered gutter row then a caret aligned under the matcher `y`.
-    assert!(err.contains("1 | if x ~ y { }\n  |        ^"), "{err}");
+    let err = try_parse("if x ~ is y { }").err().expect("expected a parse error");
+    // A numbered gutter row then a caret aligned under the redundant `is`.
+    assert!(err.contains("1 | if x ~ is y { }\n  |        ^^"), "{err}");
 }
 
 #[test]
@@ -419,17 +419,34 @@ fn matcher_atoms() {
     assert!(matches!(ast.get(&m), Matcher::Literal(MatchScalar::Number(_))));
     let (ast, m) = matcher("null");
     assert!(matches!(ast.get(&m), Matcher::Literal(MatchScalar::Null)));
-    let (ast, m) = matcher("x");
-    assert!(matches!(ast.get(&m), Matcher::Binder(_)));
+    // At a test position a bare name is the nominal type test, not a binder.
+    let (ast, m) = matcher("Point");
+    assert!(matches!(ast.get(&m), Matcher::Type { nominal: true, shape: None, .. }));
+}
+
+#[test]
+fn matcher_bare_name_test_vs_bind() {
+    // A bare name is a type test as a whole matcher, and as a `|` operand.
+    let (ast, m) = matcher("Point | null");
+    let Matcher::Or(alts) = ast.get(&m) else { panic!("not an or-matcher") };
+    assert!(matches!(ast.get(&alts[0]), Matcher::Type { nominal: true, .. }));
+
+    // A bare name standing alone as a shape field value still binds.
+    let (ast, m) = matcher("{ k: v }");
+    let Matcher::Shape(fields) = ast.get(&m) else { panic!("not a shape") };
+    assert!(matches!(ast.get(&fields[0].value), Matcher::Binder(_)));
+
+    // `is` as a whole matcher is redundant and rejected.
+    assert!(parse_matcher("is Point").is_err());
 }
 
 #[test]
 fn matcher_type_tests() {
-    let (ast, m) = matcher("is Point");
+    let (ast, m) = matcher("Point");
     let Matcher::Type { nominal, shape, .. } = ast.get(&m) else { panic!("not a type matcher") };
     assert!(*nominal && shape.is_none());
 
-    let (ast, m) = matcher("is Point { x }");
+    let (ast, m) = matcher("Point { x }");
     let Matcher::Type { nominal, shape, .. } = ast.get(&m) else { panic!("not a type matcher") };
     assert!(*nominal && shape.is_some());
 
@@ -509,9 +526,6 @@ fn matcher_rejected_forms() {
     assert!(parse_matcher("is { x }").is_err());
     assert!(parse_matcher("{ a: 1, a: 2 }").is_err());
     assert!(parse_matcher("[.., ..]").is_err());
-    // A bare name as an `&`/`|` operand binds the whole value and is rejected.
-    assert!(parse_matcher("has A & b").is_err());
-    assert!(parse_matcher("has A | b").is_err());
 }
 
 #[test]
@@ -535,18 +549,18 @@ fn negated_literal_folds_to_a_constant() {
 #[test]
 fn matcher_typed_shape_lookahead() {
     // A `{ key: ... }` or shorthand shape binds to the type; a statement-like `{` does not.
-    let (ast, m) = matcher("is P { x, y }");
+    let (ast, m) = matcher("P { x, y }");
     let Matcher::Type { shape, .. } = ast.get(&m) else { panic!("not a type matcher") };
     assert!(shape.is_some());
 
-    let (ast, m) = matcher("is P");
+    let (ast, m) = matcher("P");
     let Matcher::Type { shape, .. } = ast.get(&m) else { panic!("not a type matcher") };
     assert!(shape.is_none());
 }
 
 #[test]
 fn match_statement_arms() {
-    let ast = parse("match x { is Point { a } => f(), _ => g() }");
+    let ast = parse("match x { Point { a } => f(), _ => g() }");
     let stmts = top_stmts(&ast);
     let Stmt::Match(_, arms) = ast.get(&stmts[0]) else { panic!("not a match dispatch") };
     assert_eq!(arms.len(), 2);
@@ -578,6 +592,19 @@ fn match_is_arms_only() {
     assert!(try_parse("match d { is A | is B }").is_err());
     assert!(try_parse("match d { is A => f(), x: 1 }").is_err());
     assert!(try_parse("match d { is A, is B }").is_err());
+}
+
+#[test]
+fn match_arm_head_binds_or_tests() {
+    // A lowercase name binds the whole value; an uppercase name tests, fieldless or shaped.
+    let ast = parse("match x { A => f(), B { y } => g(), v => h() }\ntype A { }\ntype B { pub y; init(a) { this.y = a; } }");
+    let Stmt::Match(_, arms) = ast.get(&top_stmts(&ast)[0]) else { panic!("not a match dispatch") };
+    assert!(matches!(ast.get(&arms[0].matcher), Matcher::Type { nominal: true, shape: None, .. }));
+    assert!(matches!(ast.get(&arms[1].matcher), Matcher::Type { nominal: true, shape: Some(_), .. }));
+    assert!(matches!(ast.get(&arms[2].matcher), Matcher::Binder(_)));
+
+    // Matcher `is` is retired: a bare uppercase name is already the test.
+    assert!(try_parse("match x { is B { y } => g() }").is_err());
 }
 
 #[test]
@@ -615,7 +642,7 @@ fn tilde_one_liner_in_while_and_and_heads() {
 
 #[test]
 fn tilde_binderless_one_liner_in_say_value() {
-    let ast = parse("say b = d ~ is A | is B;");
+    let ast = parse("say b = d ~ A | B;");
     let Expr::Match(_, matcher) = ast.get(&say_value(&ast)) else { panic!("say value is not a `~` one-liner") };
     assert!(matches!(ast.get(matcher), Matcher::Or(_)));
 }
@@ -636,6 +663,6 @@ fn tilde_prefix_and_infix_are_distinct() {
     // Prefix `~` is bitwise-not; infix `~` is test-and-bind.
     let ast = parse("say a = ~b;");
     assert!(matches!(ast.get(&say_value(&ast)), Expr::Unary(Operator::BitNot, _)));
-    let ast = parse("say c = d ~ is T;");
+    let ast = parse("say c = d ~ T;");
     assert!(matches!(ast.get(&say_value(&ast)), Expr::Match(_, _)));
 }

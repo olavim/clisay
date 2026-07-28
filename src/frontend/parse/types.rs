@@ -51,6 +51,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.tokens.expect(TokenType::Fn)?;
         let start = self.tokens.peek(0).pos.clone();
         let name = self.parse_identifier()?;
+        self.check_name_case(&name, NameKind::Fn, &start)?;
         let name = self.ast.intern(&name);
         self.tokens.expect(TokenType::LeftParen)?;
         let params = self.parse_params(TokenType::RightParen)?;
@@ -64,7 +65,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub(super) fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
         let keyword = if is_trait { TokenType::Trait } else { TokenType::Type };
         let pos = self.tokens.expect(keyword)?.pos.clone();
+        let name_pos = self.tokens.peek(0).pos.clone();
         let type_name = self.parse_identifier()?;
+        self.check_name_case(&type_name, if is_trait { NameKind::Trait } else { NameKind::Type }, &name_pos)?;
         let type_sym = self.ast.intern(&type_name);
 
         let prev_type = std::mem::replace(&mut self.current_type, Some(type_name.clone()));
@@ -98,7 +101,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 if self.tokens.matches(TokenType::Fn) {
                     req_fns.push(self.parse_req_fn()?);
                 } else {
+                    let name_pos = self.tokens.peek(0).pos.clone();
                     let name = self.parse_identifier()?;
+                    self.check_name_case(&name, NameKind::Member, &name_pos)?;
                     self.tokens.expect(TokenType::Semicolon)?;
                     req_members.push(self.ast.intern(&name));
                 }
@@ -123,6 +128,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     method_stmts.push(stmt);
                 },
                 TokenType::Identifier => {
+                    let name_pos = self.tokens.peek(0).pos.clone();
                     let name = self.parse_identifier()?;
 
                     // `init` is a specially-named method (normal method syntax); it
@@ -137,6 +143,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                         _ => {
                             // Field declaration, optionally with a `gives Trait` delegation suffix.
                             if is_trait { return Err(self.error_help("A trait cannot declare fields", &member_pos, "`req` the state it needs and let the host type hold it")); }
+                            self.check_name_case(&name, NameKind::Field, &name_pos)?;
                             let field = self.ast.intern(&name);
                             let nullable = self.parse_nullable();
                             let clause = self.parse_slot_clause(SlotKind::Field)?;

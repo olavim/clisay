@@ -21,7 +21,7 @@ use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::signatures::{Mutability, Signatures, TypeTag};
 use self::matching::whole_value_binders;
-use crate::middle::hir::{BinOp, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::hir::{BinOp, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatchElem, HirMatcher, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 
 pub use barriers::{Barrier, Barriers, WitnessSet};
 
@@ -106,6 +106,13 @@ struct MovedAt {
     cause: MoveCause,
 }
 
+/// The binders a condition or match arm introduces, paired with the obligations each owes. Built in
+/// one place so a binding site cannot declare binders while forgetting their obligations.
+struct BinderScope {
+    names: Vec<Symbol>,
+    owed: HashMap<Symbol, HashSet<Symbol>>,
+}
+
 /// A tracked binding in the current function frame.
 struct Local {
     name: Symbol,
@@ -145,10 +152,6 @@ impl Local {
 
     fn catch(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
         Local::param(name, owed, mutable)
-    }
-
-    fn binder(name: Symbol) -> Local {
-        Local { binder: true, ..Local::base(name) }
     }
 
     fn binder_owing(name: Symbol, owed: HashSet<Symbol>) -> Local {
@@ -571,14 +574,14 @@ impl<'a> Checker<'a> {
             HirStmt::While(cond, body) => {
                 self.expr(cond)?;
                 let body_narrow = self.narrowings(cond, true);
-                let binders = self.hir.condition_binders(cond);
+                let scope = self.condition_scope(cond)?;
                 let pre = self.snapshot();
                 // Check the body twice. The second pass sees the first pass's moves, so a value the
                 // body reads after moving it is caught as a cross-iteration use. A rebind before the
                 // move clears it first, so rebind-then-move is still accepted.
                 for _ in 0..2 {
                     self.apply_narrowings(&body_narrow);
-                    self.with_binders(&binders, |c| c.expr(body))?;
+                    self.with_binders(&scope, |c| c.expr(body))?;
                     self.restore_keeping_moves(&pre);
                 }
             },
@@ -586,9 +589,9 @@ impl<'a> Checker<'a> {
                 self.expr(cond)?;
                 let then_narrow = self.narrowings(cond, true);
                 let else_narrow = self.narrowings(cond, false);
-                let binders = self.hir.condition_binders(cond);
+                let scope = self.condition_scope(cond)?;
                 let then_snap = self.narrow_branch(&then_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
-                    c.with_binders(&binders, |c| c.expr(then))?;
+                    c.with_binders(&scope, |c| c.expr(then))?;
                     Ok(c.snapshot())
                 })?;
                 let else_snap = self.narrow_branch(&else_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
@@ -642,12 +645,8 @@ impl<'a> Checker<'a> {
                 let mut exhaustive = false;
                 for arm in arms {
                     self.restore(&baseline);
-                    let whole_binders = whole_value_binders(&arm.matcher);
-                    let mut binders = arm.matcher.binders();
-                    if let Some(guard) = &arm.guard {
-                        binders.extend(self.hir.condition_binders(guard));
-                    }
-                    self.with_arm_binders(&binders, &whole_binders, &remaining, |c| -> Result<(), anyhow::Error> {
+                    let scope = self.arm_scope(arm, &remaining, stmt)?;
+                    self.with_binders(&scope, |c| -> Result<(), anyhow::Error> {
                         if let Some(guard) = &arm.guard { c.expr(guard)?; }
                         c.expr(&arm.body)?;
                         Ok(())
@@ -684,27 +683,117 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Declares `binders` as immutable locals for the duration of `f`, then drops them.
-    fn with_binders<R>(&mut self, binders: &[Symbol], f: impl FnOnce(&mut Self) -> R) -> R {
+    /// Declares a scope's binders as immutable locals for the duration of `f`, then drops them.
+    fn with_binders<R>(&mut self, scope: &BinderScope, f: impl FnOnce(&mut Self) -> R) -> R {
         let mark = self.locals.len();
-        for &name in binders {
-            self.locals.push(Local::binder(name));
+        for &name in &scope.names {
+            self.locals.push(Local::binder_owing(name, scope.owed.get(&name).cloned().unwrap_or_default()));
         }
         let r = f(self);
         self.locals.truncate(mark);
         r
     }
 
-    /// Declares a match arm's binders for the duration of `f`.
-    fn with_arm_binders<R>(&mut self, binders: &[Symbol], whole_binders: &[Symbol], remaining_obligations: &HashSet<Symbol>, f: impl FnOnce(&mut Self) -> R) -> R {
-        let mark = self.locals.len();
-        for &name in binders {
-            let owed = if whole_binders.contains(&name) { remaining_obligations.clone() } else { HashSet::new() };
-            self.locals.push(Local::binder_owing(name, owed));
+    /// The binders a `~` condition introduces, each owing the witnesses of a bindingless alternative
+    /// sharing its or-group.
+    fn condition_scope(&self, cond: &HirId<HirExpr>) -> Result<BinderScope, anyhow::Error> {
+        Ok(BinderScope {
+            names: self.hir.condition_binders(cond),
+            owed: self.condition_witness_obligations(cond)?,
+        })
+    }
+
+    /// The binders a match arm introduces: its matcher binders and any guard binders. A whole-value
+    /// binder owes what the scrutinee still owes. A destructure binder owes the witnesses on its
+    /// or-path, as in `Node { next } | null`.
+    fn arm_scope(&self, arm: &HirMatchArm, remaining: &HashSet<Symbol>, at: &HirId<HirStmt>) -> Result<BinderScope, anyhow::Error> {
+        let whole = whole_value_binders(&arm.matcher);
+        let witness = self.matcher_witness_obligations(&arm.matcher, at)?;
+        let mut names = arm.matcher.binders();
+        if let Some(guard) = &arm.guard {
+            names.extend(self.hir.condition_binders(guard));
         }
-        let r = f(self);
-        self.locals.truncate(mark);
-        r
+        let owed = names.iter().map(|&name| {
+            let mut set = if whole.contains(&name) { remaining.clone() } else { HashSet::new() };
+            if let Some(obligations) = witness.get(&name) { set.extend(obligations); }
+            (name, set)
+        }).collect();
+        Ok(BinderScope { names, owed })
+    }
+
+    /// The witness obligations each binder inherits from a bindingless alternative sharing its
+    /// or-group. In `Node { next } | null` the `next` binder owes `opt`. A bindingless alternative
+    /// beside a destructure must be a witness. A non-witness there is a dead binding.
+    fn matcher_witness_obligations<T>(&self, matcher: &HirMatcher, at: &HirId<T>) -> Result<HashMap<Symbol, HashSet<Symbol>>, anyhow::Error> {
+        let mut out = HashMap::new();
+        self.collect_witness_obligations(matcher, at, &mut out)?;
+        Ok(out)
+    }
+
+    /// The witness obligations of the `~` matchers in a condition, so an `if`/`while` binder from a
+    /// destructure-beside-witness owes the same as a `match` arm binder.
+    fn condition_witness_obligations(&self, cond: &HirId<HirExpr>) -> Result<HashMap<Symbol, HashSet<Symbol>>, anyhow::Error> {
+        let mut out = HashMap::new();
+        self.collect_condition_witness_obligations(cond, &mut out)?;
+        Ok(out)
+    }
+
+    fn collect_condition_witness_obligations(&self, cond: &HirId<HirExpr>, out: &mut HashMap<Symbol, HashSet<Symbol>>) -> Result<(), anyhow::Error> {
+        match self.hir.get(cond) {
+            HirExpr::Match(_, matcher) => self.collect_witness_obligations(matcher, cond, out),
+            HirExpr::Binary(BinOp::And | BinOp::Or, left, right) => {
+                self.collect_condition_witness_obligations(left, out)?;
+                self.collect_condition_witness_obligations(right, out)
+            },
+            _ => Ok(()),
+        }
+    }
+
+    fn collect_witness_obligations<T>(&self, matcher: &HirMatcher, at: &HirId<T>, out: &mut HashMap<Symbol, HashSet<Symbol>>) -> Result<(), anyhow::Error> {
+        match matcher {
+            HirMatcher::Or(alternatives) => {
+                let binding = alternatives.iter().find(|a| a.binds_anything());
+                let mut group = HashSet::new();
+                for alt in alternatives {
+                    if alt.binds_anything() {
+                        self.collect_witness_obligations(alt, at, out)?;
+                    } else if let Some(obligation) = self.bindingless_witness_obligation(alt) {
+                        group.insert(obligation);
+                    } else if binding.is_some() {
+                        return Err(self.error_help("a non-witness alternative beside a destructure is a dead binding".to_string(), at,
+                            "beside a destructure, an alternative must be a witness (`null` or a witness type)"));
+                    }
+                }
+                // Every binder in the binding alternatives owes this group's witnesses.
+                if let Some(binding) = binding {
+                    for name in binding.binders() {
+                        out.entry(name).or_default().extend(&group);
+                    }
+                }
+                Ok(())
+            },
+            HirMatcher::As(_, inner) => self.collect_witness_obligations(inner, at, out),
+            HirMatcher::Type { shape: Some(shape), .. } => self.collect_witness_obligations(shape, at, out),
+            HirMatcher::Shape(fields) => { for field in fields { self.collect_witness_obligations(&field.value, at, out)?; } Ok(()) },
+            HirMatcher::Array(elements) => {
+                for element in elements {
+                    if let HirMatchElem::Elem(m) = element { self.collect_witness_obligations(m, at, out)?; }
+                }
+                Ok(())
+            },
+            HirMatcher::And(parts) => { for part in parts { self.collect_witness_obligations(part, at, out)?; } Ok(()) },
+            _ => Ok(()),
+        }
+    }
+
+    /// The obligation a bindingless alternative witnesses. `null` witnesses `opt`. A bare witness type
+    /// witnesses its own obligation. A non-witness alternative yields `None`.
+    fn bindingless_witness_obligation(&self, alt: &HirMatcher) -> Option<Symbol> {
+        match alt {
+            HirMatcher::Literal(HirLiteral::Null) => Some(self.sigs.opt),
+            HirMatcher::Type { name, shape: None, .. } => self.sigs.obligation_for_witness(*name),
+            _ => None,
+        }
     }
 
     fn expr(&mut self, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {

@@ -281,14 +281,10 @@ impl<'a> Lowerer<'a> {
     fn validate_has_operand(&self, id: &AstId<Matcher>) -> Result<(), anyhow::Error> {
         match self.ast.get(id) {
             Matcher::Wildcard | Matcher::Literal(_) => Ok(()),
-            Matcher::Binder(name) => {
-                let text = self.hir.text(*name);
-                if self.names.is_type_or_trait(*name) {
-                    Err(self.error(format!("`has` does not bind; `{text}` would bind it. Write `is {text}` or `has {text}` to test the type"), id))
-                } else {
-                    Err(self.error(format!("`has` does not bind; `{text}` would bind it. Use a literal or `_` to test the value, or `match` to bind"), id))
-                }
-            },
+            Matcher::Binder(_) => Err(self.error_help_at(
+                "unexpected binder in a `has` test",
+                self.ast.pos(id),
+                "`has` only tests. To test and bind, use the `~` match operator; to test without binding, use `_`")),
             Matcher::As(..) => Err(self.error("`has` binds nothing; an `@` as-binding is only for `match`", id)),
             Matcher::Type { name, shape, .. } => {
                 if !self.names.is_type_or_trait(*name) {
@@ -305,8 +301,10 @@ impl<'a> Lowerer<'a> {
                     if let Matcher::Binder(b) = self.ast.get(&field.value) {
                         if let MatchScalar::String(s) = &field.key {
                             if s == self.hir.text(*b) {
-                                return Err(self.error(format!(
-                                    "`has` does not bind; `{{ {s} }}` would bind {s}. For key presence write `{{ {s}: _ }}`"), &field.value));
+                                return Err(self.error_help_at(
+                                    "unexpected binder in a `has` test",
+                                    self.ast.pos(&field.value),
+                                    format!("for key presence write `{{ {s}: _ }}`")));
                             }
                         }
                     }

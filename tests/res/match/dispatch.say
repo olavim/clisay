@@ -3,7 +3,7 @@ type Point { pub x; pub y; init(a, b) { this.x = a; this.y = b; } }
 
 fn render(node) {
     match node {
-        is Point { x, y } => { print(x); print(y); },
+        Point { x, y } => { print(x); print(y); },
         { kind: "line", from, to } => { print(from); print(to); },
         { tag } => print(tag),
         _ => print("skip"),

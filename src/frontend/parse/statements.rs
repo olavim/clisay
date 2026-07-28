@@ -44,7 +44,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub(super) fn parse_say(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Say)?.pos.clone();
         let mutable = self.parse_mut();
+        let name_pos = self.tokens.peek(0).pos.clone();
         let name = self.parse_identifier()?;
+        self.check_name_case(&name, NameKind::Variable, &name_pos)?;
         let name = self.ast.intern(&name);
         let nullable = self.parse_nullable();
         let clause = self.parse_slot_clause(SlotKind::Local)?;
@@ -62,7 +64,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     pub(super) fn parse_obligation(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Obligation)?.pos.clone();
+        let name_pos = self.tokens.peek(0).pos.clone();
         let name = self.parse_identifier()?;
+        self.check_name_case(&name, NameKind::Obligation, &name_pos)?;
         let name = self.ast.intern(&name);
 
         let (rule, witness) = self.parse_obligation_rule()?;
@@ -142,11 +146,18 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let catch = if self.tokens.next_if(TokenType::Catch).is_some() {
             let (param, mutable) = match self.tokens.peek(0).kind {
-                TokenType::Identifier => (Some(self.parse_identifier_expr()?), false),
+                TokenType::Identifier => {
+                    let (lex, at) = (self.tokens.peek(0).lexeme.clone(), self.tokens.peek(0).pos.clone());
+                    let param = self.parse_identifier_expr()?;
+                    self.check_name_case(&lex, NameKind::Parameter, &at)?;
+                    (Some(param), false)
+                },
                 TokenType::LeftParen => {
                     let open = self.tokens.expect(TokenType::LeftParen)?.pos.clone();
                     let mutable = self.parse_mut();
+                    let (lex, at) = (self.tokens.peek(0).lexeme.clone(), self.tokens.peek(0).pos.clone());
                     let param = self.parse_identifier_expr()?;
+                    self.check_name_case(&lex, NameKind::Parameter, &at)?;
                     // A caught value is always nullable, so a marker or clause carries no meaning,
                     // but accept the parameter surface so a catch binding parses like any other.
                     self.parse_nullable();

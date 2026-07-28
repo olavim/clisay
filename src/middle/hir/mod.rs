@@ -164,6 +164,22 @@ impl HirMatcher {
         out
     }
 
+    /// Whether this matcher binds any name, without allocating the binder list.
+    pub fn binds_anything(&self) -> bool {
+        match self {
+            HirMatcher::Wildcard | HirMatcher::Literal(_) => false,
+            HirMatcher::Binder(_) | HirMatcher::As(..) => true,
+            HirMatcher::Type { shape, .. } => shape.as_ref().is_some_and(|s| s.binds_anything()),
+            HirMatcher::Shape(fields) => fields.iter().any(|f| f.value.binds_anything()),
+            HirMatcher::Array(elements) => elements.iter().any(|e| match e {
+                HirMatchElem::Elem(m) => m.binds_anything(),
+                HirMatchElem::Rest(name) => name.is_some(),
+            }),
+            HirMatcher::And(parts) => parts.iter().any(|p| p.binds_anything()),
+            HirMatcher::Or(alternatives) => alternatives.iter().any(|a| a.binds_anything()),
+        }
+    }
+
     /// Whether this matcher accepts every value, so a guardless arm using it is a catch-all.
     pub fn is_irrefutable(&self) -> bool {
         match self {
@@ -190,8 +206,13 @@ impl HirMatcher {
             },
             HirMatcher::As(name, inner) => { out.push(*name); inner.collect_binders(out); },
             HirMatcher::And(parts) => for part in parts { part.collect_binders(out) },
-            // Alternatives bind the same set, so the first one's binders stand for all.
-            HirMatcher::Or(alternatives) => if let Some(first) = alternatives.first() { first.collect_binders(out) },
+            // Binding alternatives agree on their names, so the first that binds stands for all. A
+            // bindingless witness alternative such as `| null` contributes none.
+            HirMatcher::Or(alternatives) => {
+                if let Some(binding) = alternatives.iter().find(|a| a.binds_anything()) {
+                    binding.collect_binders(out);
+                }
+            },
         }
     }
 }
