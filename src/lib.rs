@@ -38,6 +38,8 @@ pub mod internals {
     };
     pub use crate::middle::bind::{Bindings, TypeLayout};
     pub use crate::middle::check::Barriers;
+    pub use crate::middle::codegen::matching::{Scalar, tree::{build_tree, Access, Clause, DecisionTree, Path, ValueTest}};
+    pub use crate::middle::ir::{Ir, Label};
 
     use crate::frontend::lex::{tokenize, TokenStream};
     use crate::frontend::parse::Parser;
