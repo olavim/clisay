@@ -62,6 +62,15 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             parse_error!(self, &pos, "Repeated mutability capability");
         }
 
+        // The capability leads the clause, so each clause has one canonical spelling.
+        if !clause.names.is_empty() || clause.container {
+            return Err(self.error_help(
+                "Mutability must lead the ':' clause",
+                &pos,
+                "move 'mut' / '*mut' ahead of the obligations",
+            ));
+        }
+
         // `*mut` transfers ownership; plain `mut` borrows.
         clause.capability = if self.tokens.next_if(TokenType::StarMut).is_some() {
             Capability::MoveMut

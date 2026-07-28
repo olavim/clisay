@@ -28,7 +28,7 @@ impl<'a> Lowerer<'a> {
 
         let params_set: HashSet<Symbol> = match &decl.init {
             Some(init_id) => self.ast_fn(init_id).params.iter()
-                .filter_map(|p| match self.ast.get(&p.name) { Expr::Identifier(s) => Some(*s), _ => None })
+                .filter_map(|p| p.binder(self.ast))
                 .collect(),
             None => HashSet::new(),
         };

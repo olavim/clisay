@@ -218,3 +218,8 @@ fn mutability_traits(resource: &str) -> Result<(), Failed> {
 fn mutability_borrow(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
+
+#[test_resources("tests/res/pattern_params")]
+fn pattern_params(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}

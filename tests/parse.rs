@@ -50,6 +50,54 @@ fn param_markers() {
     assert_eq!(flags, vec![false, true]);
 }
 
+/// A parameter is one matcher, so every parameter form is a pattern and `binder` derives the name.
+#[test]
+fn param_forms_are_all_patterns() {
+    let ast = parse("fn f(point, _, Point, x @ Node, Err { value: e }, 1 | 2) {}");
+    let params = &nth_fn(&ast, &top_stmts(&ast), 0).params;
+    let binder = |i: usize| params[i].binder(&ast).map(|s| ast.text(s).to_string());
+    let shape = |i: usize| ast.get(&params[i].pattern);
+
+    assert!(matches!(shape(0), Matcher::Binder(_)) && binder(0).as_deref() == Some("point"));
+    assert!(matches!(shape(1), Matcher::Wildcard) && binder(1).is_none());
+    assert!(matches!(shape(2), Matcher::Type { nominal: true, shape: None, .. }) && binder(2).is_none());
+    assert!(matches!(shape(3), Matcher::As(..)) && binder(3).as_deref() == Some("x"));
+    assert!(matches!(shape(4), Matcher::Type { shape: Some(_), .. }) && binder(4).is_none());
+    assert!(matches!(shape(5), Matcher::Or(_)) && binder(5).is_none());
+}
+
+#[test]
+fn param_pattern_carries_a_clause() {
+    let ast = parse("fn f(x @ Node { next } | null : mut) {}");
+    let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
+    assert_eq!(ast.text(param.binder(&ast).expect("no whole-value binder")), "x");
+    assert_eq!(param.clause.capability, Capability::Mut);
+
+    let Matcher::As(_, inner) = ast.get(&param.pattern) else { panic!("the pattern is not an as-binding") };
+    let Matcher::Or(alternatives) = ast.get(inner) else { panic!("the pattern is not an or") };
+    assert!(matches!(ast.get(&alternatives[0]), Matcher::Type { nominal: true, .. }));
+    assert!(matches!(ast.get(&alternatives[1]), Matcher::Literal(MatchScalar::Null)));
+}
+
+/// The clause describes the slot, so it does not need the pattern to name the value.
+#[test]
+fn unnamed_param_still_carries_a_clause() {
+    let ast = parse("fn f(_ : *mut, Node : mut opt) {}");
+    let params = &nth_fn(&ast, &top_stmts(&ast), 0).params;
+    assert!(params[0].binder(&ast).is_none());
+    assert_eq!(params[0].clause.capability, Capability::MoveMut);
+    assert!(params[1].binder(&ast).is_none());
+    assert_eq!(params[1].clause.capability, Capability::Mut);
+    assert_eq!(ast.text(params[1].clause.names[0]), "opt");
+}
+
+#[test]
+fn param_pattern_rejections() {
+    // `_` names nothing, so `_ @ P` is rejected as a longer spelling of `P`.
+    assert!(try_parse("fn f(_ @ Node) {}").is_err());
+    assert!(try_parse("match v { _ @ Node => 1 }").is_err());
+}
+
 #[test]
 fn param_capability_marker() {
     // `mut` / `*mut` lead the clause, ahead of the obligation atoms.
@@ -72,20 +120,29 @@ fn fn_return_capability_marker() {
 }
 
 #[test]
-fn capability_marker_position_is_free() {
-    // Like `void`, the capability atom composes with obligations in any order.
-    for src in ["fn f(x: mut opt) {}", "fn f(x: opt mut) {}"] {
-        let ast = parse(src);
-        let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
-        assert_eq!(param.clause.capability, Capability::Mut, "{src}");
-        assert_eq!(ast.text(param.clause.names[0]), "opt", "{src}");
-    }
-
-    let ast = parse("fn f(x: opt *mut fails) {}");
+fn capability_marker_must_lead_the_clause() {
+    // The capability leads, so `mut opt fails` is the only spelling of that clause.
+    let ast = parse("fn f(x: mut opt fails) {}");
     let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
-    assert_eq!(param.clause.capability, Capability::MoveMut);
+    assert_eq!(param.clause.capability, Capability::Mut);
     let names: Vec<&str> = param.clause.names.iter().map(|n| ast.text(*n)).collect();
     assert_eq!(names, vec!["opt", "fails"]);
+
+    for src in ["fn f(x: opt mut) {}", "fn f(x: opt *mut fails) {}", "fn f(x: [taint] mut) {}"] {
+        assert!(try_parse(src).is_err(), "{src}");
+    }
+}
+
+#[test]
+fn obligation_atoms_stay_unordered() {
+    // Only the capability's position is pinned. The obligations among themselves are a set.
+    for src in ["fn f(x: mut opt fails) {}", "fn f(x: mut fails opt) {}"] {
+        let ast = parse(src);
+        let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
+        let mut names: Vec<&str> = param.clause.names.iter().map(|n| ast.text(*n)).collect();
+        names.sort();
+        assert_eq!(names, vec!["fails", "opt"], "{src}");
+    }
 }
 
 #[test]

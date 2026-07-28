@@ -77,6 +77,23 @@ impl<'a> Collector<'a> {
         }
     }
 
+    /// Folds each parameter's witness alternatives into the obligations its signature advertises,
+    /// so a caller sees `x @ Node | null` exactly as it sees `x: opt`.
+    pub(super) fn admit_pattern_obligations(&mut self) {
+        let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
+        for stmt in stmts {
+            let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
+            let admitted: Vec<(usize, HashSet<Symbol>)> = decl.params.iter().enumerate()
+                .filter_map(|(i, p)| Some((i, self.sigs.admitted_obligations(p.pattern.as_ref()?))))
+                .filter(|(_, admits)| !admits.is_empty())
+                .collect();
+            let Some(sig) = self.sigs.fns.get_mut(&stmt).filter(|_| !admitted.is_empty()) else { continue };
+            for (i, admits) in admitted {
+                sig.param_clauses[i].extend(admits);
+            }
+        }
+    }
+
     fn fn_sig(&self, decl: &HirFnDecl) -> FnSig {
         let mut ret = self.ret_sig(decl);
         if self.body_fails(&decl.body) {

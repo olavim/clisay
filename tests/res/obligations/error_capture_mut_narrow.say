@@ -1,0 +1,8 @@
+// A rebindable slot may hold a different value by the time the nested body runs, so its narrowing
+// does not travel with the capture.
+fn a(v: opt) {
+    say mut x: opt = v;
+    if (x == null) { return; }
+    say b = () => print(x + 1); // error: unchecked value owes 'opt'
+    b();
+}

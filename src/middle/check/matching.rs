@@ -1,6 +1,6 @@
 //! Match-arm discharge: which witnesses an arm rules out for the arms below it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::core::objects::TypeMember;
 use crate::middle::signatures::Witness;
@@ -9,6 +9,22 @@ use crate::middle::hir::{HirExpr, HirId, HirLiteral, HirMatchArm, HirMatcher, Sy
 use super::Checker;
 
 impl<'a> Checker<'a> {
+    /// Recovers a nominal destructure's declared field facts onto the names its shape binds. A
+    /// nullable field makes its binder owe `opt`, exactly as reading `x.field` would. A structural
+    /// shape names no type, so it reaches this with nothing to resolve against.
+    pub(super) fn recover_shape_fields(&self, type_name: Symbol, shape: &HirMatcher, out: &mut HashMap<Symbol, HashSet<Symbol>>) {
+        let (HirMatcher::Shape(fields), Some(layout)) = (shape, self.layout_of(type_name)) else { return };
+        for field in fields {
+            let HirLiteral::String(key) = &field.key else { continue };
+            if !self.hir.symbol_of(key).is_some_and(|sym| layout.is_nullable(sym)) {
+                continue;
+            }
+            for name in whole_value_binders(&field.value) {
+                out.entry(name).or_default().insert(self.sigs.opt);
+            }
+        }
+    }
+
     /// The witnesses a match arm rules out for the arms below it.
     pub(super) fn arm_rules_out(&self, arm: &HirMatchArm, remaining: &HashSet<Symbol>) -> HashSet<Symbol> {
         if let Some(guard) = &arm.guard {

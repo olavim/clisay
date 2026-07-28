@@ -1,0 +1,6 @@
+// A narrowing is keyed by the local's slot and dies with it, so a sibling scope reusing the slot
+// inherits nothing.
+fn f(v?) {
+    { say a: opt = v; if (a == null) { return; } print(a); }
+    { say b: opt = v; print(b + 1); } // error: unchecked value owes 'opt'
+}

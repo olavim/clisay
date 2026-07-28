@@ -5,6 +5,6 @@ fn Render() { } // error: an fn name must start with a lowercase letter
 // @split
 say Total = 1; // error: a variable name must start with a lowercase letter
 // @split
-fn f(X) { return X; } // error: a parameter name must start with a lowercase letter
+try { } catch (X) { } // error: a parameter name must start with a lowercase letter
 // @split
 trait drawable { } // error: a trait name must start with an uppercase letter

@@ -10,7 +10,7 @@ mod walk;
 use std::collections::{HashMap, HashSet};
 
 use crate::middle::bind::Bindings;
-use crate::middle::hir::{Capability, Hir, HirExpr, HirId, HirStmt, ObligationRule, Symbol};
+use crate::middle::hir::{Capability, Hir, HirExpr, HirId, HirLiteral, HirMatcher, HirStmt, ObligationRule, Symbol};
 
 /// A function's return: the obligations its result carries and whether any path returns a value.
 #[derive(Clone, Default)]
@@ -131,6 +131,27 @@ impl Signatures {
         self.types_by_name.contains_key(&name)
     }
 
+    /// The obligations a matcher admits on the value it matches: one per bindingless witness among
+    /// its alternatives. `Node | null` admits `opt`, so a name bound to that value owes `opt`.
+    pub(crate) fn admitted_obligations(&self, matcher: &HirMatcher) -> HashSet<Symbol> {
+        match matcher {
+            HirMatcher::Or(alternatives) => alternatives.iter()
+                .filter_map(|alt| self.bindingless_witness_obligation(alt))
+                .collect(),
+            _ => HashSet::new(),
+        }
+    }
+
+    /// The obligation a bindingless alternative witnesses. `null` witnesses `opt`. A bare witness
+    /// type witnesses its own obligation. A non-witness alternative yields `None`.
+    pub(crate) fn bindingless_witness_obligation(&self, alt: &HirMatcher) -> Option<Symbol> {
+        match alt {
+            HirMatcher::Literal(HirLiteral::Null) => Some(self.opt),
+            HirMatcher::Type { name, shape: None, .. } => self.obligation_for_witness(*name),
+            _ => None,
+        }
+    }
+
     /// The witness of an obligation, when one is known.
     pub(crate) fn witness(&self, obligation: Symbol) -> Option<&Witness> {
         self.witnesses.get(&obligation)
@@ -195,6 +216,7 @@ pub fn collect(hir: &Hir, bindings: &Bindings) -> Signatures {
     let mut collector = Collector { hir, bindings, opt, fails, err, sigs, returns: HashMap::new() };
     collector.stmt(&hir.get_root());
     collector.register_obligations();
+    collector.admit_pattern_obligations();
     collector.collect_all_returns();
     collector.infer_ret_tags();
     collector.infer_ret_mut();

@@ -106,8 +106,8 @@ struct MovedAt {
     cause: MoveCause,
 }
 
-/// The binders a condition or match arm introduces, paired with the obligations each owes. Built in
-/// one place so a binding site cannot declare binders while forgetting their obligations.
+/// The binders a condition or match arm introduces, paired with the obligations each owes.
+#[derive(Default)]
 struct BinderScope {
     names: Vec<Symbol>,
     owed: HashMap<Symbol, HashSet<Symbol>>,
@@ -198,6 +198,7 @@ struct LocalFlow {
 struct FlowSnapshot {
     locals: Vec<LocalFlow>,
     narrowed: HashMap<NarrowKey, HashSet<Symbol>>,
+    this_narrowed: HashMap<Symbol, HashSet<Symbol>>,
 }
 
 /// The declared facts of the function currently being checked.
@@ -234,8 +235,11 @@ struct Checker<'a> {
     /// While checking a factory body, where writing an immutable field is its initialization, not
     /// a mutation.
     checking_factory: bool,
-    /// The obligations discharged per place on the current path.
+    /// The obligations discharged per local place on the current path, keyed by local index.
     narrowed: HashMap<NarrowKey, HashSet<Symbol>>,
+    /// The obligations discharged per `this` field on the current path. Keyed by name rather than
+    /// by slot, so it is scoped to the frame instead of to a local.
+    this_narrowed: HashMap<Symbol, HashSet<Symbol>>,
     current_trait_surface: Option<HashSet<Symbol>>,
     /// The function currently being checked.
     fn_ctx: FnContext<'a>,
@@ -267,6 +271,7 @@ impl<'a> Checker<'a> {
             current_type: None,
             checking_factory: false,
             narrowed: HashMap::new(),
+            this_narrowed: HashMap::new(),
             current_trait_surface: None,
             fn_ctx: FnContext::default(),
             barriers: HashSet::new(),
@@ -621,7 +626,7 @@ impl<'a> Checker<'a> {
                         self.locals.push(Local::catch(name, self.opt_set(true), catch.mutable));
                     }
                     self.expr(&catch.body)?;
-                    self.locals.truncate(mark);
+                    self.truncate_locals(mark);
                 }
                 if let Some(finally) = finally { self.expr(finally)?; }
             },
@@ -683,14 +688,24 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Declares a scope's binders as immutable locals for the duration of `f`, then drops them.
-    fn with_binders<R>(&mut self, scope: &BinderScope, f: impl FnOnce(&mut Self) -> R) -> R {
-        let mark = self.locals.len();
+    fn truncate_locals(&mut self, mark: usize) {
+        self.locals.truncate(mark);
+        self.narrowed.retain(|key, _| !matches!(key, NarrowKey::Local(i) | NarrowKey::LocalField(i, _) if *i >= mark));
+    }
+
+    /// Declares a scope's binders as immutable locals, each owing what the scope recorded for it.
+    fn push_binders(&mut self, scope: &BinderScope) {
         for &name in &scope.names {
             self.locals.push(Local::binder_owing(name, scope.owed.get(&name).cloned().unwrap_or_default()));
         }
+    }
+
+    /// Declares a scope's binders as immutable locals for the duration of `f`, then drops them.
+    fn with_binders<R>(&mut self, scope: &BinderScope, f: impl FnOnce(&mut Self) -> R) -> R {
+        let mark = self.locals.len();
+        self.push_binders(scope);
         let r = f(self);
-        self.locals.truncate(mark);
+        self.truncate_locals(mark);
         r
     }
 
@@ -700,6 +715,16 @@ impl<'a> Checker<'a> {
         Ok(BinderScope {
             names: self.hir.condition_binders(cond),
             owed: self.condition_witness_obligations(cond)?,
+        })
+    }
+
+    /// The binders a parameter's pattern introduces, each owing the witnesses on its or-path plus
+    /// whatever its field declares. A parameter with no pattern introduces none.
+    fn param_scope(&self, param: &HirParam) -> Result<BinderScope, anyhow::Error> {
+        let Some(pattern) = &param.pattern else { return Ok(BinderScope::default()) };
+        Ok(BinderScope {
+            names: pattern.binders(),
+            owed: self.matcher_witness_obligations(pattern, &param.name)?,
         })
     }
 
@@ -757,7 +782,7 @@ impl<'a> Checker<'a> {
                 for alt in alternatives {
                     if alt.binds_anything() {
                         self.collect_witness_obligations(alt, at, out)?;
-                    } else if let Some(obligation) = self.bindingless_witness_obligation(alt) {
+                    } else if let Some(obligation) = self.sigs.bindingless_witness_obligation(alt) {
                         group.insert(obligation);
                     } else if binding.is_some() {
                         return Err(self.error_help("a non-witness alternative beside a destructure is a dead binding".to_string(), at,
@@ -772,8 +797,20 @@ impl<'a> Checker<'a> {
                 }
                 Ok(())
             },
-            HirMatcher::As(_, inner) => self.collect_witness_obligations(inner, at, out),
-            HirMatcher::Type { shape: Some(shape), .. } => self.collect_witness_obligations(shape, at, out),
+            HirMatcher::As(name, inner) => {
+                // `x @ p | null` names the whole value, so `x` owes what that or-group admits.
+                let admits = self.sigs.admitted_obligations(inner);
+                if !admits.is_empty() {
+                    out.entry(*name).or_default().extend(admits);
+                }
+                self.collect_witness_obligations(inner, at, out)
+            },
+            HirMatcher::Type { nominal, name, shape: Some(shape) } => {
+                if *nominal {
+                    self.recover_shape_fields(*name, shape, out);
+                }
+                self.collect_witness_obligations(shape, at, out)
+            },
             HirMatcher::Shape(fields) => { for field in fields { self.collect_witness_obligations(&field.value, at, out)?; } Ok(()) },
             HirMatcher::Array(elements) => {
                 for element in elements {
@@ -783,16 +820,6 @@ impl<'a> Checker<'a> {
             },
             HirMatcher::And(parts) => { for part in parts { self.collect_witness_obligations(part, at, out)?; } Ok(()) },
             _ => Ok(()),
-        }
-    }
-
-    /// The obligation a bindingless alternative witnesses. `null` witnesses `opt`. A bare witness type
-    /// witnesses its own obligation. A non-witness alternative yields `None`.
-    fn bindingless_witness_obligation(&self, alt: &HirMatcher) -> Option<Symbol> {
-        match alt {
-            HirMatcher::Literal(HirLiteral::Null) => Some(self.sigs.opt),
-            HirMatcher::Type { name, shape: None, .. } => self.sigs.obligation_for_witness(*name),
-            _ => None,
         }
     }
 
@@ -865,7 +892,7 @@ impl<'a> Checker<'a> {
                 let mark = self.locals.len();
                 for s in stmts { self.stmt(s)?; }
                 self.revive_scoped_sources(mark);
-                self.locals.truncate(mark);
+                self.truncate_locals(mark);
                 Typed::unknown()
             },
             // `a ?? b` discharges the whole obligation set: the fallback runs on any bad value, so
@@ -912,7 +939,7 @@ impl<'a> Checker<'a> {
                 let mark = self.locals.len();
                 self.locals.push(binder_local);
                 let h = self.expr(handler)?;
-                self.locals.truncate(mark);
+                self.truncate_locals(mark);
                 let tag = if left.tag == h.tag { left.tag.clone() } else { TypeTag::Unknown };
                 let flow = if matches!(left.flow, Flow::Clean) { Flow::Clean } else { h.flow };
                 Typed::of(flow, tag)
@@ -961,9 +988,23 @@ impl<'a> Checker<'a> {
         let saved_frame = self.frame_start;
         let mark = self.locals.len();
         self.frame_start = mark;
+        // A `this` field narrowing is keyed by the field's name, and no nested body can reach the
+        // enclosing `this`, so such a narrowing means nothing past this frame. Local narrowings are
+        // keyed by slot and stay readable, since a capture reads the enclosing slot.
+        let saved_this_narrowed = std::mem::take(&mut self.this_narrowed);
+
+
         for param in params {
             let name = self.ident_sym(&param.name);
-            let mut local = Local::param(name, self.clause_owed(&param.clause), param.mutable);
+            let mut owed = self.clause_owed(&param.clause);
+
+            // A witness alternative is the real obligation, so `x @ Node | null` owes `opt` exactly
+            // as `x: opt` does.
+            if let Some(pattern) = &param.pattern {
+                owed.extend(self.sigs.admitted_obligations(pattern));
+            }
+
+            let mut local = Local::param(name, owed, param.mutable);
             local.container = param.clause.container;
             local.param = true;
             local.mutability = Mutability::param(param.clause.capability);
@@ -971,9 +1012,17 @@ impl<'a> Checker<'a> {
             local.borrowed = param.clause.capability == Capability::Mut;
             self.locals.push(local);
         }
+
+        // A pattern's binders live for the whole body, so they are pushed beside the parameters
+        // rather than scoped to a branch.
+        for param in params {
+            let scope = self.param_scope(param)?;
+            self.push_binders(&scope);
+        }
         let result = body(self);
-        self.locals.truncate(mark);
+        self.truncate_locals(mark);
         self.frame_start = saved_frame;
+        self.this_narrowed = saved_this_narrowed;
         result
     }
 
@@ -1123,11 +1172,43 @@ impl<'a> Checker<'a> {
             .with_help("freeze the value, or mark the container `mut`"))
     }
 
+    /// A read of a binding from an enclosing frame. Capturing a value discharges nothing, so the
+    /// binding keeps what it was declared owing. A flow fact travels with it only from an immutable
+    /// slot, which cannot be rebound, so the value tested is the value the nested body sees.
+    fn captured_read(&self, name: Symbol) -> Typed {
+        let Some(i) = self.locals[..self.frame_start].iter().rposition(|l| l.name == name) else {
+            return Typed::unknown();
+        };
+        let local = &self.locals[i];
+        if local.func.is_some() {
+            return Typed::unknown();
+        }
+
+        let discharged = self.narrowed.get(&NarrowKey::Local(i)).filter(|_| !local.mutable);
+        let owed: HashSet<Symbol> = match discharged {
+            Some(discharged) => local.owed.difference(discharged).copied().collect(),
+            None => local.owed.clone(),
+        };
+
+        let flow = if owed.is_empty() {
+            Flow::Clean
+        } else {
+            Flow::Bad { obligations: owed, definite: false, container: local.container }
+        };
+
+        // A rebindable slot may hold a different value by then, so only an immutable one carries its
+        // type and mutability in.
+        match local.mutable {
+            true => Typed::of(flow, TypeTag::Unknown),
+            false => Typed::of(flow, local.tag.clone()).with_mutability(local.mutability),
+        }
+    }
+
     fn identifier(&mut self, name: Symbol, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let Some(i) = self.frame_index_of(name) else {
             // A read that resolves to an enclosing frame is a closure capture.
             self.capture_enclosing(name, expr);
-            return Ok(Typed::unknown());
+            return Ok(self.captured_read(name));
         };
 
         if self.locals[i].func.is_some() {

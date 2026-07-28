@@ -1,6 +1,6 @@
 use crate::core::objects::ObjFn;
 use crate::core::value::Value;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirParam, HirStmt};
 use crate::middle::ir::Inst;
 use crate::middle::bind::FnKind;
 
@@ -27,6 +27,20 @@ impl<'a> Compiler<'a> {
             .unwrap_or_else(|| if arity >= 64 { u64::MAX } else { (1u64 << arity) - 1 })
     }
 
+    /// Matches each pattern parameter against its slot on entry, publishing the pattern's binders
+    /// into slots reserved ahead of the body. The match's boolean is discarded.
+    fn compile_entry_steps(&mut self, params: &[HirParam]) -> Result<(), anyhow::Error> {
+        for param in params {
+            let Some(pattern) = &param.pattern else { continue };
+            let binders = self.bindings.match_binders(&param.name).unwrap_or_default().to_vec();
+            self.reserve_slots(binders.len(), &param.name);
+            self.expression(&param.name)?;
+            self.compile_binding_matcher(pattern, &binders, &param.name)?;
+            self.emit(Inst::Pop, &param.name);
+        }
+        Ok(())
+    }
+
     pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, decl: &HirFnDecl, kind: FnKind, persist_mask: u64) -> Result<u8, anyhow::Error> {
         self.fn_kinds.push(kind);
 
@@ -38,6 +52,7 @@ impl<'a> Compiler<'a> {
         let body = self.ir.new_label();
         self.ir.bind(body);
 
+        self.compile_entry_steps(&decl.params)?;
         self.expression(&decl.body)?;
         self.exit_function(&decl.body, kind);
         self.ir.bind(skip);

@@ -1,0 +1,5 @@
+// Capturing a value discharges nothing, so a nested body owes what the binding was declared owing.
+fn a(x: opt) {
+    say b = () => print(x + 1); // error: unchecked value owes 'opt'
+    b();
+}
