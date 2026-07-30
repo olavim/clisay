@@ -1,0 +1,6 @@
+// A clause atom is an obligation name, so an undeclared one is a mistake rather than a clause that
+// forbids nothing.
+type Box {
+    r: nope; // error: Obligation 'nope' is not declared
+    init(this, v) { this.r = v; }
+}

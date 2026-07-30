@@ -3,7 +3,7 @@ trait Sink {
     req fn accept(this, x: opt);
 }
 type Db with Sink {
-    pub fn accept(this, x: opt fails) { }
+    pub fn accept(this, x: opt fails) { x ?? 0; }
     init(this) {}
 }
 say d = Db();

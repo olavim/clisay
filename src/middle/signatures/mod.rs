@@ -10,12 +10,13 @@ mod walk;
 use std::collections::{HashMap, HashSet};
 
 use crate::middle::bind::Bindings;
-use crate::middle::hir::{Capability, Hir, HirExpr, HirId, HirLiteral, HirMatcher, HirStmt, ObligationRule, Symbol};
+use crate::middle::hir::{builtin_obligation_rules, Capability, Hir, HirExpr, HirId, HirLiteral, HirMatcher, HirStmt, ObligationRules, Symbol};
+use crate::middle::obligations::Obligations;
 
 /// A function's return: the obligations its result carries and whether any path returns a value.
 #[derive(Clone, Default)]
 pub struct RetSig {
-    pub obligations: HashSet<Symbol>,
+    pub obligations: Obligations,
     pub void: bool,
 }
 
@@ -23,7 +24,7 @@ pub struct RetSig {
 pub struct FnSig {
     /// The capability the receiver requires, on a method.
     pub receiver_marker: Option<Capability>,
-    pub param_clauses: Vec<HashSet<Symbol>>,
+    pub param_clauses: Vec<Obligations>,
     pub param_markers: Vec<Capability>,
     pub ret: RetSig,
 }
@@ -78,7 +79,7 @@ pub struct Signatures {
     /// Each obligation's witness. Built-ins are seeded here; user obligations extend it.
     pub(crate) witnesses: HashMap<Symbol, Witness>,
     /// Each user obligation's rule.
-    pub(crate) rules: HashMap<Symbol, ObligationRule>,
+    pub(crate) rules: HashMap<Symbol, ObligationRules>,
 
     // Per-function facts, keyed by the function's statement.
     pub(crate) fns: HashMap<HirId<HirStmt>, FnSig>,
@@ -135,12 +136,14 @@ impl Signatures {
 
     /// The obligations a matcher admits on the value it matches: one per bindingless witness among
     /// its alternatives. `Node | null` admits `opt`, so a name bound to that value owes `opt`.
-    pub(crate) fn admitted_obligations(&self, matcher: &HirMatcher) -> HashSet<Symbol> {
+    pub(crate) fn admitted_obligations(&self, matcher: &HirMatcher) -> Obligations {
         match matcher {
             HirMatcher::Or(alternatives) => alternatives.iter()
                 .filter_map(|alt| self.bindingless_witness_obligation(alt))
                 .collect(),
-            _ => HashSet::new(),
+            HirMatcher::Type { name, .. } => self.obligation_for_witness(*name).into_iter().collect(),
+            HirMatcher::As(_, inner) => self.admitted_obligations(inner),
+            _ => Obligations::new(),
         }
     }
 
@@ -180,9 +183,10 @@ impl Signatures {
         self.param_mutates.get(func).and_then(|v| v.get(param)).copied().unwrap_or(false)
     }
 
-    /// Whether an obligation's rule is `no persist`: usable in place, but not persistable.
-    pub(crate) fn is_no_persist(&self, obligation: Symbol) -> bool {
-        matches!(self.rules.get(&obligation), Some(ObligationRule::NoPersist))
+    /// An obligation's declared rules. An unregistered name forbids nothing. A `to_use` rule is also
+    /// what a proof clears, since a discharge answers that question and nothing else.
+    pub(crate) fn rules_of(&self, obligation: Symbol) -> ObligationRules {
+        self.rules.get(&obligation).copied().unwrap_or_default()
     }
 
     pub(crate) fn obligation_for_witness(&self, name: Symbol) -> Option<Symbol> {
@@ -212,6 +216,11 @@ pub fn collect(hir: &Hir, bindings: &Bindings) -> Signatures {
     let fails = hir.symbol_of("fails").expect("lowering interns the fails obligation");
     let err = hir.symbol_of("Err");
     let mut sigs = Signatures::new(opt, fails);
+    for (name, sym) in [("opt", opt), ("fails", fails)] {
+        if let Some(rules) = builtin_obligation_rules(name) {
+            sigs.rules.insert(sym, rules);
+        }
+    }
     if let Some(err) = err {
         sigs.witnesses.insert(fails, Witness::Type(err));
     }

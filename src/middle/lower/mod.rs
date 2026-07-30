@@ -21,6 +21,7 @@ pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
     let mut hir = Hir::new(ident_ids, ident_texts);
     let opt = hir.intern("opt");
     hir.intern("fails");
+    hir.intern("Err");
     let mut lowerer = Lowerer {
         ast: &ast,
         names,
@@ -120,8 +121,8 @@ impl<'a> Lowerer<'a> {
                 HirStmt::Match(scrutinee, arms)
             },
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
-            Stmt::Obligation { name, witness, rule } => {
-                self.hir.declare_obligation(*name, *witness, *rule);
+            Stmt::Obligation { name, witness, rules } => {
+                self.hir.declare_obligation(*name, *witness, *rules);
                 HirStmt::Nop
             },
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),

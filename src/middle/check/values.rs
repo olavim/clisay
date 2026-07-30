@@ -1,16 +1,15 @@
 //! Whether a value may be used here: rejecting void results, undischarged obligations, and
 //! escaping values.
 
-use std::collections::HashSet;
-
 use anyhow::anyhow;
 
 use crate::frontend::lex::Diagnostic;
 
 use crate::middle::signatures::{TypeTag, Witness};
-use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, Symbol};
+use crate::middle::hir::{builtin_obligation_rules, BinOp, HirExpr, HirId, HirLiteral, Symbol};
+use crate::middle::obligations::Obligations;
 
-use super::{Checker, Flow, Typed};
+use super::{Checker, Flow, Rule, Site, Typed};
 
 impl<'a> Checker<'a> {
     /// A single-caret error for a confirmed witness used where its type is not allowed.
@@ -26,7 +25,7 @@ impl<'a> Checker<'a> {
 
         let Flow::Bad { obligations, .. } = &typed.flow else { return Ok(()) };
 
-        let blocking: HashSet<Symbol> = obligations.iter().copied().filter(|o| !self.sigs.is_no_persist(*o)).collect();
+        let blocking: Obligations = obligations.iter().copied().filter(|o| self.sigs.rules_of(*o).to_use).collect();
         if blocking.is_empty() {
             return Ok(());
         }
@@ -60,33 +59,93 @@ impl<'a> Checker<'a> {
         Err(anyhow!("{}", diagnostic))
     }
 
-    /// The `no persist` obligations in a set: usable in place, but rejected at a persist site.
-    fn no_persist_only(&self, obligations: &HashSet<Symbol>) -> HashSet<Symbol> {
-        obligations.iter().copied().filter(|o| self.sigs.is_no_persist(*o)).collect()
+    /// The obligations a value owes that a slot does not admit. `opt` is left out. The null axis has
+    /// its own message at every slot, so reporting it here would say the same thing twice.
+    pub(super) fn undeclared_obligations(&self, flow: &Flow, admits: &Obligations) -> Obligations {
+        let Flow::Bad { obligations, .. } = flow else { return Obligations::new() };
+        obligations.difference(admits).copied().filter(|o| *o != self.sigs.opt).collect()
+    }
+
+    /// The obligations in a set that a rule forbids.
+    pub(super) fn owing_rule(&self, obligations: &Obligations, rule: Rule) -> Obligations {
+        obligations.iter().copied().filter(|o| rule.holds(&self.sigs.rules_of(*o))).collect()
+    }
+
+    /// Refuses an operation the rule forbids on this value.
+    pub(super) fn reject_at(&self, flow: &Flow, rule: Rule, site: Site, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
+        let blocked = self.owing_rule(obligations, rule);
+        if blocked.is_empty() {
+            return Ok(());
+        }
+        let owed = self.quoted_obligation_list(&blocked);
+        let help = self.prohibition_help(&blocked, rule, site);
+        Err(self.error_help(site.refusal(&owed), node, help))
+    }
+
+    /// The declaration a rule-based prohibition comes from, for the reader to go and read. A
+    /// built-in obligation has none, so there is nothing to cite.
+    fn rule_citation(&self, obligations: &Obligations, rule: Rule) -> Option<String> {
+        let declared: Vec<String> = self.sorted_obligation_names(obligations).into_iter()
+            .filter(|name| builtin_obligation_rules(name).is_none())
+            .map(|name| format!("`{name}`"))
+            .collect();
+        match declared.len() {
+            0 => None,
+            1 => Some(format!("{} declares `{}`", declared[0], rule.spelling())),
+            _ => Some(format!("{} declare `{}`", declared.join(" and "), rule.spelling())),
+        }
+    }
+
+    /// What a flow owes. A flow that is not bad owes nothing.
+    pub(super) fn owed_of(&self, flow: &Flow) -> Obligations {
+        match flow {
+            Flow::Bad { obligations, .. } => obligations.clone(),
+            _ => Obligations::new(),
+        }
+    }
+
+    fn unprovable_only(&self, obligations: &Obligations) -> Obligations {
+        obligations.iter().copied().filter(|o| self.sigs.witness(*o).is_none()).collect()
+    }
+
+    /// A discharge proves a value is not in some bad state. An operand owing only witnessless
+    /// obligations names no such state, so the form has nothing to prove and is rejected.
+    pub(super) fn require_witnessed_operand(&self, flow: &Flow, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
+        if obligations.iter().any(|o| self.sigs.witness(*o).is_some()) {
+            return Ok(());
+        }
+        let owed = self.quoted_obligation_list(obligations);
+        let have = match obligations.len() {
+            1 => "has",
+            _ => "have",
+        };
+        Err(self.error_help(
+            format!("cannot discharge a value owing {owed}"), node,
+            format!("{owed} {have} no witness, so there is no bad state to rule out")))
     }
 
     /// Whether any of these obligations is `no persist`.
     pub(super) fn owes_no_persist(&self, obligations: impl IntoIterator<Item = Symbol>) -> bool {
-        obligations.into_iter().any(|o| self.sigs.is_no_persist(o))
+        obligations.into_iter().any(|o| self.sigs.rules_of(o).no_persist)
     }
 
-    /// Rejects persisting a value that owes a `no persist` obligation.
-    pub(super) fn reject_escape(&self, flow: &Flow, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
-        let escaping = self.no_persist_only(obligations);
-        if escaping.is_empty() {
-            return Ok(());
+    /// The help behind a rule-based prohibition. A user obligation has a declaration to cite. A
+    /// built-in has none, so it gets the guidance that applies to its values instead. Only built-ins
+    /// are left when there is nothing to cite, so the first name identifies which witness to speak of.
+    pub(super) fn prohibition_help(&self, obligations: &Obligations, rule: Rule, site: Site) -> String {
+        match self.rule_citation(obligations, rule) {
+            Some(citation) => format!("{citation}, which prevents {}", site.prevents()),
+            None => site.guidance(self.sorted_obligation_names(obligations)[0]).to_string(),
         }
-        let subject = self.quoted_subject(node);
-        let owed = self.quoted_obligation_list(&escaping);
-        Err(self.error(format!("{subject} owes {owed}; it cannot be stored or escape its scope"), node))
     }
 
-    /// The flow after a discharge operator. A witnessed obligation is cleared by proof, but a
-    /// `no persist` obligation has no witness to prove, so it stays.
+    /// The flow after a discharge operator. A discharge answers the read question, so it clears the
+    /// obligations that asked it and leaves the rest in place.
     pub(super) fn discharged_flow(&self, flow: &Flow) -> Flow {
         let Flow::Bad { obligations, .. } = flow else { return Flow::Clean };
-        let kept = self.no_persist_only(obligations);
+        let kept = self.unprovable_only(obligations);
         if kept.is_empty() {
             Flow::Clean
         } else {

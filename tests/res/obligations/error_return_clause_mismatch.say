@@ -1,0 +1,4 @@
+// A return's declared clause is the contract, so the body may not return a different obligation.
+type Taint { } obligation taint { witness Taint; discharge to use; }
+type Token { } obligation parsed { witness Token; discharge to use; }
+fn f(x: taint): parsed { return x; } // error: cannot return a value owing 'taint'

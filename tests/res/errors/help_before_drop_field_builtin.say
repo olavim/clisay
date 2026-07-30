@@ -1,0 +1,12 @@
+type Box {
+    r: fails;
+    init(this, v) { this.r = v; }
+}
+// error(full):
+// error: A field cannot owe 'fails'
+//  --> help_before_drop_field_builtin.say:2:8
+//   |
+// 1 | type Box {
+// 2 |     r: fails;
+//   |        ^^^^^
+//   = help: store what the `Err` carries, not the `Err` itself

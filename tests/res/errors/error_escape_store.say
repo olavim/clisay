@@ -1,13 +1,14 @@
-obligation borrowed: no persist;
+obligation borrowed { no persist; no return; }
 type Box {
     pub mut item;
     init(this) { this.item = 0; }
     fn stash(this: mut, x: borrowed) { this.item = x; }
 }
 // error(full):
-// error: 'x' owes 'borrowed'; it cannot be stored or escape its scope
+// error: cannot store value owing 'borrowed' in a field
 //  --> error_escape_store.say:5:52
 //   |
 // 4 |     init(this) { this.item = 0; }
 // 5 |     fn stash(this: mut, x: borrowed) { this.item = x; }
 //   |                                                    ^
+//   = help: `borrowed` declares `no persist`, which prevents storing it in a field

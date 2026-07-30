@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 
-pub use crate::frontend::ast::{Capability, ObligationRule, ReturnShape, Symbol};
+pub use crate::frontend::ast::{builtin_obligation_rules, Capability, ObligationRules, ReturnShape, Symbol};
 use crate::frontend::lex::{SourcePosition, TokenType};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -413,7 +413,7 @@ impl<T> std::hash::Hash for HirId<T> {
 /// The declaration itself lowers to a `Nop`, so its facts live here instead.
 pub struct ObligationDecl {
     pub witness: Option<Symbol>,
-    pub rule: ObligationRule,
+    pub rules: ObligationRules,
 }
 
 /// The lowered compilation unit: a flat arena of HIR nodes plus the identifier
@@ -430,8 +430,8 @@ impl Hir {
         Hir { nodes: Vec::new(), ident_ids, ident_texts, obligations: HashMap::new() }
     }
 
-    pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: Option<Symbol>, rule: ObligationRule) {
-        self.obligations.insert(name, ObligationDecl { witness, rule });
+    pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: Option<Symbol>, rules: ObligationRules) {
+        self.obligations.insert(name, ObligationDecl { witness, rules });
     }
 
     /// Every user-declared obligation, keyed by name.

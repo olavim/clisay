@@ -1,0 +1,12 @@
+obligation borrowed { no persist; no return; }
+fn leak(): borrowed {
+    return 1;
+}
+// error(full):
+// error: A return cannot owe 'borrowed'
+//  --> help_no_return_clause.say:2:12
+//   |
+// 1 | obligation borrowed { no persist; no return; }
+// 2 | fn leak(): borrowed {
+//   |            ^^^^^^^^
+//   = help: `borrowed` declares `no return`, which prevents returning it

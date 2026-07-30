@@ -11,7 +11,7 @@ pub use operator::Operator;
 use crate::frontend::lex::SourcePosition;
 
 /// An interned identifier.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Symbol(u32);
 
 impl Symbol {
@@ -303,11 +303,30 @@ pub struct MatchArm {
     pub body: AstId<Expr>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ObligationRule {
-    ToUse,
-    NoPersist,
-    NoDrop,
+/// The rules an obligation declares.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ObligationRules {
+    /// The value cannot be read until the obligation is discharged.
+    pub to_use: bool,
+    /// The value may not be stored where it would outlive its binding: a field, a container, or a
+    /// closure. It may still be handed along a call chain.
+    pub no_persist: bool,
+    /// The value may not leave its frame by `return`, so its lifetime is the call.
+    pub no_return: bool,
+    /// The binding must be discharged before its scope ends.
+    pub before_drop: bool,
+    /// Reserved for typestate.
+    pub no_drop: bool,
+}
+
+/// The rules of the built-in obligations. They have no source declaration to read a rule set from,
+/// so theirs lives here.
+pub fn builtin_obligation_rules(name: &str) -> Option<ObligationRules> {
+    Some(match name {
+        "opt" => ObligationRules { to_use: true, ..Default::default() },
+        "fails" => ObligationRules { to_use: true, no_persist: true, before_drop: true, ..Default::default() },
+        _ => return None,
+    })
 }
 
 pub enum Stmt {
@@ -324,7 +343,7 @@ pub enum Stmt {
     Say(FieldInit),
     Fn(FnDecl),
     Type(Box<TypeDecl>),
-    Obligation { name: Symbol, witness: Option<Symbol>, rule: ObligationRule },
+    Obligation { name: Symbol, witness: Option<Symbol>, rules: ObligationRules },
     /// A match statement dispatching the scrutinee over arms.
     Match(AstId<Expr>, Vec<MatchArm>)
 }

@@ -1,0 +1,4 @@
+// A closure outlives the frame, so it cannot hold a pending failure either.
+fn f(x: fails) {
+    say g = () => x; // error: cannot capture value owing 'fails'
+}

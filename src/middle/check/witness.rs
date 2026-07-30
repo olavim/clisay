@@ -1,17 +1,16 @@
 //! Object-witness flow: recognizing values that owe a type/trait witness and the runtime tests
 //! codegen must emit for them.
 
-use std::collections::HashSet;
-
 use crate::middle::signatures::{TypeTag, Witness};
 use crate::middle::hir::{HirExpr, HirId, Symbol};
+use crate::middle::obligations::Obligations;
 
 use super::{Checker, Flow, Typed, WitnessSet};
 
 impl<'a> Checker<'a> {
     /// A value owing `fails`: an `Err` witness.
     pub(super) fn fails_flow(&self) -> Flow {
-        Flow::Bad { obligations: HashSet::from([self.sigs.fails]), definite: false, container: false }
+        Flow::Bad { obligations: Obligations::from([self.sigs.fails]), definite: false, container: false }
     }
 
     pub(super) fn owes_object_witness(&self, flow: &Flow) -> bool {
@@ -75,7 +74,7 @@ impl<'a> Checker<'a> {
 
     /// The tag a caught value narrows to. A single type witness confirms the value's type. A set,
     /// a trait witness, or `opt` leaves it unknown.
-    pub(super) fn single_object_witness_tag(&self, caught: &HashSet<Symbol>) -> TypeTag {
+    pub(super) fn single_object_witness_tag(&self, caught: &Obligations) -> TypeTag {
         let mut it = caught.iter();
         match (it.next(), it.next()) {
             (Some(o), None) => match self.sigs.witness(*o) {
@@ -94,10 +93,7 @@ impl<'a> Checker<'a> {
         if self.owes_object_witness(operand) {
             self.record_witness_test(node, operand);
         }
-        let mut obligations = match operand {
-            Flow::Bad { obligations, .. } => obligations.clone(),
-            _ => HashSet::new(),
-        };
+        let mut obligations = self.owed_of(operand);
         obligations.insert(self.sigs.opt);
         Typed::of(Flow::Bad { obligations, definite: false, container: false }, TypeTag::Unknown)
     }

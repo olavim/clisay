@@ -1,0 +1,8 @@
+// An arm binder leaves scope like any other binding, so a catch-all that binds a possibly-bad
+// value and drops it is rejected.
+fn f(): fails { return Err("b"); }
+fn g() {
+    match f() {
+        other => 1 // error: 'other' owes 'fails' and is never discharged
+    }
+}

@@ -1,0 +1,13 @@
+// A built-in obligation has no declaration to cite, so the rule is not named.
+fn make(): fails { return Err("boom"); }
+type Sink { pub mut item; init(this) { this.item = 0; } }
+say s = mut Sink();
+s.item = make();
+// error(full):
+// error: cannot store value owing 'fails' in a field
+//  --> help_no_persist_builtin.say:5:10
+//   |
+// 4 | say s = mut Sink();
+// 5 | s.item = make();
+//   |          ^^^^^^
+//   = help: store what the `Err` carries, not the `Err` itself

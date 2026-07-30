@@ -1,8 +1,7 @@
 //! Flow-sensitive narrowing.
 
-use std::collections::HashSet;
-
 use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, HirMatcher, Symbol, UnOp};
+use crate::middle::obligations::Obligations;
 
 use super::{Mutability, Checker, FlowSnapshot, LocalFlow, NarrowFact, NarrowKey, TypeTag};
 
@@ -22,7 +21,7 @@ impl<'a> Checker<'a> {
     }
 
     /// A place's discharged obligations.
-    fn narrowed_set(&self, key: &NarrowKey) -> Option<&HashSet<Symbol>> {
+    fn narrowed_set(&self, key: &NarrowKey) -> Option<&Obligations> {
         match key {
             NarrowKey::ThisField(field) => self.this_narrowed.get(field),
             _ => self.narrowed.get(key),
@@ -30,7 +29,7 @@ impl<'a> Checker<'a> {
     }
 
     /// A place's discharged set, created empty if the place has none yet.
-    fn narrowed_set_or_default(&mut self, key: NarrowKey) -> &mut HashSet<Symbol> {
+    fn narrowed_set_or_default(&mut self, key: NarrowKey) -> &mut Obligations {
         match key {
             NarrowKey::ThisField(field) => self.this_narrowed.entry(field).or_default(),
             _ => self.narrowed.entry(key).or_default(),
@@ -170,6 +169,7 @@ impl<'a> Checker<'a> {
                 mutability: l.mutability,
                 move_site: l.move_site,
                 provenance: l.provenance.clone(),
+                handled: l.handled.clone(),
             }).collect(),
             narrowed: self.narrowed.clone(),
             this_narrowed: self.this_narrowed.clone(),
@@ -194,6 +194,7 @@ impl<'a> Checker<'a> {
             local.tag = snap.tag.clone();
             local.mutability = snap.mutability;
             local.move_site = local.move_site.or(snap.move_site);
+            local.handled = snap.handled.clone();
         }
         self.narrowed = flow.narrowed.clone();
         self.this_narrowed = flow.this_narrowed.clone();
@@ -207,6 +208,7 @@ impl<'a> Checker<'a> {
             local.mutability = if local.mutability == o.mutability { local.mutability } else { Mutability::Unknown };
             local.move_site = local.move_site.or(o.move_site);
             local.provenance.retain(|s| o.provenance.contains(s));
+            local.handled.retain(|ob| o.handled.contains(ob));
         }
     }
 
@@ -222,6 +224,7 @@ impl<'a> Checker<'a> {
                 { Mutability::Unknown };
             local.move_site = then_local.move_site.or(else_local.move_site);
             local.provenance = then_local.provenance.iter().copied().filter(|s| else_local.provenance.contains(s)).collect();
+            local.handled = then_local.handled.intersection(&else_local.handled).copied().collect();
         }
     }
 }

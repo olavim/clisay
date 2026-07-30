@@ -1,3 +1,4 @@
-// A borrowed mutable cannot be `!`-ed into escaping: `!` clears a witness, not the no-persist.
-obligation borrowed: no persist;
-fn leak(x: mut borrowed) { return x!; } // error: this value owes 'borrowed'; it cannot be stored or escape its scope
+// A borrowed mutable cannot be `!`-ed into escaping: `borrowed` names no witness, so there is
+// nothing for `!` to prove.
+obligation borrowed { no persist; no return; }
+fn leak(x: mut borrowed) { return x!; } // error: cannot discharge a value owing 'borrowed'

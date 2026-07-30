@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::middle::hir::{HirExpr, HirId, Symbol};
+use crate::middle::obligations::Obligations;
 
 use super::{Checker, Flow, Violation};
 
@@ -131,7 +132,7 @@ impl<'a> Checker<'a> {
 
     /// Records the guard for an unknown value reaching a destination accepting `accepted`. The
     /// guard allows those obligations' witnesses.
-    pub(super) fn record_boundary_barrier(&mut self, node: &HirId<HirExpr>, accepted: &HashSet<Symbol>) {
+    pub(super) fn record_boundary_barrier(&mut self, node: &HirId<HirExpr>, accepted: &Obligations) {
         let null_allowed = accepted.contains(&self.sigs.opt);
         let mut allow_names = Vec::new();
         for (ob, name) in self.sigs.object_witnesses() {
@@ -147,7 +148,7 @@ impl<'a> Checker<'a> {
     pub(super) fn non_null_violation(&mut self, value: &Flow, target: &HirId<HirExpr>) -> Option<Violation> {
         match value {
             Flow::Clean => None,
-            Flow::Unknown => { self.record_boundary_barrier(target, &HashSet::new()); None },
+            Flow::Unknown => { self.record_boundary_barrier(target, &Obligations::new()); None },
             Flow::Void => Some(Violation::Void),
             Flow::Bad { obligations, definite, .. } if obligations.contains(&self.sigs.opt) => {
                 Some(if *definite { Violation::Null } else { Violation::Nullable })
@@ -157,22 +158,37 @@ impl<'a> Checker<'a> {
     }
 
     /// Checks a value entering a slot against the obligations the slot accepts.
-    pub(super) fn check_into_slot(&mut self, flow: &Flow, accepted: &HashSet<Symbol>, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    pub(super) fn check_into_slot(&mut self, flow: &Flow, accepted: &Obligations, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let text = self.binding_text(name);
-        // A field-local stands for its field, so present the slot as a field there.
         let noun = if self.is_field_local(name) { "field" } else { "binding" };
         let void = || format!("Cannot assign a void result to '{text}'; the call returns no value");
+
         if flow.is_void() {
             return Err(self.error(void(), node));
         }
+
         // An unknown value is guarded against every witness the slot does not accept.
         if matches!(flow, Flow::Unknown) {
             self.record_boundary_barrier(node, accepted);
             return Ok(());
         }
+
+        // A factory's field-local carries only the field's nullability, not the rest of its clause.
+        let undeclared = match self.is_field_local(name) {
+            true => Obligations::new(),
+            false => self.undeclared_obligations(flow, accepted),
+        };
+
+        if !undeclared.is_empty() {
+            let owed = self.quoted_obligation_list(&undeclared);
+            return Err(self.error_help(format!("cannot assign a value owing {owed} to '{text}'"), node,
+                format!("discharge it first, or declare it on the {noun} (`{text}: {}`)", self.obligation_atoms(&undeclared))));
+        }
+
         if accepted.contains(&self.sigs.opt) {
             return Ok(());
         }
+
         match self.non_null_violation(flow, node) {
             None => Ok(()),
             Some(Violation::Void) => Err(self.error(void(), node)),

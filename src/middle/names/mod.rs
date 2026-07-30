@@ -4,9 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::frontend::lex::Diagnostic;
+use crate::frontend::lex::{Diagnostic, SourcePosition};
 
-use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchElem, Matcher, ObligationRule, Operator, Stmt, Symbol, TypeDecl};
+use crate::ast::{builtin_obligation_rules, Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchElem, Matcher, ObligationRules, Operator, SlotClause, Stmt, Symbol, TypeDecl};
 
 /// What an identifier reference binds to.
 pub enum Binding {
@@ -65,6 +65,8 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
         ast,
         scopes: Vec::new(),
         trait_flatten_cache: HashMap::new(),
+        obligation_rules: HashMap::new(),
+        witness_owners: HashMap::new(),
         in_condition: false,
         out: NameBindings { type_traits: HashMap::new(), name_refs: HashMap::new(), types: HashSet::new() },
     };
@@ -74,6 +76,10 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
     resolver.pop_scope();
     Ok(resolver.out)
 }
+
+/// Where an obligation clause was written, for the placement rules that key on it.
+#[derive(Clone, Copy, PartialEq)]
+enum ClauseSite { Field, Return, Other }
 
 /// What kind of binding a declared name introduces.
 #[derive(Clone, Copy, PartialEq)]
@@ -96,6 +102,10 @@ struct Resolver<'a> {
     /// The lexical scope stack, innermost last.
     scopes: Vec<Scope>,
     trait_flatten_cache: HashMap<AstId<Stmt>, Vec<(Symbol, AstId<Stmt>)>>,
+    /// Each obligation's declared rules, hoisted so a use may precede its declaration.
+    obligation_rules: HashMap<Symbol, ObligationRules>,
+    /// Which obligation each witness identifies.
+    witness_owners: HashMap<Symbol, String>,
     in_condition: bool,
     out: NameBindings,
 }
@@ -106,7 +116,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn error_help<T>(&self, msg: impl Into<String>, at: &AstId<T>, help: impl Into<String>) -> anyhow::Error {
-        anyhow!("{}", Diagnostic::new(msg, self.ast.pos(at).clone()).with_help(help))
+        self.error_help_at(msg, self.ast.pos(at), help)
     }
 
     fn push_scope(&mut self) {
@@ -127,6 +137,8 @@ impl<'a> Resolver<'a> {
             scope.declared.insert(sym, DeclKind::Item);
             scope.types.insert(sym);
             self.out.types.insert(sym);
+            // `fails` already witnesses `Err`, so a user obligation may not claim it too.
+            self.witness_owners.insert(sym, "fails".to_string());
         }
     }
 
@@ -162,6 +174,9 @@ impl<'a> Resolver<'a> {
     /// is visible block-wide.
     fn hoist_types(&mut self, stmts: &[AstId<Stmt>]) {
         for stmt in stmts {
+            if let Stmt::Obligation { name, rules, .. } = self.ast.get(stmt) {
+                self.obligation_rules.insert(*name, *rules);
+            }
             if let Stmt::Type(decl) = self.ast.get(stmt) {
                 let (name, is_trait) = (decl.name, decl.is_trait);
                 self.out.types.insert(name);
@@ -172,6 +187,75 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+    }
+
+    /// Records which obligation a witness identifies.
+    fn declare_witness(&mut self, name: Symbol, witness: Symbol, stmt: &AstId<Stmt>) -> Result<(), anyhow::Error> {
+        if !self.is_type_or_trait(witness) {
+            return Err(self.error(format!("'{}' is not a type or trait", self.ast.text(witness)), stmt));
+        }
+        let text = self.ast.text(name).to_string();
+        match self.witness_owners.insert(witness, text.clone()) {
+            Some(first) if first != text => Err(self.error_help(
+                format!("Witness '{}' is already claimed by '{first}'", self.ast.text(witness)), stmt,
+                "one witness names one obligation, so give this one its own type or trait")),
+            _ => Ok(()),
+        }
+    }
+
+    /// An obligation's declared rules. A built-in has no declaration to read them from, so it
+    /// answers by name.
+    fn rules_of(&self, name: Symbol, pos: &SourcePosition) -> Result<ObligationRules, anyhow::Error> {
+        if let Some(rules) = self.obligation_rules.get(&name) {
+            return Ok(*rules);
+        }
+        let text = self.ast.text(name);
+        builtin_obligation_rules(text).ok_or_else(|| self.error_help_at(
+            format!("Obligation '{text}' is not declared"), pos,
+            "declare it with `obligation` first, or name a built-in (`opt`, `fails`)"))
+    }
+
+    /// A slot may not declare an obligation whose rules forbid the values it would hold. Each rule
+    /// refuses for its own reason, so an obligation carrying one of them needs no other alongside it.
+    fn check_clause_placement<T>(&self, clause: &SlotClause, site: ClauseSite, at: &AstId<T>) -> Result<(), anyhow::Error> {
+        let pos = clause.pos.as_ref().unwrap_or_else(|| self.ast.pos(at));
+        // A container and a field both outlive the binding, which is `no persist`'s reason, and
+        // neither can discharge, which is `discharge before drop`'s. A return has its own rule.
+        let (outlives, prevents, header) = if clause.container {
+            (true, "storing it in a container", "A container cannot hold values owing")
+        } else if site == ClauseSite::Field {
+            (true, "storing it in a field", "A field cannot owe")
+        } else {
+            (false, "returning it", "A return cannot owe")
+        };
+        let ret = site == ClauseSite::Return;
+        for name in clause.names.iter().copied() {
+            let rules = self.rules_of(name, pos)?;
+            let rule = match (outlives, ret) {
+                (true, _) if rules.no_persist => "no persist",
+                (true, _) if rules.before_drop => "discharge before drop",
+                (_, true) if rules.no_return => "no return",
+                _ => continue,
+            };
+            return Err(self.placement_error(name, rule, prevents, header, pos));
+        }
+        Ok(())
+    }
+
+    /// A placement rejection, citing the rule when the author declared the obligation. A built-in has
+    /// no declaration to point at, so it gets the guidance that applies to its values instead.
+    fn placement_error(&self, name: Symbol, rule: &str, prevents: &str, header: &str, pos: &SourcePosition) -> anyhow::Error {
+        let text = self.ast.text(name);
+        let help = match builtin_obligation_rules(text).is_none() {
+            true => format!("`{text}` declares `{rule}`, which prevents {prevents}"),
+            false => builtin_clause_guidance(text).to_string(),
+        };
+        self.error_help_at(format!("{header} '{text}'"), pos, help)
+    }
+
+    /// A `help:` error at a span rather than a node, for a clause that carries its own position.
+    fn error_help_at(&self, msg: impl Into<String>, pos: &SourcePosition, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, pos.clone()).with_help(help))
     }
 
     /// The declared name and kind of a block-level statement.
@@ -217,16 +301,23 @@ impl<'a> Resolver<'a> {
                 if let Some(otherwise) = otherwise { self.visit_stmt(otherwise)?; }
             },
             Stmt::Block(body) => self.visit_expr(body)?,
-            Stmt::Say(field) => if let Some(value) = &field.value { self.visit_expr(value)?; },
-            Stmt::Obligation { witness, rule, .. } => {
-                if matches!(rule, ObligationRule::NoDrop) {
+            Stmt::Say(field) => {
+                self.check_clause_placement(&field.clause, ClauseSite::Other, stmt)?;
+                if let Some(value) = &field.value { self.visit_expr(value)?; }
+            },
+            Stmt::Obligation { name, witness, rules } => {
+                if rules.no_drop {
                     return Err(self.error_help("'no drop' is not available yet", stmt,
                         "the 'no drop' rule is not implemented yet"));
                 }
-                if let Some(witness) = witness {
-                    if !self.is_type_or_trait(*witness) {
-                        return Err(self.error(format!("'{}' is not a type or trait", self.ast.text(*witness)), stmt));
-                    }
+                match witness {
+                    Some(witness) => self.declare_witness(*name, *witness, stmt)?,
+                    None if rules.to_use || rules.before_drop => {
+                        return Err(self.error_help(
+                            format!("Obligation '{}' declares a `discharge` rule with no witness", self.ast.text(*name)), stmt,
+                            format!("name the bad state it is about, as in `obligation {} {{ witness <Type>; ... }}`", self.ast.text(*name))));
+                    },
+                    None => {},
                 }
             },
             Stmt::Fn(decl) => self.visit_fn(decl)?,
@@ -245,8 +336,10 @@ impl<'a> Resolver<'a> {
 
     /// A function/lambda/method. Params live in their own scope.
     fn visit_fn(&mut self, decl: &FnDecl) -> Result<(), anyhow::Error> {
+        self.check_clause_placement(&decl.clause, ClauseSite::Return, &decl.body)?;
         self.push_scope();
         for param in &decl.params {
+            self.check_clause_placement(&param.clause, ClauseSite::Other, &param.pattern)?;
             // Every name a pattern binds is a parameter name, so they share one scope and the same
             // duplicate rule. A `_` or a bare test binds nothing and declares nothing.
             for name in self.collect_matcher_binders(&param.pattern)? {
@@ -278,6 +371,7 @@ impl<'a> Resolver<'a> {
         let gives = self.resolve_gives(decl, stmt)?;
         self.out.type_traits.insert(*stmt, ResolvedTraits { with, req, gives });
 
+        for (_, clause) in &decl.field_clauses { self.check_clause_placement(clause, ClauseSite::Field, stmt)?; }
         for method in &decl.methods { self.visit_stmt(method)?; }
         if let Some(init) = &decl.init { self.visit_stmt(init)?; }
         for (_, value) in &decl.field_inits { self.visit_expr(value)?; }
@@ -507,5 +601,13 @@ impl<'a> Resolver<'a> {
             }
         }
         Ok(out)
+    }
+}
+
+fn builtin_clause_guidance(name: &str) -> &'static str {
+    match name {
+        "opt" => "declare what a narrowing leaves behind, not the value that may be `null`",
+        "fails" => "store what the `Err` carries, not the `Err` itself",
+        _ => "declare what a discharge leaves behind, not the value that owes the obligation",
     }
 }

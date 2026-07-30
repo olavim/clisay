@@ -1,9 +1,8 @@
 //! Trait-contract checks: surface use, override return conformance, and `req fn` variance.
 
-use std::collections::HashSet;
-
 use crate::middle::hir::{HirExpr, HirId, HirStmt, HirTypeDecl, Symbol};
 use crate::middle::signatures::{Mutability, RetSig};
+use crate::middle::obligations::Obligations;
 
 use super::{Checker, Typed};
 
@@ -112,7 +111,7 @@ impl<'a> Checker<'a> {
         decl.methods.iter().copied().find(|m| matches!(self.hir.get(m), HirStmt::Fn(h) if h.name == name))
     }
 
-    fn sorted_difference(&self, set: &HashSet<Symbol>, other: &HashSet<Symbol>) -> Vec<String> {
+    fn sorted_difference(&self, set: &Obligations, other: &Obligations) -> Vec<String> {
         let mut names: Vec<String> = set.difference(other).map(|o| self.hir.text(*o).to_string()).collect();
         names.sort();
         names

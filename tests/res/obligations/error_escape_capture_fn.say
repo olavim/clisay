@@ -1,0 +1,4 @@
+obligation borrowed { no persist; no return; }
+fn f(x: borrowed) {
+    fn g()! { return x; } // error: cannot capture value owing 'borrowed'
+}

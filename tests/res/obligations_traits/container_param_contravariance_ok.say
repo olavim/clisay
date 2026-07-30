@@ -1,9 +1,10 @@
 // A container parameter is contravariant in its element set: a satisfier may accept more.
+type Taint { } obligation taint { witness Taint; discharge to use; }
 trait Sink {
     req fn accept(this, x: [opt]);
 }
 type Db with Sink {
-    pub fn accept(this, x: [opt fails]) { }
+    pub fn accept(this, x: [opt taint]) { }
     init(this) {}
 }
 say d = Db();

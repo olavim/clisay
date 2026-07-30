@@ -1,6 +1,6 @@
 // The clause rides the slot the pattern names, so an `@` binder still owes it.
-obligation borrowed: no persist;
+obligation borrowed { no persist; no return; }
 type Box { pub item; init(this, i) { this.item = i; } }
 fn forward(x @ Box : borrowed) {
-    return x; // error: 'x' owes 'borrowed'; it cannot be stored or escape its scope
+    return x; // error: cannot return value owing 'borrowed'
 }

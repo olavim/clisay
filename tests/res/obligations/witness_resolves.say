@@ -1,4 +1,4 @@
 type Token { init(this) {} }
-obligation parsed: discharge to use Token;
-obligation tainted;
+obligation parsed { witness Token; discharge to use; }
+type Tainted { } obligation tainted { witness Tainted; discharge to use; }
 print("ok"); // expect: ok

@@ -1,0 +1,12 @@
+// Matching clauses on the parameter and the local are the conforming cases, and a discharge
+// clears the value for an undeclared slot.
+type Taint { } obligation taint { witness Taint; discharge to use; }
+fn takes(y: taint)! { return y!; }
+fn clean(y)! { return y; }
+
+fn f(x: taint)! {
+    say kept: taint = x;
+    print(takes(kept)); // expect: 4
+    return clean(x!);
+}
+print(f(4)); // expect: 4
