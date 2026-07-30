@@ -21,7 +21,8 @@ use crate::core::objects::TypeMember;
 use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::signatures::{Mutability, Signatures, TypeTag};
 use self::matching::whole_value_binders;
-use crate::middle::hir::{BinOp, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatchElem, HirMatcher, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::hir::{BinOp, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatchElem, HirMatcher, HirParam, HirSlotClause, HirStmt, HirTypeDecl, ObligationRules, ReturnShape, Symbol, UnOp};
+use crate::middle::obligations::Obligations;
 
 pub use barriers::{Barrier, Barriers, WitnessSet};
 
@@ -53,7 +54,7 @@ enum Flow {
     /// A value owing obligations. `definite` marks a value known to be in the bad state, as
     /// opposed to one that only may be. `container` marks an array or dict whose elements owe
     /// the obligations, so a read of it yields a pending element.
-    Bad { obligations: HashSet<Symbol>, definite: bool, container: bool },
+    Bad { obligations: Obligations, definite: bool, container: bool },
 }
 
 impl Flow {
@@ -110,14 +111,14 @@ struct MovedAt {
 #[derive(Default)]
 struct BinderScope {
     names: Vec<Symbol>,
-    owed: HashMap<Symbol, HashSet<Symbol>>,
+    owed: HashMap<Symbol, Obligations>,
 }
 
 /// A tracked binding in the current function frame.
 struct Local {
     name: Symbol,
     /// The obligations this binding owes. Reading it yields those obligations until it is narrowed.
-    owed: HashSet<Symbol>,
+    owed: Obligations,
     mutable: bool,
     /// Whether the binding is provably assigned on the current path.
     assigned: bool,
@@ -137,24 +138,28 @@ struct Local {
     /// value. The nearest survivor becomes the live holder again if it dies still holding it. A
     /// binding with sources is escape-tracked.
     provenance: Vec<usize>,
+    /// The obligations settled on this binding: discharged here, or handed to a slot that declares them.
+    handled: Obligations,
+    /// Where the binding was introduced.
+    site: Option<HirId<HirExpr>>,
 }
 
 impl Local {
     /// A binding with every fact at its neutral default. Each named constructor overrides only the
     /// fields that distinguish it, so a new field is added here once.
     fn base(name: Symbol) -> Local {
-        Local { name, owed: HashSet::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, param: false, borrowed: false, move_site: None, provenance: Vec::new() }
+        Local { name, owed: Obligations::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, mutability: Mutability::Unknown, param: false, borrowed: false, move_site: None, provenance: Vec::new(), handled: Obligations::new(), site: None }
     }
 
-    fn param(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
+    fn param(name: Symbol, owed: Obligations, mutable: bool) -> Local {
         Local { owed, mutable, ..Local::base(name) }
     }
 
-    fn catch(name: Symbol, owed: HashSet<Symbol>, mutable: bool) -> Local {
+    fn catch(name: Symbol, owed: Obligations, mutable: bool) -> Local {
         Local::param(name, owed, mutable)
     }
 
-    fn binder_owing(name: Symbol, owed: HashSet<Symbol>) -> Local {
+    fn binder_owing(name: Symbol, owed: Obligations) -> Local {
         Local { owed, binder: true, ..Local::base(name) }
     }
 
@@ -162,8 +167,81 @@ impl Local {
         Local { func: Some(stmt), ..Local::base(name) }
     }
 
-    fn value(name: Symbol, owed: HashSet<Symbol>, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
+    fn value(name: Symbol, owed: Obligations, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
         Local { owed, mutable, assigned, tag, ..Local::base(name) }
+    }
+}
+
+/// A rule an obligation may declare, paired with how a refusal spells it.
+#[derive(Clone, Copy)]
+pub(super) enum Rule { NoPersist, NoReturn, BeforeDrop }
+
+impl Rule {
+    /// Whether these rules declare it.
+    fn holds(self, rules: &ObligationRules) -> bool {
+        match self {
+            Rule::NoPersist => rules.no_persist,
+            Rule::NoReturn => rules.no_return,
+            Rule::BeforeDrop => rules.before_drop,
+        }
+    }
+
+    /// The rule as written in a declaration, for the citation in a help line.
+    fn spelling(self) -> &'static str {
+        match self {
+            Rule::NoPersist => "no persist",
+            Rule::NoReturn => "no return",
+            Rule::BeforeDrop => "discharge before drop",
+        }
+    }
+}
+
+/// The operation a rule refuses. Each site refuses in its own words and offers the way around it
+/// that fits. A `Drop` is the value reaching the end of its scope without being discharged.
+#[derive(Clone, Copy)]
+pub(super) enum Site { Field, Container, Capture, Return, Drop, ScopeEnd }
+
+impl Site {
+    /// The header completing "cannot ...", around the obligation list. `Drop` names no operation, so
+    /// it reports what happened to the value instead.
+    fn refusal(self, owed: &str) -> String {
+        match self {
+            Site::Field => format!("cannot store value owing {owed} in a field"),
+            Site::Container => format!("cannot store value owing {owed} in a container"),
+            Site::Capture => format!("cannot capture value owing {owed}"),
+            Site::Return => format!("cannot return value owing {owed}"),
+            Site::Drop => format!("this result owes {owed} and is never discharged"),
+            Site::ScopeEnd => format!("value owing {owed} is never discharged"),
+        }
+    }
+
+    /// The gerund completing "which prevents ...".
+    fn prevents(self) -> &'static str {
+        match self {
+            Site::Field => "storing it in a field",
+            Site::Container => "storing it in a container",
+            Site::Capture => "capturing it in a closure",
+            Site::Return => "returning it",
+            Site::Drop | Site::ScopeEnd => "leaving it undischarged",
+        }
+    }
+
+    /// What to do instead, for a built-in obligation with no declaration to cite. `opt` and `fails`
+    /// name their own witness, since a `null` carries nothing and an `Err` carries a payload to keep.
+    fn guidance(self, obligation: &str) -> &'static str {
+        match (obligation, self) {
+            ("opt", Site::Field | Site::Container) => "narrow it first, and store what that leaves behind",
+            ("opt", Site::Capture) => "narrow it in this frame, and capture what that leaves behind",
+            ("opt", Site::Return) => "narrow it here, or declare `opt` on the return",
+            ("opt", Site::Drop) => "narrow it here, or bind it and narrow it later",
+            ("opt", Site::ScopeEnd) => "narrow it with `??`, `!` or a test, or hand it to a slot that declares `opt`",
+            ("fails", Site::Field | Site::Container) => "store what the `Err` carries, not the `Err` itself",
+            ("fails", Site::Capture) => "handle the `Err` in this frame, and capture what it leaves behind",
+            ("fails", Site::Return) => "handle the `Err` here, or declare `fails` on the return",
+            ("fails", Site::Drop) => "handle the `Err` here, or bind it and handle it later",
+            ("fails", Site::ScopeEnd) => "handle the `Err` with `??`, `!` or a test, or hand it to a slot that declares `fails`",
+            (_, _) => unreachable!("user obligations get generic guidance in Checker::prohibition_help"),
+        }
     }
 }
 
@@ -191,14 +269,15 @@ struct LocalFlow {
     mutability: Mutability,
     move_site: Option<MovedAt>,
     provenance: Vec<usize>,
+    handled: Obligations,
 }
 
 /// A snapshot of flow facts that branches widen back at a join.
 #[derive(Clone)]
 struct FlowSnapshot {
     locals: Vec<LocalFlow>,
-    narrowed: HashMap<NarrowKey, HashSet<Symbol>>,
-    this_narrowed: HashMap<Symbol, HashSet<Symbol>>,
+    narrowed: HashMap<NarrowKey, Obligations>,
+    this_narrowed: HashMap<Symbol, Obligations>,
 }
 
 /// What a method's declared `this` says about the receiver.
@@ -206,7 +285,7 @@ struct FlowSnapshot {
 struct ReceiverFacts {
     mutability: Mutability,
     /// The obligations the receiver clause declares.
-    owed: HashSet<Symbol>,
+    owed: Obligations,
 }
 
 /// The declared facts of the function currently being checked.
@@ -220,6 +299,9 @@ struct FnContext<'a> {
     return_unmarked: bool,
     /// Whether the return is declared `: mut`.
     return_mut: bool,
+    /// The obligations the return admits, from the function's signature. A returned value may owe
+    /// no more than these. `None` where there is no signature to conform to, as in a lambda.
+    return_admits: Option<Obligations>,
     /// What the declared `this` says about the receiver.
     receiver: ReceiverFacts,
     /// The function's name.
@@ -246,10 +328,10 @@ struct Checker<'a> {
     /// a mutation.
     checking_factory: bool,
     /// The obligations discharged per local place on the current path, keyed by local index.
-    narrowed: HashMap<NarrowKey, HashSet<Symbol>>,
+    narrowed: HashMap<NarrowKey, Obligations>,
     /// The obligations discharged per `this` field on the current path. Keyed by name rather than
     /// by slot, so it is scoped to the frame instead of to a local.
-    this_narrowed: HashMap<Symbol, HashSet<Symbol>>,
+    this_narrowed: HashMap<Symbol, Obligations>,
     current_trait_surface: Option<HashSet<Symbol>>,
     /// The function currently being checked.
     fn_ctx: FnContext<'a>,
@@ -335,10 +417,24 @@ impl<'a> Checker<'a> {
             .map(|i| self.frame_start + i)
     }
 
+    /// The slot a name resolves to outside the current frame, which would get captured
+    /// if a nested function reads it.
+    fn enclosing_index(&self, name: Symbol) -> Option<usize> {
+        self.locals[..self.frame_start].iter().rposition(|l| l.name == name)
+    }
+
+    /// A closure outlives the frame it captures from, so holding a `no persist` binding in one
+    /// persists it exactly like a field or container would.
+    fn reject_capture_escape(&self, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Some(i) = self.enclosing_index(name) else { return Ok(()) };
+        let owed = self.locals[i].owed.clone();
+        self.reject_outliving(&Flow::Bad { obligations: owed, definite: false, container: false }, Site::Capture, node)
+    }
+
     /// Moves an enclosing-frame mutable binding when a nested function writes it. A read-only
     /// capture borrows the value, so the enclosing binding stays live.
     fn capture_enclosing(&mut self, name: Symbol, node: &HirId<HirExpr>) {
-        let Some(i) = self.locals[..self.frame_start].iter().rposition(|l| l.name == name) else { return };
+        let Some(i) = self.enclosing_index(name) else { return };
         if !self.fn_ctx.writes.is_some_and(|w| w.contains(&name)) {
             return;
         }
@@ -499,13 +595,21 @@ impl<'a> Checker<'a> {
     /// is rejected, a borrowed value is rejected since it cannot outlive its lender, and a mutable
     /// value moves in as the container becomes its owner.
     fn store_into_container(&mut self, flow: &Flow, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        self.reject_escape(flow, expr)?;
+        self.reject_outliving(flow, Site::Container, expr)?;
         if self.arg_is_borrowed(expr) {
             return Err(self.error_help("cannot persist a borrowed value".to_string(), expr,
                 "take it by `*mut` to own it, then it may be persisted"));
         }
         self.move_source(expr);
         Ok(())
+    }
+
+    /// Refuses a value that would outlive its binding here. Two rules forbid it for different
+    /// reasons: a field and a container outlive the binding, which is `no persist`; neither can
+    /// discharge, which is `discharge before drop`. Checking both here keeps callers from pairing them.
+    fn reject_outliving(&self, flow: &Flow, site: Site, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        self.reject_at(flow, Rule::BeforeDrop, site, node)?;
+        self.reject_at(flow, Rule::NoPersist, site, node)
     }
 
     /// The nearest binding of `name` across all frames. Functions resolve across frames so a
@@ -552,15 +656,15 @@ impl<'a> Checker<'a> {
 
     /// A value owing `opt`. `definite` marks a known-null value versus a possibly-null one.
     fn opt_flow(&self, definite: bool) -> Flow {
-        Flow::Bad { obligations: HashSet::from([self.sigs.opt]), definite, container: false }
+        Flow::Bad { obligations: Obligations::from([self.sigs.opt]), definite, container: false }
     }
 
-    fn opt_set(&self, nullable: bool) -> HashSet<Symbol> {
-        if nullable { HashSet::from([self.sigs.opt]) } else { HashSet::new() }
+    fn opt_set(&self, nullable: bool) -> Obligations {
+        if nullable { Obligations::from([self.sigs.opt]) } else { Obligations::new() }
     }
 
     /// The obligations a slot's `:` clause declares.
-    fn clause_owed(&self, clause: &HirSlotClause) -> HashSet<Symbol> {
+    fn clause_owed(&self, clause: &HirSlotClause) -> Obligations {
         clause.names.iter().copied().collect()
     }
 
@@ -575,7 +679,11 @@ impl<'a> Checker<'a> {
             HirStmt::Type(decl) => self.type_decl(stmt, Some(decl.name), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
             HirStmt::Say(field) => self.say(field.name, &field.clause, field.mutable, &field.value)?,
-            HirStmt::Expression(e) | HirStmt::Block(e) => { self.expr(e)?; },
+            HirStmt::Expression(e) => {
+                let typed = self.expr(e)?;
+                self.check_dropped_result(&typed.flow, e)?;
+            },
+            HirStmt::Block(e) => { self.expr(e)?; },
             HirStmt::Return(opt) => match opt {
                 Some(e) => {
                     let typed = self.expr(e)?;
@@ -602,7 +710,7 @@ impl<'a> Checker<'a> {
                 // move clears it first, so rebind-then-move is still accepted.
                 for _ in 0..2 {
                     self.apply_narrowings(&body_narrow);
-                    self.with_binders(&scope, |c| c.expr(body))?;
+                    self.with_binders(&scope, body, |c| c.expr(body))?;
                     self.restore_keeping_moves(&pre);
                 }
             },
@@ -612,7 +720,7 @@ impl<'a> Checker<'a> {
                 let else_narrow = self.narrowings(cond, false);
                 let scope = self.condition_scope(cond)?;
                 let then_snap = self.narrow_branch(&then_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
-                    c.with_binders(&scope, |c| c.expr(then))?;
+                    c.with_binders(&scope, then, |c| c.expr(then))?;
                     Ok(c.snapshot())
                 })?;
                 let else_snap = self.narrow_branch(&else_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
@@ -642,7 +750,7 @@ impl<'a> Checker<'a> {
                         self.locals.push(Local::catch(name, self.opt_set(true), catch.mutable));
                     }
                     self.expr(&catch.body)?;
-                    self.truncate_locals(mark);
+                    self.close_scope(mark, &catch.body)?;
                 }
                 if let Some(finally) = finally { self.expr(finally)?; }
             },
@@ -654,10 +762,8 @@ impl<'a> Checker<'a> {
 
                 // A match discharges by ruling out witnesses. A guard-free arm total over a witness
                 // clears it for the arms below.
-                let mut remaining = match &typed.flow {
-                    Flow::Bad { obligations, .. } => obligations.clone(),
-                    _ => HashSet::new(),
-                };
+                let mut remaining = self.owed_of(&typed.flow);
+                let mut settled = Obligations::new();
 
                 // Arms are mutually exclusive, so each runs from the same pre-match state and only
                 // the arms that fall through decide the state after the match.
@@ -667,7 +773,7 @@ impl<'a> Checker<'a> {
                 for arm in arms {
                     self.restore(&baseline);
                     let scope = self.arm_scope(arm, &remaining, stmt)?;
-                    self.with_binders(&scope, |c| -> Result<(), anyhow::Error> {
+                    self.with_binders(&scope, &arm.body, |c| -> Result<(), anyhow::Error> {
                         if let Some(guard) = &arm.guard { c.expr(guard)?; }
                         c.expr(&arm.body)?;
                         Ok(())
@@ -682,6 +788,7 @@ impl<'a> Checker<'a> {
                     exhaustive |= arm.guard.is_none() && arm.matcher.is_irrefutable();
                     let ruled = self.arm_rules_out(arm, &remaining);
                     remaining.retain(|w| !ruled.contains(w));
+                    settled.extend(ruled);
                 }
 
                 // A non-exhaustive match can fall through with no arm matching, keeping the pre-match
@@ -699,9 +806,81 @@ impl<'a> Checker<'a> {
                     },
                     None => self.restore(&baseline),
                 }
+
+                // After the join, since restoring the arms' snapshots would undo it. The match
+                // settles what its arms actually ruled out; a lone catch-all rules out nothing.
+                self.mark_settled(scrutinee, &settled);
             },
         }
         Ok(())
+    }
+
+    /// The frame slot a node reads, when it reads one at all.
+    fn local_of(&self, node: &HirId<HirExpr>) -> Option<usize> {
+        let HirExpr::Identifier(name) = self.hir.get(node) else { return None };
+        self.frame_index_of(*name)
+    }
+
+    /// Records a discharge that guards every witness the binding owes, such as `??`, `!` or `?!`.
+    fn mark_handled(&mut self, node: &HirId<HirExpr>) {
+        let Some(i) = self.local_of(node) else { return };
+        let mut handled = std::mem::take(&mut self.locals[i].handled);
+        handled.extend(self.locals[i].owed.iter().copied());
+        self.locals[i].handled = handled;
+    }
+
+    /// Records what a partial act settled: a test that rules out one witness, or a transfer into a
+    /// slot declaring part of the debt.
+    fn mark_settled(&mut self, node: &HirId<HirExpr>, settled: &Obligations) {
+        if let Some(i) = self.local_of(node) {
+            self.locals[i].handled.extend(settled.iter().copied());
+        }
+    }
+
+    /// Rejects a binding that reaches the end of its scope still owing a `discharge before drop` obligation.
+    fn check_dropped(&self, mark: usize, at: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        for local in &self.locals[mark..] {
+            if local.func.is_some() || local.owed.is_empty() {
+                continue;
+            }
+            let pending: Obligations = local.owed.iter().copied()
+                .filter(|o| self.sigs.rules_of(*o).before_drop && !local.handled.contains(o))
+                .collect();
+            if pending.is_empty() {
+                continue;
+            }
+            let owed = self.quoted_obligation_list(&pending);
+            let text = self.binding_text(local.name);
+            let help = self.prohibition_help(&pending, Rule::BeforeDrop, Site::ScopeEnd);
+            let pos = self.hir.pos(local.site.as_ref().unwrap_or(at)).clone();
+            return Err(anyhow!("{}", Diagnostic::new(format!("'{text}' owes {owed} and is never discharged"), pos)
+                .with_label(format!("owes {owed} from here"))
+                .with_help(help)));
+        }
+        Ok(())
+    }
+
+    /// Rejects a statement result that owes a `discharge before drop` obligation and is thrown away.
+    fn check_dropped_result(&self, flow: &Flow, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if matches!(self.hir.get(node), HirExpr::Assign(..) | HirExpr::Assert(_) | HirExpr::Propagate(_)) {
+            return Ok(());
+        }
+
+        let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
+        let pending: Obligations = obligations.iter().copied().filter(|o| self.sigs.rules_of(*o).before_drop).collect();
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let owed = self.quoted_obligation_list(&pending);
+        let help = self.prohibition_help(&pending, Rule::BeforeDrop, Site::Drop);
+        Err(self.error_help(Site::Drop.refusal(&owed), node, help))
+    }
+
+    fn close_scope(&mut self, mark: usize, at: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let dropped = self.check_dropped(mark, at);
+        self.truncate_locals(mark);
+        dropped
     }
 
     fn truncate_locals(&mut self, mark: usize) {
@@ -717,11 +896,14 @@ impl<'a> Checker<'a> {
     }
 
     /// Declares a scope's binders as immutable locals for the duration of `f`, then drops them.
-    fn with_binders<R>(&mut self, scope: &BinderScope, f: impl FnOnce(&mut Self) -> R) -> R {
+    fn with_binders<T>(&mut self, scope: &BinderScope, at: &HirId<HirExpr>, f: impl FnOnce(&mut Self) -> Result<T, anyhow::Error>) -> Result<T, anyhow::Error> {
         let mark = self.locals.len();
         self.push_binders(scope);
         let r = f(self);
-        self.truncate_locals(mark);
+        match r.is_ok() {
+            true => self.close_scope(mark, at)?,
+            false => self.truncate_locals(mark),
+        }
         r
     }
 
@@ -747,7 +929,7 @@ impl<'a> Checker<'a> {
     /// The binders a match arm introduces: its matcher binders and any guard binders. A whole-value
     /// binder owes what the scrutinee still owes. A destructure binder owes the witnesses on its
     /// or-path, as in `Node { next } | null`.
-    fn arm_scope(&self, arm: &HirMatchArm, remaining: &HashSet<Symbol>, at: &HirId<HirStmt>) -> Result<BinderScope, anyhow::Error> {
+    fn arm_scope(&self, arm: &HirMatchArm, remaining: &Obligations, at: &HirId<HirStmt>) -> Result<BinderScope, anyhow::Error> {
         let whole = whole_value_binders(&arm.matcher);
         let witness = self.matcher_witness_obligations(&arm.matcher, at)?;
         let mut names = arm.matcher.binders();
@@ -755,7 +937,7 @@ impl<'a> Checker<'a> {
             names.extend(self.hir.condition_binders(guard));
         }
         let owed = names.iter().map(|&name| {
-            let mut set = if whole.contains(&name) { remaining.clone() } else { HashSet::new() };
+            let mut set = if whole.contains(&name) { remaining.clone() } else { Obligations::new() };
             if let Some(obligations) = witness.get(&name) { set.extend(obligations); }
             (name, set)
         }).collect();
@@ -765,7 +947,7 @@ impl<'a> Checker<'a> {
     /// The witness obligations each binder inherits from a bindingless alternative sharing its
     /// or-group. In `Node { next } | null` the `next` binder owes `opt`. A bindingless alternative
     /// beside a destructure must be a witness. A non-witness there is a dead binding.
-    fn matcher_witness_obligations<T>(&self, matcher: &HirMatcher, at: &HirId<T>) -> Result<HashMap<Symbol, HashSet<Symbol>>, anyhow::Error> {
+    fn matcher_witness_obligations<T>(&self, matcher: &HirMatcher, at: &HirId<T>) -> Result<HashMap<Symbol, Obligations>, anyhow::Error> {
         let mut out = HashMap::new();
         self.collect_witness_obligations(matcher, at, &mut out)?;
         Ok(out)
@@ -773,13 +955,13 @@ impl<'a> Checker<'a> {
 
     /// The witness obligations of the `~` matchers in a condition, so an `if`/`while` binder from a
     /// destructure-beside-witness owes the same as a `match` arm binder.
-    fn condition_witness_obligations(&self, cond: &HirId<HirExpr>) -> Result<HashMap<Symbol, HashSet<Symbol>>, anyhow::Error> {
+    fn condition_witness_obligations(&self, cond: &HirId<HirExpr>) -> Result<HashMap<Symbol, Obligations>, anyhow::Error> {
         let mut out = HashMap::new();
         self.collect_condition_witness_obligations(cond, &mut out)?;
         Ok(out)
     }
 
-    fn collect_condition_witness_obligations(&self, cond: &HirId<HirExpr>, out: &mut HashMap<Symbol, HashSet<Symbol>>) -> Result<(), anyhow::Error> {
+    fn collect_condition_witness_obligations(&self, cond: &HirId<HirExpr>, out: &mut HashMap<Symbol, Obligations>) -> Result<(), anyhow::Error> {
         match self.hir.get(cond) {
             HirExpr::Match(_, matcher) => self.collect_witness_obligations(matcher, cond, out),
             HirExpr::Binary(BinOp::And | BinOp::Or, left, right) => {
@@ -790,7 +972,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn collect_witness_obligations<T>(&self, matcher: &HirMatcher, at: &HirId<T>, out: &mut HashMap<Symbol, HashSet<Symbol>>) -> Result<(), anyhow::Error> {
+    fn collect_witness_obligations<T>(&self, matcher: &HirMatcher, at: &HirId<T>, out: &mut HashMap<Symbol, Obligations>) -> Result<(), anyhow::Error> {
         match matcher {
             HirMatcher::Or(alternatives) => {
                 let binding = alternatives.iter().find(|a| a.binds_anything());
@@ -869,7 +1051,7 @@ impl<'a> Checker<'a> {
                 }
 
                 if let TypeTag::Concrete(type_name) = &tag {
-                    let braced: HashSet<Symbol> = brace.iter().map(|(name, _)| *name).collect();
+                    let braced: Obligations = brace.iter().map(|(name, _)| *name).collect();
                     self.check_construction(*type_name, &braced, callee)?;
                 }
 
@@ -889,7 +1071,13 @@ impl<'a> Checker<'a> {
             HirExpr::Index(target, member, _) => self.member_access(target, member)?,
             HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
             HirExpr::Unary(op, x) => self.unary(*op, x)?,
-            HirExpr::Is(x, _) => { self.expr(x)?; Typed::nonnull() },
+            HirExpr::Is(x, witness) => {
+                if let Some(obligation) = self.sigs.obligation_for_witness(*witness) {
+                    self.mark_settled(x, &Obligations::from([obligation]));
+                }
+                self.expr(x)?;
+                Typed::nonnull()
+            },
             HirExpr::Has(left, _) => {
                 let typed = self.expr(left)?;
                 if typed.flow.is_void() {
@@ -897,8 +1085,12 @@ impl<'a> Checker<'a> {
                 }
                 Typed::nonnull()
             },
-            HirExpr::Match(scrutinee, _) => {
+            HirExpr::Match(scrutinee, matcher) => {
                 let typed = self.expr(scrutinee)?;
+                if let Flow::Bad { obligations, .. } = &typed.flow {
+                    let settled = self.matcher_rules_out(matcher, obligations);
+                    self.mark_settled(scrutinee, &settled);
+                }
                 if typed.flow.is_void() {
                     return Err(self.error("This call returns no value, so its result cannot be matched here".to_string(), scrutinee));
                 }
@@ -907,14 +1099,18 @@ impl<'a> Checker<'a> {
             HirExpr::Block(stmts) => {
                 let mark = self.locals.len();
                 for s in stmts { self.stmt(s)?; }
+                let dropped = self.check_dropped(mark, expr);
                 self.revive_scoped_sources(mark);
                 self.truncate_locals(mark);
+                dropped?;
                 Typed::unknown()
             },
             // `a ?? b` discharges the whole obligation set: the fallback runs on any bad value, so
             // a possibly-bad left crosses with no barrier. The result is `a` when clean, else `b`.
             HirExpr::Coalesce(l, r) => {
+                self.mark_handled(l);
                 let left = self.expr(l)?;
+                self.require_witnessed_operand(&left.flow, l)?;
                 if self.owes_object_witness(&left.flow) { self.record_witness_test(expr, &left.flow); }
                 let right = self.expr(r)?;
                 let tag = if left.tag == right.tag { left.tag.clone() } else { TypeTag::Unknown };
@@ -923,39 +1119,43 @@ impl<'a> Checker<'a> {
             },
             // `a?.b` / `a?[i]` short-circuits on a bad operand, so the result carries the operand's
             // obligations.
-            HirExpr::SafeAccess(target, member, _) => {
-                let target = self.expr(target)?;
+            HirExpr::SafeAccess(target_id, member, _) => {
+                let target = self.expr(target_id)?;
+                self.require_witnessed_operand(&target.flow, target_id)?;
                 self.expr(member)?;
                 self.chain_result(&target.flow, expr)
             },
             // `cb?(args)` short-circuits on a bad callee, carrying its obligations.
-            HirExpr::SafeCall(callee, args) => {
-                let callee = self.expr(callee)?;
+            HirExpr::SafeCall(callee_id, args) => {
+                let callee = self.expr(callee_id)?;
+                self.require_witnessed_operand(&callee.flow, callee_id)?;
                 for a in args { self.expr(a)?; }
                 self.chain_result(&callee.flow, expr)
             },
             // `a?!` discharges the operand on its fall-through path. The enclosing function carries
             // the obligation instead, recorded in signatures. The yielded value is clean.
             HirExpr::Propagate(operand) => {
+                self.mark_handled(operand);
                 let typed = self.expr(operand)?;
+                self.require_witnessed_operand(&typed.flow, operand)?;
                 if self.owes_object_witness(&typed.flow) { self.record_witness_test(expr, &typed.flow); }
                 Typed::of(self.discharged_flow(&typed.flow), typed.tag)
             },
             // `a ?? p => h` binds the caught bad value to `p`, which still owes what `a` owed. A
             // single type witness narrows `p`'s tag, so a caught `Err` is usable as one.
-            HirExpr::Handle(left, binder, handler) => {
-                let left = self.expr(left)?;
-                let caught: HashSet<Symbol> = match &left.flow {
-                    Flow::Bad { obligations, .. } => obligations.clone(),
-                    _ => HashSet::new(),
-                };
+            HirExpr::Handle(left_id, binder, handler) => {
+                self.mark_handled(left_id);
+                let left = self.expr(left_id)?;
+                self.require_witnessed_operand(&left.flow, left_id)?;
+                let caught = self.owed_of(&left.flow);
                 let tag = self.single_object_witness_tag(&caught);
                 let mut binder_local = Local::binder_owing(*binder, caught);
                 binder_local.tag = tag;
+                binder_local.handled = binder_local.owed.clone();
                 let mark = self.locals.len();
                 self.locals.push(binder_local);
                 let h = self.expr(handler)?;
-                self.truncate_locals(mark);
+                self.close_scope(mark, handler)?;
                 let tag = if left.tag == h.tag { left.tag.clone() } else { TypeTag::Unknown };
                 let flow = if matches!(left.flow, Flow::Clean) { Flow::Clean } else { h.flow };
                 Typed::of(flow, tag)
@@ -963,12 +1163,14 @@ impl<'a> Checker<'a> {
             // `a!` asserts the value is clean, keeping its type tag. A barrier guards it unless
             // the operand is already proven clean.
             HirExpr::Assert(x) => {
+                self.mark_handled(x);
                 let typed = self.expr(x)?;
+                self.require_witnessed_operand(&typed.flow, x)?;
                 if self.owes_object_witness(&typed.flow) {
                     self.record_witness_test(expr, &typed.flow);
                 } else if matches!(typed.flow, Flow::Unknown) {
                     // An unknown value could be any witness, so `!` must assert against them all.
-                    self.record_boundary_barrier(expr, &HashSet::new());
+                    self.record_boundary_barrier(expr, &Obligations::new());
                 } else if !matches!(typed.flow, Flow::Clean) {
                     self.add_barrier(expr);
                 }
@@ -984,6 +1186,7 @@ impl<'a> Checker<'a> {
             self.check_into_slot(&typed.flow, &owed, name, value)?;
             // The move records the sources feeding the value, so the slot reuses that walk for its
             // provenance and adds the closure captures a bare walk would miss.
+            self.mark_settled(value, &owed);
             let mut provenance = self.move_source(value);
             provenance.extend(self.captured_sources(value));
             (true, typed.tag, typed.mutability, provenance)
@@ -992,6 +1195,7 @@ impl<'a> Checker<'a> {
         };
         let mut local = Local::value(name, owed, mutable, assigned, tag);
         local.container = clause.container;
+        local.site = *value;
         local.mutability = mutability;
         local.provenance = provenance;
         self.locals.push(local);
@@ -1000,7 +1204,7 @@ impl<'a> Checker<'a> {
 
     /// Runs `body` in a fresh function frame whose locals are the given params. `frame_start` is
     /// moved past the enclosing locals so value reads do not cross into them, then restored.
-    fn with_frame<R>(&mut self, params: &[HirParam], body: impl FnOnce(&mut Self) -> Result<R, anyhow::Error>) -> Result<R, anyhow::Error> {
+    fn with_frame<R>(&mut self, params: &[HirParam], at: &HirId<HirExpr>, body: impl FnOnce(&mut Self) -> Result<R, anyhow::Error>) -> Result<R, anyhow::Error> {
         let saved_frame = self.frame_start;
         let mark = self.locals.len();
         self.frame_start = mark;
@@ -1026,6 +1230,13 @@ impl<'a> Checker<'a> {
             local.mutability = Mutability::param(param.clause.capability);
             // A plain `mut` parameter borrows its argument; `*mut` owns it.
             local.borrowed = param.clause.capability == Capability::Mut;
+            local.site = Some(param.name);
+
+            // A pattern tests the argument on entry, which is a discharge of the slot it names.
+            if param.pattern.is_some() {
+                local.handled = local.owed.clone();
+            }
+
             self.locals.push(local);
         }
 
@@ -1035,10 +1246,18 @@ impl<'a> Checker<'a> {
             let scope = self.param_scope(param)?;
             self.push_binders(&scope);
         }
+
         let result = body(self);
+        // A body that already failed has nothing to say about undischarged bindings.
+        let dropped = match result.is_ok() {
+            true => self.check_dropped(mark, at),
+            false => Ok(()),
+        };
+
         self.truncate_locals(mark);
         self.frame_start = saved_frame;
         self.this_narrowed = saved_this_narrowed;
+        dropped?;
         result
     }
 
@@ -1075,13 +1294,14 @@ impl<'a> Checker<'a> {
             return_owes: !decl.clause.names.is_empty(),
             return_unmarked: unmarked,
             return_mut: decl.clause.capability.is_mut(),
+            return_admits: stmt.and_then(|s| self.sigs.fns.get(&s)).map(|s| s.ret.obligations.clone()),
             name: Some(decl.name),
             return_clause: decl.clause.pos.clone(),
             params: decl.params.iter().map(|p| (self.ident_sym(&p.name), p.pos.clone())).collect(),
             writes,
         };
         let saved = std::mem::replace(&mut self.fn_ctx, ctx);
-        let result = self.with_frame(&decl.params, |c| {
+        let result = self.with_frame(&decl.params, &decl.body, |c| {
             c.expr(&decl.body)?;
             // A non-null return must be produced on every path.
             if c.fn_ctx.return_shape == ReturnShape::NonNull && !c.hir.definitely_returns(&decl.body) {
@@ -1119,13 +1339,11 @@ impl<'a> Checker<'a> {
 
     /// An unmarked function that returns a bad value on one path and nothing on another owes a shape
     /// the compiler will not infer silently. The message names the annotation that makes it explicit.
-    fn mixed_void_error(&self, decl: &HirFnDecl, obligations: &HashSet<Symbol>) -> anyhow::Error {
+    fn mixed_void_error(&self, decl: &HirFnDecl, obligations: &Obligations) -> anyhow::Error {
         let name = self.hir.text(decl.name);
         let list = self.quoted_obligation_list(obligations);
         // The annotation spells the obligations as clause atoms: `: void opt fails`.
-        let mut names: Vec<&str> = obligations.iter().map(|o| self.hir.text(*o)).collect();
-        names.sort();
-        let annotation = format!(": void {}", names.join(" "));
+        let annotation = format!(": void {}", self.obligation_atoms(obligations));
         self.error_help(
             format!("'{name}' returns a value owing {list} on some paths and no value on others"),
             &decl.body,
@@ -1133,11 +1351,21 @@ impl<'a> Checker<'a> {
         )
     }
 
-    /// The obligations sorted and quoted for a diagnostic, like `'fails', 'opt'`.
-    fn quoted_obligation_list(&self, obligations: &HashSet<Symbol>) -> String {
+    /// The obligation names in a stable order, so a diagnostic does not follow the hash order.
+    fn sorted_obligation_names(&self, obligations: &Obligations) -> Vec<&str> {
         let mut names: Vec<&str> = obligations.iter().map(|o| self.hir.text(*o)).collect();
         names.sort();
-        names.iter().map(|o| format!("'{o}'")).collect::<Vec<_>>().join(", ")
+        names
+    }
+
+    /// The obligations spelled as clause atoms, like `fails taint`, for a suggested annotation.
+    fn obligation_atoms(&self, obligations: &Obligations) -> String {
+        self.sorted_obligation_names(obligations).join(" ")
+    }
+
+    /// The obligations sorted and quoted for a diagnostic, like `'fails', 'opt'`.
+    fn quoted_obligation_list(&self, obligations: &Obligations) -> String {
+        self.sorted_obligation_names(obligations).iter().map(|o| format!("'{o}'")).collect::<Vec<_>>().join(", ")
     }
 
     fn type_decl(&mut self, _node: &HirId<HirStmt>, type_name: Option<Symbol>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
@@ -1218,7 +1446,7 @@ impl<'a> Checker<'a> {
     /// binding keeps what it was declared owing. A flow fact travels with it only from an immutable
     /// slot, which cannot be rebound, so the value tested is the value the nested body sees.
     fn captured_read(&self, name: Symbol) -> Typed {
-        let Some(i) = self.locals[..self.frame_start].iter().rposition(|l| l.name == name) else {
+        let Some(i) = self.enclosing_index(name) else {
             return Typed::unknown();
         };
         let local = &self.locals[i];
@@ -1227,7 +1455,7 @@ impl<'a> Checker<'a> {
         }
 
         let discharged = self.narrowed.get(&NarrowKey::Local(i)).filter(|_| !local.mutable);
-        let owed: HashSet<Symbol> = match discharged {
+        let owed: Obligations = match discharged {
             Some(discharged) => local.owed.difference(discharged).copied().collect(),
             None => local.owed.clone(),
         };
@@ -1249,6 +1477,7 @@ impl<'a> Checker<'a> {
     fn identifier(&mut self, name: Symbol, expr: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
         let Some(i) = self.frame_index_of(name) else {
             // A read that resolves to an enclosing frame is a closure capture.
+            self.reject_capture_escape(name, expr)?;
             self.capture_enclosing(name, expr);
             return Ok(self.captured_read(name));
         };
@@ -1267,7 +1496,7 @@ impl<'a> Checker<'a> {
             return Err(self.error(format!("{subject} is used before it is assigned"), expr));
         }
 
-        let owed: HashSet<Symbol> = match self.narrowed.get(&NarrowKey::Local(i)) {
+        let owed: Obligations = match self.narrowed.get(&NarrowKey::Local(i)) {
             Some(discharged) => self.locals[i].owed.difference(discharged).copied().collect(),
             None => self.locals[i].owed.clone(),
         };
@@ -1390,4 +1619,3 @@ impl<'a> Checker<'a> {
     }
 
 }
-

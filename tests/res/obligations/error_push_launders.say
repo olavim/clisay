@@ -1,4 +1,4 @@
-obligation taint;
+type Taint { } obligation taint { witness Taint; discharge to use; }
 say t: taint = "x";
 say mut a = [];
 a.push(t);

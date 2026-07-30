@@ -1,4 +1,4 @@
-obligation tainted;
+type Tainted { } obligation tainted { witness Tainted; discharge to use; }
 say t: tainted = "x";
 say n = t + 1;
 // error(full):
@@ -7,5 +7,6 @@ say n = t + 1;
 //   |
 // 2 | say t: tainted = "x";
 // 3 | say n = t + 1;
-//   |         ^
-//   = help: discharge it before use
+//   |         ^ might be Tainted
+//   |
+//   = help: make sure `t` is not Tainted before using it

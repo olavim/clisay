@@ -1,0 +1,2 @@
+type Taint { } obligation taint { witness Taint; discharge to use; }
+fn f(x: taint) { say v = x; } // error: cannot assign a value owing 'taint' to 'v'

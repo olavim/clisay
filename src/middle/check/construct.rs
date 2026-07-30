@@ -1,9 +1,8 @@
 //! Construction checks: non-null field completeness at a brace.
 
-use std::collections::HashSet;
-
 use crate::core::objects::TypeMember;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, Symbol};
+use crate::middle::obligations::Obligations;
 
 use super::{Checker, FieldInfo, TypeTag};
 
@@ -31,7 +30,7 @@ impl<'a> Checker<'a> {
     }
 
     /// A brace must supply every non-null public field.
-    pub(super) fn check_construction(&self, type_name: Symbol, braced: &HashSet<Symbol>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    pub(super) fn check_construction(&self, type_name: Symbol, braced: &Obligations, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // A non-null field a brace cannot set would be left null, breaking the non-null guarantee.
         let mut unreachable: Vec<Symbol> = self.fields(type_name)
             .filter(|field| field.non_null && !field.public)

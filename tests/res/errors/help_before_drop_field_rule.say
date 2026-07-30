@@ -1,0 +1,13 @@
+type Held { } obligation held { witness Held; discharge to use; discharge before drop; }
+type Box {
+    r: held;
+    init(this, v) { this.r = v; }
+}
+// error(full):
+// error: A field cannot owe 'held'
+//  --> help_before_drop_field_rule.say:3:8
+//   |
+// 2 | type Box {
+// 3 |     r: held;
+//   |        ^^^^
+//   = help: `held` declares `discharge before drop`, which prevents storing it in a field

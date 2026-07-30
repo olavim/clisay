@@ -1,6 +1,9 @@
 // A witness alternative is the real obligation: it lands on the whole value and flows to the
-// binders under it, and a discharge clears it just as a `:` clause obligation would.
-type Node { pub next; init(this, n) { this.next = n; } }
+// binders under it, and a discharge clears it just as a `:` clause obligation would. The nested case
+// uses a user witness, since `fails` cannot live in a field.
+obligation stale { witness Old; discharge to use; }
+type Old { }
+type Node { pub next; init(this, n: stale) { this.next = n; } }
 
 fn whole(x @ Node | null) {
     print(x ?? "none"); // expect: none
@@ -12,7 +15,7 @@ fn flowed(x @ Node { next } | null) {
 }
 flowed(Node(7));
 
-fn nested(x @ Node { next: y @ Node | Err } | null) {
+fn nested(x @ Node { next: y @ Node | Old } | null) {
     print(y ?? "none"); // expect: none
 }
-nested(Node(Err("boom")));
+nested(Node(Old{}));

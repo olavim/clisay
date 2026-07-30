@@ -1,10 +1,12 @@
 //! Match-arm discharge: which witnesses an arm rules out for the arms below it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::core::objects::TypeMember;
 use crate::middle::signatures::Witness;
 use crate::middle::hir::{HirExpr, HirId, HirLiteral, HirMatchArm, HirMatcher, Symbol};
+
+use crate::middle::obligations::Obligations;
 
 use super::Checker;
 
@@ -12,7 +14,7 @@ impl<'a> Checker<'a> {
     /// Recovers a nominal destructure's declared field facts onto the names its shape binds. A
     /// nullable field makes its binder owe `opt`, exactly as reading `x.field` would. A structural
     /// shape names no type, so it reaches this with nothing to resolve against.
-    pub(super) fn recover_shape_fields(&self, type_name: Symbol, shape: &HirMatcher, out: &mut HashMap<Symbol, HashSet<Symbol>>) {
+    pub(super) fn recover_shape_fields(&self, type_name: Symbol, shape: &HirMatcher, out: &mut HashMap<Symbol, Obligations>) {
         let (HirMatcher::Shape(fields), Some(layout)) = (shape, self.layout_of(type_name)) else { return };
         for field in fields {
             let HirLiteral::String(key) = &field.key else { continue };
@@ -26,15 +28,20 @@ impl<'a> Checker<'a> {
     }
 
     /// The witnesses a match arm rules out for the arms below it.
-    pub(super) fn arm_rules_out(&self, arm: &HirMatchArm, remaining: &HashSet<Symbol>) -> HashSet<Symbol> {
+    pub(super) fn arm_rules_out(&self, arm: &HirMatchArm, remaining: &Obligations) -> Obligations {
         if let Some(guard) = &arm.guard {
             // A guarded arm may not run, so it cannot be trusted to rule out a witness.
             // Only a literal `true` guard always runs.
             if !self.is_literal_true(guard) {
-                return HashSet::new();
+                return Obligations::new();
             }
         }
-        remaining.iter().copied().filter(|w| self.matcher_total_over_witness(&arm.matcher, *w)).collect()
+        self.matcher_rules_out(&arm.matcher, remaining)
+    }
+
+    /// The witnesses a bare matcher rules out, for the `~` one-liner, which has no arms to consult.
+    pub(super) fn matcher_rules_out(&self, matcher: &HirMatcher, remaining: &Obligations) -> Obligations {
+        remaining.iter().copied().filter(|w| self.matcher_total_over_witness(matcher, *w)).collect()
     }
 
     /// Whether a matcher matches every value in a witness's bad state.

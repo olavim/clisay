@@ -1,6 +1,0 @@
-obligation audited;
-type Ledger {
-    pub mut n;
-    init(this, v) { this.n = v; }
-    pub fn seal(this: mut audited) { this.n = 2; } // error: unchecked value owes 'audited'
-}

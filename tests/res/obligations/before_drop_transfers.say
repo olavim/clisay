@@ -1,0 +1,7 @@
+// `discharge before drop` bars untracked storage, not the ordinary paths a failure travels.
+fn load(flag): fails { if flag { return Err("boom"); } return 7; }
+fn forward(x: fails): fails { return x; }
+
+say r: fails = load(false);
+print(forward(r) ?? "recovered"); // expect: 7
+print(load(true) ?? "recovered"); // expect: recovered

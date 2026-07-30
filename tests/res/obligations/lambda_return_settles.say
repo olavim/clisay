@@ -1,0 +1,13 @@
+// A lambda infers its return, so returning a binding hands the debt out with it. Dropping it does
+// not.
+fn f(): fails { return Err("b"); }
+
+say hands = () => {
+    say x: fails = f();
+    return x;
+};
+
+say drops = () => {
+    say y: fails = f(); // error: 'y' owes 'fails' and is never discharged
+    return 1;
+};

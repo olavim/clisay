@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol};
+use crate::middle::obligations::Obligations;
 
 use super::Collector;
 use super::walk::Child;
@@ -41,17 +42,17 @@ impl<'a> Collector<'a> {
 
     /// The obligations a `?!` operand carries. This mirrors the check pass's `chain_result`, so a
     /// chain does not launder an object witness out of the propagated set.
-    fn operand_obligations(&self, operand: &HirId<HirExpr>, decl: &HirFnDecl) -> HashSet<Symbol> {
+    fn operand_obligations(&self, operand: &HirId<HirExpr>, decl: &HirFnDecl) -> Obligations {
         match self.hir.get(operand) {
             HirExpr::Call(callee, _) => {
                 if self.is_err_call(operand) {
-                    return HashSet::from([self.fails]);
+                    return Obligations::from([self.fails]);
                 }
                 match self.hir.get(callee) {
                     HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
                         .map(|s| self.sigs.fns[s].ret.obligations.clone())
                         .unwrap_or_default(),
-                    _ => HashSet::new(),
+                    _ => Obligations::new(),
                 }
             },
             // A `?` chain carries its operand's obligations from the guarded access.
@@ -60,20 +61,20 @@ impl<'a> Collector<'a> {
                 set.insert(self.opt);
                 set
             },
-            HirExpr::Literal(HirLiteral::Null) => HashSet::from([self.opt]),
+            HirExpr::Literal(HirLiteral::Null) => Obligations::from([self.opt]),
             HirExpr::Identifier(name) => self.param_obligations(*name, decl),
-            _ => HashSet::new(),
+            _ => Obligations::new(),
         }
     }
 
     /// The declared obligation set of `name` when it is a parameter of `decl`.
-    fn param_obligations(&self, name: Symbol, decl: &HirFnDecl) -> HashSet<Symbol> {
+    fn param_obligations(&self, name: Symbol, decl: &HirFnDecl) -> Obligations {
         for p in &decl.params {
             if matches!(self.hir.get(&p.name), HirExpr::Identifier(pname) if *pname == name) {
                 return p.clause.names.iter().copied().collect();
             }
         }
-        HashSet::new()
+        Obligations::new()
     }
 
     /// Collects each `?!` operand in a body, skipping nested function and lambda bodies.

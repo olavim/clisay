@@ -1,5 +1,5 @@
 // A `no persist` value may be used in place, just not persisted.
-obligation borrowed: no persist;
+obligation borrowed { no persist; no return; }
 fn show(x: borrowed) {
     print(x + 1); // expect: 2
 }

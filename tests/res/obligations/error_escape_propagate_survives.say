@@ -1,5 +1,6 @@
-// `?!` cannot launder a borrowed value out either: `no persist` stays on the yielded value.
-obligation borrowed: no persist;
+// `?!` needs a witness to propagate on, and `borrowed` has none, so it cannot launder a borrowed
+// value out either.
+obligation borrowed { no persist; no return; }
 fn forward(x: borrowed) {
-    return x?!; // error: this value owes 'borrowed'; it cannot be stored or escape its scope
+    return x?!; // error: cannot discharge a value owing 'borrowed'
 }

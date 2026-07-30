@@ -1,0 +1,12 @@
+obligation borrowed { no persist; no return; }
+fn leak(x: borrowed) {
+    return x;
+}
+// error(full):
+// error: cannot return value owing 'borrowed'
+//  --> error_no_return.say:3:12
+//   |
+// 2 | fn leak(x: borrowed) {
+// 3 |     return x;
+//   |            ^
+//   = help: `borrowed` declares `no return`, which prevents returning it

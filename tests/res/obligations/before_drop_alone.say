@@ -1,0 +1,5 @@
+// The rule needs no other alongside it: any discharge form satisfies the drop deadline, even one
+// that clears nothing, so an obligation carrying only this rule is usable.
+type Held { } obligation held { witness Held; discharge before drop; }
+fn f(x: held) { print(x!); }
+f(5); // expect: 5

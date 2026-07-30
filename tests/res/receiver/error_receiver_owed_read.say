@@ -1,7 +1,0 @@
-// A receiver clause obligation makes `this` owe it, so a read has to discharge first.
-obligation audited;
-type Ledger {
-    pub n;
-    init(this, v) { this.n = v; }
-    pub fn seal(this: audited)! { return this.n; } // error: unchecked value owes 'audited'
-}

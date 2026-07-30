@@ -1,0 +1,6 @@
+// A parameter that admits only part of what the argument owes cannot take the debt at all.
+type Flag1 { } obligation obl1 { witness Flag1; discharge before drop; }
+type Flag2 { } obligation obl2 { witness Flag2; discharge before drop; }
+
+fn takesOne(y: obl1) { y!; }
+fn handOver(x: obl1 obl2) { takesOne(x); } // error: cannot pass a value owing 'obl2'

@@ -1,0 +1,4 @@
+fn fail(): fails { return Err("boom"); }
+fn f() {
+    say r: fails = fail(); // error: 'r' owes 'fails' and is never discharged
+}

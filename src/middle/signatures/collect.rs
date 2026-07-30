@@ -1,9 +1,8 @@
 //! The signature-building walk: records every function and method signature, registers obligations,
 //! and infers each function's declared return shape.
 
-use std::collections::HashSet;
-
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnShape, Symbol};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnShape};
+use crate::middle::obligations::Obligations;
 
 use super::{Collector, FnSig, RetSig, Witness};
 use super::walk::Child;
@@ -56,7 +55,7 @@ impl<'a> Collector<'a> {
     /// Registers each user obligation's witness and rule.
     pub(super) fn register_obligations(&mut self) {
         for (name, decl) in self.hir.obligations() {
-            self.sigs.rules.insert(name, decl.rule);
+            self.sigs.rules.insert(name, decl.rules);
             if let Some(witness) = decl.witness {
                 let w = if self.sigs.is_type(witness) {
                     Witness::Type(witness)
@@ -83,7 +82,7 @@ impl<'a> Collector<'a> {
         let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
         for stmt in stmts {
             let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
-            let admitted: Vec<(usize, HashSet<Symbol>)> = decl.params.iter().enumerate()
+            let admitted: Vec<(usize, Obligations)> = decl.params.iter().enumerate()
                 .filter_map(|(i, p)| Some((i, self.sigs.admitted_obligations(p.pattern.as_ref()?))))
                 .filter(|(_, admits)| !admits.is_empty())
                 .collect();
@@ -123,10 +122,10 @@ impl<'a> Collector<'a> {
     /// its obligations are filled by the propagation pass.
     fn ret_sig(&self, decl: &HirFnDecl) -> RetSig {
         if decl.is_unmarked() {
-            return RetSig { obligations: HashSet::new(), void: self.has_void_path(&decl.body) };
+            return RetSig { obligations: Obligations::new(), void: self.has_void_path(&decl.body) };
         }
         // A synthesized forwarder carries a `?` marker with no clause, so honor the marker too.
-        let mut obligations: HashSet<Symbol> = decl.clause.names.iter().copied().collect();
+        let mut obligations: Obligations = decl.clause.names.iter().copied().collect();
         if decl.ret == ReturnShape::Nullable {
             obligations.insert(self.opt);
         }

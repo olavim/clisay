@@ -9,6 +9,8 @@ use crate::middle::hir::{Capability, HirExpr, HirId, HirStmt};
 use crate::middle::signatures::RetSig;
 
 use crate::middle::native::{self, Container, NativeSig};
+use crate::middle::obligations::Obligations;
+
 use super::{Mutability, Checker, Flow, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
@@ -164,6 +166,7 @@ impl<'a> Checker<'a> {
         let Some(sig) = sigs.fns.get(&callee_fn) else { return Ok(()) };
         let nullable: Vec<bool> = sig.param_clauses.iter().map(|p| p.contains(&sigs.opt)).collect();
         self.check_arg_mutability(callee, callee_fn, &sig.param_markers, arg_types, args)?;
+        self.check_arg_obligations(callee, &sig.param_clauses, arg_types, args)?;
         self.check_args(callee, &nullable, arg_types, args)?;
         self.consume_move_args(&sig.param_markers, args);
         // A mutable argument lent to a non-consuming parameter is borrowed for the call, so mark it.
@@ -222,6 +225,33 @@ impl<'a> Checker<'a> {
             HirExpr::This => "`this`".to_string(),
             _ => self.arg_name(receiver),
         }
+    }
+
+    /// Checks each argument's obligations against its parameter's clause. A parameter admits exactly
+    /// what it declares.
+    fn check_arg_obligations(&mut self, callee: &HirId<HirExpr>, clauses: &[Obligations], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+        let mut handed: Vec<usize> = Vec::new();
+        for (i, admits) in clauses.iter().enumerate() {
+            let Some(typed) = arg_types.get(i) else { break };
+            let undeclared = self.undeclared_obligations(&typed.flow, admits);
+            if undeclared.is_empty() {
+                // The debt moves to the callee, but only for what this parameter declares.
+                handed.push(i);
+                continue;
+            }
+            let owed = self.quoted_obligation_list(&undeclared);
+            let subject = self.quoted_subject(&args[i]);
+            let c = self.callee_name(callee);
+            return Err(self.error_ctx_help(
+                format!("cannot pass a value owing {owed}"),
+                self.hir.pos(&args[i]), format!("{subject} owes {owed}"),
+                self.hir.pos(callee), format!("{c} does not declare {owed} here"),
+                "discharge it before the call, or declare it on the parameter"));
+        }
+        for i in handed {
+            self.mark_settled(&args[i], &clauses[i]);
+        }
+        Ok(())
     }
 
     /// Matches each argument's mutability against its parameter marker.
@@ -379,7 +409,7 @@ impl<'a> Checker<'a> {
         if ret.void {
             return Flow::Void;
         }
-        let mut obligations = HashSet::new();
+        let mut obligations = Obligations::new();
         if ret.set.opt { obligations.insert(self.sigs.opt); }
         if ret.set.fails { obligations.insert(self.sigs.fails); }
         if obligations.is_empty() {

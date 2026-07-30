@@ -1,4 +1,4 @@
-obligation tainted;
+type Tainted { } obligation tainted { witness Tainted; discharge to use; }
 trait Sink {
     req fn accept(this, x: tainted);
 }

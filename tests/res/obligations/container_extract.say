@@ -1,5 +1,5 @@
 // A read stays pending at any depth, so a nested element is extracted per level with `!`.
-obligation taint;
+type Taint { } obligation taint { witness Taint; discharge to use; }
 say a: [taint] = mut [];
 a.push([42]);
 say v = a[0][0]!;

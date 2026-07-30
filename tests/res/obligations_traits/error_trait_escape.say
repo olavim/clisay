@@ -1,6 +1,6 @@
-obligation borrowed: no persist;
+obligation borrowed { no persist; no return; }
 trait View {
-    pub fn get(this, x: borrowed) { return x; } // error: 'x' owes 'borrowed'; it cannot be stored or escape its scope
+    pub fn get(this, x: borrowed) { return x; } // error: cannot return value owing 'borrowed'
 }
 type W with View { init(this) {} }
 print("unreachable");

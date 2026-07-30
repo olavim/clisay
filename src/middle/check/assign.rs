@@ -1,9 +1,8 @@
 //! Assignment checks: write conformance and mutability.
 
-use std::collections::HashSet;
-
 use crate::core::objects::TypeMember;
 use crate::middle::hir::{HirExpr, HirId, Symbol};
+use crate::middle::obligations::Obligations;
 
 use super::{Mutability, Checker, Flow, TypeTag, Typed, Violation};
 
@@ -231,7 +230,7 @@ impl<'a> Checker<'a> {
     /// Checks a value moving into a field per the field's nullability.
     fn check_into_field(&mut self, flow: &Flow, field_nullable: bool, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // Storing into a field persists the value, which a `no persist` value forbids.
-        self.reject_escape(flow, node)?;
+        self.reject_outliving(flow, super::Site::Field, node)?;
         let text = self.hir.text(field);
         let void = || format!("Cannot assign a void result to field '{text}'; the call returns no value");
         if field_nullable {
@@ -241,7 +240,7 @@ impl<'a> Checker<'a> {
             }
             // An unknown value into an `opt` field is guarded against every object witness it may be.
             if matches!(flow, Flow::Unknown) {
-                self.record_boundary_barrier(node, &HashSet::from([self.sigs.opt]));
+                self.record_boundary_barrier(node, &Obligations::from([self.sigs.opt]));
             }
             return Ok(());
         }

@@ -1,0 +1,5 @@
+// The `no` family names a prohibition with nothing to prove, so a discharge form has no question to ask.
+obligation borrowed { no persist; no return; }
+fn f(x: borrowed) {
+    say y = x ?? 0; // error: cannot discharge a value owing 'borrowed'
+}

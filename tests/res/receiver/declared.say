@@ -12,11 +12,3 @@ say c = mut Counter(1);
 print(c.value()); // expect: 1
 c.bump();
 print(c.value()); // expect: 2
-
-obligation audited;
-type Ledger {
-    pub n;
-    init(this, v) { this.n = v; }
-    pub fn seal(this: audited)! { return this!.n; }
-}
-print(Ledger(7).seal()); // expect: 7
