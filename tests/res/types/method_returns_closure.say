@@ -1,5 +1,5 @@
 type A {
-    pub fn getCounter()! {
+    pub fn getCounter(this)! {
         say mut n = 0;
         fn inc()! {
             n += 1;

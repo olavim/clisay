@@ -201,6 +201,14 @@ struct FlowSnapshot {
     this_narrowed: HashMap<Symbol, HashSet<Symbol>>,
 }
 
+/// What a method's declared `this` says about the receiver.
+#[derive(Default, Clone)]
+struct ReceiverFacts {
+    mutability: Mutability,
+    /// The obligations the receiver clause declares.
+    owed: HashSet<Symbol>,
+}
+
 /// The declared facts of the function currently being checked.
 #[derive(Default)]
 struct FnContext<'a> {
@@ -212,6 +220,8 @@ struct FnContext<'a> {
     return_unmarked: bool,
     /// Whether the return is declared `: mut`.
     return_mut: bool,
+    /// What the declared `this` says about the receiver.
+    receiver: ReceiverFacts,
     /// The function's name.
     name: Option<Symbol>,
     /// The return-clause span.
@@ -531,7 +541,13 @@ impl<'a> Checker<'a> {
     }
 
     fn this_typed(&self) -> Typed {
-        Typed::of(Flow::Clean, self.this_tag())
+        let receiver = &self.fn_ctx.receiver;
+        let flow = if receiver.owed.is_empty() {
+            Flow::Clean
+        } else {
+            Flow::Bad { obligations: receiver.owed.clone(), definite: false, container: false }
+        };
+        Typed::of(flow, self.this_tag()).with_mutability(receiver.mutability)
     }
 
     /// A value owing `opt`. `definite` marks a known-null value versus a possibly-null one.
@@ -1051,8 +1067,10 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        self.reject_receiver_witnesses(decl)?;
         // A lambda's shape is inferred, so it is not checked against a declaration.
         let ctx = FnContext {
+            receiver: self.receiver_facts(decl),
             return_shape: decl.ret,
             return_owes: !decl.clause.names.is_empty(),
             return_unmarked: unmarked,
@@ -1073,6 +1091,30 @@ impl<'a> Checker<'a> {
         });
         self.fn_ctx = saved;
         result
+    }
+
+    /// What the declared `this` says about the receiver.
+    fn receiver_facts(&self, decl: &HirFnDecl) -> ReceiverFacts {
+        match &decl.receiver {
+            Some(_) if self.checking_factory => ReceiverFacts::default(),
+            Some(clause) => ReceiverFacts {
+                mutability: Mutability::param(clause.capability),
+                owed: self.clause_owed(clause),
+            },
+            None => self.fn_ctx.receiver.clone(),
+        }
+    }
+
+    /// Inside a method `this` is a concrete instance of the type, so there is no null or `Err`
+    /// receiver for a witnessed obligation to admit.
+    fn reject_receiver_witnesses(&self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
+        let Some(clause) = &decl.receiver else { return Ok(()) };
+        let Some(name) = clause.names.iter().find(|n| self.sigs.witness(**n).is_some()) else { return Ok(()) };
+        let text = self.hir.text(*name);
+        let pos = clause.pos.clone().unwrap_or_else(|| decl.sig_pos.clone());
+        Err(anyhow!("{}", Diagnostic::new(format!("The receiver cannot owe '{text}'"), pos)
+            .with_label(format!("'{text}' admits a value `this` cannot be"))
+            .with_help("`this` is always an instance of the type; put the obligation on a parameter instead")))
     }
 
     /// An unmarked function that returns a bad value on one path and nothing on another owes a shape
@@ -1277,10 +1319,10 @@ impl<'a> Checker<'a> {
 
     /// Evaluates a receiver, requiring it to be non-null.
     fn receiver(&mut self, receiver: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
-        if matches!(self.hir.get(receiver), HirExpr::This) {
-            return Ok(self.this_typed());
-        }
-        let typed = self.expr(receiver)?;
+        let typed = match self.hir.get(receiver) {
+            HirExpr::This => self.this_typed(),
+            _ => self.expr(receiver)?,
+        };
         // A value confirmed to be a witness it owes is usable by that type, even while it owes.
         if self.confirmed_witness(&typed) {
             return Ok(typed);

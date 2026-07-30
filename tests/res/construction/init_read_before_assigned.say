@@ -2,7 +2,7 @@
 type T {
     a;
     b;
-    init() {
+    init(this) {
         this.a = this.b; // error: Field 'b' is used before it is assigned
         this.b = 5;
     }

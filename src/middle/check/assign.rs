@@ -168,6 +168,15 @@ impl<'a> Checker<'a> {
             return Err(self.immutable_field_error(type_name, field, lhs));
         }
 
+        // Writing a field is a use of the receiver, so an owing `this` has to be discharged first.
+        let this = self.this_typed();
+        self.require_usable_value(&this, lhs)?;
+
+        // Mutating a field is mutating the receiver, so the method has to have asked for one.
+        if !self.checking_factory && this.mutability == Mutability::Immutable {
+            return Err(self.readonly_receiver_error(type_name, field, lhs));
+        }
+
         self.check_into_field(flow, nullable, field, rhs)
     }
 
@@ -189,6 +198,14 @@ impl<'a> Checker<'a> {
             return Err(self.immutable_field_error(type_name, field, lhs));
         }
         self.check_into_field(flow, nullable, field, rhs)
+    }
+
+    /// The error for writing a field through a receiver the method did not declare mutable.
+    fn readonly_receiver_error(&self, type_name: Symbol, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
+        let name = self.qualified_field(type_name, field);
+        let method = self.fn_ctx.name.map_or("this method".to_string(), |s| format!("`{}`", self.hir.text(s)));
+        self.error_help(format!("cannot assign `{name}` through a read-only receiver"), lhs,
+            format!("declare {method}'s receiver `this: mut` to let it mutate the instance"))
     }
 
     fn immutable_field_error(&self, type_name: Symbol, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {

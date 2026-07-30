@@ -54,12 +54,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.check_name_case(&name, NameKind::Fn, &start)?;
         let name = self.ast.intern(&name);
         self.tokens.expect(TokenType::LeftParen)?;
-        let params = self.parse_params(TokenType::RightParen)?;
+        let (receiver, params) = self.parse_params(TokenType::RightParen)?;
         let ret = self.parse_return_shape();
         let clause = self.parse_slot_clause(SlotKind::Return)?;
         let pos = start.to(&self.tokens.previous().pos);
+        self.check_receiver_presence(receiver.as_ref(), true, &pos)?;
         self.tokens.expect(TokenType::Semicolon)?;
-        Ok(ReqFn { name, pos, params, ret, clause })
+        Ok(ReqFn { name, pos, receiver, params, ret, clause })
     }
 
     pub(super) fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -117,7 +118,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             match kind {
                 TokenType::Fn => {
                     if mutable { parse_error!(self, &member_pos, "Only fields can be `mut`"); }
-                    let stmt = self.parse_fn()?;
+                    let stmt = self.parse_fn(true)?;
                     if let Stmt::Fn(decl) = self.ast.get(&stmt) {
                         match visibility {
                             Visibility::Pub => { pub_members.insert(decl.name); },

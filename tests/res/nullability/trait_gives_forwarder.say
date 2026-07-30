@@ -1,16 +1,16 @@
 // A `gives` forwarder is trusted at its trait's declared nullability on a known receiver, so a
 // nullable forwarded result into a non-null slot is caught statically with no runtime barrier.
 trait Powered {
-    pub fn start()? {
+    pub fn start(this)? {
         return null;
     }
 }
 type Engine with Powered {
-    init() {}
+    init(this) {}
 }
 type Car {
     engine gives Powered;
-    init() {
+    init(this) {
         this.engine = Engine();
     }
 }

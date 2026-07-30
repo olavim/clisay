@@ -1,2 +1,2 @@
-trait Shape { pub fn area() { return 0; } }
-type Shape { init() {} } // error: 'Shape' already declared in this scope
+trait Shape { pub fn area(this) { return 0; } }
+type Shape { init(this) {} } // error: 'Shape' already declared in this scope

@@ -2,12 +2,12 @@
 // as a specific type's nullable return. It compiles (no nullable-into-non-null error) and the
 // crossing is guarded by a barrier, which passes here since the call returns a value.
 type Cache {
-    pub fn find()? {
+    pub fn find(this)? {
         return 1;
     }
 }
 type Other {
-    pub fn find()? {
+    pub fn find(this)? {
         return 2;
     }
 }

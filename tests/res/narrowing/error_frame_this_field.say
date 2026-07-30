@@ -2,8 +2,8 @@
 // runs later. The lambda sees `x` owing what it was declared owing.
 type T {
     x?;
-    init() { this.x = null; }
-    pub fn m() {
+    init(this) { this.x = null; }
+    pub fn m(this) {
         if (this.x != null) {
             say f = () => print(this.x + 1); // error: unchecked value owes 'opt'
             f();

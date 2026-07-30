@@ -1,0 +1,4 @@
+type Counter {
+    pub n = 0;
+    pub fn value()! { return this.n; } // error: A method must declare its receiver
+}

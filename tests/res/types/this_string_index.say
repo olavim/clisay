@@ -2,7 +2,7 @@
 type Counter {
     pub mut n = 0;
 
-    pub fn bump() {
+    pub fn bump(this: mut) {
         this["n"] = this["n"] + 1;
     }
 }

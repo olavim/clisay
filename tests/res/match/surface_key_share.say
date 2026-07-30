@@ -1,6 +1,6 @@
 // A shape key and a surface member with the same name are one presence test, so the `{ x }` binder
 // and `has T` share the `x` check.
-type T { pub x; init(a) { this.x = a; } }
+type T { pub x; init(this, a) { this.x = a; } }
 say t = T(1);
 match t {
     { x } => 0,

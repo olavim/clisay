@@ -1,3 +1,3 @@
 trait Mover {
-    pub fn step() { return this.stuff(1); } // error: Trait 'Mover' accesses undeclared member 'this.stuff'; use `with`, `req`, or `req fn` to provide it
+    pub fn step(this) { return this.stuff(1); } // error: Trait 'Mover' accesses undeclared member 'this.stuff'; use `with`, `req`, or `req fn` to provide it
 }

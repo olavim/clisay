@@ -100,6 +100,7 @@ impl<'a> Collector<'a> {
             ret.obligations.insert(self.fails);
         }
         FnSig {
+            receiver_marker: decl.receiver.as_ref().map(|r| r.capability),
             param_clauses: decl.params.iter().map(|p| p.clause.names.iter().copied().collect()).collect(),
             param_markers: decl.params.iter().map(|p| p.clause.capability).collect(),
             ret,

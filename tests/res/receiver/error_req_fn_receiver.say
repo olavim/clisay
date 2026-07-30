@@ -1,0 +1,3 @@
+trait Source {
+    req fn read()!; // error: A method must declare its receiver
+}

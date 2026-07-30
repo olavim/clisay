@@ -1,6 +1,6 @@
 use clisay::internals::try_resolve;
 
-const POINT: &str = "type Point { pub x; pub y; init(a, b) { this.x = a; this.y = b; } }";
+const POINT: &str = "type Point { pub x; pub y; init(this, a, b) { this.x = a; this.y = b; } }";
 
 #[test]
 fn matcher_unknown_type_ref_errors() {

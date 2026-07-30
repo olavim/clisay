@@ -1,5 +1,5 @@
 // A borrow forwarded to an opaque callback that persists it into a brace construction traps at runtime.
-type Wrap { pub w?; init() { } }
+type Wrap { pub w?; init(this) { } }
 say mut kept? = null;
 fn relay(x, cb) { cb(x); }
 say m = mut [1, 2];

@@ -1,5 +1,5 @@
 // Every alternative of an or-matcher must bind the same names.
-type P { pub x; init(a) { this.x = a; } }
+type P { pub x; init(this, a) { this.x = a; } }
 say v = { x: 1 };
 match v {
     P { x } | { y } => print(x), // error: or-matcher alternatives must bind the same names

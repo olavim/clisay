@@ -1,5 +1,5 @@
 // A nullable field's binder owes `opt`, so using it undischarged is rejected.
-type Box { pub item?; init(i) { this.item = i; } }
+type Box { pub item?; init(this, i) { this.item = i; } }
 fn f(x @ Box { item }) {
     print(item + 1); // error: unchecked value owes 'opt'
 }

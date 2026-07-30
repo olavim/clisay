@@ -1,12 +1,12 @@
 // A nullable `req fn` is satisfied by a non-null member, since non-null is more specific.
 trait Cache {
-    req fn find()?;
-    pub fn lookup()? {
+    req fn find(this)?;
+    pub fn lookup(this)? {
         return this.find();
     }
 }
 type Store with Cache {
-    pub fn find()! {
+    pub fn find(this)! {
         return 1;
     }
 }

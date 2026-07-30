@@ -1,6 +1,6 @@
-type Sink { pub mut item; init() { this.item = 0; } fn keep(x) { this.item = x; } }
+type Sink { pub mut item; init(this) { this.item = 0; } fn keep(this: mut, x) { this.item = x; } }
 fn make(): mut { return mut {}; }
-say s = Sink();
+say s = mut Sink();
 say m = make();
 s.keep(m);
 // error(full):

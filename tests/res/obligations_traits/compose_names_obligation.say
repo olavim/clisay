@@ -1,10 +1,10 @@
 obligation tainted;
 trait Sink {
-    req fn accept(x: tainted);
+    req fn accept(this, x: tainted);
 }
 type Db with Sink {
-    pub fn accept(x: tainted) { }
-    init() {}
+    pub fn accept(this, x: tainted) { }
+    init(this) {}
 }
 say d = Db();
 print("ok"); // expect: ok

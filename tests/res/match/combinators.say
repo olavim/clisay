@@ -1,6 +1,6 @@
 // Combinator precedence and mixing.
-type A { pub n; init(a) { this.n = a; } }
-type B { pub n; init(a) { this.n = a; } }
+type A { pub n; init(this, a) { this.n = a; } }
+type B { pub n; init(this, a) { this.n = a; } }
 
 fn viaAsOr(v?) {
     if v ~ n @ 1 | 2 | 3 { print(n); } else { print("no"); }

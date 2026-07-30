@@ -1,9 +1,9 @@
 trait Sink {
-    req fn accept(x: [opt]);
+    req fn accept(this, x: [opt]);
 }
 type Db with Sink {
-    pub fn accept(x: [opt fails]) { }
-    init() {}
+    pub fn accept(this, x: [opt fails]) { }
+    init(this) {}
 }
 say d = Db();
 print("ok"); // expect: ok

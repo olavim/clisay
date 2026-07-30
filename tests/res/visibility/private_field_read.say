@@ -1,6 +1,6 @@
 type Box {
     secret;
-    init(s) { this.secret = s; }
+    init(this, s) { this.secret = s; }
 }
 say b = Box(42);
 print(b.secret); // error: Invalid index: Box doesn't have member "secret"

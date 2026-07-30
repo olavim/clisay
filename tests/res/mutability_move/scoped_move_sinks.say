@@ -11,14 +11,14 @@ print(a[0]); // expect: 1
 
 // @split
 // Through a constructor call.
-type Box { pub mut item; init(x: *mut) { this.item = x; } }
+type Box { pub mut item; init(this, x: *mut) { this.item = x; } }
 say a = mut [1];
 { say b = Box(a); }
 print(a[0]); // expect: 1
 
 // @split
 // Through a constructor call.
-type Box { init(x) { } }
+type Box { init(this, x) { } }
 say a = mut [1];
 say b = Box(a);
 print(a[0]); // expect: 1
@@ -31,7 +31,7 @@ print(a[0]); // expect: 1
 
 // @split
 // Through a field store on a block-local receiver.
-type Box { pub mut item; init() { this.item = 0; } }
+type Box { pub mut item; init(this) { this.item = 0; } }
 say a = mut [1];
 { say b = mut Box(); b.item = a; }
 print(a[0]); // expect: 1

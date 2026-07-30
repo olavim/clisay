@@ -1,5 +1,5 @@
 // In a matcher a bare uppercase name is a nominal type test; `has T` is the structural test.
-type Shape { pub a; init() { this.a = 1; } }
+type Shape { pub a; init(this) { this.a = 1; } }
 
 say s = Shape();
 say d = { nested: s };

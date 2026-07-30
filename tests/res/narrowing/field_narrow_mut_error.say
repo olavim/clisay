@@ -1,7 +1,7 @@
 // A `mut` field does not narrow, since a call could change it between check and use.
 type Node {
     pub mut prev?;
-    pub fn check() {
+    pub fn check(this) {
         if (this.prev != null) {
             this.prev.x; // error: unchecked value owes 'opt'
         }

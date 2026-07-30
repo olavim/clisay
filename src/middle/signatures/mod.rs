@@ -21,6 +21,8 @@ pub struct RetSig {
 
 /// A function's per-parameter obligation set and its return signature.
 pub struct FnSig {
+    /// The capability the receiver requires, on a method.
+    pub receiver_marker: Option<Capability>,
     pub param_clauses: Vec<HashSet<Symbol>>,
     pub param_markers: Vec<Capability>,
     pub ret: RetSig,

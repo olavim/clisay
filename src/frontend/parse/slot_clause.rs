@@ -29,7 +29,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn parse_clause_atom(&mut self, clause: &mut SlotClause, slot: SlotKind) -> Result<(), anyhow::Error> {
         if self.tokens.matches(TokenType::LeftBracket) {
-            self.parse_obligation_container(clause)
+            self.parse_obligation_container(clause, slot)
         } else if self.at_void_marker() {
             self.parse_void_marker(clause, slot)
         } else if self.at_mut_marker() {
@@ -95,8 +95,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             || self.tokens.matches(TokenType::Comma)
     }
 
-    fn parse_obligation_container(&mut self, clause: &mut SlotClause) -> Result<(), anyhow::Error> {
+    fn parse_obligation_container(&mut self, clause: &mut SlotClause, slot: SlotKind) -> Result<(), anyhow::Error> {
         let open = self.tokens.expect(TokenType::LeftBracket)?.pos.clone();
+        if !slot.allows_container() {
+            return Err(self.error_help(format!("A {} cannot be a container", slot.label()), &open,
+                "'[obl]' names an array or dict whose elements owe the obligation"));
+        }
         clause.container = true;
         while self.at_container_content() {
             let pos = self.tokens.peek(0).pos.clone();
