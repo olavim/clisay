@@ -8,10 +8,10 @@
 
 type Foo {
     pub val;
-    init(v) {
+    init(this, v) {
         this.val = v;
     }
-    pub fn bar() {
+    pub fn bar(this) {
         print(this.val);
     }
 }

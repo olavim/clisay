@@ -1,0 +1,3 @@
+type T {
+    pub fn m(this, this) { return 1; } // error: Repeated 'this' parameter
+}

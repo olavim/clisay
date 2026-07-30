@@ -2,7 +2,7 @@
 type A {
     knob = 10;
     pub value;
-    init(n) {
+    init(this, n) {
         this.value = this.knob + n;
     }
 }

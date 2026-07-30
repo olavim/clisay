@@ -2,7 +2,7 @@
 type T {
     pub x = 1;
     pub mut y = 2;
-    init() { this.y = 3; }
+    init(this) { this.y = 3; }
 }
 say t = T();
 print(t.x); // expect: 1

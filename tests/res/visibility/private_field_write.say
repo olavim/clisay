@@ -1,6 +1,6 @@
 type Box {
     value; // private by default
-    init(v) { this.value = v; }
+    init(this, v) { this.value = v; }
 }
 say b = mut Box(1);
 // A private member is invisible to external code, so an external write is "no such member".

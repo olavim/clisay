@@ -458,6 +458,7 @@ impl<'a> Lowerer<'a> {
         Ok(HirFnDecl {
             name: decl.name,
             sig_pos: decl.sig_pos.clone(),
+            receiver: decl.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause)),
             params: self.params(&decl.params)?,
             body: self.expr(&decl.body)?,
             ret,

@@ -1,6 +1,6 @@
 type Node {
     pub mut prev?;
-    pub fn check() {
+    pub fn check(this) {
         if (this.prev != null) {
             this.prev.x;
         }

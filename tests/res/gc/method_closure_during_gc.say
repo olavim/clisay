@@ -13,10 +13,10 @@
 
 type Counter {
     pub mut n;
-    init() {
+    init(this) {
         this.n = 0;
     }
-    pub fn inc() {
+    pub fn inc(this: mut) {
         this.n = this.n + 1;
     }
 }

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
-use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRule, ReqFn, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
+use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRule, Receiver, ReqFn, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
 use crate::frontend::lex::{ContextualKeyword, Diagnostic, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -16,7 +16,7 @@ macro_rules! parse_error {
 enum Visibility { Pub, Inner, Private }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SlotKind { Local, Param, Field, Return }
+enum SlotKind { Local, Param, Receiver, Field, Return }
 
 impl SlotKind {
     fn allows_void_clause(self) -> bool {
@@ -25,13 +25,18 @@ impl SlotKind {
 
     /// Only parameters and return slots carry capability markers (like value mutability).
     fn allows_capability(self) -> bool {
-        matches!(self, SlotKind::Param | SlotKind::Return)
+        matches!(self, SlotKind::Param | SlotKind::Receiver | SlotKind::Return)
+    }
+
+    fn allows_container(self) -> bool {
+        self != SlotKind::Receiver
     }
 
     fn label(self) -> &'static str {
         match self {
             SlotKind::Local => "local",
             SlotKind::Param => "parameter",
+            SlotKind::Receiver => "receiver",
             SlotKind::Field => "field",
             SlotKind::Return => "return",
         }

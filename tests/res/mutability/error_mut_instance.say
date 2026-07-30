@@ -1,4 +1,4 @@
-type Counter { pub mut n; init() { this.n = 0; } }
+type Counter { pub mut n; init(this) { this.n = 0; } }
 say c = mut Counter();
 c.n = 5;
 freeze(c);

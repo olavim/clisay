@@ -1,10 +1,10 @@
 // A `req fn` reached through a transitive `with` chain is still checked for variance.
 trait Base {
-    req fn read(): opt;
+    req fn read(this): opt;
 }
 trait Mid with Base { }
 type File with Mid {
-    pub fn read(): opt fails { return Err("x"); } // error: return owes an obligation the trait forbids
-    init() {}
+    pub fn read(this): opt fails { return Err("x"); } // error: return owes an obligation the trait forbids
+    init(this) {}
 }
 print("unreachable");

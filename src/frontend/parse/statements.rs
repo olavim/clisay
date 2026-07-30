@@ -7,7 +7,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         match self.tokens.peek(0).kind {
             TokenType::Say => self.parse_say(),
             TokenType::While => self.parse_while(),
-            TokenType::Fn => self.parse_fn(),
+            TokenType::Fn => self.parse_fn(false),
             TokenType::Type => self.parse_type_decl(false),
             TokenType::Trait => self.parse_type_decl(true),
             TokenType::Obligation => self.parse_obligation(),

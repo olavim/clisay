@@ -1,10 +1,10 @@
 // The `?` marker and the `: opt` clause name the same obligation across the require/satisfy seam.
 trait Sink {
-    req fn accept(x?);
+    req fn accept(this, x?);
 }
 type Db with Sink {
-    pub fn accept(x: opt) { }
-    init() {}
+    pub fn accept(this, x: opt) { }
+    init(this) {}
 }
 say d = Db();
 print("ok"); // expect: ok

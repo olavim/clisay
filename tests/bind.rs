@@ -30,7 +30,7 @@ fn field_nullability_and_mutability_on_layout() {
 
 #[test]
 fn method_return_nullability_on_layout() {
-    let (hir, bindings) = bind("type T { pub fn maybe()? { return null; } pub fn always()! { return 1; } }");
+    let (hir, bindings) = bind("type T { pub fn maybe(this)? { return null; } pub fn always(this)! { return 1; } }");
     let layout = first_type_layout(&hir, &bindings);
 
     let maybe = hir.symbol_of("maybe").expect("maybe not interned");

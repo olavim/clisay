@@ -2,13 +2,13 @@
 // `T.x` is narrowed here, but `K.x` is a different field and keeps what it owes.
 type T {
     x: opt;
-    init(a: opt) { this.x = a; }
-    pub fn run() {
+    init(this, a: opt) { this.x = a; }
+    pub fn run(this) {
         if (this.x == null) { return; }
         type K {
             x: opt;
-            init() { this.x = null; }
-            pub fn runK() { print(this.x + 1); } // error: unchecked value owes 'opt'
+            init(this) { this.x = null; }
+            pub fn runK(this) { print(this.x + 1); } // error: unchecked value owes 'opt'
         }
         K().runK();
     }

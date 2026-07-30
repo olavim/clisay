@@ -1,3 +1,3 @@
-type Shape { pub a; init() { this.a = 1; } }
+type Shape { pub a; init(this) { this.a = 1; } }
 say d = { nested: { a: 10 } };
 d has { nested: shape }; // error: unexpected binder in a `has` test

@@ -316,7 +316,9 @@ impl<'a> Lowerer<'a> {
         let call = self.hir.add(HirExpr::Call(method_access, args), pos.clone());
         let ret_stmt = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
         let body = self.hir.add(HirExpr::Block(vec![ret_stmt]), pos.clone());
-        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), params, body, ret, clause: HirSlotClause::default() }), pos.clone())
+        // The forwarder only reads `this.<field>`, so it needs no capability of its own.
+        let receiver = Some(HirSlotClause::default());
+        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), receiver, params, body, ret, clause: HirSlotClause::default() }), pos.clone())
     }
 
     /// Lowers a `req fn` hole to its per-slot clauses, folding each `?` marker into the clause the
@@ -456,10 +458,11 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
         let sig_pos = decl.sig_pos.clone();
+        let receiver = decl.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause));
         let params = self.params(&decl.params)?;
         let (ret, clause) = self.return_clause(decl);
         let body = self.expr(&decl.body)?;
-        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, sig_pos, params, body, ret, clause }), pos))
+        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, sig_pos, receiver, params, body, ret, clause }), pos))
     }
 
     pub(super) fn as_qualified_method_call(&self, callee: &AstId<Expr>) -> Option<(Symbol, String)> {

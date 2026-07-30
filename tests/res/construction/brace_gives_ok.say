@@ -1,6 +1,6 @@
 // A brace with a satisfying gives delegate constructs.
-trait Powered { pub fn go()! { return "v"; } }
-type Engine with Powered { init() {} }
+trait Powered { pub fn go(this)! { return "v"; } }
+type Engine with Powered { init(this) {} }
 type Car { pub engine gives Powered; }
 say c = Car{engine: Engine{}};
 print(c is Powered); // expect: true

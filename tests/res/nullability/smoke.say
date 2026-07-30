@@ -2,10 +2,10 @@
 // Nothing is enforced yet, so it runs to completion.
 type Box {
     pub mut value;
-    init(v) {
+    init(this, v) {
         value = v;
     }
-    pub fn get()! {
+    pub fn get(this)! {
         return this.value;
     }
 }

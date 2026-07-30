@@ -119,6 +119,7 @@ impl<'a> Checker<'a> {
         }
         if let (TypeTag::Concrete(type_name), Some(method)) = (&receiver_typed.tag, self.hir.symbol_of(name)) {
             if let Some(stmt) = self.sigs.methods_by_type.get(&(*type_name, method)).copied() {
+                self.check_receiver(callee, receiver, stmt, &receiver_typed)?;
                 self.check_call_args(callee, stmt, arg_types, args)?;
                 return Ok(self.call_result(stmt, &receiver_typed.tag));
             }
@@ -181,6 +182,45 @@ impl<'a> Checker<'a> {
             if matches!(marker, Capability::MoveMut) {
                 if let Some(arg) = args.get(i) { self.move_source(arg); }
             }
+        }
+    }
+
+    /// Matches the receiver against the capability the method declares on its `this`, the way an
+    /// argument is matched against its parameter marker. A `mut` receiver is borrowed for the call;
+    /// a `*mut` one is consumed by it.
+    fn check_receiver(&mut self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>, callee_fn: HirId<HirStmt>, receiver_typed: &Typed) -> Result<(), anyhow::Error> {
+        let Some(marker) = self.sigs.fns.get(&callee_fn).and_then(|s| s.receiver_marker) else { return Ok(()) };
+        if !marker.is_mut() {
+            return Ok(());
+        }
+        if receiver_typed.mutability == Mutability::Immutable {
+            return Err(self.immutable_receiver_error(callee, receiver));
+        }
+        if marker.is_move() {
+            // A borrow cannot be given away, so it may not feed a consuming receiver.
+            if self.arg_is_borrowed(receiver) {
+                return Err(self.consumes_borrow_error(callee, receiver));
+            }
+            self.move_source(receiver);
+        }
+        Ok(())
+    }
+
+    /// The error for calling a `this: mut` method on a value the caller may not mutate.
+    fn immutable_receiver_error(&self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>) -> anyhow::Error {
+        let subject = self.receiver_subject(receiver);
+        let method = self.callee_name(callee);
+        // The callee span contains the receiver span, so a second caret would sit inside the first.
+        anyhow!("{}", Diagnostic::new("expected mutable receiver".to_string(), self.hir.pos(receiver).clone())
+            .with_label(format!("{subject} is immutable"))
+            .with_help(format!("{method} declares `this: mut`; construct the value with `mut` to call it")))
+    }
+
+    /// Backtick-quoted name of a method call's receiver, or `this` when the call is internal.
+    fn receiver_subject(&self, receiver: &HirId<HirExpr>) -> String {
+        match self.hir.get(receiver) {
+            HirExpr::This => "`this`".to_string(),
+            _ => self.arg_name(receiver),
         }
     }
 

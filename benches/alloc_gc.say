@@ -3,7 +3,7 @@
 // threshold/marking, and per-call allocation.
 type Box {
     pub v;
-    init(v) {
+    init(this, v) {
         this.v = v;
     }
 }

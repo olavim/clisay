@@ -203,6 +203,13 @@ impl Param {
     }
 }
 
+/// The `this` parameter of an instance method. It names no slot of its own, since the receiver
+/// already occupies slot 0, so it carries only its span and its `:` clause.
+pub struct Receiver {
+    pub pos: SourcePosition,
+    pub clause: SlotClause,
+}
+
 // TODO: fold into SlotClause
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ReturnShape {
@@ -222,17 +229,20 @@ pub struct FnDecl {
     pub name: Symbol,
     /// The `name(params): clause` signature span.
     pub sig_pos: SourcePosition,
+    /// The declared `this`, present on an instance method and absent on a plain function.
+    pub receiver: Option<Receiver>,
     pub params: Vec<Param>,
     pub body: AstId<Expr>,
     pub ret: ReturnShape,
     pub clause: SlotClause,
 }
 
-/// A `req fn f(params): clause;` method hole.
+/// A `req fn f(this, params): clause;` method hole.
 pub struct ReqFn {
     pub name: Symbol,
     /// The `name(params): clause` span.
     pub pos: SourcePosition,
+    pub receiver: Option<Receiver>,
     pub params: Vec<Param>,
     pub ret: ReturnShape,
     pub clause: SlotClause,

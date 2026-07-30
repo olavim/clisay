@@ -2,6 +2,6 @@
 obligation borrowed: no persist;
 type Box {
     pub mut item;
-    init() { this.item = 0; }
-    fn run(x: borrowed, cb) { cb(x); }
+    init(this) { this.item = 0; }
+    fn run(this, x: borrowed, cb) { cb(x); }
 }

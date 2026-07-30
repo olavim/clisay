@@ -137,7 +137,9 @@ impl<'a> Lowerer<'a> {
 
     fn make_factory_fn(&mut self, name: Symbol, params: Vec<HirParam>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
         let body = self.hir.add(HirExpr::Block(body), pos.clone());
-        let fn_decl = HirFnDecl { name, sig_pos: pos.clone(), params, body, ret: ReturnShape::Inferred, clause: HirSlotClause::default() };
+        // A factory always has a receiver: the instance it is building up.
+        let receiver = Some(HirSlotClause::default());
+        let fn_decl = HirFnDecl { name, sig_pos: pos.clone(), receiver, params, body, ret: ReturnShape::Inferred, clause: HirSlotClause::default() };
         self.hir.add(HirStmt::Fn(fn_decl), pos.clone())
     }
 }

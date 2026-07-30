@@ -2,7 +2,7 @@
 type T {
     pub x;
     grab = () => this; // error: the partially-constructed 'this' is not a value in a factory
-    init() {
+    init(this) {
         this.x = 1;
     }
 }

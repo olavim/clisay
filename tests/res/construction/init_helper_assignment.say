@@ -1,10 +1,10 @@
 // Calling a method on the half-built `this` is illegal because `this` is not a value in a factory.
 type T {
     pub mut value = 0;
-    init() {
+    init(this) {
         this.setup(); // error: cannot access `this.setup` in a factory: `this` is not a value there, only its fields
     }
-    fn setup() {
+    fn setup(this) {
         this.value = 1;
     }
 }

@@ -1,0 +1,11 @@
+// A `*mut` receiver consumes the instance, so the caller cannot use it afterwards.
+type Box {
+    pub mut item;
+    init(this) { this.item = 0; }
+    pub fn consume(this: *mut) { this.item = 1; }
+    pub fn peek(this)! { return this.item; }
+}
+
+say b = mut Box();
+b.consume();
+print(b.peek()); // error: value used after it was moved

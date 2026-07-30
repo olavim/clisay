@@ -188,7 +188,7 @@ fn lambda_return_is_inferred() {
 
 #[test]
 fn type_field_markers() {
-    let ast = parse("type T { a; b?; mut c; mut d?; init(a, c) { this.a = a; this.c = c; } }");
+    let ast = parse("type T { a; b?; mut c; mut d?; init(this, a, c) { this.a = a; this.c = c; } }");
     let stmts = top_stmts(&ast);
     let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a type") };
     let names = |set: &HashSet<Symbol>| -> HashSet<String> {
@@ -200,7 +200,7 @@ fn type_field_markers() {
 
 #[test]
 fn req_fn_return_shape() {
-    let ast = parse("trait T { req fn find()?; req fn count()!; req fn onClick(); }");
+    let ast = parse("trait T { req fn find(this)?; req fn count(this)!; req fn onClick(this); }");
     let stmts = top_stmts(&ast);
     let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a trait") };
     let shapes: Vec<ReturnShape> = decl.req_fns.iter().map(|rf| rf.ret).collect();
@@ -654,7 +654,7 @@ fn match_is_arms_only() {
 #[test]
 fn match_arm_head_binds_or_tests() {
     // A lowercase name binds the whole value; an uppercase name tests, fieldless or shaped.
-    let ast = parse("match x { A => f(), B { y } => g(), v => h() }\ntype A { }\ntype B { pub y; init(a) { this.y = a; } }");
+    let ast = parse("match x { A => f(), B { y } => g(), v => h() }\ntype A { }\ntype B { pub y; init(this, a) { this.y = a; } }");
     let Stmt::Match(_, arms) = ast.get(&top_stmts(&ast)[0]) else { panic!("not a match dispatch") };
     assert!(matches!(ast.get(&arms[0].matcher), Matcher::Type { nominal: true, shape: None, .. }));
     assert!(matches!(ast.get(&arms[1].matcher), Matcher::Type { nominal: true, shape: Some(_), .. }));

@@ -4,7 +4,7 @@ say holder = mut [a];
 print(a[0]); // error: value used after it was moved
 
 // @split
-type Box { pub mut v; init() { this.v = 0; } }
+type Box { pub mut v; init(this) { this.v = 0; } }
 say a = mut [1];
 say b = mut Box();
 b.v = a;

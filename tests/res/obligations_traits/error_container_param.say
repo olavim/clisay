@@ -1,9 +1,9 @@
 // Container shape is checked per parameter, not just on the return.
 trait Sink {
-    req fn accept(x: [fails]);
+    req fn accept(this, x: [fails]);
 }
 type Db with Sink {
-    pub fn accept(x: fails) { } // error: parameter shape does not match the trait
-    init() {}
+    pub fn accept(this, x: fails) { } // error: parameter shape does not match the trait
+    init(this) {}
 }
 print("unreachable");

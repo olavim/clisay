@@ -17,6 +17,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Expr::Literal(Literal::Lambda(FnDecl {
             name,
             sig_pos: self.ast.pos(&body).clone(),
+            receiver: None,
             params,
             body,
             ret: ReturnShape::Inferred,

@@ -254,6 +254,8 @@ pub struct HirFnDecl {
     pub name: Symbol,
     /// The `name(params): clause` signature span.
     pub sig_pos: SourcePosition,
+    /// The declared `this` clause, present on an instance method and absent on a plain function.
+    pub receiver: Option<HirSlotClause>,
     pub params: Vec<HirParam>,
     pub body: HirId<HirExpr>,
     /// The declared return shape (the postfix marker after the parameter list).

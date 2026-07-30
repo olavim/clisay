@@ -3,7 +3,7 @@
 type Node {
     pub next?;
     pub mut prev?;
-    pub fn check()! {
+    pub fn check(this)! {
         if (this.next != null) {
             this.next.x;
         }

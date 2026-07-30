@@ -1,0 +1,4 @@
+type Ledger {
+    pub n = 1;
+    pub fn seal(this: [taint])! { return this.n; } // error: A receiver cannot be a container
+}

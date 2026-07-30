@@ -1,4 +1,4 @@
 // A lowercase bare name binds, so it cannot be an `&`/`|` operand.
-type A { init() { } }
+type A { init(this) { } }
 say v = A();
 if v ~ has A & other { print("no"); } // error: a bare name cannot be an operand of `&` or `|`

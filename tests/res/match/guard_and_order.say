@@ -1,5 +1,5 @@
 // Guards run after a matcher matches; arms are first-match-wins; no match is a no-op.
-type Point { pub x; pub y; init(a, b) { this.x = a; this.y = b; } }
+type Point { pub x; pub y; init(this, a, b) { this.x = a; this.y = b; } }
 
 fn classify(p) {
     match p {

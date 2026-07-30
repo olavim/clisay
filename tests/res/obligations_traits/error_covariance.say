@@ -1,10 +1,10 @@
 // A clean `req fn` cannot be satisfied by a method owing `fails`; the trait would use it undischarged.
 trait Source {
-    req fn read();
+    req fn read(this);
 }
 type File with Source {
-    pub fn read(): fails { return Err("x"); } // error: return owes an obligation the trait forbids
-    init() {}
+    pub fn read(this): fails { return Err("x"); } // error: return owes an obligation the trait forbids
+    init(this) {}
 }
 say f = File();
 print("unreachable");

@@ -1,14 +1,14 @@
 // A method clash between two exposed trait methods is resolved by a host override, which may
 // delegate to each trait's version via the qualified call `T.method(...)`.
-trait Logger  { pub fn log(m) { print(m + " [log]"); } }
-trait Auditor { pub fn log(m) { print(m + " [audit]"); } }
+trait Logger  { pub fn log(this, m) { print(m + " [log]"); } }
+trait Auditor { pub fn log(this, m) { print(m + " [audit]"); } }
 
 type Service with Logger, Auditor {
-    pub fn log(m) {
+    pub fn log(this, m) {
         Logger.log(m);
         Auditor.log(m);
     }
-    init() {}
+    init(this) {}
 }
 
 say s = Service();

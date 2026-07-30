@@ -1,9 +1,9 @@
 // A satisfier owing an obligation outside the hole's set is rejected, and the diagnostic names it.
 trait Source {
-    req fn read(): opt;
+    req fn read(this): opt;
 }
 type File with Source {
-    pub fn read(): opt fails { return Err("x"); } // error: return owes an obligation the trait forbids
-    init() {}
+    pub fn read(this): opt fails { return Err("x"); } // error: return owes an obligation the trait forbids
+    init(this) {}
 }
 print("unreachable");
