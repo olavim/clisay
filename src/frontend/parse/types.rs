@@ -5,9 +5,18 @@ use super::*;
 impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses the composition header: an optional `with T1, T2, ...` clause then an optional
     /// `req T1, T2, ...` clause (each at most once, in that order).
-    pub(super) fn parse_composition_header(&mut self, refs: &mut Vec<TraitRef>) -> Result<(Vec<Symbol>, Vec<Symbol>), anyhow::Error> {
+    pub(super) fn parse_composition_header(&mut self, is_trait: bool, refs: &mut Vec<TraitRef>) -> Result<(Vec<Symbol>, Vec<Symbol>), anyhow::Error> {
         let with_traits = self.parse_trait_clause(ContextualKeyword::With, TraitClause::With, refs)?;
+        let req_pos = self.tokens.peek(0).pos.clone();
         let req_traits = self.parse_trait_clause(ContextualKeyword::Req, TraitClause::Req, refs)?;
+
+        if !is_trait {
+            if let Some(first) = req_traits.first() {
+                let name = self.ast.text(*first);
+                return Err(self.error_help("'req' is a trait-only clause", &req_pos,
+                    format!("a type provides what it uses: `with {name}`, or a field that `gives {name}`")));
+            }
+        }
 
         // A header is `with ... req ...`; any further `with`/`req` here is a duplicate or misordered clause.
         let tok = self.tokens.peek(0);
@@ -74,7 +83,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let prev_type = std::mem::replace(&mut self.current_type, Some(type_name.clone()));
 
         let mut trait_refs: Vec<TraitRef> = Vec::new();
-        let (with_traits, req_traits) = self.parse_composition_header(&mut trait_refs)?;
+        let (with_traits, req_traits) = self.parse_composition_header(is_trait, &mut trait_refs)?;
 
         let body_open = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
 
