@@ -1,0 +1,10 @@
+trait Clock { pub fn tick(this) { return 1; } }
+type Player req Clock { init(this) {} }
+// error(full):
+// error: 'req' is a trait-only clause
+//  --> help_type_req.say:2:13
+//   |
+// 1 | trait Clock { pub fn tick(this) { return 1; } }
+// 2 | type Player req Clock { init(this) {} }
+//   |             ^^^
+//   = help: a type provides what it uses: `with Clock`, or a field that `gives Clock`
