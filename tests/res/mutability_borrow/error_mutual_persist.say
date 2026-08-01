@@ -1,0 +1,8 @@
+// Mutually recursive functions form one group, so a persist in either reaches both.
+type Box { pub mut v; init(this) { this.v = 0; } }
+fn ping(x: mut, sink: mut, n) { // error: a `mut` parameter borrows its argument and cannot let it escape
+    if (n > 0) { pong(x, sink, n - 1); }
+}
+fn pong(x: mut, sink: mut, n) {
+    if (n > 0) { ping(x, sink, n - 1); } else { sink.v = x; }
+}

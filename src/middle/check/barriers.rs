@@ -36,6 +36,9 @@ pub struct Barriers {
     pub(super) boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
     /// Discharge nodes (`??`, `?`, `!`) whose operand owes an object witness.
     pub(super) witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
+    /// Opaque calls whose argument the caller reads again afterwards, keyed by callee node to the
+    /// argument position and the read.
+    pub(super) reread_barriers: HashMap<HirId<HirExpr>, Vec<(u8, HirId<HirExpr>)>>,
     /// Opaque calls whose argument must survive, keyed by callee node to the argument positions
     /// the callee must borrow.
     pub(super) survive_barriers: HashMap<HirId<HirExpr>, Vec<u8>>,
@@ -74,6 +77,10 @@ impl Barriers {
     }
 
     /// The argument positions an opaque call at this callee must assert the callee borrows.
+    pub fn rereads(&self, callee: &HirId<HirExpr>) -> Option<&[(u8, HirId<HirExpr>)]> {
+        self.reread_barriers.get(callee).map(Vec::as_slice)
+    }
+
     pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[u8]> {
         self.survive_barriers.get(callee).map(Vec::as_slice)
     }
@@ -111,6 +118,21 @@ impl<'a> Checker<'a> {
     /// Records that an opaque call must assert its callee borrows the given argument positions.
     pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<u8>) {
         self.survive_barriers.insert(*callee, positions);
+    }
+
+    /// Records that `read` reads an opaque call's argument again, so the callee must have borrowed
+    /// it. A position is recorded once, no matter how many times the binding is read afterwards.
+    pub(super) fn record_reread_barrier(&mut self, callee: &HirId<HirExpr>, position: u8, read: HirId<HirExpr>) {
+        let rereads = self.reread_barriers.entry(*callee).or_default();
+        if !rereads.iter().any(|(p, _)| *p == position) {
+            rereads.push((position, read));
+            rereads.sort_unstable_by_key(|(p, _)| *p);
+        }
+        let marks = self.borrow_marks.entry(*callee).or_default();
+        if !marks.contains(&position) {
+            marks.push(position);
+            marks.sort_unstable();
+        }
     }
 
     /// Records the argument positions a call lends, to mark as borrowed for its duration.

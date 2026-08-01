@@ -22,8 +22,15 @@ use crate::middle::hir::{
 pub enum Place {
     Local(u8),
     Upvalue(u8),
-    Field(u8),
+    Field(u8, Receiver),
     Global(Symbol),
+}
+
+/// Where a method's receiver sits in the running frame.
+#[derive(Clone, Copy)]
+pub enum Receiver {
+    Slot,
+    Upvalue(u8),
 }
 
 /// A local cleanup emitted when a scope exits.
@@ -197,6 +204,8 @@ struct FnFrame {
     upvalues: Vec<UpvalueLocation>,
     local_offset: u8,
     type_frame: Option<u8>,
+    /// Whether slot 0 of this frame is the receiver.
+    owns_receiver: bool,
     body: HirId<HirExpr>,
 }
 
@@ -450,7 +459,7 @@ impl<'a> Resolver<'a> {
                 self.construct(expr, &callee, &args, &brace)?;
             },
             HirExpr::Mut(inner) => self.expression(inner)?,
-            HirExpr::This => self.require_type(expr)?,
+            HirExpr::This => self.resolve_this(expr)?,
             HirExpr::Coalesce(left, right) => {
                 self.expression(left)?;
                 self.expression(right)?;

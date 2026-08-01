@@ -1,0 +1,23 @@
+// An unresolvable callee is only opaque to the compiler. A caller that reads its argument again
+// makes the runtime prove the callee borrowed it, so a callee that keeps nothing lets the read stand.
+type Box { pub mut v; init(this) { this.v = 0; } }
+say noop = (x) => 0;
+
+say a = mut Box();
+say r = noop(a);
+a.v = 1;
+print(a.v);   // expect: 1
+print(a.v);   // expect: 1
+
+// The proof is demanded once, however deep the later read sits.
+say b = mut Box();
+say s = noop(b);
+{ b.v = 2; }
+print(b.v);   // expect: 2
+
+// A callee that borrows and writes is equally fine.
+fn bump(x: mut) { x.v = x.v + 5; }
+say lend = bump;
+say c = mut Box();
+lend(c);
+print(c.v);   // expect: 5

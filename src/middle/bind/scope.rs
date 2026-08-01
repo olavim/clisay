@@ -5,7 +5,7 @@ use anyhow::bail;
 use crate::core::objects::UpvalueLocation;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirMatcher, Symbol};
 
-use super::{FnFrame, FnKind, Local, Place, Resolver};
+use super::{FnFrame, FnKind, Local, Place, Receiver, Resolver};
 
 impl<'a> Resolver<'a> {
     pub(super) fn enter_scope(&mut self) {
@@ -135,8 +135,8 @@ impl<'a> Resolver<'a> {
     pub(super) fn resolve_place(&mut self, name: Symbol, node: &HirId<HirExpr>) -> Result<Place, anyhow::Error> {
         let place = if let Some(slot) = self.resolve_local(name) {
             Place::Local(slot)
-        } else if let Some(id) = self.this_field_id(name) {
-            Place::Field(id)
+        } else if let Some((id, receiver)) = self.this_field(name)? {
+            Place::Field(id, receiver)
         } else if let Some(idx) = self.resolve_upvalue(name)? {
             Place::Upvalue(idx)
         } else {
@@ -144,6 +144,48 @@ impl<'a> Resolver<'a> {
             Place::Global(name)
         };
         Ok(place)
+    }
+
+    /// Records where `this` reads from.
+    pub(super) fn resolve_this(&mut self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Some(receiver) = self.receiver_place()? else {
+            return Err(self.error("Cannot use 'this' outside of a type method", node));
+        };
+        let place = match receiver {
+            Receiver::Slot => Place::Local(0),
+            Receiver::Upvalue(idx) => Place::Upvalue(idx),
+        };
+        self.bindings.places.insert(*node, place);
+        Ok(())
+    }
+
+    /// A bare name that names a field of the enclosing type, with where its receiver sits. A bare
+    /// field is `this.<name>`, so a nested body captures the receiver exactly as a written `this` does.
+    fn this_field(&mut self, name: Symbol) -> Result<Option<(u8, Receiver)>, anyhow::Error> {
+        let Some(id) = self.this_field_id(name) else { return Ok(None) };
+        Ok(self.receiver_place()?.map(|receiver| (id, receiver)))
+    }
+
+    /// Where the receiver sits for the body being resolved. The receiver is slot 0 of the nearest
+    /// method or factory frame, so a nested body reaches it as an upvalue like any captured local.
+    fn receiver_place(&mut self) -> Result<Option<Receiver>, anyhow::Error> {
+        let Some(owner) = self.fn_frames.iter().rposition(|frame| frame.owns_receiver) else {
+            return Ok(None);
+        };
+        match owner == self.fn_frames.len() - 1 {
+            true => Ok(Some(Receiver::Slot)),
+            false => Ok(Some(Receiver::Upvalue(self.capture_this(owner)?))),
+        }
+    }
+
+    /// Chains one upvalue per frame between the receiver's owner and the body naming it.
+    fn capture_this(&mut self, owner: usize) -> Result<u8, anyhow::Error> {
+        self.locals[self.fn_frames[owner].local_offset as usize].is_captured = true;
+        let mut idx = self.add_upvalue(0, true, owner + 1)?;
+        for frame in (owner + 2)..self.fn_frames.len() {
+            idx = self.add_upvalue(idx, false, frame)?;
+        }
+        Ok(idx)
     }
 
     pub(super) fn function(&mut self, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
@@ -161,6 +203,7 @@ impl<'a> Resolver<'a> {
             upvalues: Vec::new(),
             local_offset,
             type_frame: self.type_frames.last().map(|_| self.type_frames.len() as u8 - 1),
+            owns_receiver: !matches!(kind, FnKind::Function),
             body: decl.body,
         });
 

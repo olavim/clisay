@@ -22,6 +22,7 @@ pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
     let opt = hir.intern("opt");
     hir.intern("fails");
     hir.intern("Err");
+    hir.intern("this");
     let mut lowerer = Lowerer {
         ast: &ast,
         names,

@@ -103,6 +103,7 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::ASSERT_NON_NULL => vm.op_assert_non_null()?,
         opcode::BARRIER_GUARD => vm.op_barrier_guard()?,
         opcode::ASSERT_BORROW => vm.op_assert_borrow()?,
+        opcode::ASSERT_NOT_CONSUMED => vm.op_assert_not_consumed()?,
         opcode::MARK_BORROW => vm.op_mark_borrow(),
         opcode::RELEASE_BORROW => vm.op_release_borrow(),
         opcode::CLOSE_UPVALUE => vm.op_close_upvalue(),

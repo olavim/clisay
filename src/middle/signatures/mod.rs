@@ -13,6 +13,25 @@ use crate::middle::bind::Bindings;
 use crate::middle::hir::{builtin_obligation_rules, Capability, Hir, HirExpr, HirId, HirLiteral, HirMatcher, HirStmt, ObligationRules, Symbol};
 use crate::middle::obligations::Obligations;
 
+/// What one parameter's argument undergoes in the body it is passed to.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub(crate) struct ParamFact {
+    /// The body keeps the argument past the call.
+    pub escapes: bool,
+    /// The body puts it where the caller cannot reach it again. A return is excluded, since that
+    /// hands the value back to the caller that supplied it.
+    pub beyond_return: bool,
+    /// The body mutates it in place. A read-only borrow leaves its argument untouched, so a mutable
+    /// value is admitted only where this is false.
+    pub mutates: bool,
+    /// The body's result keeps the argument reachable, so a caller that persists the result persists
+    /// the argument. Read while the rows are built, to see a borrow through a call.
+    pub hands_back: bool,
+    /// The body's result may be the argument itself rather than something holding it. Binding the
+    /// result then names that argument a second time.
+    pub hands_back_itself: bool,
+}
+
 /// A function's return: the obligations its result carries and whether any path returns a value.
 #[derive(Clone, Default)]
 pub struct RetSig {
@@ -85,12 +104,8 @@ pub struct Signatures {
     pub(crate) fns: HashMap<HirId<HirStmt>, FnSig>,
     pub(crate) ret_tags: HashMap<HirId<HirStmt>, TypeTag>,
     pub(crate) ret_mut: HashMap<HirId<HirStmt>, Mutability>,
-    /// Per parameter, whether the body persists its argument. A free function, constructor, or
-    /// `this.method` call is resolved. An opaque call is deferred to the runtime borrow check.
-    pub(crate) param_escapes: HashMap<HirId<HirStmt>, Vec<bool>>,
-    /// Per parameter, whether the body mutates its argument in place. A read-only borrow leaves
-    /// its argument untouched, so a mutable value is admitted only where this is false.
-    pub(crate) param_mutates: HashMap<HirId<HirStmt>, Vec<bool>>,
+    /// What each parameter's argument undergoes in the body. A method's receiver rides the last entry.
+    pub(crate) params: HashMap<HirId<HirStmt>, Vec<ParamFact>>,
     /// Per lambda parameter, whether the body persists its argument.
     pub(crate) lambda_param_escapes: HashMap<HirId<HirExpr>, Vec<bool>>,
     /// Names each function's body writes, either persisting or mutating them. A closure that only
@@ -117,8 +132,7 @@ impl Signatures {
             fns: HashMap::new(),
             ret_tags: HashMap::new(),
             ret_mut: HashMap::new(),
-            param_escapes: HashMap::new(),
-            param_mutates: HashMap::new(),
+            params: HashMap::new(),
             lambda_param_escapes: HashMap::new(),
             writes: HashMap::new(),
             lambda_writes: HashMap::new(),
@@ -171,16 +185,31 @@ impl Signatures {
         })
     }
 
+    /// What the argument at `param` undergoes. An unresolved function or position answers that it
+    /// undergoes nothing, leaving that call to the runtime borrow check.
+    fn param_fact(&self, func: &HirId<HirStmt>, param: usize) -> ParamFact {
+        self.params.get(func).and_then(|row| row.get(param)).copied().unwrap_or_default()
+    }
+
     /// Whether `func` persists the argument to its parameter at position `param`.
-    /// An unresolved function is assumed not to; the runtime borrow check covers it instead.
     pub(crate) fn param_escapes_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
-        self.param_escapes.get(func).and_then(|v| v.get(param)).copied().unwrap_or(false)
+        self.param_fact(func, param).escapes
+    }
+
+    /// Whether a parameter escapes somewhere its caller cannot follow, ignoring a plain return.
+    pub(crate) fn escapes_beyond_return_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
+        self.param_fact(func, param).beyond_return
+    }
+
+    /// Whether `func`'s result may be the argument at `param` itself, so binding the result names
+    /// that argument a second time.
+    pub(crate) fn hands_back_itself_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
+        self.param_fact(func, param).hands_back_itself
     }
 
     /// Whether `func` mutates the argument to its parameter at position `param` in place.
-    /// An unresolved function is assumed not to; the runtime borrow check covers it instead.
     pub(crate) fn param_mutates_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
-        self.param_mutates.get(func).and_then(|v| v.get(param)).copied().unwrap_or(false)
+        self.param_fact(func, param).mutates
     }
 
     /// An obligation's declared rules. An unregistered name forbids nothing. A `to_use` rule is also
@@ -215,6 +244,7 @@ pub fn collect(hir: &Hir, bindings: &Bindings) -> Signatures {
     let opt = hir.symbol_of("opt").expect("lowering interns the opt obligation");
     let fails = hir.symbol_of("fails").expect("lowering interns the fails obligation");
     let err = hir.symbol_of("Err");
+    let this = hir.symbol_of("this").expect("lowering interns the receiver name");
     let mut sigs = Signatures::new(opt, fails);
     for (name, sym) in [("opt", opt), ("fails", fails)] {
         if let Some(rules) = builtin_obligation_rules(name) {
@@ -224,7 +254,7 @@ pub fn collect(hir: &Hir, bindings: &Bindings) -> Signatures {
     if let Some(err) = err {
         sigs.witnesses.insert(fails, Witness::Type(err));
     }
-    let mut collector = Collector { hir, bindings, opt, fails, err, sigs, returns: HashMap::new() };
+    let mut collector = Collector { hir, bindings, opt, fails, err, this, sigs, returns: HashMap::new(), lambda_captures: HashMap::new() };
     collector.stmt(&hir.get_root());
     collector.register_obligations();
     collector.admit_pattern_obligations();
@@ -232,7 +262,8 @@ pub fn collect(hir: &Hir, bindings: &Bindings) -> Signatures {
     collector.infer_ret_tags();
     collector.infer_ret_mut();
     collector.infer_propagated();
-    collector.infer_param_escapes();
+    collector.collect_lambda_captures();
+    collector.infer_escape_summaries();
     collector.infer_lambda_escapes();
     collector.sigs
 }
@@ -243,6 +274,10 @@ struct Collector<'a> {
     opt: Symbol,
     fails: Symbol,
     err: Option<Symbol>,
+    /// The receiver's reserved name, which the escape rows track it under.
+    this: Symbol,
     sigs: Signatures,
     returns: HashMap<HirId<HirStmt>, Vec<HirId<HirExpr>>>,
+    /// Each lambda's captured names, resolved once so a closure mentioned many times is walked once.
+    lambda_captures: HashMap<HirId<HirExpr>, Vec<Symbol>>,
 }
