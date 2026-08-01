@@ -74,7 +74,7 @@ impl<'a> Resolver<'a> {
 
     /// Resolves a `this` member access (`this.x`, `this["x"]`) to a member id.
     pub(super) fn this_member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, _is_store: bool) -> Result<(), anyhow::Error> {
-        self.require_type(target)?;
+        self.resolve_this(target)?;
         let target_type = self.current_type().clone();
 
         // Members on `this` are statically known. A string-literal key names a member; a
@@ -115,13 +115,6 @@ impl<'a> Resolver<'a> {
         } else {
             compiler_error!(self, target, "Invalid index: {type_name} doesn't have that member")
         }
-    }
-
-    pub(super) fn require_type(&self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if self.type_frames.is_empty() {
-            compiler_error!(self, node, "Cannot use 'this' outside of a type method");
-        }
-        Ok(())
     }
 
     fn current_type(&self) -> &TypeLayout {

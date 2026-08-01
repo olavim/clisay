@@ -113,23 +113,12 @@ impl<'a> Collector<'a> {
         }
     }
 
+    /// A nested function's returns belong to that function, which the walk treats as a leaf.
     pub(super) fn collect_returns(&self, expr: &HirId<HirExpr>, out: &mut Vec<HirId<HirExpr>>) {
-        for child in self.children_of_expr(expr) {
-            match child {
-                Child::Expr(e) => self.collect_returns(&e, out),
-                Child::Stmt(s) => self.collect_returns_stmt(&s, out),
+        self.visit_body(expr, &mut |node| {
+            if let Child::Stmt(s) = node {
+                if let HirStmt::Return(Some(e)) = self.hir.get(&s) { out.push(*e); }
             }
-        }
-    }
-
-    fn collect_returns_stmt(&self, stmt: &HirId<HirStmt>, out: &mut Vec<HirId<HirExpr>>) {
-        // A nested function's returns belong to that function, so the traversal treats it as a leaf.
-        if let HirStmt::Return(Some(e)) = self.hir.get(stmt) { out.push(*e); }
-        for child in self.children_of_stmt(stmt) {
-            match child {
-                Child::Expr(e) => self.collect_returns(&e, out),
-                Child::Stmt(s) => self.collect_returns_stmt(&s, out),
-            }
-        }
+        });
     }
 }

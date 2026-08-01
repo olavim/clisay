@@ -2,7 +2,7 @@ use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
 use crate::middle::ir::{BarrierAllow, Inst, Label};
-use crate::middle::bind::{FnKind, Place};
+use crate::middle::bind::{FnKind, Place, Receiver};
 use crate::middle::check::{Barrier, WitnessSet};
 
 use super::Compiler;
@@ -47,7 +47,7 @@ impl<'a> Compiler<'a> {
                     None => self.compile_matcher_test(matcher, expr)?,
                 }
             },
-            HirExpr::This => self.emit(Inst::LoadLocal(0), expr),
+            HirExpr::This => self.emit_load(self.bindings.place(expr), expr)?,
             HirExpr::Coalesce(left, right) => self.coalesce(expr, left, right)?,
             HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(expr, target, member, *is_dot)?,
             HirExpr::SafeCall(callee, args) => self.safe_call(expr, callee, args)?,
@@ -258,13 +258,21 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Pushes the receiver an implicit-`this` field hangs off.
+    fn emit_receiver(&mut self, receiver: Receiver, node: &HirId<HirExpr>) {
+        match receiver {
+            Receiver::Slot => self.emit(Inst::LoadLocal(0), node),
+            Receiver::Upvalue(idx) => self.emit(Inst::LoadUpvalue(idx), node),
+        }
+    }
+
     /// Emits a read of `place`, pushing its value.
     fn emit_load(&mut self, place: Place, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match place {
             Place::Local(slot) => self.emit(Inst::LoadLocal(slot), node),
             Place::Upvalue(idx) => self.emit(Inst::LoadUpvalue(idx), node),
-            Place::Field(id) => {
-                self.emit(Inst::LoadLocal(0), node);
+            Place::Field(id, receiver) => {
+                self.emit_receiver(receiver, node);
                 self.emit(Inst::GetField(id), node);
             },
             Place::Global(symbol) => {
@@ -286,8 +294,8 @@ impl<'a> Compiler<'a> {
             Place::Upvalue(idx) => {
                 self.emit(if discarded { Inst::StoreUpvaluePop(idx) } else { Inst::StoreUpvalue(idx) }, node);
             },
-            Place::Field(id) => {
-                self.emit(Inst::LoadLocal(0), node); // push `this` (the target)
+            Place::Field(id, receiver) => {
+                self.emit_receiver(receiver, node);
                 self.emit(if discarded { Inst::SetFieldPop(id) } else { Inst::SetField(id) }, node);
             },
             Place::Global(_) => unreachable!("assignment to a global is rejected during resolution"),
@@ -405,6 +413,16 @@ impl<'a> Compiler<'a> {
 
         for arg in args {
             self.expression(arg)?;
+        }
+
+        // An argument read again after the call needs the callee to have borrowed it. The entry is
+        // mapped to the read, so the caret lands on the use that made the callee's choice matter.
+        if let Some(rereads) = self.barriers.rereads(callee) {
+            let entries = rereads.iter()
+                .map(|&(p, read)| (p, self.hir.pos(&read).clone()))
+                .collect();
+            let idx = self.ir.add_survive_positions(entries)?;
+            self.emit(Inst::AssertNotConsumed(args.len() as u8, idx), callee);
         }
 
         // An opaque call that must keep an argument asserts the callee borrows it, not consumes it.

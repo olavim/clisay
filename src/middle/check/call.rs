@@ -11,7 +11,7 @@ use crate::middle::signatures::RetSig;
 use crate::middle::native::{self, Container, NativeSig};
 use crate::middle::obligations::Obligations;
 
-use super::{Mutability, Checker, Flow, TypeTag, Typed, Violation};
+use super::{Mutability, Checker, Flow, MoveCause, TypeTag, Typed, Violation};
 
 impl<'a> Checker<'a> {
     pub(super) fn call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<Typed, anyhow::Error> {
@@ -80,10 +80,12 @@ impl<'a> Checker<'a> {
             }
             if self.arg_is_borrowed(&args[i]) {
                 survive.push(i as u8);
-            } else {
-                // An owned mutable handed to an opaque call is consumed by it.
-                self.move_source(&args[i]);
+                continue;
             }
+            // An owned mutable may be consumed by the callee or merely borrowed, and this pass
+            // cannot tell which. Treat the binding as dead for now. If it is never read again both
+            // outcomes are fine, and if it is read the reader demands the runtime prove a borrow.
+            self.move_source_because(&args[i], MoveCause::Opaque(*callee, i as u8));
         }
         if !survive.is_empty() {
             self.record_survive_barrier(callee, survive.clone());
@@ -161,6 +163,7 @@ impl<'a> Checker<'a> {
 
     /// Checks a user call's arguments against the resolved function's declared parameters.
     fn check_call_args(&mut self, callee: &HirId<HirExpr>, callee_fn: HirId<HirStmt>, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+        self.resolved_callees.insert(*callee, callee_fn);
         // Read the params through the shared signatures borrow so the later check can take &mut self.
         let sigs = self.sigs;
         let Some(sig) = sigs.fns.get(&callee_fn) else { return Ok(()) };

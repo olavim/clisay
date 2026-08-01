@@ -3,7 +3,7 @@ use std::mem;
 
 use fnv::FnvHashMap;
 
-use super::objects::{ObjClosure, ObjString, ObjUpvalue, ObjectHeader, ObjectKind, Object};
+use super::objects::{ObjClosure, ObjString, ObjUpvalue, ObjectHeader, ObjectKind, Object, FLAG_MARKED};
 
 /// Every heap object is `repr(align(8))`, so a freed block can back any later
 /// object of the same size regardless of its concrete type. Blocks are bucketed
@@ -149,8 +149,8 @@ impl Gc {
     pub fn mark_object<T: Into<Object>>(&mut self, obj: T) {
         let obj: Object = obj.into();
         unsafe {
-            if !(*obj.as_header_ptr()).marked {
-                (*obj.as_header_ptr()).marked = true;
+            if !(*obj.as_header_ptr()).has(FLAG_MARKED) {
+                (*obj.as_header_ptr()).set(FLAG_MARKED, true);
                 self.reachable_refs.push(obj);
             }
         }
@@ -172,15 +172,15 @@ impl Gc {
     }
 
     fn sweep_strings(&mut self) {
-        self.strings.retain(|_, &mut obj_ptr| unsafe { (*obj_ptr).header.marked });
+        self.strings.retain(|_, &mut obj_ptr| unsafe { (*obj_ptr).header.has(FLAG_MARKED) });
     }
 
     fn sweep_objects(&mut self) {
         for i in (0..self.refs.len()).rev() {
             let obj = &self.refs[i];
             unsafe {
-                if (*obj.as_header_ptr()).marked {
-                    (*obj.as_header_ptr()).marked = false;
+                if (*obj.as_header_ptr()).has(FLAG_MARKED) {
+                    (*obj.as_header_ptr()).set(FLAG_MARKED, false);
                 } else {
                     self.free(i);
                 }

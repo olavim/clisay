@@ -35,6 +35,7 @@ pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barrie
         boundary_barriers: checker.boundary_barriers,
         witness_tests: checker.witness_tests,
         survive_barriers: checker.survive_barriers,
+        reread_barriers: checker.reread_barriers,
         borrow_marks: checker.borrow_marks,
         witness_names,
         seal_checks: checker.seal_checks,
@@ -98,6 +99,10 @@ enum MoveCause {
     Value,
     /// Captured by a closure that writes the value. Carries the closure's name.
     Capture(Symbol),
+    /// Passed to a callee this pass cannot resolve, which may or may not have consumed it. Reading
+    /// the binding again settles it, by making the call prove the callee only borrowed. Carries the
+    /// callee node and argument position that proof needs.
+    Opaque(HirId<HirExpr>, u8),
 }
 
 /// Where and why a mutable binding was moved out.
@@ -329,6 +334,9 @@ struct Checker<'a> {
     checking_factory: bool,
     /// The obligations discharged per local place on the current path, keyed by local index.
     narrowed: HashMap<NarrowKey, Obligations>,
+    /// Each resolved call site's callee, keyed by the callee node. A later walk of the same value
+    /// reads it rather than resolving a receiver's type again.
+    resolved_callees: HashMap<HirId<HirExpr>, HirId<HirStmt>>,
     /// The obligations discharged per `this` field on the current path. Keyed by name rather than
     /// by slot, so it is scoped to the frame instead of to a local.
     this_narrowed: HashMap<Symbol, Obligations>,
@@ -344,6 +352,9 @@ struct Checker<'a> {
     /// Opaque calls whose argument must survive, keyed by callee node to the argument positions
     /// that need the callee to borrow rather than consume.
     survive_barriers: HashMap<HirId<HirExpr>, Vec<u8>>,
+    /// Opaque calls whose argument the caller reads again afterwards, keyed by callee node to the
+    /// argument position and the read.
+    reread_barriers: HashMap<HirId<HirExpr>, Vec<(u8, HirId<HirExpr>)>>,
     /// Calls that lend a mutable argument, keyed by callee node to the param positions to mark as borrowed.
     borrow_marks: HashMap<HirId<HirExpr>, Vec<u8>>,
     /// Immutable container literals with an unknown-capability element, needing a runtime seal-check.
@@ -358,6 +369,7 @@ impl<'a> Checker<'a> {
             hir,
             bindings,
             sigs,
+            resolved_callees: HashMap::new(),
             locals: Vec::new(),
             frame_start: 0,
             current_type: None,
@@ -370,6 +382,7 @@ impl<'a> Checker<'a> {
             boundary_barriers: HashMap::new(),
             witness_tests: HashMap::new(),
             survive_barriers: HashMap::new(),
+            reread_barriers: HashMap::new(),
             borrow_marks: HashMap::new(),
             seal_checks: HashSet::new(),
             constructions: HashSet::new(),
@@ -459,6 +472,8 @@ impl<'a> Checker<'a> {
                     .with_label(format!("`{text}` used here"))
                     .with_span(self.hir.pos(&moved.node).clone(), format!("`{text}` moved here")))
             },
+            // A pending opaque consume is settled at the read, so it never reaches here.
+            MoveCause::Opaque(..) => unreachable!("an opaque consume is resolved where it is read"),
             MoveCause::Capture(captor) => {
                 let who = if self.hir.text(captor) == "lambda" { "a closure".to_string() } else { format!("closure `{}`", self.hir.text(captor)) };
                 anyhow!("{}", Diagnostic::new("value used after it was moved into a closure".to_string(), self.hir.pos(use_site).clone())
@@ -518,22 +533,36 @@ impl<'a> Checker<'a> {
             },
             // A brace also persists its field values into the new instance, so each escapes.
             HirExpr::Construct(callee, args, brace) => {
-                self.reachable_init_args(callee, args, out);
+                self.reachable_call_args(callee, args, out);
                 for (_, v) in brace { self.reachable_sources(v, out); }
             },
-            HirExpr::Call(callee, args) => self.reachable_init_args(callee, args, out),
+            HirExpr::Call(callee, args) => self.reachable_call_args(callee, args, out),
             _ => for c in self.hir.ownership_children(node) { self.reachable_sources(&c, out); },
         }
     }
 
-    /// The sources a call's arguments keep reachable, when the callee is a constructor. Only the
-    /// arguments its init persists escape into the instance; the rest are borrowed. A non-constructor
-    /// call yields a fresh value, so it reaches none.
-    fn reachable_init_args(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], out: &mut Vec<(usize, HirId<HirExpr>)>) {
-        let Some(init) = self.constructor_init(callee) else { return };
+    /// The sources a call's result keeps reachable. A constructor keeps the arguments its init
+    /// persists. Any other resolved callee keeps the ones it hands back, so binding the result names
+    /// them a second time. An unresolved callee answers nothing, which the runtime barrier covers.
+    fn reachable_call_args(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], out: &mut Vec<(usize, HirId<HirExpr>)>) {
+        if let Some(init) = self.constructor_init(callee) {
+            for (i, a) in args.iter().enumerate() {
+                if self.sigs.param_escapes_at(&init, i) {
+                    self.reachable_sources(a, out);
+                }
+            }
+            return;
+        }
+        let Some(func) = self.resolved_callees.get(callee).copied() else { return };
         for (i, a) in args.iter().enumerate() {
-            if self.sigs.param_escapes_at(&init, i) {
+            if self.sigs.hands_back_itself_at(&func, i) {
                 self.reachable_sources(a, out);
+            }
+        }
+        // A method's receiver rides the row position after its declared parameters.
+        if let HirExpr::Index(receiver, _, _) = self.hir.get(callee) {
+            if self.sigs.hands_back_itself_at(&func, args.len()) {
+                self.reachable_sources(receiver, out);
             }
         }
     }
@@ -557,11 +586,16 @@ impl<'a> Checker<'a> {
     /// Marks every mutable-value holder a moved value reaches as moved out, so a later read is
     /// use-after-move. Returns those holders, so a caller that also records provenance reuses the walk.
     fn move_source(&mut self, node: &HirId<HirExpr>) -> Vec<usize> {
+        self.move_source_because(node, MoveCause::Value)
+    }
+
+    /// Marks every mutable-value holder a moved value reaches as moved out, for the given reason.
+    fn move_source_because(&mut self, node: &HirId<HirExpr>, cause: MoveCause) -> Vec<usize> {
         let mut sources = Vec::new();
         self.reachable_sources(node, &mut sources);
         let moved: Vec<usize> = sources.iter().map(|(i, _)| *i).collect();
         for (i, blame) in sources {
-            self.locals[i].move_site = Some(MovedAt { node: blame, cause: MoveCause::Value });
+            self.locals[i].move_site = Some(MovedAt { node: blame, cause });
         }
         moved
     }
@@ -1208,11 +1242,7 @@ impl<'a> Checker<'a> {
         let saved_frame = self.frame_start;
         let mark = self.locals.len();
         self.frame_start = mark;
-        // A `this` field narrowing is keyed by the field's name, and no nested body can reach the
-        // enclosing `this`, so such a narrowing means nothing past this frame. Local narrowings are
-        // keyed by slot and stay readable, since a capture reads the enclosing slot.
         let saved_this_narrowed = std::mem::take(&mut self.this_narrowed);
-
 
         for param in params {
             let name = self.ident_sym(&param.name);
@@ -1272,18 +1302,29 @@ impl<'a> Checker<'a> {
                 return Err(self.mixed_void_error(decl, &ret.obligations));
             }
         }
+
         // A `mut` parameter borrows its argument, so it may not persist it. `*mut` owns the
         // argument and may persist it. A `no persist` parameter is left to `reject_escape`.
         if let Some(stmt) = stmt {
             for (i, param) in decl.params.iter().enumerate() {
                 let cap = param.clause.capability;
                 let owes_no_persist = self.owes_no_persist(param.clause.names.iter().copied());
-                if cap.is_mut() && !cap.is_move() && !owes_no_persist && self.sigs.param_escapes_at(&stmt, i) {
+                if cap.is_mut() && !cap.is_move() && !owes_no_persist && self.sigs.escapes_beyond_return_at(&stmt, i) {
                     return Err(self.error_help(
                         "a `mut` parameter borrows its argument and cannot let it escape".to_string(),
                         &param.name,
                         "take it by `*mut` to own it, or freeze or copy it before persisting"));
                 }
+            }
+
+            // A `mut` receiver is lent for the call, so a body that captures it into a value
+            // outliving the call keeps writing through a borrow the caller has taken back.
+            let cap = decl.receiver.as_ref().map_or(Capability::None, |r| r.capability);
+            if cap.is_mut() && !cap.is_move() && self.sigs.escapes_beyond_return_at(&stmt, decl.params.len()) {
+                return Err(self.error_help(
+                    "a `mut` receiver borrows the instance and cannot let it escape".to_string(),
+                    &decl.body,
+                    "take the receiver by `*mut` to own it, or capture the values it holds instead of `this`"));
             }
         }
         self.reject_receiver_witnesses(decl)?;
@@ -1487,7 +1528,13 @@ impl<'a> Checker<'a> {
         }
 
         if let Some(site) = self.locals[i].move_site {
-            return Err(self.use_after_move_error(name, expr, site));
+            // Reading it again is what makes the callee's choice matter, so the demand for proof is
+            // raised here rather than at the call. Once demanded, the binding is live again.
+            let MoveCause::Opaque(callee, position) = site.cause else {
+                return Err(self.use_after_move_error(name, expr, site));
+            };
+            self.record_reread_barrier(&callee, position, *expr);
+            self.locals[i].move_site = None;
         }
 
         if !self.locals[i].assigned && !self.locals[i].owed.contains(&self.sigs.opt) {

@@ -102,6 +102,7 @@ opcodes! {
     AssertNonNull => ASSERT_NON_NULL,
     BarrierGuard => BARRIER_GUARD(Byte, List),
     AssertBorrow => ASSERT_BORROW(Byte, List),
+    AssertNotConsumed => ASSERT_NOT_CONSUMED(Byte, List),
     MarkBorrow => MARK_BORROW(Byte, List),
     ReleaseBorrow => RELEASE_BORROW(Byte),
 

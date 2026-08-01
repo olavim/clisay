@@ -23,10 +23,19 @@ use crate::middle::hir::{
 pub enum Place {
     Local(u8),
     Upvalue(u8),
-    /// An implicit-`this` type field, by member id.
-    Field(u8),
+    /// An implicit-`this` type field, by member id and where its receiver sits.
+    Field(u8, Receiver),
     /// A global, by symbol (codegen interns its text into the constant pool).
     Global(Symbol),
+}
+
+/// Where a method's receiver sits in the running frame.
+#[derive(Clone, Copy)]
+pub enum Receiver {
+    /// Slot 0, in the method or factory body itself.
+    Slot,
+    /// Captured from an enclosing method frame, in a nested body.
+    Upvalue(u8),
 }
 
 /// A local cleanup emitted when a scope exits, top of stack first.
@@ -206,6 +215,8 @@ struct FnFrame {
     upvalues: Vec<UpvalueLocation>,
     local_offset: u8,
     type_frame: Option<u8>,
+    /// Whether slot 0 of this frame is the receiver.
+    owns_receiver: bool,
     body: HirId<HirExpr>,
 }
 
@@ -469,7 +480,7 @@ impl<'a> Resolver<'a> {
                 self.construct(expr, &callee, &args, &brace)?;
             },
             HirExpr::Mut(inner) => self.expression(inner)?,
-            HirExpr::This => self.require_type(expr)?,
+            HirExpr::This => self.resolve_this(expr)?,
             HirExpr::Coalesce(left, right) => {
                 self.expression(left)?;
                 self.expression(right)?;

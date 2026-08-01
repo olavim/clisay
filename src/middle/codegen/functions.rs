@@ -14,9 +14,11 @@ fn param_bits(flags: impl IntoIterator<Item = bool>) -> u64 {
 }
 
 impl<'a> Compiler<'a> {
-    /// The persist mask of a named function or method, read from the escape summary.
-    pub(super) fn persist_mask(&self, stmt: &HirId<HirStmt>) -> u64 {
-        self.sigs.param_escapes.get(stmt).map(|e| param_bits(e.iter().copied())).unwrap_or(0)
+    /// The persist mask of a named function or method, read from the escape summary. The summary
+    /// carries a method's receiver after its declared parameters, and the mask covers only the
+    /// arguments a call passes.
+    pub(super) fn persist_mask(&self, stmt: &HirId<HirStmt>, arity: usize) -> u64 {
+        param_bits((0..arity).map(|i| self.sigs.param_escapes_at(stmt, i)))
     }
 
     /// The persist mask of a lambda, read from its per-lambda escape summary. An unanalyzed lambda

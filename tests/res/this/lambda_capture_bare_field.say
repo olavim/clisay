@@ -1,0 +1,18 @@
+// A bare field name is `this.<field>`, so it reaches the enclosing receiver from a nested body the
+// same way a written `this` does, for reads and writes alike.
+type Counter {
+    pub mut n;
+    init(this) { this.n = 7; }
+
+    pub fn read(this)! { say f = () => n; return f(); }
+    pub fn write(this: mut) { say f = () => { n = n + 1; }; f(); }
+    pub fn deep(this)! { say a = () => { say b = () => n; return b(); }; return a(); }
+    pub fn mixed(this)! { say f = () => n + this.n; return f(); }
+}
+
+say c = mut Counter();
+print(c.read()); // expect: 7
+c.write();
+print(c.read());  // expect: 8
+print(c.deep());  // expect: 8
+print(c.mixed()); // expect: 16

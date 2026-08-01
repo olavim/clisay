@@ -76,6 +76,11 @@ pub mod internals {
         (hir, bindings)
     }
 
+    /// Runs the signature pass alone, so a benchmark can time it without the rest of the pipeline.
+    pub fn signatures(hir: &Hir, bindings: &Bindings) {
+        crate::middle::signatures::collect(hir, bindings);
+    }
+
     pub fn nullck(src: &str) -> Barriers {
         let (hir, bindings) = bind(src);
         let sigs = crate::middle::signatures::collect(&hir, &bindings);

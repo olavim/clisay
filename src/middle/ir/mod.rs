@@ -58,6 +58,8 @@ pub enum Inst {
     /// Asserts an opaque callee borrows the guarded argument positions. Operands are the argument
     /// count (the callee's stack depth) and an index into the barrier's position list.
     AssertBorrow(u8, u16),
+    /// An opaque call whose argument is read again afterwards, so the callee must have borrowed it.
+    AssertNotConsumed(u8, u16),
     /// Marks the listed argument positions borrowed for the call that follows. Operands are the
     /// argument count and an index into the position list.
     MarkBorrow(u8, u16),

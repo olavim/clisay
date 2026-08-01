@@ -79,21 +79,10 @@ impl<'a> Collector<'a> {
 
     /// Collects each `?!` operand in a body, skipping nested function and lambda bodies.
     fn collect_propagates(&self, expr: &HirId<HirExpr>, out: &mut Vec<HirId<HirExpr>>) {
-        if let HirExpr::Propagate(operand) = self.hir.get(expr) { out.push(*operand); }
-        for child in self.children_of_expr(expr) {
-            match child {
-                Child::Expr(e) => self.collect_propagates(&e, out),
-                Child::Stmt(s) => self.collect_propagates_stmt(&s, out),
+        self.visit_body(expr, &mut |node| {
+            if let Child::Expr(e) = node {
+                if let HirExpr::Propagate(operand) = self.hir.get(&e) { out.push(*operand); }
             }
-        }
-    }
-
-    fn collect_propagates_stmt(&self, stmt: &HirId<HirStmt>, out: &mut Vec<HirId<HirExpr>>) {
-        for child in self.children_of_stmt(stmt) {
-            match child {
-                Child::Expr(e) => self.collect_propagates(&e, out),
-                Child::Stmt(s) => self.collect_propagates_stmt(&s, out),
-            }
-        }
+        });
     }
 }

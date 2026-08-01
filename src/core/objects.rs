@@ -23,6 +23,8 @@ pub const ESCAPED_BORROW: &str = "cannot pass a borrowed argument to a callee th
 
 /// The runtime diagnostic raised when a borrowed value is persisted at a store site.
 pub const PERSISTED_BORROW: &str = "cannot persist a borrowed value";
+/// A value read again after a call the compiler could not resolve turned out to consume it.
+pub const CONSUMED_ARGUMENT: &str = "value used after a call consumed it";
 
 /// Whether a value is a mutable container. Only Array, Dict, and Instance carry the immutable bit;
 /// every other object kind and every primitive is always an immutable value.
@@ -52,20 +54,39 @@ pub fn freeze_value(value: Value, origin: u32) {
     }
 }
 
+/// Reached by the collector this cycle.
+pub const FLAG_MARKED: u8 = 1 << 0;
+/// Frozen, so a store through it traps.
+pub const FLAG_IMMUTABLE: u8 = 1 << 1;
+/// Lent as a borrow to an active call, so a store of it traps.
+pub const FLAG_BORROWED: u8 = 1 << 2;
+
 #[repr(C)]
 pub struct ObjectHeader {
     pub kind: ObjectKind,
-    pub marked: bool,
-    pub immutable: bool,
-    /// Set while the value is lent as a borrow to an active call. A store of a borrowed value panics.
-    pub borrowed: bool,
+    /// The header's boolean state, packed so another flag costs no object memory. Every heap object
+    /// carries this header, so a byte here is a byte per allocation.
+    flags: u8,
     /// Code index of the site that made this value immutable, or `NO_ORIGIN` while it is mutable.
     pub immutable_origin: u32
 }
 
 impl ObjectHeader {
     pub fn new(kind: ObjectKind) -> ObjectHeader {
-        ObjectHeader { kind, marked: false, immutable: false, borrowed: false, immutable_origin: NO_ORIGIN }
+        ObjectHeader { kind, flags: 0, immutable_origin: NO_ORIGIN }
+    }
+
+    #[inline]
+    pub fn has(&self, flag: u8) -> bool {
+        self.flags & flag != 0
+    }
+
+    #[inline]
+    pub fn set(&mut self, flag: u8, on: bool) {
+        match on {
+            true => self.flags |= flag,
+            false => self.flags &= !flag,
+        }
     }
 }
 
@@ -186,20 +207,20 @@ impl Object {
 
     #[inline]
     pub fn is_immutable(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).immutable }
+        unsafe { (*self.as_header_ptr()).has(FLAG_IMMUTABLE) }
     }
 
     #[inline]
     pub fn set_immutable(&self, origin: u32) {
         let header = unsafe { &mut *self.as_header_ptr() };
-        header.immutable = true;
+        header.set(FLAG_IMMUTABLE, true);
         header.immutable_origin = origin;
     }
 
     #[inline]
     pub fn set_mutable(&self) {
         let header = unsafe { &mut *self.as_header_ptr() };
-        header.immutable = false;
+        header.set(FLAG_IMMUTABLE, false);
         header.immutable_origin = NO_ORIGIN;
     }
 
@@ -214,12 +235,12 @@ impl Object {
 
     #[inline]
     pub fn is_borrowed(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).borrowed }
+        unsafe { (*self.as_header_ptr()).has(FLAG_BORROWED) }
     }
 
     #[inline]
     pub fn set_borrowed(&self, value: bool) {
-        unsafe { (*self.as_header_ptr()).borrowed = value; }
+        unsafe { (*self.as_header_ptr()).set(FLAG_BORROWED, value); }
     }
 
     #[inline]

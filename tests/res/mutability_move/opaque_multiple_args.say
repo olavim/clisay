@@ -1,0 +1,16 @@
+// The proof is demanded per argument, so reading one afterwards says nothing about the others.
+type Box { pub mut v; init(this) { this.v = 0; } }
+fn eats(x: *mut) { }
+say pair = (x, y) => 0;
+say consume = eats;
+
+say kept = mut Box();
+say given = mut Box();
+say r = pair(given, kept);
+kept.v = 7;
+print(kept.v);   // expect: 7
+
+// `given` was never read again, so nothing was asked of the callee on its behalf.
+say other = mut Box();
+consume(other);
+print("ok");     // expect: ok

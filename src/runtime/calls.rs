@@ -57,6 +57,26 @@ impl Vm {
         }
     }
 
+    /// An argument the caller reads again after the call. The compiler could not tell whether the
+    /// callee consumes it, so the reader demanded this proof that it only borrowed.
+    pub(super) fn op_assert_not_consumed(&mut self) -> Result<(), anyhow::Error> {
+        let arg_count = self.read_next() as usize;
+        let count = self.read_next() as usize;
+        let call_pos = self.get_source_position().clone();
+        let callee = self.stack.peek(arg_count);
+        for _ in 0..count {
+            let position = self.read_next() as usize;
+            if self.callee_escapes(callee, position) {
+                let read = self.get_source_position().clone();
+                let label = format!("`{}` used here", read.snippet());
+                return self.raise(Diagnostic::new(objects::CONSUMED_ARGUMENT, read)
+                    .with_label(label)
+                    .with_context_span(call_pos, "this call took it"));
+            }
+        }
+        Ok(())
+    }
+
     /// The opaque-call mode barrier. An argument the caller must keep alive may not be handed to a
     /// callee that consumes it, so this asserts the callee borrows the guarded parameter.
     pub(super) fn op_assert_borrow(&mut self) -> Result<(), anyhow::Error> {

@@ -79,5 +79,9 @@ harness = false
 
 # Deterministic instruction-count benchmarks (Linux/WSL only; see the bench file).
 [[bench]]
+name = "escape_order"
+harness = false
+
+[[bench]]
 name = "iai"
 harness = false

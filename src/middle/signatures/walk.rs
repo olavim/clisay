@@ -7,12 +7,30 @@ use crate::middle::hir::{HirExpr, HirId, HirLiteral, HirStmt};
 use super::Collector;
 
 /// A direct child of a node: either an expression or a statement.
+#[derive(Clone, Copy)]
 pub(super) enum Child {
     Expr(HirId<HirExpr>),
     Stmt(HirId<HirStmt>),
 }
 
 impl<'a> Collector<'a> {
+    /// Visits every node of a body, itself included, in source order. A nested declaration is a leaf,
+    /// so a gatherer sees only the nodes its own function owns.
+    pub(super) fn visit_body(&self, root: &HirId<HirExpr>, visit: &mut impl FnMut(Child)) {
+        self.visit_node(Child::Expr(*root), visit);
+    }
+
+    fn visit_node(&self, node: Child, visit: &mut impl FnMut(Child)) {
+        visit(node);
+        let children = match node {
+            Child::Expr(e) => self.children_of_expr(&e),
+            Child::Stmt(s) => self.children_of_stmt(&s),
+        };
+        for child in children {
+            self.visit_node(child, visit);
+        }
+    }
+
     /// The direct children of an expression, in source order. A nested declaration is a separate
     /// scope, so a lambda body is a leaf here.
     pub(super) fn children_of_expr(&self, node: &HirId<HirExpr>) -> Vec<Child> {
