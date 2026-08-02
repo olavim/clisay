@@ -227,6 +227,13 @@ pub struct HirSlotClause {
     pub pos: Option<SourcePosition>,
 }
 
+impl HirSlotClause {
+    /// The obligations the clause declares.
+    pub fn owed(&self) -> crate::middle::obligations::Obligations {
+        self.names.iter().copied().collect()
+    }
+}
+
 pub struct HirFieldInit {
     pub name: Symbol,
     pub value: Option<HirId<HirExpr>>,
@@ -463,6 +470,15 @@ impl Hir {
         T::unwrap(&self.nodes[id.id].kind)
     }
 
+    /// The symbol an identifier node names. Only call it where the grammar guarantees one, such
+    /// as a parameter name.
+    pub fn ident_sym(&self, id: &HirId<HirExpr>) -> Symbol {
+        match self.get(id) {
+            HirExpr::Identifier(sym) => *sym,
+            _ => unreachable!("node is an identifier"),
+        }
+    }
+
     pub fn pos<T>(&self, id: &HirId<T>) -> &SourcePosition {
         &self.nodes[id.id].pos
     }
@@ -477,6 +493,25 @@ impl Hir {
             .filter(|(_, n)| matches!(&n.kind, HirNodeKind::Expr(HirExpr::Literal(HirLiteral::Lambda(_)))))
             .map(|(i, _)| HirId { id: i, _marker: PhantomData })
             .collect()
+    }
+
+    /// Each binder a condition introduces, paired with the value it was destructured out of. A
+    /// binder names part of its scrutinee, so that scrutinee is where its element comes from.
+    pub fn condition_binder_sources(&self, cond: &HirId<HirExpr>) -> Vec<(Symbol, HirId<HirExpr>)> {
+        match self.get(cond) {
+            HirExpr::Match(scrutinee, matcher) => matcher.binders().into_iter().map(|n| (n, *scrutinee)).collect(),
+            HirExpr::Binary(BinOp::And, left, right) => {
+                let mut out = self.condition_binder_sources(left);
+                out.extend(self.condition_binder_sources(right));
+                out
+            },
+            // An `or` binds the same names on both sides, so either side names their sources.
+            HirExpr::Binary(BinOp::Or, left, _) => match self.condition_binders(cond).is_empty() {
+                true => Vec::new(),
+                false => self.condition_binder_sources(left),
+            },
+            _ => Vec::new(),
+        }
     }
 
     /// The binder names a condition makes live in its true branch, in store order. `&&` unions

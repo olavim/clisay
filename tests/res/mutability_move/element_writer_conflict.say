@@ -1,0 +1,109 @@
+// The runtime writer slot is what a named and an unnamed key have in common, so a conflict is
+// caught however the two names spelled their element.
+
+// Both keys unnamed.
+say arr = mut [mut [0]];
+say mut i = 0;
+say a = arr[i];
+say b = arr[i];
+a[0] = 1;
+b[0] = 2; // error: cannot write an element another name already writes
+
+// @split
+// A named key first, then an unnamed one for the same element.
+say arr = mut [mut [0]];
+say mut i = 0;
+say a = arr[0];
+say b = arr[i];
+a[0] = 1;
+b[0] = 2; // error: cannot write an element another name already writes
+
+// @split
+// And the other way round.
+say arr = mut [mut [0]];
+say mut i = 0;
+say a = arr[i];
+say b = arr[0];
+a[0] = 1;
+b[0] = 2; // error: cannot write an element another name already writes
+
+// @split
+// Mixed keys naming different elements are two writers of two values.
+say arr = mut [mut [0], mut [0]];
+say mut i = 1;
+say a = arr[0];
+say b = arr[i];
+a[0] = 7;
+b[0] = 9;
+print(arr[0][0]); // expect: 7
+print(arr[1][0]); // expect: 9
+
+// @split
+// A dict value under an unnamed key.
+say m = mut {};
+say k = "a";
+m[k] = mut [0];
+say c = m[k];
+say d = m[k];
+c[0] = 1;
+d[0] = 2; // error: cannot write an element another name already writes
+
+// @split
+// A second name that only reads takes no slot, so it never collides.
+say arr = mut [mut [0]];
+say mut i = 0;
+say a = arr[i];
+say b = arr[i];
+a[0] = 5;
+print(b[0]); // expect: 5
+print(arr[0][0]); // expect: 5
+
+// @split
+// Writing twice through one name takes the slot once.
+say arr = mut [mut [0]];
+say mut i = 0;
+say a = arr[i];
+a[0] = 1;
+a[0] = 2;
+a[0] = 3;
+print(arr[0][0]); // expect: 3
+
+// @split
+// A mutating method takes the same slot an index write does.
+say arr = mut [mut [0]];
+say mut i = 0;
+say a = arr[i];
+say b = arr[i];
+a.push(1);
+b[0] = 2; // error: cannot write an element another name already writes
+
+// @split
+// Recursion reaching the same element twice through the same site.
+say arr = mut [mut [0]];
+fn down(a: mut, n) { say e = a[n - n]; e[0] = n; if (n > 0) { down(a, n - 1); } } // error: cannot write an element another name already writes
+down(arr, 1);
+
+// @split
+// A name that rebinds onto an element another name writes is still a second writer.
+say arr = mut [mut [0], mut [0]];
+say mut i = 1;
+say mut d = arr[0];
+d[0] = 1;
+d = arr[i];
+say c = arr[i];
+c[0] = 9;
+d[0] = 5; // error: cannot write an element another name already writes
+
+// @split
+// Three distinct elements, three writers.
+say arr = mut [mut [0], mut [0], mut [0]];
+say mut i = 0;
+say mut j = 1;
+say mut k = 2;
+say a = arr[i];
+say b = arr[j];
+say c = arr[k];
+a[0] = 1;
+b[0] = 2;
+c[0] = 3;
+print(arr[2][0]); // expect: 3

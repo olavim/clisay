@@ -72,6 +72,9 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Throw
         | PopTry
         | AssertNonNull
+        | AssertNotBorrowed
+        | AssertNoWriter
+        | AssertImmutable
         | Pop | Dup
         | PushNull | PushTrue | PushFalse
         | GetIndex | SetIndex
@@ -88,6 +91,11 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
         | CloseUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
         | GetField(b) | SetField(b) | SetFieldPop(b)
+        | TakeWriteOwnership(b)
+        | TransferWriteOwnership(b)
+        | AssertNoOtherWriter(b)
+        | ReleaseWriteOwnership(b)
+        | ReleaseWriteOwnershipAt(b)
         | ReleaseBorrow(b)
         | Is(b) | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
 

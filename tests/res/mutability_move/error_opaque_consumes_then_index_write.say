@@ -1,0 +1,6 @@
+// The proof a bracket write demands fails when the callee turned out to consume the argument.
+fn eats(x: *mut) { }
+say consume = eats;
+say a = mut [0];
+consume(a);
+a[0] = 1; // error: value used after a call consumed it

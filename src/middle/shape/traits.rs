@@ -1,13 +1,14 @@
-//! Trait-contract checks: surface use, override return conformance, and `req fn` variance.
+//! Trait-contract shape: override return conformance and `req fn` variance.
 
-use crate::middle::hir::{HirExpr, HirId, HirStmt, HirTypeDecl, Symbol};
+use crate::middle::diagnose::Diagnose;
+use crate::middle::hir::{HirId, HirStmt, HirTypeDecl, Symbol};
 use crate::middle::signatures::{Mutability, RetSig};
 use crate::middle::obligations::Obligations;
 
-use super::{Checker, Typed};
+use super::Shape;
 
-impl<'a> Checker<'a> {
-    /// A member overriding a trait method may return non-null where the traitmethod is nullable,
+impl<'a> Shape<'a> {
+    /// A member overriding a trait method may return non-null where the trait method is nullable,
     /// but not the reverse.
     pub(super) fn check_method_overrides(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         for method in &decl.methods {
@@ -67,7 +68,7 @@ impl<'a> Checker<'a> {
             }
 
             // A satisfier may not owe a return obligation the requirement does not permit.
-            let diff = self.sorted_difference(&sig.ret.obligations, &self.clause_owed(&req.ret));
+            let diff = self.sorted_difference(&sig.ret.obligations, &req.ret.owed());
             if !diff.is_empty() {
                 return Err(self.error_ctx("return owes an obligation the trait forbids",
                     self.hir.pos(&method), format!("`{type_name}.{name}` returns a value owing {}", quote_list(&diff)),
@@ -86,7 +87,7 @@ impl<'a> Checker<'a> {
 
                 // A `*mut` hole only accepts a `*mut` satisfier. A borrow hole accepts either.
                 if hole.clause.capability.is_move() && !sat_param.clause.capability.is_move() {
-                    let param = self.hir.text(self.ident_sym(&sat_param.name));
+                    let param = self.hir.text(self.hir.ident_sym(&sat_param.name));
                     return Err(self.error_ctx_help("parameter is less permissive than the trait requires",
                         &sat_param.pos, format!("`{type_name}.{name}` only borrows `{param}` here (`mut`)"),
                         &hole.pos, format!("`{trait_name}.{name}` requires ownership of `{param}` (`*mut`)"),
@@ -94,9 +95,9 @@ impl<'a> Checker<'a> {
                 }
 
                 let Some(accepted) = sig.param_clauses.get(i) else { continue };
-                let missing = self.sorted_difference(&self.clause_owed(&hole.clause), accepted);
+                let missing = self.sorted_difference(&hole.clause.owed(), accepted);
                 if !missing.is_empty() {
-                    let param = self.hir.text(self.ident_sym(&sat_param.name));
+                    let param = self.hir.text(self.hir.ident_sym(&sat_param.name));
                     return Err(self.error_ctx("parameter rejects an obligation the trait passes",
                         self.hir.pos(&sat_param.name), format!("`{type_name}.{name}` does not accept {} for `{param}`", quote_list(&missing)),
                         &req.pos, format!("`{trait_name}.{name}` passes {}", quote_list(&missing))));
@@ -115,14 +116,6 @@ impl<'a> Checker<'a> {
         let mut names: Vec<String> = set.difference(other).map(|o| self.hir.text(*o).to_string()).collect();
         names.sort();
         names
-    }
-
-    pub(super) fn trait_member(&self, name: &str, node: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
-        let in_surface = self.current_trait_surface.as_ref().is_some_and(|surface| surface.iter().any(|m| self.hir.text(*m) == name));
-        if !in_surface {
-            return Err(self.error_help(format!("'{}' is not declared or required by this trait", name), node, "declare it or add a 'req'"));
-        }
-        Ok(Typed::unknown())
     }
 
     /// Whether a member's return conforms to a trait method's.

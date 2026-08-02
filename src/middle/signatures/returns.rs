@@ -3,7 +3,8 @@
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt};
 
 use super::{Collector, Mutability, TypeTag};
-use super::walk::Child;
+use crate::middle::walk::Child;
+use crate::middle::walk;
 
 impl<'a> Collector<'a> {
     /// Infers every function's return type tag.
@@ -115,7 +116,7 @@ impl<'a> Collector<'a> {
 
     /// A nested function's returns belong to that function, which the walk treats as a leaf.
     pub(super) fn collect_returns(&self, expr: &HirId<HirExpr>, out: &mut Vec<HirId<HirExpr>>) {
-        self.visit_body(expr, &mut |node| {
+        walk::visit_body(self.hir, expr, &mut |node| {
             if let Child::Stmt(s) = node {
                 if let HirStmt::Return(Some(e)) = self.hir.get(&s) { out.push(*e); }
             }

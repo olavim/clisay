@@ -28,6 +28,7 @@ impl Vm {
             return_ip: self.ip,
             stack_start,
             seal,
+            write_depth: self.write_owners.len(),
         });
         self.ip = unsafe { self.chunk.code.as_ptr().offset(ip_start as isize) };
         Ok(())
@@ -55,6 +56,58 @@ impl Vm {
             objects::TAG_TYPE => self.call_type(arg_count, object.as_type_ptr(), seal),
             _ => unsafe { std::hint::unreachable_unchecked() }
         }
+    }
+
+    pub(super) fn op_assert_immutable(&mut self) -> Result<(), anyhow::Error> {
+        let value = self.stack.peek(0);
+        if !objects::is_mutable_container(value) {
+            return Ok(());
+        }
+        let position = self.get_source_position().clone();
+        let label = format!("`{}` is mutable", position.snippet());
+        self.raise(Diagnostic::new(objects::MUTABLE_IN_IMMUTABLE, position)
+            .with_label(label)
+            .with_help("an immutable value is immutable all the way down; freeze this value, or mark the construction `mut`"))
+    }
+
+    /// The path-write barrier. A write through a path has no binding denoting the element it
+    /// reaches, so it takes no writer slot of its own. It fails only when one is already held by
+    /// something other than its own root.
+    pub(super) fn op_assert_no_other_writer(&mut self) -> Result<(), anyhow::Error> {
+        let base = self.read_next() as usize;
+        let value = self.stack.peek(0);
+        if !value.is_object() || !value.as_object().is_write_owned() {
+            return Ok(());
+        }
+        // A container that took an element writes it through its own paths. Only a path rooted
+        // somewhere else is a second writer.
+        match self.owns_write(value, self.slot_addr(base)) {
+            true => Ok(()),
+            false => Err(self.second_writer_error(value)),
+        }
+    }
+
+    /// Assert that nothing is holding the write-ownership of the value on top.
+    pub(super) fn op_assert_no_writer(&mut self) -> Result<(), anyhow::Error> {
+        let value = self.stack.peek(0);
+        match value.is_object() && value.as_object().is_write_owned() {
+            true => Err(self.second_writer_error(value)),
+            false => Ok(()),
+        }
+    }
+
+    /// The persist barrier. A parameter may hold a mutable borrowed from the caller, and storing
+    /// it somewhere that outlives the call would keep it reachable past the borrow.
+    pub(super) fn op_assert_not_borrowed(&mut self) -> Result<(), anyhow::Error> {
+        let value = self.stack.peek(0);
+        if !value.is_borrowed() {
+            return Ok(());
+        }
+        let position = self.get_source_position().clone();
+        let label = format!("`{}` is a mutable value borrowed from the caller", position.snippet());
+        self.raise(Diagnostic::new(objects::PERSISTED_BORROW, position)
+            .with_label(label)
+            .with_help("a borrowed value cannot be stored where it outlives the borrow; take the parameter by `*mut` to own it, or `copy` it before storing"))
     }
 
     /// An argument the caller reads again after the call. The compiler could not tell whether the
@@ -108,6 +161,118 @@ impl Vm {
                 value.as_object().set_borrowed(true);
             }
             self.borrows.push((value, prev));
+        }
+    }
+
+    /// Takes the writer slot for an element the compiler could not name. A literal key is settled
+    /// statically, so only a computed one reaches here.
+    pub(super) fn op_take_write_ownership(&mut self) -> Result<(), anyhow::Error> {
+        let slot = self.read_next() as usize;
+        self.take_write_ownership(slot, false)
+    }
+
+    /// A container taking the writer slot for an element it is given.
+    pub(super) fn op_transfer_write_ownership(&mut self) -> Result<(), anyhow::Error> {
+        let slot = self.read_next() as usize;
+        self.take_write_ownership(slot, true)
+    }
+
+    /// Takes the writer slot for the value on top in the name of a local. The holder may take it
+    /// again as often as it likes, so only a different holder is a second writer.
+    fn take_write_ownership(&mut self, slot: usize, given: bool) -> Result<(), anyhow::Error> {
+        let value = self.stack.peek(0);
+        if !value.is_object() {
+            return Ok(());
+        }
+        let holder = self.slot_addr(slot);
+        if value.as_object().is_write_owned() {
+            return match self.owns_write(value, holder) {
+                true => Ok(()),
+                false => Err(self.second_writer_error(value)),
+            };
+        }
+        value.as_object().set_write_owned(true);
+        self.write_owners.push(WriteOwner { value, holder, at: self.current_pos_index(), given });
+        Ok(())
+    }
+
+    /// The address of a local in the running frame, which is what identifies a holder.
+    fn slot_addr(&self, slot: usize) -> *mut Value {
+        unsafe { (*self.frames.top()).stack_start.add(slot) }
+    }
+
+    /// Whether this name is the one already holding the value's writer slot.
+    fn owns_write(&self, value: Value, holder: *mut Value) -> bool {
+        self.write_owners.iter().rev().find(|held| held.value == value)
+            .is_some_and(|held| held.holder == holder)
+    }
+
+    /// The trap for a second name taking the writer slot for one element.
+    #[cold]
+    #[inline(never)]
+    fn second_writer_error(&mut self, value: Value) -> anyhow::Error {
+        let here = self.get_source_position().clone();
+        let held = self.write_owners.iter().rev().find(|held| held.value == value).copied();
+        let given = held.is_some_and(|held| held.given);
+        let mut diagnostic = match given {
+            true => Diagnostic::new(objects::WROTE_GIVEN_ELEMENT, here.clone())
+                .with_label(format!("`{}` is written here", here.snippet())),
+            false => Diagnostic::new(objects::SECOND_ELEMENT_WRITER, here.clone())
+                .with_label("this takes a second writer for the element"),
+        };
+        if let Some(held) = held {
+            let taken = self.chunk.code_pos[held.at as usize].clone();
+            if taken.start != here.start {
+                let label = match given {
+                    true => format!("`{}` is stored here, which takes write-ownership", taken.snippet()),
+                    false => "another name already writes it here".to_string(),
+                };
+                diagnostic = diagnostic.with_context_span(taken, label);
+            }
+        }
+        let help = match given {
+            true => "an element has one write-owner; reading it here is still fine, but to write it, go through the container it was stored into",
+            false => "one element has one writer; let the other name go out of scope first, or only read through this one",
+        };
+        self.raise(diagnostic.with_help(help)).unwrap_err()
+    }
+
+    /// Gives back the slot a local holds, where its value is about to change.
+    pub(super) fn op_release_write_ownership_at(&mut self) {
+        let slot = self.read_next() as usize;
+        let holder = self.slot_addr(slot);
+        for k in (0..self.write_owners.len()).rev() {
+            if self.write_owners[k].holder == holder {
+                let held = self.write_owners.remove(k);
+                self.release_write(held.value);
+            }
+        }
+    }
+
+    /// Gives back whatever the scope's own `count` values still hold.
+    pub(super) fn op_release_write_ownership(&mut self) {
+        let count = self.read_next() as usize;
+        let floor = unsafe { self.stack.top().sub(count) };
+        for k in (0..self.write_owners.len()).rev() {
+            if self.write_owners[k].holder >= floor {
+                let held = self.write_owners.remove(k);
+                self.release_write(held.value);
+            }
+        }
+    }
+
+    /// Clears one value's writer slot. A value that holds none is left alone.
+    fn release_write(&self, value: Value) {
+        if value.is_object() && value.as_object().is_write_owned() {
+            value.as_object().set_write_owned(false);
+        }
+    }
+
+    /// Clears every held writer slot above `depth`, for an exit that skips the scope releases.
+    pub(super) fn release_writes_above(&mut self, depth: usize) {
+        while self.write_owners.len() > depth {
+            let held = self.write_owners.pop().unwrap();
+            self.release_write(held.value);
         }
     }
 

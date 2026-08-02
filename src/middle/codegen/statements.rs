@@ -109,7 +109,10 @@ impl<'a> Compiler<'a> {
                 let slot = self.bindings.slot(stmt_id);
 
                 let inst = if let Some(expr) = value {
-                    self.expression(expr)?;
+                    let saved = self.receiving_slot.replace(slot);
+                    let compiled = self.expression(expr);
+                    self.receiving_slot = saved;
+                    compiled?;
                     Inst::StoreLocal(slot)
                 } else {
                     Inst::LoadLocal(slot)

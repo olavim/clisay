@@ -1,5 +1,5 @@
 // A borrowed value pushed into a container traps at the store site at runtime.
-fn stash(bin, item) { bin.push(item); } // error: cannot persist a borrowed value
+fn stash(bin: mut, item) { bin.push(item); } // error: cannot persist a borrowed value
 say sink = mut [];
 say m = mut [1, 2];
 stash(sink, m);

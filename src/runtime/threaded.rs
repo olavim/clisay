@@ -101,11 +101,19 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::JUMP_IF_BAD => vm.op_jump_if_bad(),
         opcode::JUMP_IF_IS => vm.op_jump_if_is(),
         opcode::ASSERT_NON_NULL => vm.op_assert_non_null()?,
+        opcode::ASSERT_NOT_BORROWED => vm.op_assert_not_borrowed()?,
+        opcode::ASSERT_NO_OTHER_WRITER => vm.op_assert_no_other_writer()?,
+        opcode::ASSERT_NO_WRITER => vm.op_assert_no_writer()?,
+        opcode::ASSERT_IMMUTABLE => vm.op_assert_immutable()?,
         opcode::BARRIER_GUARD => vm.op_barrier_guard()?,
         opcode::ASSERT_BORROW => vm.op_assert_borrow()?,
         opcode::ASSERT_NOT_CONSUMED => vm.op_assert_not_consumed()?,
         opcode::MARK_BORROW => vm.op_mark_borrow(),
         opcode::RELEASE_BORROW => vm.op_release_borrow(),
+        opcode::TAKE_WRITE_OWNERSHIP => vm.op_take_write_ownership()?,
+        opcode::TRANSFER_WRITE_OWNERSHIP => vm.op_transfer_write_ownership()?,
+        opcode::RELEASE_WRITE_OWNERSHIP => vm.op_release_write_ownership(),
+        opcode::RELEASE_WRITE_OWNERSHIP_AT => vm.op_release_write_ownership_at(),
         opcode::CLOSE_UPVALUE => vm.op_close_upvalue(),
         opcode::ARRAY => vm.op_array(),
         opcode::DICT => vm.op_dict(),
@@ -516,7 +524,7 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     }
 
     let stack_start = unsafe { top.sub(arg_count + 1) };
-    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true });
+    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true, write_depth: vm.write_owners.len() });
     become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
 }
 
@@ -527,7 +535,7 @@ fn halt(vm: &mut Vm, _ip: *const OpCode, _top: *mut Value, _base: *mut Value) ->
 
 fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R {
     // The top-level ends in HALT, so every RETURN has a caller frame to pop.
-    if vm.open_upvalues.is_empty() {
+    if vm.open_upvalues.is_empty() && vm.write_owners.is_empty() {
         let frame = vm.frames.pop();
         let value = unsafe { *top.sub(1) };
         unsafe { *frame.stack_start = value };

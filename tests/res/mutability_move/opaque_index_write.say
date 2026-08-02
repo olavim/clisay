@@ -1,0 +1,7 @@
+// A bracket write demands the same runtime proof a read does, and a borrowing callee passes it.
+fn borrows(x: mut) { x[0] = x[0] + 1; }
+say lend = borrows;
+say a = mut [0];
+lend(a);
+a[0] = 5;
+print(a[0]); // expect: 5

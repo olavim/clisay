@@ -13,7 +13,7 @@ print(a[0]); // expect: 1
 // Through a constructor call.
 type Box { pub mut item; init(this, x: *mut) { this.item = x; } }
 say a = mut [1];
-{ say b = Box(a); }
+{ say b = mut Box(a); }
 print(a[0]); // expect: 1
 
 // @split

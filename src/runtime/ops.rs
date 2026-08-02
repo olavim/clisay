@@ -45,6 +45,7 @@ impl Vm {
 
         self.ip = frame.return_ip;
         self.close_upvalues(frame.stack_start);
+        self.release_writes_above(frame.write_depth);
 
         let value = self.stack.pop();
         self.stack.set_top(frame.stack_start);
@@ -58,6 +59,7 @@ impl Vm {
         let frame = self.frames.pop();
         self.ip = frame.return_ip;
         self.close_upvalues(frame.stack_start);
+        self.release_writes_above(frame.write_depth);
 
         let value = self.stack.pop();
         if frame.seal {
@@ -79,6 +81,7 @@ impl Vm {
 
         let frame = self.try_frames.pop().unwrap();
         // Restore borrows marked since the `try` began, whose `RELEASE_BORROW` the unwind skips.
+        self.release_writes_above(frame.write_depth);
         while self.borrows.len() > frame.borrow_depth {
             let (v, prev) = self.borrows.pop().unwrap();
             if v.is_object() { v.as_object().set_borrowed(prev); }
@@ -96,7 +99,8 @@ impl Vm {
             origin: self.frames.top_ptr(),
             handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
             stack_start: self.stack.top(),
-            borrow_depth: self.borrows.len()
+            borrow_depth: self.borrows.len(),
+            write_depth: self.write_owners.len()
         });
     }
 

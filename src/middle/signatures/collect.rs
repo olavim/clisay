@@ -5,7 +5,8 @@ use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnS
 use crate::middle::obligations::Obligations;
 
 use super::{Collector, FnSig, RetSig, Witness};
-use super::walk::Child;
+use crate::middle::walk::Child;
+use crate::middle::walk;
 
 impl<'a> Collector<'a> {
     pub(super) fn stmt(&mut self, stmt: &HirId<HirStmt>) {
@@ -29,7 +30,7 @@ impl<'a> Collector<'a> {
             },
             HirStmt::Trait(_) | HirStmt::Nop => {},
             // A non-declaration statement holds no signatures of its own. Recurse into its children.
-            _ => for child in self.children_of_stmt(stmt) {
+            _ => for child in walk::children_of_stmt(self.hir, stmt) {
                 match child {
                     Child::Expr(e) => self.expr(&e),
                     Child::Stmt(s) => self.stmt(&s),
@@ -44,7 +45,7 @@ impl<'a> Collector<'a> {
             self.expr(&decl.body);
             return;
         }
-        for child in self.children_of_expr(expr) {
+        for child in walk::children_of_expr(self.hir, expr) {
             match child {
                 Child::Expr(e) => self.expr(&e),
                 Child::Stmt(s) => self.stmt(&s),

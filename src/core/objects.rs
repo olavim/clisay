@@ -23,6 +23,8 @@ pub const ESCAPED_BORROW: &str = "cannot pass a borrowed argument to a callee th
 
 /// The runtime diagnostic raised when a borrowed value is persisted at a store site.
 pub const PERSISTED_BORROW: &str = "cannot persist a borrowed value";
+pub const SECOND_ELEMENT_WRITER: &str = "cannot write an element another name already writes";
+pub const WROTE_GIVEN_ELEMENT: &str = "cannot write an element whose write-ownership moved to another container";
 /// A value read again after a call the compiler could not resolve turned out to consume it.
 pub const CONSUMED_ARGUMENT: &str = "value used after a call consumed it";
 
@@ -60,6 +62,8 @@ pub const FLAG_MARKED: u8 = 1 << 0;
 pub const FLAG_IMMUTABLE: u8 = 1 << 1;
 /// Lent as a borrow to an active call, so a store of it traps.
 pub const FLAG_BORROWED: u8 = 1 << 2;
+/// Set while one name holds the writer slot for this value, so a second writer traps.
+pub const FLAG_WRITE_OWNED: u8 = 1 << 3;
 
 #[repr(C)]
 pub struct ObjectHeader {
@@ -241,6 +245,16 @@ impl Object {
     #[inline]
     pub fn set_borrowed(&self, value: bool) {
         unsafe { (*self.as_header_ptr()).set(FLAG_BORROWED, value); }
+    }
+
+    #[inline]
+    pub fn is_write_owned(&self) -> bool {
+        unsafe { (*self.as_header_ptr()).has(FLAG_WRITE_OWNED) }
+    }
+
+    #[inline]
+    pub fn set_write_owned(&self, value: bool) {
+        unsafe { (*self.as_header_ptr()).set(FLAG_WRITE_OWNED, value); }
     }
 
     #[inline]

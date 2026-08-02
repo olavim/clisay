@@ -3,7 +3,7 @@ use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
 use crate::middle::ir::{BarrierAllow, Inst, Label};
 use crate::middle::bind::{FnKind, Place, Receiver};
-use crate::middle::check::{Barrier, WitnessSet};
+use crate::middle::check::{Barrier, Guard, WitnessSet};
 
 use super::Compiler;
 
@@ -56,13 +56,55 @@ impl<'a> Compiler<'a> {
             HirExpr::Assert(operand) => self.assert(expr, operand)?,
         };
 
-        // An unknown value reaching a slot or `!` is checked against the witnesses it does not allow.
-        if let Some(barrier) = self.barriers.boundary(expr) {
-            self.emit_boundary_barrier(expr, barrier)?;
+        // Each runtime check this node carries, in the order the check pass put them in.
+        for guard in self.barriers.guards(expr) {
+            self.emit_guard(expr, *guard)?;
         }
-        // A `!` operand owing only `opt` rides the fast-path null assertion.
-        if self.barriers.has(expr) {
-            self.emit(Inst::AssertNonNull, expr);
+        Ok(())
+    }
+
+    /// The slot of the binding a path is rooted in, if it has one. A write through a path is the
+    /// container's own when they share a root.
+    fn root_slot(&self, node: &HirId<HirExpr>) -> Option<u8> {
+        let mut current = *node;
+        loop {
+            match self.hir.get(&current) {
+                HirExpr::Index(target, _, _) | HirExpr::SafeAccess(target, _, _) => current = *target,
+                HirExpr::Assert(inner) | HirExpr::Propagate(inner) | HirExpr::Mut(inner) => current = *inner,
+                HirExpr::Identifier(_) => return match self.bindings.place(&current) {
+                    Place::Local(slot) => Some(slot),
+                    _ => None,
+                },
+                _ => return None,
+            }
+        }
+    }
+
+    /// Emits one runtime check, once the node's value is on the stack. The operand each needs is
+    /// derived here rather than carried, since only codegen knows a binding's slot.
+    fn emit_guard(&mut self, node: &HirId<HirExpr>, guard: Guard) -> Result<(), anyhow::Error> {
+        match guard {
+            Guard::Boundary => if let Some(barrier) = self.barriers.boundary(node) {
+                self.emit_boundary_barrier(node, barrier)?;
+            },
+            Guard::NonNull => self.emit(Inst::AssertNonNull, node),
+            // The receiving container takes the element's writer slot, so the aggregate it came
+            // from keeps reading it and stops writing it.
+            Guard::StoreIntoContainer => if let Some(slot) = self.receiving_slot {
+                self.emit(Inst::TransferWriteOwnership(slot), node);
+            },
+            // A path rooted in no binding has no slot that could be its holder, so it asks the
+            // stricter question: that nothing holds the element at all.
+            Guard::WriteThroughPath => match self.root_slot(node) {
+                Some(base) => self.emit(Inst::AssertNoOtherWriter(base), node),
+                None => self.emit(Inst::AssertNoWriter, node),
+            },
+            Guard::Immutable => self.emit(Inst::AssertImmutable, node),
+            Guard::Unborrowed => self.emit(Inst::AssertNotBorrowed, node),
+            // The slot rides the name, so the same name writing again is not a second writer.
+            Guard::WriteThroughName => if let Place::Local(slot) = self.bindings.place(node) {
+                self.emit(Inst::TakeWriteOwnership(slot), node);
+            },
         }
         Ok(())
     }
@@ -309,6 +351,10 @@ impl<'a> Compiler<'a> {
         match self.hir.get(lhs) {
             HirExpr::Identifier(_) => {
                 let place = self.bindings.place(lhs);
+                // The slot goes back while the name still holds the value that took it.
+                if let (true, Place::Local(slot)) = (self.barriers.releases_on_rebind(lhs), place) {
+                    self.emit(Inst::ReleaseWriteOwnershipAt(slot), lhs);
+                }
                 self.expression(rhs)?;
                 self.emit_store(place, discarded, lhs)?;
                 Ok(())
@@ -398,9 +444,13 @@ impl<'a> Compiler<'a> {
         // resolution) and the member is a literal name.
         if let Some((target, name)) = self.as_method_invoke(callee) {
             self.expression(&target)?;
-            for arg in args {
-                self.expression(arg)?;
-            }
+            // The receiver is the container an argument it keeps is handed to, so it is the slot
+            // that takes the writer slot for that argument.
+            let receiver = self.root_slot(&target);
+            let saved = std::mem::replace(&mut self.receiving_slot, receiver);
+            let compiled = args.iter().try_for_each(|arg| self.expression(arg));
+            self.receiving_slot = saved;
+            compiled?;
             let name_ref = self.gc.intern(name);
             let idx = self.ir.add_constant(Value::from(name_ref))?;
             let marked = self.emit_mark_borrow(callee, args)?;

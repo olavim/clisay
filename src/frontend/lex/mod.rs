@@ -152,7 +152,8 @@ fn render_span_line(lines: &mut Vec<String>, bar: &str, width: usize, group: &[S
     for (k, span) in group.iter().enumerate() {
         let (glyph, color) = span.kind.style();
         let carets = display_width(&content[span.pos.start..span.pos.end.min(end)]).max(1);
-        row.push_str(&" ".repeat(cols[k] - col));
+        // Two spans can share a column, such as a recursive call reporting the same site twice.
+        row.push_str(&" ".repeat(cols[k].saturating_sub(col)));
         row.push_str(&paint(&glyph.to_string().repeat(carets), color));
         col = cols[k] + carets;
     }

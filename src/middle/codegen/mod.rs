@@ -48,7 +48,10 @@ pub struct Compiler<'a> {
     /// The kind of each enclosing function, for factory return handling.
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
-    types: FnvHashMap<*mut ObjString, *mut ObjType>
+    types: FnvHashMap<*mut ObjString, *mut ObjType>,
+    /// The slot that will hold the container being built, while its parts are compiled. An element
+    /// handed to it takes its writer slot in that slot's name.
+    receiving_slot: Option<u8>,
 }
 
 #[macro_export]
@@ -59,6 +62,7 @@ macro_rules! compiler_error {
 impl<'a> Compiler<'a> {
     pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
+            receiving_slot: None,
             ir: Ir::new(),
             hir,
             gc,
@@ -111,6 +115,12 @@ impl<'a> Compiler<'a> {
 
     fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
         let cleanups = self.bindings.cleanup(node_id).to_vec();
+        // Writer slots go back before the locals holding them are popped. The count is how many
+        // values to look at, not how many were taken, so a scope with two exits is safe either way.
+        if self.barriers.releases_write_ownership(node_id) {
+            let held = cleanups.iter().filter(|c| matches!(c, Cleanup::Pop)).count();
+            self.emit(Inst::ReleaseWriteOwnership(held as u8), node_id);
+        }
         for cleanup in cleanups {
             let inst = match cleanup {
                 Cleanup::Pop => Inst::Pop,

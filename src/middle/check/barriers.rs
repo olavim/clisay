@@ -1,5 +1,7 @@
-//! Runtime checks.
+//! What codegen must check at runtime, and the record the pass hands it.
 
+use crate::middle::diagnose::Diagnose;
+use crate::middle::obligations::{obligation_atoms, quoted_obligation_list};
 use std::collections::{HashMap, HashSet};
 
 use crate::middle::hir::{HirExpr, HirId, Symbol};
@@ -25,26 +27,50 @@ pub struct Barrier {
     pub allow_names: Vec<Symbol>,
 }
 
+/// A runtime check codegen emits for a node, once that node's value is on the stack. The order
+/// here is the order they are emitted, so a node carrying several asks them in a fixed sequence.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Guard {
+    /// An unknown value against the witnesses its destination refuses.
+    Boundary,
+    /// A `!` operand owing only `opt`, where a null check alone suffices.
+    NonNull,
+    /// A store handing an element to a container, which takes its write-ownership.
+    StoreIntoContainer,
+    /// A write through a path, which takes no write-ownership and so must find nothing holding it.
+    WriteThroughPath,
+    /// A value entering an immutable construction.
+    Immutable,
+    /// A value about to be persisted, which a borrow may not be.
+    Unborrowed,
+    /// A write through a name, which takes the element's write-ownership.
+    WriteThroughName,
+}
+
+/// What a call does to its arguments.
+#[derive(Default)]
+pub struct ArgMarks {
+    /// Positions the call lends, to mark as borrowed for its duration.
+    borrowed: Vec<u8>,
+    /// Positions an opaque call must assert its callee borrows rather than keeps.
+    survive: Vec<u8>,
+    /// Positions the caller reads again after the call, with the read that does it.
+    reread: Vec<(u8, HirId<HirExpr>)>,
+}
+
 /// The runtime checks codegen emits. A barrier tests an unknown value against the witnesses its
 /// destination does not allow, whether the value enters a slot or is asserted clean by `!`.
 #[derive(Default)]
 pub struct Barriers {
-    /// The null fast path: a `!` operand owing only `opt`, where a null check alone suffices.
-    pub(super) null_barriers: HashSet<HirId<HirExpr>>,
+    /// Every per-node runtime check, in the order codegen emits them.
+    pub(super) guards: HashMap<HirId<HirExpr>, Vec<Guard>>,
     /// An unknown value guarded against the witnesses its destination does not allow: a value
     /// entering a slot, or a `!` on an unknown operand.
     pub(super) boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
     /// Discharge nodes (`??`, `?`, `!`) whose operand owes an object witness.
     pub(super) witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
-    /// Opaque calls whose argument the caller reads again afterwards, keyed by callee node to the
-    /// argument position and the read.
-    pub(super) reread_barriers: HashMap<HirId<HirExpr>, Vec<(u8, HirId<HirExpr>)>>,
-    /// Opaque calls whose argument must survive, keyed by callee node to the argument positions
-    /// the callee must borrow.
-    pub(super) survive_barriers: HashMap<HirId<HirExpr>, Vec<u8>>,
-    /// Calls that lend a mutable argument (callee node -> argument positions) to mark
-    /// as borrowed for the call.
-    pub(super) borrow_marks: HashMap<HirId<HirExpr>, Vec<u8>>,
+    /// What each call does to its arguments, keyed by callee node.
+    pub(super) arg_marks: HashMap<HirId<HirExpr>, ArgMarks>,
     /// Every registered object witness name, the VM's registry for recognizing a crossing value
     /// as a witness at a boundary barrier.
     pub(super) witness_names: Vec<Symbol>,
@@ -53,12 +79,18 @@ pub struct Barriers {
     pub(super) seal_checks: HashSet<HirId<HirExpr>>,
     /// Paren-construction `Call` nodes (`K(args)`).
     pub(super) constructions: HashSet<HirId<HirExpr>>,
+    /// Rebinds of a name that holds an element writer slot, which give the slot back before the
+    /// new value lands. Keyed on the assignment's left side.
+    pub(super) rebind_releases: HashSet<HirId<HirExpr>>,
+    /// Scopes holding an element writer slot, by node index. A scope gives back whatever its own
+    /// locals still hold.
+    pub(super) write_scopes: HashSet<usize>,
 }
 
 impl Barriers {
-    /// Whether a `!` operand at this node needs the built-in null assertion.
-    pub fn has(&self, node: &HirId<HirExpr>) -> bool {
-        self.null_barriers.contains(node)
+    /// Every runtime check this node carries, in emission order.
+    pub fn guards(&self, node: &HirId<HirExpr>) -> &[Guard] {
+        self.guards.get(node).map_or(&[], Vec::as_slice)
     }
 
     /// The boundary guard for an unknown value at this node, if one is needed.
@@ -78,16 +110,16 @@ impl Barriers {
 
     /// The argument positions an opaque call at this callee must assert the callee borrows.
     pub fn rereads(&self, callee: &HirId<HirExpr>) -> Option<&[(u8, HirId<HirExpr>)]> {
-        self.reread_barriers.get(callee).map(Vec::as_slice)
+        self.arg_marks.get(callee).map(|m| m.reread.as_slice()).filter(|p| !p.is_empty())
     }
 
     pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[u8]> {
-        self.survive_barriers.get(callee).map(Vec::as_slice)
+        self.arg_marks.get(callee).map(|m| m.survive.as_slice()).filter(|p| !p.is_empty())
     }
 
     /// The argument positions a call at this callee lends, to mark as borrowed for the call.
     pub fn borrow_marks(&self, callee: &HirId<HirExpr>) -> Option<&[u8]> {
-        self.borrow_marks.get(callee).map(Vec::as_slice)
+        self.arg_marks.get(callee).map(|m| m.borrowed.as_slice()).filter(|p| !p.is_empty())
     }
 
     /// Whether this container literal needs a runtime check that no element is mutable.
@@ -100,56 +132,81 @@ impl Barriers {
         self.constructions.contains(node)
     }
 
+    /// Whether this rebind gives back the writer slot the name held.
+    pub fn releases_on_rebind(&self, lhs: &HirId<HirExpr>) -> bool {
+        self.rebind_releases.contains(lhs)
+    }
+
+    /// Whether this scope has to give back element writer slots on the way out.
+    pub fn releases_write_ownership<T>(&self, scope: &HirId<T>) -> bool {
+        self.write_scopes.contains(&scope.index())
+    }
+
+    /// How many nodes carry a runtime check. A boundary's payload rides its guard, so it is one
+    /// node here however many guards it asks for.
     pub fn len(&self) -> usize {
-        self.null_barriers.len() + self.boundary_barriers.len()
+        self.guards.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.null_barriers.is_empty() && self.boundary_barriers.is_empty()
+        self.guards.is_empty()
     }
 }
 
 impl<'a> Checker<'a> {
-    /// Marks a `!` operand owing only `opt`, whose null state is asserted at runtime.
-    pub(super) fn add_barrier(&mut self, node: &HirId<HirExpr>) {
-        self.barriers.insert(*node);
+    /// Records a runtime check for a node. Guards are kept in emission order, and a node asks for
+    /// each at most once however many times the pass reaches it.
+    pub(super) fn record_guard(&mut self, node: &HirId<HirExpr>, guard: Guard) {
+        let guards = self.out.guards.entry(*node).or_default();
+        if let Err(at) = guards.binary_search(&guard) {
+            guards.insert(at, guard);
+        }
     }
 
     /// Records that an opaque call must assert its callee borrows the given argument positions.
     pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<u8>) {
-        self.survive_barriers.insert(*callee, positions);
+        self.out.arg_marks.entry(*callee).or_default().survive = positions;
     }
 
     /// Records that `read` reads an opaque call's argument again, so the callee must have borrowed
     /// it. A position is recorded once, no matter how many times the binding is read afterwards.
     pub(super) fn record_reread_barrier(&mut self, callee: &HirId<HirExpr>, position: u8, read: HirId<HirExpr>) {
-        let rereads = self.reread_barriers.entry(*callee).or_default();
-        if !rereads.iter().any(|(p, _)| *p == position) {
-            rereads.push((position, read));
-            rereads.sort_unstable_by_key(|(p, _)| *p);
+        let marks = self.out.arg_marks.entry(*callee).or_default();
+        if !marks.reread.iter().any(|(p, _)| *p == position) {
+            marks.reread.push((position, read));
+            marks.reread.sort_unstable_by_key(|(p, _)| *p);
         }
-        let marks = self.borrow_marks.entry(*callee).or_default();
-        if !marks.contains(&position) {
-            marks.push(position);
-            marks.sort_unstable();
+        if !marks.borrowed.contains(&position) {
+            marks.borrowed.push(position);
+            marks.borrowed.sort_unstable();
         }
     }
 
     /// Records the argument positions a call lends, to mark as borrowed for its duration.
     pub(super) fn record_borrow_marks(&mut self, callee: &HirId<HirExpr>, positions: Vec<u8>) {
         if !positions.is_empty() {
-            self.borrow_marks.insert(*callee, positions);
+            self.out.arg_marks.entry(*callee).or_default().borrowed = positions;
         }
     }
 
     /// Marks an immutable container literal whose elements must be checked for mutability at runtime.
     pub(super) fn record_seal_check(&mut self, node: &HirId<HirExpr>) {
-        self.seal_checks.insert(*node);
+        self.out.seal_checks.insert(*node);
     }
 
     /// Marks a `Call` node as a paren construction `K(args)`.
     pub(super) fn record_construction(&mut self, node: &HirId<HirExpr>) {
-        self.constructions.insert(*node);
+        self.out.constructions.insert(*node);
+    }
+
+    /// Marks a rebind that gives back the writer slot its name held.
+    pub(super) fn record_rebind_release(&mut self, lhs: &HirId<HirExpr>) {
+        self.out.rebind_releases.insert(*lhs);
+    }
+
+    /// Marks a scope that has to give back element writer slots.
+    pub(super) fn record_write_scope(&mut self, scope: &HirId<HirExpr>) {
+        self.out.write_scopes.insert(scope.index());
     }
 
     /// Records the guard for an unknown value reaching a destination accepting `accepted`. The
@@ -162,7 +219,8 @@ impl<'a> Checker<'a> {
                 allow_names.push(name);
             }
         }
-        self.boundary_barriers.insert(*node, Barrier { null_allowed, allow_names });
+        self.out.boundary_barriers.insert(*node, Barrier { null_allowed, allow_names });
+        self.record_guard(node, Guard::Boundary);
     }
 
     /// Classifies a value entering a non-null target. A non-null slot forbids `opt`, so only a
@@ -202,9 +260,9 @@ impl<'a> Checker<'a> {
         };
 
         if !undeclared.is_empty() {
-            let owed = self.quoted_obligation_list(&undeclared);
+            let owed = quoted_obligation_list(self.hir, &undeclared);
             return Err(self.error_help(format!("cannot assign a value owing {owed} to '{text}'"), node,
-                format!("discharge it first, or declare it on the {noun} (`{text}: {}`)", self.obligation_atoms(&undeclared))));
+                format!("discharge it first, or declare it on the {noun} (`{text}: {}`)", obligation_atoms(self.hir, &undeclared))));
         }
 
         if accepted.contains(&self.sigs.opt) {

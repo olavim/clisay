@@ -73,6 +73,19 @@ pub struct CallFrame {
     stack_start: *mut Value,
     /// Whether a factory returning from this frame should seal (deep-freeze) its instance.
     seal: bool,
+    /// How much write-ownership was held when this frame began, so a return gives back what the
+    /// body still holds.
+    write_depth: usize,
+}
+
+/// Write-ownership of one element, held by a name or by a container. `given` says how the holder
+/// came by it: two names writing one element reads differently from a name writing one it gave away.
+#[derive(Clone, Copy)]
+pub struct WriteOwner {
+    pub value: Value,
+    pub holder: *mut Value,
+    pub at: u32,
+    pub given: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -81,7 +94,8 @@ pub struct TryFrame {
     handler_ip: *const OpCode,
     stack_start: *mut Value,
     /// The borrow-stack depth when the `try` began, restored on an unwind to this handler.
-    borrow_depth: usize
+    borrow_depth: usize,
+    write_depth: usize
 }
 
 pub struct Vm {
@@ -94,6 +108,8 @@ pub struct Vm {
     try_frames: Vec<TryFrame>,
     /// Values marked borrowed for an active call, each with its prior bit for nesting.
     borrows: Vec<(Value, bool)>,
+    /// Values whose element writer slot is held, innermost last.
+    write_owners: Vec<WriteOwner>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     /// Every registered object witness name. A boundary barrier throws a crossing value when it
@@ -199,6 +215,7 @@ impl Vm {
             frames: CachedStack::new(),
             try_frames: Vec::new(),
             borrows: Vec::new(),
+            write_owners: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
             witnesses,
@@ -216,6 +233,7 @@ impl Vm {
             return_ip: std::ptr::null(),
             stack_start: vm.stack.top(),
             seal: false,
+            write_depth: 0,
         });
 
         vm.define_native("print", 1, |vm, _target, args| {
@@ -393,6 +411,9 @@ impl Vm {
 
         // A borrowed value may leave the stack while the call runs, so keep it alive until its
         // matching release restores the borrowed bit on its header.
+        for held in &self.write_owners {
+            held.value.mark(&mut self.gc);
+        }
         for (value, _) in &self.borrows {
             value.mark(&mut self.gc);
         }
