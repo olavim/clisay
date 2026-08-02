@@ -5,7 +5,6 @@ mod collect;
 mod escape;
 mod propagate;
 mod returns;
-mod walk;
 
 use std::collections::{HashMap, HashSet};
 
@@ -106,6 +105,9 @@ pub struct Signatures {
     pub(crate) ret_mut: HashMap<HirId<HirStmt>, Mutability>,
     /// What each parameter's argument undergoes in the body. A method's receiver rides the last entry.
     pub(crate) params: HashMap<HirId<HirStmt>, Vec<ParamFact>>,
+    /// Per function, the names its result may be that are none of its parameters. A body returning
+    /// a binding from an outer scope hands out a second name for it, which no parameter row says.
+    pub(crate) returns_free: HashMap<HirId<HirStmt>, Vec<Symbol>>,
     /// Per lambda parameter, whether the body persists its argument.
     pub(crate) lambda_param_escapes: HashMap<HirId<HirExpr>, Vec<bool>>,
     /// Names each function's body writes, either persisting or mutating them. A closure that only
@@ -125,6 +127,7 @@ pub struct Signatures {
 impl Signatures {
     fn new(opt: Symbol, fails: Symbol) -> Signatures {
         Signatures {
+            returns_free: HashMap::new(),
             opt,
             fails,
             witnesses: HashMap::from([(opt, Witness::Null)]),
@@ -203,6 +206,11 @@ impl Signatures {
 
     /// Whether `func`'s result may be the argument at `param` itself, so binding the result names
     /// that argument a second time.
+    /// The names `func`'s result may be that are none of its parameters.
+    pub(crate) fn returns_free(&self, func: &HirId<HirStmt>) -> &[Symbol] {
+        self.returns_free.get(func).map_or(&[], Vec::as_slice)
+    }
+
     pub(crate) fn hands_back_itself_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
         self.param_fact(func, param).hands_back_itself
     }

@@ -1,0 +1,5 @@
+// A bracket write is a use like any other, so it is caught without needing a later read.
+fn eats(x: *mut) { }
+say a = mut [0];
+eats(a);
+a[0] = 1; // error: value used after it was moved

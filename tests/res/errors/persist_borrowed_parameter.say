@@ -1,0 +1,14 @@
+fn stash(bin: mut, item) { bin.push(item); }
+say sink = mut [];
+say m = mut [1, 2];
+stash(sink, m);
+// error(full):
+// error: cannot persist a borrowed value
+//  --> persist_borrowed_parameter.say:1:37
+//   |
+// 1 | fn stash(bin: mut, item) { bin.push(item); }
+//   |                                     ^^^^ `item` is a mutable value borrowed from the caller
+//   |
+//   = help: a borrowed value cannot be stored where it outlives the borrow; take the parameter by `*mut` to own it, or `copy` it before storing
+// 	at stash (persist_borrowed_parameter.say:1)
+// 	at script (persist_borrowed_parameter.say:4)

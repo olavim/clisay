@@ -1,0 +1,101 @@
+// A call hands back whatever the callee chose, which may be a value the callee still names. Two
+// results written through are two writers until something proves otherwise.
+say g = mut [0];
+fn one()! { return g; }
+say a = one();
+say b = one();
+a[0] = 9;
+b[0] = 1; // error: cannot write an element another name already writes
+
+// @split
+// One writer and one reader is the ordinary shape, so it stays open.
+say g = mut [0];
+fn one()! { return g; }
+say a = one();
+say b = one();
+a[0] = 9;
+print(b[0]); // expect: 9
+
+// @split
+// A construction is a fresh value, so it is proven exclusive and takes no slot.
+type C { pub mut v; init(this) { this.v = 0; } }
+say a = mut C();
+say b = mut C();
+a.v = 1;
+b.v = 2;
+print(a.v); // expect: 1
+print(b.v); // expect: 2
+
+// @split
+// So are two fresh values from the same function.
+fn make()! { return mut [0]; }
+say a = make();
+say b = make();
+a[0] = 1;
+b[0] = 2;
+print(a[0]); // expect: 1
+print(b[0]); // expect: 2
+
+// @split
+// One name may write through its own result as often as it likes. The result is `g` itself, so
+// binding it moves `g` the way `say a = g` would, and `a` is the name that reads it afterwards.
+say g = mut [0];
+fn one()! { return g; }
+say a = one();
+a[0] = 1;
+a[0] = 2;
+a[0] = 3;
+print(a[0]); // expect: 3
+
+// @split
+// The slot goes back with the scope that took it.
+say g = mut [0];
+fn one()! { return g; }
+{ say a = one(); a[0] = 1; }
+{ say b = one(); b[0] = 2; }
+print(g[0]); // expect: 2
+
+// @split
+// A callee the pass cannot resolve is the same story.
+say g = mut [0];
+fn one()! { return g; }
+say f = one;
+say a = f();
+say b = f();
+a[0] = 1;
+b[0] = 2; // error: cannot write an element another name already writes
+
+// @split
+// A method handing back a field is one more way to name it twice.
+type H { pub mut item; init(this) { this.item = mut [0]; } pub fn get(this)! { return this.item; } }
+say h = mut H();
+say a = h.get();
+say b = h.get();
+a[0] = 1;
+b[0] = 2; // error: cannot write an element another name already writes
+
+// @split
+// The global itself is a second writer, since the result is a second name for it. Binding the
+// result moves it, the same as `say a = g` does.
+say g = mut [0];
+fn one()! { return g; }
+say a = one();
+a[0] = 9;
+g[0] = 5; // error: value used after it was moved
+
+// @split
+// A function returning a name it did not take from an outer scope moves nothing.
+fn id(x: mut)! { return x; }
+say m = mut [0];
+say a = id(m);
+a[0] = 1;
+print(a[0]); // expect: 1
+
+// @split
+// Nor does one returning a fresh value.
+fn make()! { return mut [0]; }
+say g = mut [0];
+say a = make();
+a[0] = 1;
+g[0] = 2;
+print(g[0]); // expect: 2

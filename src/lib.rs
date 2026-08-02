@@ -96,6 +96,7 @@ use crate::middle::codegen::Compiler;
 use crate::middle::lower::lower;
 use crate::middle::names::resolve as resolve_names;
 use crate::middle::check::check;
+use crate::middle::shape::check as check_shape;
 use crate::middle::optimize::optimize;
 use crate::middle::bind::resolve as resolve_bindings;
 use crate::middle::signatures::collect as collect_signatures;
@@ -110,6 +111,7 @@ pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
     let hir = lower(ast, &names)?;
     let bindings = resolve_bindings(&hir)?;
     let sigs = collect_signatures(&hir, &bindings);
+    check_shape(&hir, &bindings, &sigs)?;
     let barriers = check(&hir, &bindings, &sigs)?;
     let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs)?;
     let ir = optimize(ir);

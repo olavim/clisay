@@ -12,7 +12,8 @@ use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol}
 use crate::middle::native;
 
 use super::{Collector, ParamFact};
-use super::walk::Child;
+use crate::middle::walk::Child;
+use crate::middle::walk;
 
 /// How the escape walk counts a parameter reference.
 #[derive(Clone, Copy, PartialEq)]
@@ -248,6 +249,7 @@ impl<'a> Collector<'a> {
     /// patched, which is safe because every input only ever grows.
     fn record(&mut self, a: &FnAnalysis) -> bool {
         let mut row = self.fold_facts(&a.params, &a.carriers, &a.facts);
+        let mut free: Vec<Symbol> = Vec::new();
         // Handing an argument back still counts as keeping it, which is what bars passing a mutable
         // value to a function that returns it.
         for name in &a.facts.returned {
@@ -269,15 +271,24 @@ impl<'a> Collector<'a> {
             // The narrower fact: the result may be the argument itself, not merely something
             // holding it. `return x` counts and `return [x]` does not.
             for name in self.returned_identity(ret) {
-                for p in a.carriers.get(&name).into_iter().flatten() {
-                    row[param_position(&a.params, *p)].hands_back_itself = true;
+                match a.carriers.get(&name) {
+                    Some(carried) => for p in carried {
+                        row[param_position(&a.params, *p)].hands_back_itself = true;
+                    },
+                    // A name no parameter carries comes from an outer scope, so the result is a
+                    // second name for a binding the caller may hold too.
+                    None => free.push(name),
                 }
             }
         }
 
+        free.sort_unstable();
+        free.dedup();
         // Every input only ever grows, so a row that differs from the stored one has gained a bit.
-        let grew = self.sigs.params.get(&a.func) != Some(&row);
+        let grew = self.sigs.params.get(&a.func) != Some(&row)
+            || self.sigs.returns_free.get(&a.func) != Some(&free);
         self.sigs.params.insert(a.func, row);
+        self.sigs.returns_free.insert(a.func, free);
         grew
     }
 
@@ -287,7 +298,7 @@ impl<'a> Collector<'a> {
         let owner = self.sigs.method_owner.get(&func).copied();
         let mut out = Vec::new();
 
-        self.visit_body(&decl.body, &mut |node| {
+        walk::visit_body(self.hir, &decl.body, &mut |node| {
             if let Child::Expr(e) = node {
                 if let HirExpr::Call(callee, _) = self.hir.get(&e) {
                     if let Some(func) = self.resolved_callee(callee, owner) { out.push(func); }
@@ -554,7 +565,7 @@ impl<'a> Collector<'a> {
             },
             _ => {},
         }
-        for child in self.children_of_expr(expr) {
+        for child in walk::children_of_expr(self.hir, expr) {
             match child {
                 Child::Expr(e) => self.walk_escapes(&e, facts, mode, owner),
                 Child::Stmt(s) => self.walk_escapes_stmt(&s, facts, mode, owner),
@@ -593,7 +604,7 @@ impl<'a> Collector<'a> {
             HirStmt::Fn(decl) => self.walk_escapes(&decl.body, facts, EscapeCollectMode::Capture, None),
             _ => {},
         }
-        for child in self.children_of_stmt(stmt) {
+        for child in walk::children_of_stmt(self.hir, stmt) {
             match child {
                 Child::Expr(e) => self.walk_escapes(&e, facts, mode, owner),
                 Child::Stmt(s) => self.walk_escapes_stmt(&s, facts, mode, owner),

@@ -7,7 +7,8 @@ use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol}
 use crate::middle::obligations::Obligations;
 
 use super::Collector;
-use super::walk::Child;
+use crate::middle::walk::Child;
+use crate::middle::walk;
 
 impl<'a> Collector<'a> {
     /// Adds each `?!` operand's obligations to the enclosing function's return set.
@@ -79,7 +80,7 @@ impl<'a> Collector<'a> {
 
     /// Collects each `?!` operand in a body, skipping nested function and lambda bodies.
     fn collect_propagates(&self, expr: &HirId<HirExpr>, out: &mut Vec<HirId<HirExpr>>) {
-        self.visit_body(expr, &mut |node| {
+        walk::visit_body(self.hir, expr, &mut |node| {
             if let Child::Expr(e) = node {
                 if let HirExpr::Propagate(operand) = self.hir.get(&e) { out.push(*operand); }
             }

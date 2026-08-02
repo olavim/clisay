@@ -50,6 +50,10 @@ pub enum Inst {
     PopTry,
     /// Aborts if the top of the stack is null, else leaves it.
     AssertNonNull,
+    AssertNotBorrowed,
+    AssertNoOtherWriter(u8),
+    AssertNoWriter,
+    AssertImmutable,
     /// Guards an unknown value at a destination: throws any registered witness the destination
     /// does not allow.
     BarrierGuard(u16),
@@ -63,6 +67,10 @@ pub enum Inst {
     MarkBorrow(u8, u16),
     /// Releases the last `count` marked borrows.
     ReleaseBorrow(u8),
+    TakeWriteOwnership(u8),
+    TransferWriteOwnership(u8),
+    ReleaseWriteOwnership(u8),
+    ReleaseWriteOwnershipAt(u8),
 
     // Stack / constants
     Pop,

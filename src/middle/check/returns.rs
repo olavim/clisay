@@ -1,6 +1,12 @@
-//! Return-contract checks: shape conformance and definite return.
+//! What a body owes on the way out: return shape, definite return, and results left undischarged.
 
-use crate::middle::hir::{HirExpr, HirId, ReturnShape};
+use anyhow::anyhow;
+
+use crate::middle::diagnose::Diagnose;
+use crate::frontend::lex::Diagnostic;
+use crate::middle::obligations::{obligation_atoms, Rule, Site};
+use crate::middle::obligations::{quoted_obligation_list};
+use crate::middle::hir::{HirFnDecl, HirExpr, HirId, ReturnShape};
 use crate::middle::obligations::Obligations;
 
 use super::{Mutability, Checker, Flow, Typed, Violation};
@@ -38,7 +44,7 @@ impl<'a> Checker<'a> {
 
     /// Checks a returned value against the obligations the return admits. An unmarked return infers
     /// its obligations from the body instead, so it admits whatever the body produces.
-    fn check_return_obligations(&self, flow: &Flow, admits: &Obligations, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    pub(super) fn check_return_obligations(&self, flow: &Flow, admits: &Obligations, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if self.fn_ctx.return_unmarked {
             return Ok(());
         }
@@ -48,7 +54,7 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
 
-        let owed = self.quoted_obligation_list(&undeclared);
+        let owed = quoted_obligation_list(self.hir, &undeclared);
         let subject = self.quoted_subject(node);
         let help = "discharge it before returning, or declare it on the return";
         let Some(clause) = &self.fn_ctx.return_clause else {
@@ -111,4 +117,59 @@ impl<'a> Checker<'a> {
             ReturnShape::Inferred => unreachable!("inferred returns are skipped above"),
         }
     }
+
+    /// Rejects a binding that reaches the end of its scope still owing a `discharge before drop` obligation.
+    pub(super) fn check_dropped(&self, mark: usize, at: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        for local in &self.locals[mark..] {
+            if local.func.is_some() || local.owed.is_empty() {
+                continue;
+            }
+            let pending: Obligations = local.owed.iter().copied()
+                .filter(|o| self.sigs.rules_of(*o).before_drop && !local.handled.contains(o))
+                .collect();
+            if pending.is_empty() {
+                continue;
+            }
+            let owed = quoted_obligation_list(self.hir, &pending);
+            let text = self.binding_text(local.name);
+            let help = self.prohibition_help(&pending, Rule::BeforeDrop, Site::ScopeEnd);
+            let pos = self.hir.pos(local.site.as_ref().unwrap_or(at)).clone();
+            return Err(anyhow!("{}", Diagnostic::new(format!("'{text}' owes {owed} and is never discharged"), pos)
+                .with_label(format!("owes {owed} from here"))
+                .with_help(help)));
+        }
+        Ok(())
+    }
+
+    /// Rejects a statement result that owes a `discharge before drop` obligation and is thrown away.
+    pub(super) fn check_dropped_result(&self, flow: &Flow, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if matches!(self.hir.get(node), HirExpr::Assign(..) | HirExpr::Assert(_) | HirExpr::Propagate(_)) {
+            return Ok(());
+        }
+
+        let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
+        let pending: Obligations = obligations.iter().copied().filter(|o| self.sigs.rules_of(*o).before_drop).collect();
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        let owed = quoted_obligation_list(self.hir, &pending);
+        let help = self.prohibition_help(&pending, Rule::BeforeDrop, Site::Drop);
+        Err(self.error_help(Site::Drop.refusal(&owed), node, help))
+    }
+
+    /// An unmarked function that returns a bad value on one path and nothing on another owes a shape
+    /// the compiler will not infer silently. The message names the annotation that makes it explicit.
+    pub(super) fn mixed_void_error(&self, decl: &HirFnDecl, obligations: &Obligations) -> anyhow::Error {
+        let name = self.hir.text(decl.name);
+        let list = quoted_obligation_list(self.hir, obligations);
+        // The annotation spells the obligations as clause atoms: `: void opt fails`.
+        let annotation = format!(": void {}", obligation_atoms(self.hir, obligations));
+        self.error_help(
+            format!("'{name}' returns a value owing {list} on some paths and no value on others"),
+            &decl.body,
+            format!("annotate its return '{annotation}', or return a value on every path"),
+        )
+    }
 }
+

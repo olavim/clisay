@@ -1,0 +1,179 @@
+// Every way out of a scope gives the element writer slot back. Each section takes the slot more
+// than once through one exit path, so a leak shows up as a false rejection on the second pass.
+
+// Falling off the end of a block.
+say arr = mut [mut [0]];
+say mut i = 0;
+{ say a = arr[i]; a[0] = 1; }
+{ say b = arr[i]; b[0] = 2; }
+{ say c = arr[i]; c[0] = 3; }
+print(arr[0][0]); // expect: 3
+
+// @split
+// An explicit `return`, which jumps past the body's release.
+say arr = mut [mut [0]];
+fn touch(a: mut, k) { say e = a[k]; e[0] = 1; return; }
+say mut i = 0;
+touch(arr, i);
+touch(arr, i);
+print(arr[0][0]); // expect: 1
+
+// @split
+// Falling off the end of a function body.
+say arr = mut [mut [0]];
+fn touch(a: mut, k) { say e = a[k]; e[0] = 2; }
+say mut i = 0;
+touch(arr, i);
+touch(arr, i);
+print(arr[0][0]); // expect: 2
+
+// @split
+// A `return` from inside a loop inside the body.
+say arr = mut [mut [0]];
+fn touch(a: mut, k) { say mut n = 0; while (n < 3) { say e = a[k]; e[0] = 3; return; } }
+say mut i = 0;
+touch(arr, i);
+touch(arr, i);
+print(arr[0][0]); // expect: 3
+
+// @split
+// An unwind, which skips the release outright.
+say arr = mut [mut [0]];
+fn touch(a: mut, k) { say e = a[k]; e[0] = 4; throw "up"; }
+say mut i = 0;
+try { touch(arr, i); } catch (e) { }
+try { touch(arr, i); } catch (e) { }
+print(arr[0][0]); // expect: 4
+
+// @split
+// An unwind from a call nested below the one holding the slot.
+say arr = mut [mut [0]];
+fn inner() { throw "up"; }
+fn touch(a: mut, k) { say e = a[k]; e[0] = 5; inner(); }
+say mut i = 0;
+try { touch(arr, i); } catch (e) { }
+try { touch(arr, i); } catch (e) { }
+print(arr[0][0]); // expect: 5
+
+// @split
+// A `finally` on the way out.
+say arr = mut [mut [0]];
+fn touch(a: mut, k) { try { say e = a[k]; e[0] = 6; return; } finally { } }
+say mut i = 0;
+touch(arr, i);
+touch(arr, i);
+print(arr[0][0]); // expect: 6
+
+// @split
+// A factory body, which returns through `RETURN_FAC` rather than `RETURN`.
+type H { pub mut v; init(this, a: mut, k) { say e = a[k]; e[0] = 7; this.v = 0; } }
+say arr = mut [mut [0]];
+say mut i = 0;
+say h1 = mut H(arr, i);
+say h2 = mut H(arr, i);
+print(arr[0][0]); // expect: 7
+
+// @split
+// A method body.
+type H { init(this) { } pub fn touch(this, a: mut, k) { say e = a[k]; e[0] = 8; } }
+say arr = mut [mut [0]];
+say h = H();
+say mut i = 0;
+h.touch(arr, i);
+h.touch(arr, i);
+print(arr[0][0]); // expect: 8
+
+// @split
+// A call through a value, where the callee is not known at the call site.
+say arr = mut [mut [0]];
+fn touch(a: mut, k) { say e = a[k]; e[0] = 9; }
+say f = touch;
+say mut i = 0;
+f(arr, i);
+f(arr, i);
+print(arr[0][0]); // expect: 9
+
+// @split
+// Recursion, where each level takes the slot its caller still holds.
+say arr = mut [mut [0], mut [0]];
+fn down(a: mut, n) { say e = a[n - n]; e[0] = n; if (n > 0) { down(a, n - 1); } }
+down(arr, 0);
+down(arr, 0);
+print(arr[0][0]); // expect: 0
+
+// @split
+// A slot taken inside a `catch`.
+say arr = mut [mut [0]];
+say mut i = 0;
+try { throw "up"; } catch (x) { say e = arr[i]; e[0] = 1; }
+try { throw "up"; } catch (x) { say e = arr[i]; e[0] = 2; }
+print(arr[0][0]); // expect: 2
+
+// @split
+// Nesting: an inner scope gives its slot back while the outer keeps its own.
+say arr = mut [mut [0], mut [0]];
+say mut i = 0;
+say mut j = 1;
+say outer = arr[i];
+outer[0] = 1;
+{ say a = arr[j]; a[0] = 2; }
+{ say b = arr[j]; b[0] = 3; }
+print(arr[0][0]); // expect: 1
+print(arr[1][0]); // expect: 3
+
+// @split
+// A rebind gives the slot back where the value changes, not at the end of the scope.
+say arr = mut [mut [0], mut [0]];
+say mut d = arr[0];
+d[0] = 1;
+d = arr[1];
+say c = arr[0];
+c[0] = 9;
+print(arr[0][0]); // expect: 9
+
+// @split
+// A rebind may take a slot again, since a scope gives back what its values hold rather than a
+// count of what it took.
+say arr = mut [mut [0], mut [0]];
+say mut i = 1;
+say mut d = arr[0];
+d[0] = 1;
+d = arr[i];
+d[0] = 5;
+say c = arr[0];
+c[0] = 9;
+print(arr[0][0]); // expect: 9
+print(arr[1][0]); // expect: 5
+
+// @split
+// A scope with more than one way out gives the slot back on each of them.
+say arr = mut [mut [0]];
+say mut i = 0;
+say mut n = 0;
+while (n < 3) {
+    say e = arr[i];
+    e[0] = n;
+    if (n > 100) { print("no"); } else { }
+    n = n + 1;
+}
+print(arr[0][0]); // expect: 2
+
+// @split
+// A loop body taking a slot every round does not grow the record of held slots.
+say arr = mut [mut [0]];
+say mut i = 0;
+say mut n = 0;
+while (n < 500) { say e = arr[i]; e[0] = n; n = n + 1; }
+print(arr[0][0]); // expect: 499
+
+// @split
+// The collector keeps a held value alive.
+say arr = mut [mut [0]];
+say mut i = 0;
+say e = arr[i];
+e[0] = 1;
+gcCollect();
+say mut n = 0;
+while (n < 200) { say junk = mut [n]; n = n + 1; }
+gcCollect();
+print(e[0]); // expect: 1

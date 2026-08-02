@@ -1,9 +1,13 @@
-//! Flow-sensitive narrowing.
+//! What a condition or a match arm proves, so the branch it guards may assume it.
 
-use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, HirMatcher, Symbol, UnOp};
+use std::collections::HashMap;
+
+use crate::core::objects::TypeMember;
+use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, HirMatchArm, HirMatcher, Symbol, UnOp};
 use crate::middle::obligations::Obligations;
+use crate::middle::signatures::Witness;
 
-use super::{Mutability, Checker, FlowSnapshot, LocalFlow, NarrowFact, NarrowKey, TypeTag};
+use super::{Checker, NarrowFact, NarrowKey, TypeTag};
 
 impl<'a> Checker<'a> {
     /// A reassignment drops the binding's narrowing facts. The slot is non-null again only if
@@ -21,7 +25,7 @@ impl<'a> Checker<'a> {
     }
 
     /// A place's discharged obligations.
-    fn narrowed_set(&self, key: &NarrowKey) -> Option<&Obligations> {
+    pub(super) fn narrowed_set(&self, key: &NarrowKey) -> Option<&Obligations> {
         match key {
             NarrowKey::ThisField(field) => self.this_narrowed.get(field),
             _ => self.narrowed.get(key),
@@ -29,7 +33,7 @@ impl<'a> Checker<'a> {
     }
 
     /// A place's discharged set, created empty if the place has none yet.
-    fn narrowed_set_or_default(&mut self, key: NarrowKey) -> &mut Obligations {
+    pub(super) fn narrowed_set_or_default(&mut self, key: NarrowKey) -> &mut Obligations {
         match key {
             NarrowKey::ThisField(field) => self.this_narrowed.entry(field).or_default(),
             _ => self.narrowed.entry(key).or_default(),
@@ -86,12 +90,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn narrow_null_compare(&self, l: &HirId<HirExpr>, r: &HirId<HirExpr>) -> Vec<NarrowFact> {
+    pub(super) fn narrow_null_compare(&self, l: &HirId<HirExpr>, r: &HirId<HirExpr>) -> Vec<NarrowFact> {
         let place = if self.is_null(l) { r } else if self.is_null(r) { l } else { return Vec::new() };
         self.narrow_place(place)
     }
 
-    fn narrow_place(&self, expr: &HirId<HirExpr>) -> Vec<NarrowFact> {
+    pub(super) fn narrow_place(&self, expr: &HirId<HirExpr>) -> Vec<NarrowFact> {
         match self.hir.get(expr) {
             HirExpr::Identifier(name) => match self.frame_index_of(*name) {
                 Some(i) if self.locals[i].func.is_none() => vec![NarrowFact::Discharge(NarrowKey::Local(i), self.sigs.opt)],
@@ -105,14 +109,14 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn field_is_mutable(&self, type_name: Symbol, field: Symbol) -> bool {
+    pub(super) fn field_is_mutable(&self, type_name: Symbol, field: Symbol) -> bool {
         self.layout_of(type_name).is_some_and(|layout| layout.is_mutable(field))
     }
 
     /// The positive branch of `x is W` narrows a local to non-null and to the tested concrete
     /// type. When `W` witnesses an obligation the value keeps owing it. The tag just records that
     /// it is confirmed to be `W`.
-    fn narrow_is(&self, target: &HirId<HirExpr>, type_name: Symbol) -> Vec<NarrowFact> {
+    pub(super) fn narrow_is(&self, target: &HirId<HirExpr>, type_name: Symbol) -> Vec<NarrowFact> {
         let HirExpr::Identifier(name) = self.hir.get(target) else { return Vec::new() };
         let Some(i) = self.frame_index_of(*name) else { return Vec::new() };
         if self.locals[i].func.is_some() {
@@ -126,7 +130,7 @@ impl<'a> Checker<'a> {
     }
 
     /// The false branch of `x is W` discharges the obligation `W` witnesses, if `W` names one.
-    fn narrow_is_negative(&self, target: &HirId<HirExpr>, type_name: Symbol) -> Vec<NarrowFact> {
+    pub(super) fn narrow_is_negative(&self, target: &HirId<HirExpr>, type_name: Symbol) -> Vec<NarrowFact> {
         let HirExpr::Identifier(name) = self.hir.get(target) else { return Vec::new() };
         let Some(i) = self.frame_index_of(*name) else { return Vec::new() };
         if self.locals[i].func.is_some() {
@@ -138,7 +142,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn is_null(&self, expr: &HirId<HirExpr>) -> bool {
+    pub(super) fn is_null(&self, expr: &HirId<HirExpr>) -> bool {
         matches!(self.hir.get(expr), HirExpr::Literal(HirLiteral::Null))
     }
 
@@ -160,73 +164,6 @@ impl<'a> Checker<'a> {
         self.restore(&pre);
         r
     }
-
-    pub(super) fn snapshot(&self) -> FlowSnapshot {
-        FlowSnapshot {
-            locals: self.locals.iter().map(|l| LocalFlow {
-                assigned: l.assigned,
-                tag: l.tag.clone(),
-                mutability: l.mutability,
-                move_site: l.move_site,
-                provenance: l.provenance.clone(),
-                handled: l.handled.clone(),
-            }).collect(),
-            narrowed: self.narrowed.clone(),
-            this_narrowed: self.this_narrowed.clone(),
-        }
-    }
-
-    pub(super) fn restore(&mut self, flow: &FlowSnapshot) {
-        self.restore_keeping_moves(flow);
-        for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
-            local.move_site = snap.move_site;
-            local.provenance = snap.provenance.clone();
-        }
-    }
-
-    /// Restores flow but keeps each local's move site and give-back sources. A loop body's moves
-    /// persist to the next iteration and past the loop, while its narrowings and assignments do not
-    /// survive zero runs. A value moved before the loop stays moved on the zero-run path, so its
-    /// pre-loop move merges back in rather than being masked by an in-body rebind.
-    pub(super) fn restore_keeping_moves(&mut self, flow: &FlowSnapshot) {
-        for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
-            local.assigned = snap.assigned;
-            local.tag = snap.tag.clone();
-            local.mutability = snap.mutability;
-            local.move_site = local.move_site.or(snap.move_site);
-            local.handled = snap.handled.clone();
-        }
-        self.narrowed = flow.narrowed.clone();
-        self.this_narrowed = flow.this_narrowed.clone();
-    }
-
-    /// Merges another branch's end state into the current local flow.
-    pub(super) fn join_in(&mut self, other: &FlowSnapshot) {
-        for (local, o) in self.locals.iter_mut().zip(&other.locals) {
-            local.assigned = local.assigned && o.assigned;
-            local.tag = if local.tag == o.tag { local.tag.clone() } else { TypeTag::Unknown };
-            local.mutability = if local.mutability == o.mutability { local.mutability } else { Mutability::Unknown };
-            local.move_site = local.move_site.or(o.move_site);
-            local.provenance.retain(|s| o.provenance.contains(s));
-            local.handled.retain(|ob| o.handled.contains(ob));
-        }
-    }
-
-    /// Merges two branch snapshots.
-    pub(super) fn join(&mut self, then_snap: &FlowSnapshot, else_snap: &FlowSnapshot) {
-        debug_assert!(then_snap.locals.len() == self.locals.len() && else_snap.locals.len() == self.locals.len());
-        for (i, local) in self.locals.iter_mut().enumerate() {
-            let (then_local, else_local) = (&then_snap.locals[i], &else_snap.locals[i]);
-            local.assigned = then_local.assigned && else_local.assigned;
-            local.tag = if then_local.tag == else_local.tag { then_local.tag.clone() } else { TypeTag::Unknown };
-            local.mutability = if then_local.mutability == else_local.mutability
-                { then_local.mutability } else
-                { Mutability::Unknown };
-            local.move_site = then_local.move_site.or(else_local.move_site);
-            local.provenance = then_local.provenance.iter().copied().filter(|s| else_local.provenance.contains(s)).collect();
-            local.handled = then_local.handled.intersection(&else_local.handled).copied().collect();
-        }
-    }
 }
 
 /// Whether matching this matcher proves the scrutinee non-null. A bare binder, a wildcard, and a
@@ -240,5 +177,112 @@ fn matcher_implies_non_null(matcher: &HirMatcher) -> bool {
         HirMatcher::As(_, inner) => matcher_implies_non_null(inner),
         HirMatcher::And(parts) => parts.iter().any(matcher_implies_non_null),
         HirMatcher::Or(alternatives) => alternatives.iter().all(matcher_implies_non_null),
+    }
+}
+
+impl<'a> Checker<'a> {
+    /// Recovers a nominal destructure's declared field facts onto the names its shape binds. A
+    /// nullable field makes its binder owe `opt`, exactly as reading `x.field` would. A structural
+    /// shape names no type, so it reaches this with nothing to resolve against.
+    pub(super) fn recover_shape_fields(&self, type_name: Symbol, shape: &HirMatcher, out: &mut HashMap<Symbol, Obligations>) {
+        let (HirMatcher::Shape(fields), Some(layout)) = (shape, self.layout_of(type_name)) else { return };
+        for field in fields {
+            let HirLiteral::String(key) = &field.key else { continue };
+            if !self.hir.symbol_of(key).is_some_and(|sym| layout.is_nullable(sym)) {
+                continue;
+            }
+            for name in whole_value_binders(&field.value) {
+                out.entry(name).or_default().insert(self.sigs.opt);
+            }
+        }
+    }
+
+    /// The witnesses a match arm rules out for the arms below it.
+    pub(super) fn arm_rules_out(&self, arm: &HirMatchArm, remaining: &Obligations) -> Obligations {
+        if let Some(guard) = &arm.guard {
+            // A guarded arm may not run, so it cannot be trusted to rule out a witness.
+            // Only a literal `true` guard always runs.
+            if !self.is_literal_true(guard) {
+                return Obligations::new();
+            }
+        }
+        self.matcher_rules_out(&arm.matcher, remaining)
+    }
+
+    /// The witnesses a bare matcher rules out, for the `~` one-liner, which has no arms to consult.
+    pub(super) fn matcher_rules_out(&self, matcher: &HirMatcher, remaining: &Obligations) -> Obligations {
+        remaining.iter().copied().filter(|w| self.matcher_total_over_witness(matcher, *w)).collect()
+    }
+
+    /// Whether a matcher matches every value in a witness's bad state.
+    pub(super) fn matcher_total_over_witness(&self, matcher: &HirMatcher, witness: Symbol) -> bool {
+        self.sigs.witness(witness).is_some_and(|w| self.total_over_witness(matcher, w))
+    }
+
+    /// Whether a matcher matches every value the witness names.
+    pub(super) fn total_over_witness(&self, matcher: &HirMatcher, witness: &Witness) -> bool {
+        match matcher {
+            HirMatcher::As(_, inner) => self.total_over_witness(inner, witness),
+            HirMatcher::Or(alternatives) => alternatives.iter().any(|m| self.total_over_witness(m, witness)),
+            HirMatcher::And(parts) => parts.iter().all(|m| self.total_over_witness(m, witness)),
+            HirMatcher::Literal(HirLiteral::Null) => matches!(witness, Witness::Null),
+            HirMatcher::Type { name: tested, shape, .. } => match witness {
+                Witness::Type(name) if tested == name => shape.as_ref().is_none_or(|s| self.destructure_total(*name, s)),
+                Witness::Trait(name) => tested == name && shape.is_none(),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Whether an `is Type { ... }` destructure matches every value of the type: every named field
+    /// is public and binds irrefutably.
+    pub(super) fn destructure_total(&self, type_name: Symbol, shape: &HirMatcher) -> bool {
+        let HirMatcher::Shape(fields) = shape else { return false };
+        fields.iter().all(|field| {
+            self.is_public_field(type_name, &field.key)
+                && matches!(field.value, HirMatcher::Binder(_) | HirMatcher::Wildcard)
+        })
+    }
+
+    /// Whether `key` names a public field of the type. A built-in witness type carries no layout,
+    /// so its public surface is answered directly.
+    pub(super) fn is_public_field(&self, type_name: Symbol, key: &HirLiteral) -> bool {
+        let HirLiteral::String(field) = key else { return false };
+        match self.layout_of(type_name) {
+            Some(layout) => match self.hir.symbol_of(field) {
+                Some(field) => matches!(layout.members.get(&field), Some(TypeMember::Field(_))) && layout.is_public(field),
+                None => false,
+            },
+            None => builtin_public_field(self.hir.text(type_name), field),
+        }
+    }
+
+    pub(super) fn is_literal_true(&self, guard: &HirId<HirExpr>) -> bool {
+        matches!(self.hir.get(guard), HirExpr::Literal(HirLiteral::Boolean(true)))
+    }
+}
+
+/// The public fields of a built-in witness type, which carries no layout. `Err` exposes `value`.
+fn builtin_public_field(type_name: &str, field: &str) -> bool {
+    matches!((type_name, field), ("Err", "value"))
+}
+
+/// The names a matcher binds to the whole matched value: a top-level binder or an `as` name. A
+/// shape, array, or type destructure binds sub-values, which are clean payloads.
+pub(super) fn whole_value_binders(matcher: &HirMatcher) -> Vec<Symbol> {
+    let mut out = Vec::new();
+    collect_whole_value_binders(matcher, &mut out);
+    out
+}
+
+fn collect_whole_value_binders(matcher: &HirMatcher, out: &mut Vec<Symbol>) {
+    match matcher {
+        HirMatcher::Binder(name) => out.push(*name),
+        HirMatcher::As(name, inner) => { out.push(*name); collect_whole_value_binders(inner, out); },
+        HirMatcher::And(parts) => for part in parts { collect_whole_value_binders(part, out); },
+        // Binding alternatives agree on their names, so the first that binds stands for all.
+        HirMatcher::Or(alternatives) => if let Some(binding) = alternatives.iter().find(|a| a.binds_anything()) { collect_whole_value_binders(binding, out); },
+        _ => {},
     }
 }
