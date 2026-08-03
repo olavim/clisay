@@ -9,7 +9,7 @@ use crate::middle::signatures::{Mutability, TypeTag};
 
 use super::narrow::whole_value_binders;
 use super::{ElementKey, MovedAt};
-use super::{Checker, Local, NarrowKey};
+use super::{Checker, Local};
 
 /// The binders a condition or match arm introduces, paired with the obligations each owes.
 #[derive(Default)]
@@ -30,13 +30,14 @@ pub(super) struct LocalFlow {
     pub(super) provenance: Vec<usize>,
     pub(super) extracted_from: Option<(usize, Option<ElementKey>)>,
     pub(super) handled: Obligations,
+    pub(super) discharged: Obligations,
+    pub(super) field_discharged: HashMap<Symbol, Obligations>,
 }
 
 /// A snapshot of flow facts that branches widen back at a join.
 #[derive(Clone)]
 pub(super) struct FlowSnapshot {
     pub(super) locals: Vec<LocalFlow>,
-    pub(super) narrowed: HashMap<NarrowKey, Obligations>,
     pub(super) this_narrowed: HashMap<Symbol, Obligations>,
 }
 
@@ -59,9 +60,10 @@ impl<'a> Checker<'a> {
         dropped
     }
 
+    /// Drops every local a scope introduced.
     pub(super) fn truncate_locals(&mut self, mark: usize) {
+        self.revive_scoped_sources(mark);
         self.locals.truncate(mark);
-        self.narrowed.retain(|key, _| !matches!(key, NarrowKey::Local(i) | NarrowKey::LocalField(i, _) if *i >= mark));
     }
 
     /// Declares a scope's binders as immutable locals, each owing what the scope recorded for it.
@@ -212,8 +214,9 @@ impl<'a> Checker<'a> {
                 provenance: l.alias.provenance.clone(),
                 extracted_from: l.alias.extracted_from,
                 handled: l.handled.clone(),
+                discharged: l.discharged.clone(),
+                field_discharged: l.field_discharged.clone(),
             }).collect(),
-            narrowed: self.narrowed.clone(),
             this_narrowed: self.this_narrowed.clone(),
         }
     }
@@ -235,9 +238,18 @@ impl<'a> Checker<'a> {
             local.alias.mutability = snap.mutability;
             local.alias.move_site = local.alias.move_site.or(snap.move_site);
             local.handled = snap.handled.clone();
+            local.discharged = snap.discharged.clone();
+            local.field_discharged = snap.field_discharged.clone();
         }
-        self.narrowed = flow.narrowed.clone();
         self.this_narrowed = flow.this_narrowed.clone();
+    }
+
+    /// Puts each local's narrowings back.
+    pub(super) fn restore_narrowings(&mut self, flow: &FlowSnapshot) {
+        for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
+            local.discharged = snap.discharged.clone();
+            local.field_discharged = snap.field_discharged.clone();
+        }
     }
 
     /// Merges another branch's end state into the current local flow.

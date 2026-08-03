@@ -3,7 +3,7 @@
 mod init;
 mod traits;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
@@ -393,6 +393,13 @@ impl<'a> Lowerer<'a> {
             },
             Literal::Lambda(decl) => HirLiteral::Lambda(self.fn_decl(decl)?),
         })
+    }
+
+    /// Each field's lowered `:` clause. A field with no clause carries nothing.
+    pub(super) fn field_clauses(&self, decl: &TypeDecl) -> HashMap<Symbol, HirSlotClause> {
+        decl.field_clauses.iter()
+            .map(|(field, clause)| (*field, self.slot_clause(decl.nullable_fields.contains(field), clause)))
+            .collect()
     }
 
     fn slot_clause(&self, marker_nullable: bool, clause: &SlotClause) -> HirSlotClause {

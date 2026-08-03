@@ -109,6 +109,7 @@ impl<'a> Lowerer<'a> {
             fields: composed.fields,
             nullable_fields: decl.nullable_fields.clone(),
             mut_fields: decl.mut_fields.clone(),
+            field_clauses: self.field_clauses(decl),
             methods: composed.methods,
             req_fns,
             method_traits: composed.method_traits,
@@ -136,6 +137,7 @@ impl<'a> Lowerer<'a> {
             fields: composed.fields,
             nullable_fields: decl.nullable_fields.clone(),
             mut_fields: decl.mut_fields.clone(),
+            field_clauses: self.field_clauses(decl),
             methods: composed.methods,
             req_fns: Vec::new(), // satisfaction is checked at composing types, not the trait itself
             method_traits: composed.method_traits,

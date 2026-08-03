@@ -253,12 +253,7 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
 
-        // A factory's field-local carries only the field's nullability, not the rest of its clause.
-        let undeclared = match self.is_field_local(name) {
-            true => Obligations::new(),
-            false => self.undeclared_obligations(flow, accepted),
-        };
-
+        let undeclared = self.undeclared_obligations(flow, accepted);
         if !undeclared.is_empty() {
             let owed = quoted_obligation_list(self.hir, &undeclared);
             return Err(self.error_help(format!("cannot assign a value owing {owed} to '{text}'"), node,

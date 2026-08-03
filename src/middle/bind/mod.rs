@@ -17,6 +17,7 @@ use crate::core::objects::{TypeMember, UpvalueLocation};
 use crate::middle::hir::{
     BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol,
 };
+use crate::middle::obligations::Obligations;
 
 /// Where a bare identifier binds.
 #[derive(Clone, Copy)]
@@ -52,6 +53,14 @@ pub enum FnKind {
     Factory,
 }
 
+/// What a member's `:` clause declares. `container` marks `[obl]`, where the elements owe the
+/// obligations rather than the member itself.
+#[derive(Clone)]
+pub struct MemberClause {
+    pub owed: Obligations,
+    pub container: bool,
+}
+
 #[derive(Clone)]
 pub struct TypeLayout {
     pub name: Symbol,
@@ -65,6 +74,8 @@ pub struct TypeLayout {
     /// Nullable fields and nullable-returning methods.
     pub nullable: IntSet<u8>,
     pub mutable: IntSet<u8>,
+    /// What each member's `:` clause declares, for the members that have one.
+    pub clauses: FnvHashMap<u8, MemberClause>,
     pub inner: IntSet<u8>,
     pub member_count: u8,
     /// Member id of the factory function.
@@ -80,6 +91,7 @@ impl TypeLayout {
             non_public: IntSet::default(),
             nullable: IntSet::default(),
             mutable: IntSet::default(),
+            clauses: FnvHashMap::default(),
             inner: IntSet::default(),
             factory_id: 0,
             member_count: 0,
@@ -102,6 +114,11 @@ impl TypeLayout {
 
     pub fn is_mutable(&self, name: Symbol) -> bool {
         self.resolve_id(name).is_some_and(|id| self.mutable.contains(&id))
+    }
+
+    /// What a member's clause declares, or nothing where it declares none.
+    pub fn clause_of(&self, name: Symbol) -> Option<&MemberClause> {
+        self.resolve_id(name).and_then(|id| self.clauses.get(&id))
     }
 
     pub fn is_public(&self, name: Symbol) -> bool {

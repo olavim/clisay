@@ -311,6 +311,8 @@ pub struct HirTypeDecl {
     pub nullable_fields: HashSet<Symbol>,
     /// Fields declared reassignable with a `mut` modifier (`mut count;`).
     pub mut_fields: HashSet<Symbol>,
+    /// Each field's declared `:` clause, for the fields that have one.
+    pub field_clauses: HashMap<Symbol, HirSlotClause>,
     pub methods: Vec<HirId<HirStmt>>,
     /// The `req fn` holes this composer must satisfy: its own and those of its `with` traits.
     pub req_fns: Vec<HirReqFn>,

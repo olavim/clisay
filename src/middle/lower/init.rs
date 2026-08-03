@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl};
+use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl, SlotClause};
 use crate::frontend::lex::SourcePosition;
 use crate::middle::hir::{HirSlotClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp};
 
@@ -53,7 +53,8 @@ impl<'a> Lowerer<'a> {
                 None if nullable => Some(self.hir.add(HirExpr::Literal(HirLiteral::Null), type_pos.clone())),
                 None => None,
             };
-            body.push(self.field_local_decl(field, value, nullable, type_pos));
+            let clause = decl.field_clauses.iter().find(|(f, _)| *f == field).map(|(_, c)| c);
+            body.push(self.field_local_decl(field, value, nullable, clause, type_pos));
         }
 
         // The declared body, with each `this.<field>` now a field-local.
@@ -93,12 +94,13 @@ impl<'a> Lowerer<'a> {
 
     /// Declares a factory's field-local: `say mut $<field> [= value]`. A nullable field is `opt`, so
     /// a null seed and later null writes are accepted.
-    fn field_local_decl(&mut self, field: Symbol, value: Option<HirId<HirExpr>>, nullable: bool, pos: &SourcePosition) -> HirId<HirStmt> {
+    fn field_local_decl(&mut self, field: Symbol, value: Option<HirId<HirExpr>>, nullable: bool, declared: Option<&SlotClause>, pos: &SourcePosition) -> HirId<HirStmt> {
         let name = self.field_local_sym(field);
-        let clause = if nullable {
-            HirSlotClause { names: vec![self.opt], ..Default::default() }
-        } else {
-            HirSlotClause::default()
+        // The local stands for the field, so it accepts exactly what the field declares.
+        let clause = match declared {
+            Some(declared) => self.slot_clause(nullable, declared),
+            None if nullable => HirSlotClause { names: vec![self.opt], ..Default::default() },
+            None => HirSlotClause::default(),
         };
         let field_init = HirFieldInit { name, value, nullable, mutable: true, clause };
         self.hir.add(HirStmt::Say(field_init), pos.clone())
