@@ -546,6 +546,7 @@ impl<'a> Checker<'a> {
     pub(super) fn type_decl(&mut self, _node: &HirId<HirStmt>, type_name: Option<Symbol>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         let saved_type = self.current_type;
         let saved_surface = self.current_trait_surface.take();
+        let saved_factory = std::mem::replace(&mut self.checking_factory, false);
         self.current_type = type_name;
         if let Some(_type_name) = type_name {
             // The factory's field-locals carry definite assignment, and writing an immutable field
@@ -562,6 +563,7 @@ impl<'a> Checker<'a> {
         }
         self.current_type = saved_type;
         self.current_trait_surface = saved_surface;
+        self.checking_factory = saved_factory;
         Ok(())
     }
 

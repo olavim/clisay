@@ -1,5 +1,4 @@
-//! Construction shape: a brace supplies every non-null public field, and never mixes with a
-//! factory's arguments.
+//! Construction shape: a brace supplies every non-null public field.
 
 use crate::core::objects::TypeMember;
 use crate::middle::diagnose::Diagnose;
@@ -16,11 +15,8 @@ struct FieldInfo {
 }
 
 impl<'a> Shape<'a> {
-    /// A construction is a factory call or a brace, never both.
-    pub(super) fn construct(&self, node: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
-        if !args.is_empty() && !brace.is_empty() {
-            return Err(self.error("cannot mix constructor arguments and brace fields; use `K(..)` or `K { .. }`".to_string(), node));
-        }
+    /// The fields a brace supplies, against the fields the type declares.
+    pub(super) fn construct(&self, callee: &HirId<HirExpr>, brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
         let Some(type_name) = self.sigs.type_named(self.hir, callee) else { return Ok(()) };
         let braced: Obligations = brace.iter().map(|(name, _)| *name).collect();
         self.check_construction(type_name, &braced, callee)

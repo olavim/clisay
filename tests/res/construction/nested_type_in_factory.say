@@ -1,0 +1,38 @@
+// A type declared inside a factory body is checked as its own type, and the factory resumes.
+type Outer {
+    pub a; pub b;
+    init(this, x) {
+        this.a = x;
+        type Inner { pub p; init(this, q) { this.p = q; } }
+        this.b = Inner(1).p;
+    }
+}
+say o = Outer(5);
+print(o.a); // expect: 5
+print(o.b); // expect: 1
+
+// @split
+// The nested type does not switch the immutable-field rule off for the rest of the enclosing type.
+type Outer {
+    pub a;
+    init(this, x) {
+        type Inner { pub p; init(this, q) { this.p = q; } }
+        this.a = x;
+    }
+    pub fn bad(this) { this.a = 2; } // error: Cannot assign immutable field `Outer.a`
+}
+
+// @split
+// Two nested types in one factory, so the flag survives more than one round trip.
+type Outer {
+    pub a; pub b;
+    init(this, x) {
+        type One { pub p; init(this) { this.p = 1; } }
+        this.a = One().p;
+        type Two { pub q; init(this) { this.q = 2; } }
+        this.b = Two().q;
+    }
+}
+say o = Outer(0);
+print(o.a); // expect: 1
+print(o.b); // expect: 2

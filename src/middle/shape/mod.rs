@@ -42,7 +42,7 @@ impl<'a> Shape<'a> {
 
     fn expr(&self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match self.hir.get(node) {
-            HirExpr::Construct(callee, args, brace) => self.construct(node, callee, args, brace)?,
+            HirExpr::Construct(callee, _, brace) => self.construct(callee, brace)?,
             HirExpr::Literal(HirLiteral::Lambda(decl)) => self.visit(Child::Expr(decl.body))?,
             _ => {},
         }
