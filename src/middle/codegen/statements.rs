@@ -255,7 +255,12 @@ impl<'a> Compiler<'a> {
     /// compiled into it - which is what lets forward references resolve.
     fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
-            if matches!(self.hir.get(stmt_id), HirStmt::Fn(_) | HirStmt::Type(_)) {
+            let reserves = match self.hir.get(stmt_id) {
+                HirStmt::Fn(_) => true,
+                HirStmt::Type(decl) => decl.builtin.is_none(),
+                _ => false,
+            };
+            if reserves {
                 self.emit(Inst::PushNull, stmt_id);
             }
         }

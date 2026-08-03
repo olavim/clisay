@@ -1,6 +1,6 @@
 use std::{fmt, mem};
 
-use fnv::{FnvHashMap, FnvHashSet};
+use fnv::FnvHashMap;
 use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
@@ -55,6 +55,9 @@ pub fn freeze_value(value: Value, origin: u32) {
         _ => {},
     }
 }
+
+/// A type or trait declaration's runtime identity.
+pub type TypeId = u16;
 
 /// Reached by the collector this cycle.
 pub const FLAG_MARKED: u8 = 1 << 0;
@@ -153,6 +156,20 @@ macro_rules! objects {
             fn as_traceable(&self) -> &dyn GcTraceable {
                 match self.kind() {
                     $( ObjectKind::$kind => unsafe { &*self.$accessor() }, )+
+                }
+            }
+
+            /// Marks everything the object owns. Dispatching on the concrete type keeps the
+            /// allocation pointer, which whatever an object stores past its struct needs.
+            fn mark_owned(&self, gc: &mut Gc) {
+                match self.kind() {
+                    $(
+                        ObjectKind::$kind => {
+                            let ptr = self.$accessor();
+                            unsafe { (*ptr).mark(gc) };
+                            unsafe { <$ty>::mark_trailing(ptr, gc) };
+                        }
+                    ),+
                 }
             }
 
@@ -270,7 +287,7 @@ impl GcTraceable for Object {
 
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(*self);
-        self.as_traceable().mark(gc);
+        self.mark_owned(gc);
     }
 
     fn size(&self) -> usize {
@@ -426,21 +443,19 @@ impl ObjClosure {
         Self::UPVALUES_OFFSET + count * mem::size_of::<*mut ObjUpvalue>()
     }
 
+    /// The trailing upvalue array. Takes the allocation pointer rather than `&self`, because a
+    /// reference to the struct reaches only its own bytes and the array sits past them.
+    /// Safety: `closure` must be a pointer returned by [`Gc::alloc_closure`].
     #[inline]
-    fn upvalues_ptr(&self) -> *mut *mut ObjUpvalue {
-        unsafe { (self as *const ObjClosure as *mut u8).add(Self::UPVALUES_OFFSET) as *mut *mut ObjUpvalue }
-    }
-
-    #[inline]
-    pub fn upvalues(&self) -> &[*mut ObjUpvalue] {
-        unsafe { std::slice::from_raw_parts(self.upvalues_ptr(), self.upvalue_count as usize) }
+    pub unsafe fn upvalues_ptr(closure: *const ObjClosure) -> *mut *mut ObjUpvalue {
+        unsafe { (closure as *mut u8).add(Self::UPVALUES_OFFSET) as *mut *mut ObjUpvalue }
     }
 
     /// Reads the captured upvalue at `idx`.
-    /// Safety: callers must guarantee `idx < upvalue_count`.
+    /// Safety: as `upvalues_ptr`, and `idx < upvalue_count`.
     #[inline]
-    pub unsafe fn upvalue_at(&self, idx: usize) -> *mut ObjUpvalue {
-        unsafe { *self.upvalues_ptr().add(idx) }
+    pub unsafe fn upvalue_at(closure: *const ObjClosure, idx: usize) -> *mut ObjUpvalue {
+        unsafe { *Self::upvalues_ptr(closure).add(idx) }
     }
 }
 
@@ -451,9 +466,11 @@ impl GcTraceable for ObjClosure {
 
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.name);
+    }
 
-        for &upvalue in self.upvalues() {
-            gc.mark_object(upvalue);
+    unsafe fn mark_trailing(ptr: *const ObjClosure, gc: &mut Gc) {
+        for i in 0..unsafe { (*ptr).upvalue_count } as usize {
+            gc.mark_object(unsafe { Self::upvalue_at(ptr, i) });
         }
     }
 
@@ -513,15 +530,19 @@ pub enum TypeMember {
 pub struct ObjType {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
+    /// Members below this id are fields and the rest are methods.
+    pub field_count: MemberId,
+    pub id: TypeId,
     /// Field and regular-method names. The accessors/factory are *not* here;
     /// they're addressed structurally via the id fields below.
     pub members: FnvHashMap<*mut ObjString, TypeMember>,
     pub fields: IntSet<MemberId>,
     pub methods: IntMap<MemberId, Object>,
-    /// Interned names of every trait/type this type **provides** (own name + transitively
-    /// `with`-mixed traits + inherited). Drives `x is T`: membership is pointer equality on the
-    /// gc-interned name.
-    pub provided: FnvHashSet<*mut ObjString>,
+    /// The declaration id of every trait/type this type provides: its own, plus every `with`-mixed trait.
+    pub provided: IntSet<TypeId>,
+    /// The obligation witnesses this type provides, by id, sorted. Almost always empty: a type
+    /// provides one per witness trait it mixes, and most types mix none.
+    pub witness_ids: Box<[u16]>,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
@@ -529,9 +550,9 @@ pub struct ObjType {
     pub factory_id: Option<MemberId>,
     /// Prebuilt initial instance values (method slots filled, fields `NULL`).
     pub template: Box<[Value]>,
-    /// The `gives` delegations, `(field id, field name, trait name)`. A construction verifies each
-    /// field provides its trait.
-    pub gives: Box<[(MemberId, *mut ObjString, *mut ObjString)]>
+    /// The `gives` delegations, `(field id, field name, trait name, trait id)`. A construction
+    /// verifies each field provides that trait.
+    pub gives: Box<[(MemberId, *mut ObjString, *mut ObjString, TypeId)]>
 }
 
 impl ObjType {
@@ -541,14 +562,39 @@ impl ObjType {
             name,
             members: FnvHashMap::default(),
             fields: IntSet::default(),
+            field_count: 0,
+            id: TypeId::MAX,
             methods: IntMap::default(),
-            provided: FnvHashSet::default(),
+            provided: IntSet::default(),
+            witness_ids: Box::new([]),
             member_count: 0,
             getter_id: None,
             setter_id: None,
             factory_id: None,
             template: Box::new([]),
             gives: Box::new([])
+        }
+    }
+
+    /// Copies a type so its methods can be rebound for one execution. Every field but the header
+    /// is copied as-is. The caller reinstalls the methods that capture.
+    pub fn duplicate(&self) -> ObjType {
+        ObjType {
+            header: ObjectHeader::new(ObjectKind::Type),
+            name: self.name,
+            members: self.members.clone(),
+            fields: self.fields.clone(),
+            field_count: self.field_count,
+            id: self.id,
+            methods: self.methods.clone(),
+            provided: self.provided.clone(),
+            witness_ids: self.witness_ids.clone(),
+            member_count: self.member_count,
+            getter_id: self.getter_id,
+            setter_id: self.setter_id,
+            factory_id: self.factory_id,
+            template: self.template.clone(),
+            gives: self.gives.clone(),
         }
     }
 
@@ -603,10 +649,7 @@ impl GcTraceable for ObjType {
         for (_, &method) in &self.methods {
             gc.mark_object(method);
         }
-        for &name in &self.provided {
-            gc.mark_object(name);
-        }
-        for &(_, field_name, trait_name) in &self.gives {
+        for &(_, field_name, trait_name, _) in &self.gives {
             gc.mark_object(field_name);
             gc.mark_object(trait_name);
         }
@@ -615,9 +658,12 @@ impl GcTraceable for ObjType {
     fn size(&self) -> usize {
         mem::size_of::<ObjType>()
             + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<TypeMember>())
-            + self.provided.capacity() * mem::size_of::<*mut ObjString>()
+            + self.fields.capacity() * mem::size_of::<MemberId>()
+            + self.methods.capacity() * (mem::size_of::<MemberId>() + mem::size_of::<Object>())
+            + self.provided.capacity() * mem::size_of::<TypeId>()
+            + self.witness_ids.len() * mem::size_of::<u16>()
             + self.template.len() * mem::size_of::<Value>()
-            + self.gives.len() * mem::size_of::<(MemberId, *mut ObjString, *mut ObjString)>()
+            + self.gives.len() * mem::size_of::<(MemberId, *mut ObjString, *mut ObjString, TypeId)>()
     }
 }
 

@@ -1,0 +1,56 @@
+// A shape matches an instance only if its type exposes every member named, so a witness missing one
+// cannot be what matched. `Err` carries `value`, not `x`.
+fn src(): fails { return Err("e"); }
+
+say v: fails = src();
+if (v ~ { x: _ }) { say y = v; }
+print(v ?? "ok"); // expect: ok
+
+// @split
+// A witness that does expose the member is still possible.
+fn src(): fails { return Err("e"); }
+
+say v: fails = src();
+if (v ~ { value: _ }) {
+    say y = v; // error: cannot assign a value owing 'fails' to 'y'
+}
+
+// @split
+// One missing member is enough, since the shape needs them all.
+fn src(): fails { return Err("e"); }
+
+say v: fails = src();
+if (v ~ { x: _, value: _ }) { say y = v; }
+print(v ?? "ok"); // expect: ok
+
+// @split
+// The same for a declared witness type.
+type Wt { pub a; init(this) { this.a = 1; } }
+obligation warned { witness Wt; discharge to use; }
+fn src(): warned { return Wt(); }
+
+say v: warned = src();
+if (v ~ { zzz: _ }) { say y = v; }
+print("ok"); // expect: ok
+
+// @split
+type Wt { pub a; init(this) { this.a = 1; } }
+obligation warned { witness Wt; discharge to use; }
+fn src(): warned { return Wt(); }
+
+say v: warned = src();
+if (v ~ { a: _ }) {
+    say y = v; // error: cannot assign a value owing 'warned' to 'y'
+}
+
+// @split
+// A trait witness is an open family, so no single type's members settle it.
+trait Wt { }
+type T with Wt { pub other; init(this) { this.other = 1; } }
+obligation warned { witness Wt; discharge to use; }
+fn src(): warned { return T(); }
+
+say v: warned = src();
+if (v ~ { x: _ }) {
+    say y = v; // error: cannot assign a value owing 'warned' to 'y'
+}

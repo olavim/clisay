@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
-use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Receiver, ReqFn, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
+use crate::ast::{MatchArm, Ast, AstId, BuiltinType, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Receiver, ReqFn, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
 use crate::frontend::lex::{ContextualKeyword, Diagnostic, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -158,6 +158,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         while parser.tokens.has_next() {
             stmts.push(parser.parse_stmt()?);
         }
+
+        stmts.push(parser.declare_err(&pos));
         let block = parser.ast.add_expr(Expr::Block(stmts), pos.clone());
         ast.add_stmt(Stmt::Expression(block), pos);
 

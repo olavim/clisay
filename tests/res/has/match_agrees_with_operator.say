@@ -1,0 +1,20 @@
+// A surface test reads a declared member's admitted values, not just its presence. The match arm
+// and the operator spelling run the same test, so a null in a non-null field fails both.
+type Box { pub v; init(this, v) { this.v = v; } }
+say d = mut { "v": null };
+print(d has Box); // expect: false
+match (d) { has Box => print("yes"), _ => print("no"), } // expect: no
+
+// @split
+// A value that does admit it satisfies both.
+type Box { pub v; init(this, v) { this.v = v; } }
+say d = mut { "v": 1 };
+print(d has Box); // expect: true
+match (d) { has Box => print("yes"), _ => print("no"), } // expect: yes
+
+// @split
+// A trait declares no member shape, so its surface is presence alone in both spellings.
+trait Tr { pub fn go(this)! { return 1; } }
+say d = mut { "go": null };
+print(d has Tr); // expect: true
+match (d) { has Tr => print("yes"), _ => print("no"), } // expect: yes

@@ -6,7 +6,7 @@ use anyhow::anyhow;
 
 use crate::ast::{AstId, Expr, Literal, ReqFn, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqParam, HirStmt, HirTypeDecl};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqParam, HirStmt, HirTypeDecl, TypeId};
 
 use super::Lowerer;
 
@@ -96,15 +96,29 @@ impl<'a> Lowerer<'a> {
         self.provided_traits = prev_provided;
         self.emitted_aliases = prev_aliases;
 
+        // Each entry names the declaration it came from, so an id is assigned here even for a trait
+        // this type mixes that has not been lowered yet.
+        let mixed: Vec<(Symbol, AstId<Stmt>)> = self.names.flattened_with(&type_id).to_vec();
+        let given: Vec<(Symbol, Symbol, AstId<Stmt>)> = self.names.gives_traits(&type_id).to_vec();
+        let own_id = self.type_id(type_id)?;
+        self.hir.declare_type(own_id, decl.name, false);
+
         // What `x is T` matches: the type's own name, every transitively `with`-mixed trait, and
         // every trait it provides by `gives` delegation.
-        let provides = std::iter::once(decl.name)
-            .chain(self.names.flattened_with(&type_id).iter().map(|(sym, _)| *sym))
-            .chain(gives_traits.iter().copied())
-            .collect();
+        let mut provides = vec![(decl.name, own_id)];
+        for (sym, trait_decl) in mixed.into_iter().chain(given.iter().map(|(_, t, d)| (*t, *d))) {
+            let id = self.type_id(trait_decl)?;
+            provides.push((sym, id));
+        }
+        let mut gives: Vec<(Symbol, Symbol, TypeId)> = Vec::with_capacity(given.len());
+        for (field, trait_sym, decl) in given {
+            gives.push((field, trait_sym, self.type_id(decl)?));
+        }
 
         Ok(HirTypeDecl {
             name: decl.name,
+            id: own_id,
+            builtin: decl.builtin,
             init,
             fields: composed.fields,
             nullable_fields: decl.nullable_fields.clone(),
@@ -118,7 +132,7 @@ impl<'a> Lowerer<'a> {
             trait_privates: composed.trait_privates,
             surface: HashSet::new(), // gating applies to standalone traits, not composed types
             provides,
-            gives: self.names.gives_traits(&type_id).iter().map(|(f, t, _)| (*f, *t)).collect(),
+            gives,
         })
     }
 
@@ -130,9 +144,14 @@ impl<'a> Lowerer<'a> {
         let mut composed = Composed::empty();
         self.fold_trait(decl.name, decl, &HashSet::new(), &mut composed)?;
         let init = self.hir.add(HirStmt::Nop, pos.clone());
+        // A type mixing this trait may have minted its id already, and both must agree.
+        let id = self.type_id(type_id)?;
+        self.hir.declare_type(id, decl.name, true);
 
         Ok(HirTypeDecl {
             name: decl.name,
+            id,
+            builtin: None,
             init,
             fields: composed.fields,
             nullable_fields: decl.nullable_fields.clone(),

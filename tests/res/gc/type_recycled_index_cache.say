@@ -1,0 +1,15 @@
+// A collected type's block goes to the next type of its size. A member lookup keyed on the raw
+// pointer has to be dropped at a collection, or it resolves against the wrong declaration.
+gcStress(true);
+fn mkA(v)! { type A { pub p; pub q; pub fn tag(this)! { return v; } init(this) { this.p = v; this.q = 111; } } return A(); }
+fn mkB(v)! { type B { pub q; pub p; pub fn tag(this)! { return v; } init(this) { this.q = 222; this.p = v; } } return B(); }
+fn read(x)! { return x.p; }
+
+say mut bad = 0;
+say mut i = 0;
+while (i < 50) {
+    if (read(mkA(10)) != 10) { bad = bad + 1; }
+    if (read(mkB(20)) != 20) { bad = bad + 1; }
+    i = i + 1;
+}
+print(bad); // expect: 0

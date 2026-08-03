@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl, SlotClause};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirStmt, UnOp};
 
 use super::Lowerer;
 
@@ -117,7 +117,9 @@ impl<'a> Lowerer<'a> {
             let this = self.hir.add(HirExpr::This, pos.clone());
             let field_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(field_name.clone())), pos.clone());
             let access = self.hir.add(HirExpr::Index(this, field_lit, true), pos.clone());
-            let is_check = self.hir.add(HirExpr::Is(access, trait_sym), pos.clone());
+            let matcher = HirMatcher::Type { nominal: true, name: trait_sym, shape: None };
+            let matcher = self.hir.add(matcher, pos.clone());
+            let is_check = self.hir.add(HirExpr::Match(access, matcher), pos.clone());
             let not_check = self.hir.add(HirExpr::Unary(UnOp::Not, is_check), pos.clone());
 
             let msg = format!("Delegate field '{field_name}' does not provide trait '{trait_name}'");

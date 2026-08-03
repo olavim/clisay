@@ -1,0 +1,50 @@
+// An obligation is declared where every holder of one can name it, and name the witness that
+// discharges it.
+
+type A { pub x; init(this) { this.x = 1; } }
+fn f() { obligation w { witness A; discharge to use; } }
+
+// error(full):
+// error: obligation 'w' must be declared at the top level
+//  --> obligation_placement.say:5:10
+//   |
+// 4 | type A { pub x; init(this) { this.x = 1; } }
+// 5 | fn f() { obligation w { witness A; discharge to use; } }
+//   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+// @split
+type A { pub x; init(this) { this.x = 1; } }
+obligation opt { witness A; discharge to use; }
+
+// error(full):
+// error: 'opt' is a built-in obligation and cannot be redeclared
+//  --> obligation_placement.say:2:1
+//   |
+// 1 | type A { pub x; init(this) { this.x = 1; } }
+// 2 | obligation opt { witness A; discharge to use; }
+//   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+// @split
+type A { pub x; init(this) { this.x = 1; } }
+obligation fails { witness A; discharge to use; }
+
+// error(full):
+// error: 'fails' is a built-in obligation and cannot be redeclared
+//  --> obligation_placement.say:2:1
+//   |
+// 1 | type A { pub x; init(this) { this.x = 1; } }
+// 2 | obligation fails { witness A; discharge to use; }
+//   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+// @split
+type A { pub x; init(this) { this.x = 1; } }
+obligation w { witness A; discharge to use; }
+obligation w { witness A; discharge to use; }
+
+// error(full):
+// error: 'w' already declared in this scope
+//  --> obligation_placement.say:3:1
+//   |
+// 2 | obligation w { witness A; discharge to use; }
+// 3 | obligation w { witness A; discharge to use; }
+//   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

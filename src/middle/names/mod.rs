@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
+use crate::core::builtins::is_builtin;
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
 use crate::ast::{builtin_obligation_rules, Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchElem, Matcher, ObligationRules, Operator, SlotClause, Stmt, Symbol, TypeDecl};
@@ -29,6 +30,8 @@ pub struct NameBindings {
     type_traits: HashMap<AstId<Stmt>, ResolvedTraits>,
     name_refs: HashMap<AstId<Expr>, Binding>,
     types: HashSet<Symbol>,
+    /// Each obligation => the declaration its witness names. A built-in witness has none.
+    witness_decls: HashMap<Symbol, AstId<Stmt>>,
 }
 
 impl NameBindings {
@@ -58,7 +61,15 @@ impl NameBindings {
     pub fn is_type_or_trait(&self, name: Symbol) -> bool {
         self.types.contains(&name)
     }
+
+    /// The declaration an obligation's witness names.
+    pub fn witness_decl(&self, obligation: Symbol) -> Option<AstId<Stmt>> {
+        self.witness_decls.get(&obligation).copied()
+    }
 }
+
+/// The obligation names the compiler defines. A program cannot take one.
+const BUILTIN_OBLIGATIONS: [&str; 3] = ["opt", "fails", "void"];
 
 pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
     let mut resolver = Resolver {
@@ -68,7 +79,12 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
         obligation_rules: HashMap::new(),
         witness_owners: HashMap::new(),
         in_condition: false,
-        out: NameBindings { type_traits: HashMap::new(), name_refs: HashMap::new(), types: HashSet::new() },
+        out: NameBindings {
+            type_traits: HashMap::new(),
+            name_refs: HashMap::new(),
+            types: HashSet::new(),
+            witness_decls: HashMap::new(),
+        },
     };
     resolver.push_scope();
     resolver.predeclare_intrinsics();
@@ -92,9 +108,10 @@ enum DeclKind {
 /// One lexical scope.
 struct Scope {
     declared: HashMap<Symbol, DeclKind>,
-    traits: HashMap<Symbol, AstId<Stmt>>,
-    /// Every `type`/`trait` name in scope (traits included), for validating the right operand of `x is T`.
-    types: HashSet<Symbol>,
+    /// A type or trait name to the trait it names, or `None` where a type masks an outer trait.
+    traits: HashMap<Symbol, Option<AstId<Stmt>>>,
+    /// Every `type`/`trait` name in scope, with the declaration it names.
+    types: HashMap<Symbol, Option<AstId<Stmt>>>,
 }
 
 struct Resolver<'a> {
@@ -115,36 +132,47 @@ impl<'a> Resolver<'a> {
         anyhow!("{}", Diagnostic::new(msg, self.ast.pos(at).clone()))
     }
 
+    fn error_at(&self, msg: impl Into<String>, pos: &SourcePosition) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, pos.clone()))
+    }
+
     fn error_help<T>(&self, msg: impl Into<String>, at: &AstId<T>, help: impl Into<String>) -> anyhow::Error {
         self.error_help_at(msg, self.ast.pos(at), help)
     }
 
     fn push_scope(&mut self) {
-        self.scopes.push(Scope { declared: HashMap::new(), traits: HashMap::new(), types: HashSet::new() });
+        self.scopes.push(Scope { declared: HashMap::new(), traits: HashMap::new(), types: HashMap::new() });
     }
 
     /// Reserves the intrinsic names in the root scope: `opt`, `fails`, `void`, and the `fails`
     /// witness type `Err`. Only names the source interned need reserving, since an intrinsic the
     /// program never mentions can never be referenced.
     fn predeclare_intrinsics(&mut self) {
-        for name in ["opt", "fails", "void"] {
+        for name in BUILTIN_OBLIGATIONS {
             if let Some(sym) = self.ast.symbol(name) {
                 self.scopes.last_mut().unwrap().declared.insert(sym, DeclKind::Item);
             }
         }
         if let Some(sym) = self.ast.symbol("Err") {
-            let scope = self.scopes.last_mut().unwrap();
-            scope.declared.insert(sym, DeclKind::Item);
-            scope.types.insert(sym);
-            self.out.types.insert(sym);
-            // `fails` already witnesses `Err`, so a user obligation may not claim it too.
             self.witness_owners.insert(sym, "fails".to_string());
         }
     }
 
+    /// Whether the walk is in a module's own block. The stack is the intrinsic scope the resolver
+    /// opens, then the module block, so anything deeper is nested.
+    fn at_top_level(&self) -> bool {
+        self.scopes.len() <= 2
+    }
+
     /// Whether `name` refers to a `type` or `trait` in scope (the valid right operands of `is`).
     fn is_type_or_trait(&self, name: Symbol) -> bool {
-        self.scopes.iter().any(|scope| scope.types.contains(&name))
+        self.scopes.iter().any(|scope| scope.types.contains_key(&name))
+    }
+
+    /// The declaration a type or trait name reaches, innermost first. A built-in answers `None`,
+    /// as does a name nothing declares.
+    fn lookup_type_decl(&self, name: Symbol) -> Option<AstId<Stmt>> {
+        self.scopes.iter().rev().find_map(|scope| scope.types.get(&name)).copied().flatten()
     }
 
     fn pop_scope(&mut self) {
@@ -153,12 +181,13 @@ impl<'a> Resolver<'a> {
 
     /// Resolves a trait name against the scope stack, innermost-first.
     fn lookup_trait(&self, name: Symbol) -> Option<AstId<Stmt>> {
-        self.scopes.iter().rev().find_map(|scope| scope.traits.get(&name).copied())
+        self.scopes.iter().rev().find_map(|scope| scope.traits.get(&name)).copied().flatten()
     }
 
     /// Records a declaration in the current scope. A `say` may shadow an earlier value binding
     /// (another `say` or a param); any other collision is rejected.
     fn declare<T>(&mut self, name: Symbol, kind: DeclKind, at: &AstId<T>) -> Result<(), anyhow::Error> {
+        self.reject_builtin_name(name, at)?;
         let scope = self.scopes.last_mut().unwrap();
         if let Some(&existing) = scope.declared.get(&name) {
             let can_shadow = kind == DeclKind::Say && existing != DeclKind::Item;
@@ -168,6 +197,29 @@ impl<'a> Resolver<'a> {
         }
         scope.declared.insert(name, kind);
         Ok(())
+    }
+
+    fn reject_builtin_name<T>(&self, name: Symbol, at: &AstId<T>) -> Result<(), anyhow::Error> {
+        self.reject_builtin_at(name, self.ast.pos(at))
+    }
+
+    fn reject_builtin_at(&self, name: Symbol, pos: &SourcePosition) -> Result<(), anyhow::Error> {
+        let text = self.ast.text(name);
+        match is_builtin(text) {
+            true => Err(self.error_at(format!("'{text}' is a built-in and cannot be redeclared"), pos)),
+            false => Ok(()),
+        }
+    }
+
+    fn name_span<T>(&self, name: Symbol, at: &AstId<T>) -> SourcePosition {
+        let pos = self.ast.pos(at);
+        let end = pos.start + self.ast.text(name).len();
+        SourcePosition { source: pos.source.clone(), start: pos.start, end, line: pos.line }
+    }
+
+    /// Whether a statement is a declaration the compiler supplies rather than the program.
+    fn is_builtin_decl(&self, stmt: &AstId<Stmt>) -> bool {
+        matches!(self.ast.get(stmt), Stmt::Type(decl) if decl.builtin.is_some())
     }
 
     /// Hoists a block's `type`/`trait` declarations into the current scope so a later-declared one
@@ -181,10 +233,8 @@ impl<'a> Resolver<'a> {
                 let (name, is_trait) = (decl.name, decl.is_trait);
                 self.out.types.insert(name);
                 let scope = self.scopes.last_mut().unwrap();
-                scope.types.insert(name);
-                if is_trait {
-                    scope.traits.insert(name, *stmt);
-                }
+                scope.types.insert(name, Some(*stmt));
+                scope.traits.insert(name, is_trait.then_some(*stmt));
             }
         }
     }
@@ -193,6 +243,10 @@ impl<'a> Resolver<'a> {
     fn declare_witness(&mut self, name: Symbol, witness: Symbol, stmt: &AstId<Stmt>) -> Result<(), anyhow::Error> {
         if !self.is_type_or_trait(witness) {
             return Err(self.error(format!("'{}' is not a type or trait", self.ast.text(witness)), stmt));
+        }
+        // Which declaration the witness names, so identity survives two of them sharing a name.
+        if let Some(decl) = self.lookup_type_decl(witness) {
+            self.out.witness_decls.insert(name, decl);
         }
         let text = self.ast.text(name).to_string();
         match self.witness_owners.insert(witness, text.clone()) {
@@ -274,6 +328,10 @@ impl<'a> Resolver<'a> {
     fn block(&mut self, stmts: &[AstId<Stmt>]) -> Result<(), anyhow::Error> {
         self.hoist_types(stmts);
         for stmt in stmts {
+            // The compiler's own declarations are not the program's, so they take no name from it.
+            if self.is_builtin_decl(stmt) {
+                continue;
+            }
             if let Some((name, kind)) = self.decl_name(stmt) {
                 self.declare(name, kind, stmt)?;
             }
@@ -306,6 +364,13 @@ impl<'a> Resolver<'a> {
                 if let Some(value) = &field.value { self.visit_expr(value)?; }
             },
             Stmt::Obligation { name, witness, rules } => {
+                let text = self.ast.text(*name);
+                if !self.at_top_level() {
+                    return Err(self.error(format!("obligation '{text}' must be declared at the top level"), stmt));
+                }
+                if BUILTIN_OBLIGATIONS.contains(&text) {
+                    return Err(self.error(format!("'{text}' is a built-in obligation and cannot be redeclared"), stmt));
+                }
                 if rules.no_drop {
                     return Err(self.error_help("'no drop' is not available yet", stmt,
                         "the 'no drop' rule is not implemented yet"));
@@ -461,7 +526,10 @@ impl<'a> Resolver<'a> {
     fn collect_matcher_binders(&self, id: &AstId<Matcher>) -> Result<HashSet<Symbol>, anyhow::Error> {
         match self.ast.get(id) {
             Matcher::Wildcard | Matcher::Literal(_) => Ok(HashSet::new()),
-            Matcher::Binder(name) => Ok(HashSet::from([*name])),
+            Matcher::Binder(name) => {
+                self.reject_builtin_name(*name, id)?;
+                Ok(HashSet::from([*name]))
+            },
             Matcher::Type { name, shape, .. } => {
                 if !self.is_type_or_trait(*name) {
                     return Err(self.error(format!("'{}' is not a type or trait", self.ast.text(*name)), id));
@@ -484,7 +552,7 @@ impl<'a> Resolver<'a> {
                 for element in elements {
                     let sub = match element {
                         MatchElem::Elem(matcher) => self.collect_matcher_binders(matcher)?,
-                        MatchElem::Rest(Some(name)) => HashSet::from([*name]),
+                        MatchElem::Rest(Some(binder)) => self.collect_matcher_binders(binder)?,
                         MatchElem::Rest(None) => HashSet::new(),
                     };
                     self.merge_distinct(&mut binders, sub, id)?;
@@ -492,6 +560,9 @@ impl<'a> Resolver<'a> {
                 Ok(binders)
             },
             Matcher::As(name, inner) => {
+                // The node starts at the name, so the span is trimmed to it rather than the whole
+                // `name @ m`.
+                self.reject_builtin_at(*name, &self.name_span(*name, id))?;
                 let mut binders = HashSet::from([*name]);
                 let sub = self.collect_matcher_binders(inner)?;
                 self.merge_distinct(&mut binders, sub, id)?;

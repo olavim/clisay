@@ -5,6 +5,8 @@ use anyhow::bail;
 use fnv::FnvHashMap;
 
 use crate::core::objects::ObjFn;
+use crate::ast::BuiltinType;
+use crate::core::objects::TypeId;
 use crate::core::value::Value;
 use crate::frontend::lex::SourcePosition;
 
@@ -32,7 +34,7 @@ pub enum Inst {
     JumpIfNull(Label),
     JumpIfClean(Label),
     JumpIfBad(Label),
-    JumpIfIs(Label, u8),
+    JumpIfIs(Label, TypeId),
     JumpIfGe(Label),
     JumpIfGt(Label),
     JumpIfLe(Label),
@@ -58,7 +60,7 @@ pub enum Inst {
     AssertImmutable,
     /// Guards an unknown value at a destination: throws any registered witness the destination
     /// does not allow.
-    BarrierGuard(u16),
+    BarrierGuard(bool, u16),
     /// Asserts an opaque callee borrows the guarded argument positions. Operands are the argument
     /// count (the callee's stack depth) and an index into the barrier's position list.
     AssertBorrow(u8, u16),
@@ -84,6 +86,8 @@ pub enum Inst {
     PushFalse,
     PushClosure(u8),
     PushType(u8),
+    /// Builds a type from a template. Its capturing methods bind to the running frame.
+    BuildType(u8),
 
     // Variables and properties
     LoadGlobal(u8),
@@ -140,8 +144,10 @@ pub enum Inst {
     LessThanEqual,
     GreaterThan,
     GreaterThanEqual,
-    Is(u8),
+    Is(TypeId),
     HasMember(u8),
+    /// Whether a member satisfies what its declaration admits.
+    MemberAdmits(u8, bool, u16),
     /// Replaces the top with whether it is a dict or instance, the values a shape can match.
     IsShaped,
     ArrayLen,
@@ -149,14 +155,12 @@ pub enum Inst {
     ArrayMiddle(u8, u8),
 }
 
-/// A boundary barrier's data: whether the destination permits null, and the constant-pool indices
-/// of the witness names it allows.
-pub struct BarrierAllow {
-    pub null_allowed: bool,
-    pub names: Vec<u8>,
-}
-
 pub struct Ir {
+    /// Each registered object witness name and its id.
+    witness_ids: Vec<(TypeId, u16)>,
+    builtin_type_ids: [TypeId; BuiltinType::COUNT],
+    /// The witness ids each barrier allows.
+    witness_allows: Vec<Box<[u16]>>,
     code: Vec<Inst>,
     positions: Vec<SourcePosition>,
     constants: Vec<Value>,
@@ -166,14 +170,15 @@ pub struct Ir {
     fn_entries: Vec<(*mut ObjFn, Label)>,
     /// Brace-construction field-id lists.
     construct_fields: Vec<Vec<u8>>,
-    barrier_allows: Vec<BarrierAllow>,
     survive_positions: Vec<Vec<(u8, SourcePosition)>>,
-    witness_names: Vec<Value>,
 }
 
 impl Ir {
     pub fn new() -> Ir {
         Ir {
+            witness_ids: Vec::new(),
+            builtin_type_ids: [0; BuiltinType::COUNT],
+            witness_allows: Vec::new(),
             code: Vec::new(),
             positions: Vec::new(),
             constants: Vec::new(),
@@ -181,9 +186,7 @@ impl Ir {
             labels: Vec::new(),
             fn_entries: Vec::new(),
             construct_fields: Vec::new(),
-            barrier_allows: Vec::new(),
             survive_positions: Vec::new(),
-            witness_names: Vec::new(),
         }
     }
 
@@ -212,27 +215,7 @@ impl Ir {
         &self.survive_positions[idx as usize]
     }
 
-    pub fn add_barrier_allow(&mut self, allow: BarrierAllow) -> Result<u16, anyhow::Error> {
-        if self.barrier_allows.len() >= u16::MAX as usize {
-            bail!("Too many boundary barriers");
-        }
-        self.barrier_allows.push(allow);
-        Ok((self.barrier_allows.len() - 1) as u16)
-    }
-
-    pub fn barrier_allow(&self, idx: u16) -> &BarrierAllow {
-        &self.barrier_allows[idx as usize]
-    }
-
     /// Records the program's object witness names for the VM's boundary-barrier registry.
-    pub fn set_witness_names(&mut self, names: Vec<Value>) {
-        self.witness_names = names;
-    }
-
-    pub fn witness_names(&self) -> &[Value] {
-        &self.witness_names
-    }
-
     pub fn emit(&mut self, inst: Inst, pos: &SourcePosition) {
         self.code.push(inst);
         self.positions.push(pos.clone());
@@ -259,6 +242,38 @@ impl Ir {
     }
 
     /// Interns a constant, returning its pool index. Equal values reuse one slot.
+    pub fn set_witness_ids(&mut self, ids: Vec<(TypeId, u16)>) {
+        self.witness_ids = ids;
+    }
+
+    pub fn set_builtin_type_id(&mut self, builtin: BuiltinType, id: TypeId) {
+        self.builtin_type_ids[builtin.index()] = id;
+    }
+
+    pub fn builtin_type_ids(&self) -> [TypeId; BuiltinType::COUNT] {
+        self.builtin_type_ids
+    }
+
+    pub fn witness_ids(&self) -> &[(TypeId, u16)] {
+        &self.witness_ids
+    }
+
+    pub fn witness_allows(&self) -> &[Box<[u16]>] {
+        &self.witness_allows
+    }
+
+    /// Pools a barrier's allowed witness ids.
+    pub fn add_witness_allow(&mut self, allow: Box<[u16]>) -> Result<u16, anyhow::Error> {
+        if let Some(i) = self.witness_allows.iter().position(|a| **a == *allow) {
+            return Ok(i as u16);
+        }
+        if self.witness_allows.len() >= u16::MAX as usize {
+            bail!("Too many distinct barrier witness sets");
+        }
+        self.witness_allows.push(allow);
+        Ok((self.witness_allows.len() - 1) as u16)
+    }
+
     pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
         if let Some(&idx) = self.constant_indices.get(&value) {
             return Ok(idx);
@@ -324,9 +339,10 @@ impl Ir {
             labels,
             fn_entries: self.fn_entries,
             construct_fields: self.construct_fields,
-            barrier_allows: self.barrier_allows,
             survive_positions: self.survive_positions,
-            witness_names: self.witness_names
+            witness_ids: self.witness_ids,
+            builtin_type_ids: self.builtin_type_ids,
+            witness_allows: self.witness_allows,
         }
     }
 }

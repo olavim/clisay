@@ -95,7 +95,6 @@ pub enum HirExpr {
     Index(HirId<HirExpr>, HirId<HirExpr>, bool),
     Literal(HirLiteral),
     Identifier(Symbol),
-    Is(HirId<HirExpr>, Symbol),
     /// Brace construction `C { field: value, ... }`: the callee type expression, an unused args
     /// slot (the combined form is retired), then the brace fields.
     Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
@@ -118,8 +117,7 @@ pub enum HirExpr {
     Handle(HirId<HirExpr>, Symbol, HirId<HirExpr>),
     /// The non-null assertion `a!`: yields the value, checking against null at runtime.
     Assert(HirId<HirExpr>),
-    Has(HirId<HirExpr>, Box<HirMatcher>),
-    Match(HirId<HirExpr>, Box<HirMatcher>),
+    Match(HirId<HirExpr>, HirId<HirMatcher>),
 }
 
 /// A lowered matcher: it tests a value and binds sub-values out into names.
@@ -131,86 +129,86 @@ pub enum HirMatcher {
     /// A bare name that binds the whole value.
     Binder(Symbol),
     /// `is T shape?` or `has T shape?`.
-    Type { nominal: bool, name: Symbol, shape: Option<Box<HirMatcher>> },
+    Type { nominal: bool, name: Symbol, shape: Option<HirId<HirMatcher>> },
     /// A structural shape `{ k: m, ... }`.
     Shape(Vec<HirMatchField>),
     /// An array shape `[ ... ]` with at most one rest element.
     Array(Vec<HirMatchElem>),
     /// `name @ m`: binds the whole value and also matches `m`.
-    As(Symbol, Box<HirMatcher>),
+    As(Symbol, HirId<HirMatcher>),
     /// `a | b | ...`: alternatives tried left to right.
-    Or(Vec<HirMatcher>),
+    Or(Vec<HirId<HirMatcher>>),
     /// `a & b & ...`: all must match.
-    And(Vec<HirMatcher>),
+    And(Vec<HirId<HirMatcher>>),
 }
 
 /// A field of a shape matcher `{ key: value }`.
 pub struct HirMatchField {
     pub key: HirLiteral,
-    pub value: HirMatcher,
+    pub value: HirId<HirMatcher>,
 }
 
 /// An element of an array matcher. `Rest` is `..` or `..name`, at most one per array.
 pub enum HirMatchElem {
-    Elem(HirMatcher),
+    Elem(HirId<HirMatcher>),
     Rest(Option<Symbol>),
 }
 
 impl HirMatcher {
     /// The names this matcher binds, in the left-to-right order codegen stores them.
-    pub fn binders(&self) -> Vec<Symbol> {
+    pub fn binders(&self, hir: &Hir) -> Vec<Symbol> {
         let mut out = Vec::new();
-        self.collect_binders(&mut out);
+        self.collect_binders(hir, &mut out);
         out
     }
 
     /// Whether this matcher binds any name, without allocating the binder list.
-    pub fn binds_anything(&self) -> bool {
+    pub fn binds_anything(&self, hir: &Hir) -> bool {
         match self {
             HirMatcher::Wildcard | HirMatcher::Literal(_) => false,
             HirMatcher::Binder(_) | HirMatcher::As(..) => true,
-            HirMatcher::Type { shape, .. } => shape.as_ref().is_some_and(|s| s.binds_anything()),
-            HirMatcher::Shape(fields) => fields.iter().any(|f| f.value.binds_anything()),
+            HirMatcher::Type { shape, .. } => shape.is_some_and(|s| hir.get(&s).binds_anything(hir)),
+            HirMatcher::Shape(fields) => fields.iter().any(|f| hir.get(&f.value).binds_anything(hir)),
             HirMatcher::Array(elements) => elements.iter().any(|e| match e {
-                HirMatchElem::Elem(m) => m.binds_anything(),
+                HirMatchElem::Elem(m) => hir.get(m).binds_anything(hir),
                 HirMatchElem::Rest(name) => name.is_some(),
             }),
-            HirMatcher::And(parts) => parts.iter().any(|p| p.binds_anything()),
-            HirMatcher::Or(alternatives) => alternatives.iter().any(|a| a.binds_anything()),
+            HirMatcher::And(parts) => parts.iter().any(|p| hir.get(p).binds_anything(hir)),
+            HirMatcher::Or(alternatives) => alternatives.iter().any(|a| hir.get(a).binds_anything(hir)),
         }
     }
 
     /// Whether this matcher accepts every value, so a guardless arm using it is a catch-all.
-    pub fn is_irrefutable(&self) -> bool {
+    pub fn is_irrefutable(&self, hir: &Hir) -> bool {
         match self {
             HirMatcher::Wildcard | HirMatcher::Binder(_) => true,
-            HirMatcher::As(_, inner) => inner.is_irrefutable(),
-            HirMatcher::And(parts) => parts.iter().all(HirMatcher::is_irrefutable),
-            HirMatcher::Or(alternatives) => alternatives.iter().any(HirMatcher::is_irrefutable),
+            HirMatcher::As(_, inner) => hir.get(inner).is_irrefutable(hir),
+            HirMatcher::And(parts) => parts.iter().all(|p| hir.get(p).is_irrefutable(hir)),
+            HirMatcher::Or(alternatives) => alternatives.iter().any(|a| hir.get(a).is_irrefutable(hir)),
             _ => false,
         }
     }
 
-    fn collect_binders(&self, out: &mut Vec<Symbol>) {
+    fn collect_binders(&self, hir: &Hir, out: &mut Vec<Symbol>) {
         match self {
             HirMatcher::Wildcard | HirMatcher::Literal(_) => {},
             HirMatcher::Binder(name) => out.push(*name),
-            HirMatcher::Type { shape, .. } => if let Some(shape) = shape { shape.collect_binders(out) },
-            HirMatcher::Shape(fields) => for field in fields { field.value.collect_binders(out) },
+            HirMatcher::Type { shape, .. } => if let Some(shape) = shape { hir.get(shape).collect_binders(hir, out) },
+            HirMatcher::Shape(fields) => for field in fields { hir.get(&field.value).collect_binders(hir, out) },
             HirMatcher::Array(elements) => for element in elements {
                 match element {
-                    HirMatchElem::Elem(matcher) => matcher.collect_binders(out),
+                    HirMatchElem::Elem(matcher) => hir.get(matcher).collect_binders(hir, out),
                     HirMatchElem::Rest(Some(name)) => out.push(*name),
                     HirMatchElem::Rest(None) => {},
                 }
             },
-            HirMatcher::As(name, inner) => { out.push(*name); inner.collect_binders(out); },
-            HirMatcher::And(parts) => for part in parts { part.collect_binders(out) },
+            HirMatcher::As(name, inner) => { out.push(*name); hir.get(inner).collect_binders(hir, out); },
+            HirMatcher::And(parts) => for part in parts { hir.get(part).collect_binders(hir, out) },
             // Binding alternatives agree on their names, so the first that binds stands for all. A
             // bindingless witness alternative such as `| null` contributes none.
             HirMatcher::Or(alternatives) => {
-                if let Some(binding) = alternatives.iter().find(|a| a.binds_anything()) {
-                    binding.collect_binders(out);
+                if let Some(binding) = alternatives.iter().find(|a| hir.get(*a).binds_anything(hir)) {
+                    hir.get(binding).collect_binders(hir, out);
                 }
             },
         }
@@ -249,7 +247,7 @@ pub struct HirFieldInit {
 pub struct HirParam {
     pub name: HirId<HirExpr>,
     /// The parameter's pattern, when it does more than name its slot.
-    pub pattern: Option<Box<HirMatcher>>,
+    pub pattern: Option<HirId<HirMatcher>>,
     /// The `name[: clause]` span.
     pub pos: SourcePosition,
     pub nullable: bool,
@@ -303,8 +301,18 @@ pub struct HirCatchClause {
     pub body: HirId<HirExpr>,
 }
 
+pub use crate::core::objects::TypeId;
+pub use crate::frontend::ast::BuiltinType;
+
+/// What a declaration id stands for.
+pub struct TypeInfo {
+    pub name: Symbol,
+    pub is_trait: bool,
+}
+
 pub struct HirTypeDecl {
     pub name: Symbol,
+    pub id: TypeId,
     pub init: HirId<HirStmt>,
     pub fields: HashSet<Symbol>,
     /// Fields declared nullable with a `?` marker (`next?;`).
@@ -326,18 +334,21 @@ pub struct HirTypeDecl {
     /// Per trait, that trait's **private** members mapped from their plain name to the
     /// per-trait renamed slot name (`"<Trait>.<name>"`).
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
+    /// Which built-in this declares, if any.
+    pub builtin: Option<BuiltinType>,
     /// For a standalone trait (`HirStmt::Trait`): its **declared surface**.
     pub surface: HashSet<Symbol>,
-    /// The trait/type names this type **provides** for `x is T`: its own name plus every
-    /// transitively `with`-mixed trait.
-    pub provides: Vec<Symbol>,
-    /// The `gives` delegations, `(field, trait)`. A construction verifies each field provides its trait.
-    pub gives: Vec<(Symbol, Symbol)>,
+    /// What this type **provides** for `x is T`: its own declaration plus every transitively
+    /// `with`-mixed trait, each as its name and its declaration id.
+    pub provides: Vec<(Symbol, TypeId)>,
+    /// The `gives` delegations, `(field, trait name, trait declaration)`. A construction verifies
+    /// each field provides its trait.
+    pub gives: Vec<(Symbol, Symbol, TypeId)>,
 }
 
 /// One arm of a `match`.
 pub struct HirMatchArm {
-    pub matcher: HirMatcher,
+    pub matcher: HirId<HirMatcher>,
     pub guard: Option<HirId<HirExpr>>,
     pub body: HirId<HirExpr>,
 }
@@ -361,6 +372,7 @@ pub enum HirStmt {
 pub enum HirNodeKind {
     Expr(HirExpr),
     Stmt(HirStmt),
+    Matcher(HirMatcher),
 }
 
 pub trait HirNode: Sized {
@@ -382,6 +394,13 @@ impl HirNode for HirStmt {
     }
 }
 
+impl HirNode for HirMatcher {
+    fn wrap(self) -> HirNodeKind { HirNodeKind::Matcher(self) }
+    fn unwrap(node: &HirNodeKind) -> &HirMatcher {
+        match node { HirNodeKind::Matcher(matcher) => matcher, _ => unreachable!() }
+    }
+}
+
 struct HirArenaNode {
     pos: SourcePosition,
     kind: HirNodeKind,
@@ -396,6 +415,11 @@ impl<T> HirId<T> {
     /// The node's index in the arena. A stable key for side-tables (e.g. resolver bindings).
     pub fn index(&self) -> usize {
         self.id
+    }
+
+    /// Rebuilds a handle from an index produced by `index`.
+    pub fn from_index(id: usize) -> HirId<T> {
+        HirId { id, _marker: PhantomData }
     }
 }
 
@@ -418,10 +442,17 @@ impl<T> std::hash::Hash for HirId<T> {
     }
 }
 
+/// The type or trait an obligation names as its bad state.
+pub struct ObligationWitness {
+    pub name: Symbol,
+    pub id: TypeId,
+}
+
 /// A user `obligation` declaration's witness and rule, kept for signatures and the check pass.
 /// The declaration itself lowers to a `Nop`, so its facts live here instead.
 pub struct ObligationDecl {
-    pub witness: Option<Symbol>,
+    /// The bad state this obligation is about. A witnessless obligation names none.
+    pub witness: Option<ObligationWitness>,
     pub rules: ObligationRules,
 }
 
@@ -432,14 +463,25 @@ pub struct Hir {
     ident_ids: HashMap<String, u32>,
     ident_texts: Vec<String>,
     obligations: HashMap<Symbol, ObligationDecl>,
+    type_info: HashMap<TypeId, TypeInfo>,
 }
 
 impl Hir {
     pub(crate) fn new(ident_ids: HashMap<String, u32>, ident_texts: Vec<String>) -> Hir {
-        Hir { nodes: Vec::new(), ident_ids, ident_texts, obligations: HashMap::new() }
+        Hir { nodes: Vec::new(), ident_ids, ident_texts, obligations: HashMap::new(), type_info: HashMap::new() }
     }
 
-    pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: Option<Symbol>, rules: ObligationRules) {
+    /// Records what a declaration id stands for.
+    pub(crate) fn declare_type(&mut self, id: TypeId, name: Symbol, is_trait: bool) {
+        self.type_info.insert(id, TypeInfo { name, is_trait });
+    }
+
+    /// What a declaration id stands for.
+    pub fn type_info(&self, id: TypeId) -> Option<&TypeInfo> {
+        self.type_info.get(&id)
+    }
+
+    pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: Option<ObligationWitness>, rules: ObligationRules) {
         self.obligations.insert(name, ObligationDecl { witness, rules });
     }
 
@@ -501,7 +543,7 @@ impl Hir {
     /// binder names part of its scrutinee, so that scrutinee is where its element comes from.
     pub fn condition_binder_sources(&self, cond: &HirId<HirExpr>) -> Vec<(Symbol, HirId<HirExpr>)> {
         match self.get(cond) {
-            HirExpr::Match(scrutinee, matcher) => matcher.binders().into_iter().map(|n| (n, *scrutinee)).collect(),
+            HirExpr::Match(scrutinee, matcher) => self.get(matcher).binders(self).into_iter().map(|n| (n, *scrutinee)).collect(),
             HirExpr::Binary(BinOp::And, left, right) => {
                 let mut out = self.condition_binder_sources(left);
                 out.extend(self.condition_binder_sources(right));
@@ -520,7 +562,7 @@ impl Hir {
     /// both sides. An `||` contributes a name only when both sides bind the identical set.
     pub fn condition_binders(&self, cond: &HirId<HirExpr>) -> Vec<Symbol> {
         match self.get(cond) {
-            HirExpr::Match(_, matcher) => matcher.binders(),
+            HirExpr::Match(_, matcher) => self.get(matcher).binders(self),
             HirExpr::Binary(BinOp::And, left, right) => {
                 let mut out = self.condition_binders(left);
                 out.extend(self.condition_binders(right));
@@ -571,7 +613,7 @@ impl Hir {
             // A match returns on every path when it cannot fall through: some guardless arm is a
             // catch-all, and every arm returns.
             HirStmt::Match(_, arms) => {
-                arms.iter().any(|a| a.guard.is_none() && a.matcher.is_irrefutable())
+                arms.iter().any(|a| a.guard.is_none() && self.get(&a.matcher).is_irrefutable(self))
                     && arms.iter().all(|a| self.definitely_returns(&a.body))
             },
             _ => false,

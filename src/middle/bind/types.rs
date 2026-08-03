@@ -34,6 +34,11 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
+    /// Whether a declaration is one the VM supplies, whose layout no brace can reach.
+    fn is_builtin_type(&self, decl: &HirId<HirStmt>) -> bool {
+        matches!(self.hir.get(decl), HirStmt::Type(decl) if decl.builtin.is_some())
+    }
+
     /// Resolves and validates a brace construction `C { field: value, ... }`: the type must be
     /// known, and each brace field must be a distinct `pub` field.
     pub(super) fn construct(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
@@ -45,7 +50,13 @@ impl<'a> Resolver<'a> {
             compiler_error!(self, callee, "Brace construction requires a type name");
         };
         let type_name = *type_name;
-        let Some(layout) = self.types.get(&type_name).cloned() else {
+        let decl = self.resolve_type_decl(type_name);
+        let layout = decl.and_then(|decl| self.bindings.layout_of_decl(&decl)).cloned();
+        // A trait resolves to a declaration but has no layout, so a brace cannot build one.
+        let Some(layout) = layout else {
+            if decl.is_some_and(|decl| self.is_builtin_type(&decl)) {
+                compiler_error!(self, callee, "'{}' cannot be built with a brace", self.hir.text(type_name));
+            }
             compiler_error!(self, callee, "'{}' is not a type", self.hir.text(type_name));
         };
 
@@ -182,8 +193,11 @@ impl<'a> Resolver<'a> {
     }
 
     pub(super) fn type_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
-        let slot = self.resolve_local(decl.name).expect("type declarations are reserved by hoisting");
-        self.bindings.slots.insert(*stmt, slot);
+        // A built-in takes no slot, but still needs its layout, so only the slot is skipped.
+        if decl.builtin.is_none() {
+            let slot = self.resolve_local(decl.name).expect("type declarations are reserved by hoisting");
+            self.bindings.slots.insert(*stmt, slot);
+        }
         self.enter_scope();
 
         let layout = self.build_layout(decl);
@@ -208,18 +222,17 @@ impl<'a> Resolver<'a> {
         self.type_frames.pop();
         self.exit_scope(stmt);
 
-        self.types.insert(decl.name, layout.clone());
         self.bindings.types.insert(*stmt, layout);
-        self.record_surface(decl.name, &decl.pub_members);
+        self.record_surface(stmt, &decl.pub_members);
         Ok(())
     }
 
     /// Records a type/trait's public member names for the `x has T` surface form, in a stable
     /// order so codegen emits the membership checks deterministically.
-    fn record_surface(&mut self, name: Symbol, members: &HashSet<Symbol>) {
+    fn record_surface(&mut self, stmt: &HirId<HirStmt>, members: &HashSet<Symbol>) {
         let mut members: Vec<Symbol> = members.iter().copied().collect();
         members.sort_by_key(|s| s.index());
-        self.bindings.surfaces.insert(name, members);
+        self.bindings.surfaces.insert(*stmt, members);
     }
 
     /// Validates a standalone `trait`: resolves its method bodies against a layout built from its
@@ -255,7 +268,7 @@ impl<'a> Resolver<'a> {
 
         self.type_frames.pop();
         self.exit_scope(stmt);
-        self.record_surface(decl.name, &decl.surface);
+        self.record_surface(stmt, &decl.surface);
         Ok(())
     }
 

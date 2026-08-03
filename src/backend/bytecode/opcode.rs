@@ -16,15 +16,18 @@ pub enum Operand {
     /// A `u8` count followed by that many raw bytes. Variable length; the
     /// disassembler reads the count then the bytes.
     List,
+    /// A 16-bit index into a side table, little-endian.
+    Pool,
 }
 
 impl Operand {
     /// The fixed number of bytes this operand occupies, or `None` for a
-    /// variable-length operand (`List`), which the reader sizes from its count.
+    /// variable-length operand, which the reader sizes from its count.
     pub fn size(&self) -> Option<usize> {
         match self {
             Operand::Byte | Operand::Local | Operand::Const => Some(1),
             Operand::Jump => Some(2),
+            Operand::Pool => Some(2),
             Operand::List => None,
         }
     }
@@ -77,7 +80,7 @@ opcodes! {
     JumpIfNull => JUMP_IF_NULL(Jump),
     JumpIfClean => JUMP_IF_CLEAN(Jump),
     JumpIfBad => JUMP_IF_BAD(Jump),
-    JumpIfIs => JUMP_IF_IS(Jump, Const),
+    JumpIfIs => JUMP_IF_IS(Jump, Pool),
     JumpIfGe => JUMP_IF_GE(Jump),
     JumpIfGt => JUMP_IF_GT(Jump),
     JumpIfLe => JUMP_IF_LE(Jump),
@@ -104,7 +107,7 @@ opcodes! {
     AssertNoOtherWriter => ASSERT_NO_OTHER_WRITER(Byte),
     AssertNoWriter => ASSERT_NO_WRITER,
     AssertImmutable => ASSERT_IMMUTABLE,
-    BarrierGuard => BARRIER_GUARD(Byte, List),
+    BarrierGuard => BARRIER_GUARD(Byte, Pool),
     AssertBorrow => ASSERT_BORROW(Byte, List),
     AssertNotConsumed => ASSERT_NOT_CONSUMED(Byte, List),
     MarkBorrow => MARK_BORROW(Byte, List),
@@ -123,6 +126,7 @@ opcodes! {
     PushFalse => PUSH_FALSE,
     PushClosure => PUSH_CLOSURE(Const),
     PushType => PUSH_TYPE(Const),
+    BuildType => BUILD_TYPE(Const),
 
     // Variable bindings (local/upvalue/global)
     LoadGlobal => LOAD_GLOBAL(Const),
@@ -171,8 +175,9 @@ opcodes! {
     LessThanEqual => LESS_THAN_EQUAL,
     GreaterThan => GREATER_THAN,
     GreaterThanEqual => GREATER_THAN_EQUAL,
-    Is => IS(Const),
+    Is => IS(Pool),
     HasMember => HAS_MEMBER(Const),
+    MemberAdmits => MEMBER_ADMITS(Const, Byte, Pool),
     IsShaped => IS_SHAPED,
     ArrayLen => ARRAY_LEN,
     ArrayMiddle => ARRAY_MIDDLE(Byte, Byte),

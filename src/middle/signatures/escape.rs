@@ -313,8 +313,8 @@ impl<'a> Collector<'a> {
     }
 
     /// The declaration a callee expression names, when the pass can name one.
-    fn resolved_callee(&self, callee: &HirId<HirExpr>, owner: Option<Symbol>) -> Option<HirId<HirStmt>> {
-        if self.sigs.type_named(self.hir, callee).is_some() {
+    fn resolved_callee(&self, callee: &HirId<HirExpr>, owner: Option<HirId<HirStmt>>) -> Option<HirId<HirStmt>> {
+        if self.sigs.type_named(self.hir, self.bindings, callee).is_some() {
             return None;
         }
         match self.hir.get(callee) {
@@ -453,9 +453,9 @@ impl<'a> Collector<'a> {
     /// Records how a call reaches its arguments. A known free function forwards each argument to its
     /// matching parameter, a constructor stores its arguments, and a `this.method` call forwards to
     /// the resolved method's parameters.
-    fn escapes_at_call(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], facts: &mut EscapeFacts, owner: Option<Symbol>) {
+    fn escapes_at_call(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], facts: &mut EscapeFacts, owner: Option<HirId<HirStmt>>) {
         // A constructor stores its arguments into the new object, so they persist.
-        if self.sigs.type_named(self.hir, callee).is_some() {
+        if self.sigs.type_named(self.hir, self.bindings, callee).is_some() {
             for arg in args { self.mark_persisted(arg, facts); }
             return;
         }
@@ -498,7 +498,7 @@ impl<'a> Collector<'a> {
     /// Records the names a call writes, for the body-writes summary the capture check reads. A
     /// native call may mutate its receiver or persist its argument, and an opaque callee may write
     /// any argument. A known function, constructor, or `this.method` is left to the escape forwarding.
-    fn mark_call_writes(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], owner: Option<Symbol>, facts: &mut EscapeFacts) {
+    fn mark_call_writes(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], owner: Option<HirId<HirStmt>>, facts: &mut EscapeFacts) {
         match self.hir.get(callee) {
             HirExpr::Index(recv, member, _) => {
                 let Some(text) = self.member_text(member) else {
@@ -537,7 +537,7 @@ impl<'a> Collector<'a> {
     /// field or container, or a forward to a callee) records the name. A nested function or lambda is
     /// walked in `Capture` mode, where every reference records the name, since a capture persists it.
     /// `owner` is the enclosing type of a method body, so a `this.method` call resolves.
-    fn walk_escapes(&self, expr: &HirId<HirExpr>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<Symbol>) {
+    fn walk_escapes(&self, expr: &HirId<HirExpr>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<HirId<HirStmt>>) {
         // Record what this node contributes, then recurse through the shared child structure.
         match self.hir.get(expr) {
             HirExpr::Identifier(s) => if mode == EscapeCollectMode::Capture { facts.direct.insert(*s); },
@@ -584,7 +584,7 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn walk_escapes_stmt(&self, stmt: &HirId<HirStmt>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<Symbol>) {
+    fn walk_escapes_stmt(&self, stmt: &HirId<HirStmt>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<HirId<HirStmt>>) {
         match self.hir.get(stmt) {
             HirStmt::Return(Some(e)) => if mode == EscapeCollectMode::Escape {
                 let handed: HashSet<Symbol> = self.returned_identity(e).into_iter().collect();

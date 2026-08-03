@@ -2,7 +2,7 @@
 
 use crate::core::objects::TypeMember;
 use crate::middle::diagnose::Diagnose;
-use crate::middle::hir::{HirExpr, HirId, Symbol};
+use crate::middle::hir::{HirExpr, HirId, HirStmt, Symbol};
 use crate::middle::obligations::Obligations;
 
 use super::Shape;
@@ -17,14 +17,14 @@ struct FieldInfo {
 impl<'a> Shape<'a> {
     /// The fields a brace supplies, against the fields the type declares.
     pub(super) fn construct(&self, callee: &HirId<HirExpr>, brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
-        let Some(type_name) = self.sigs.type_named(self.hir, callee) else { return Ok(()) };
+        let Some(decl) = self.sigs.type_named(self.hir, self.bindings, callee) else { return Ok(()) };
         let braced: Obligations = brace.iter().map(|(name, _)| *name).collect();
-        self.check_construction(type_name, &braced, callee)
+        self.check_construction(&decl, &braced, callee)
     }
 
     /// Iterates a type's fields with the facts the construction check needs.
-    fn fields(&self, type_name: Symbol) -> impl Iterator<Item = FieldInfo> + 'a {
-        let layout = self.layout_of(type_name);
+    fn fields(&self, decl: &HirId<HirStmt>) -> impl Iterator<Item = FieldInfo> + 'a {
+        let layout = self.layout_of(decl);
         layout.into_iter().flat_map(move |layout| {
             layout.members.iter().filter_map(move |(name, member)| {
                 if !matches!(member, TypeMember::Field(_)) {
@@ -40,9 +40,9 @@ impl<'a> Shape<'a> {
     }
 
     /// A brace must supply every non-null public field.
-    fn check_construction(&self, type_name: Symbol, braced: &Obligations, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn check_construction(&self, decl: &HirId<HirStmt>, braced: &Obligations, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // A non-null field a brace cannot set would be left null, breaking the non-null guarantee.
-        let mut unreachable: Vec<Symbol> = self.fields(type_name)
+        let mut unreachable: Vec<Symbol> = self.fields(decl)
             .filter(|field| field.non_null && !field.public)
             .map(|field| field.name)
             .collect();
@@ -50,18 +50,18 @@ impl<'a> Shape<'a> {
         unreachable.sort_by_key(|field| self.hir.text(*field));
         if let Some(field) = unreachable.first() {
             return Err(self.error_help(
-                format!("'{}' cannot be brace-constructed: non-null field '{}' is not public, so a brace cannot set it", self.hir.text(type_name), self.hir.text(*field)),
+                format!("'{}' cannot be brace-constructed: non-null field '{}' is not public, so a brace cannot set it", self.type_text(decl), self.hir.text(*field)),
                 node,
-                format!("make '{}' public, give it the `opt` obligation (`{}: opt`), or construct with a factory `{}(..)`", self.hir.text(*field), self.hir.text(*field), self.hir.text(type_name))));
+                format!("make '{}' public, give it the `opt` obligation (`{}: opt`), or construct with a factory `{}(..)`", self.hir.text(*field), self.hir.text(*field), self.type_text(decl))));
         }
 
-        let mut missing: Vec<Symbol> = self.fields(type_name)
+        let mut missing: Vec<Symbol> = self.fields(decl)
             .filter(|field| field.non_null && field.public && !braced.contains(&field.name))
             .map(|field| field.name)
             .collect();
         missing.sort_by_key(|field| self.hir.text(*field));
         if let Some(field) = missing.first() {
-            return Err(self.error(format!("Construction of '{}' is missing non-null field '{}'", self.hir.text(type_name), self.hir.text(*field)), node));
+            return Err(self.error(format!("Construction of '{}' is missing non-null field '{}'", self.type_text(decl), self.hir.text(*field)), node));
         }
         Ok(())
     }

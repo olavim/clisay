@@ -167,11 +167,10 @@ impl Vm {
     /// Keep the top value and jump when `value is <name>`.
     pub(super) fn op_jump_if_is(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
-        let const_idx = self.read_next() as usize;
-        let name = self.chunk.constants[const_idx].as_object().as_string_ptr();
+        let id = u16::from_le_bytes([self.read_next(), self.read_next()]);
         let value = self.stack.peek(0);
         let provides = matches!(value.kind(), ValueKind::Object(ObjectKind::Instance))
-            && unsafe { &*(*value.as_object().as_instance_ptr()).ty }.provided.contains(&name);
+            && unsafe { &*(*value.as_object().as_instance_ptr()).ty }.provided.contains(&id);
         if provides {
             self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
         }
@@ -186,28 +185,35 @@ impl Vm {
         }
     }
 
+    /// Reads a barrier's operands: whether null passes, then the pool index of the witnesses it allows.
+    pub(super) fn read_allowed(&mut self) -> (bool, u16) {
+        let null_allowed = self.read_next() != 0;
+        let idx = u16::from_le_bytes([self.read_next(), self.read_next()]);
+        (null_allowed, idx)
+    }
+
+    /// Whether the value carries a witness the destination does not allow.
+    pub(super) fn carries_disallowed_witness(&self, value: Value, allowed: u16) -> bool {
+        let ValueKind::Object(ObjectKind::Instance) = value.kind() else { return false };
+        let ty = unsafe { &*(*value.as_object().as_instance_ptr()).ty };
+        if ty.witness_ids.is_empty() {
+            return false;
+        }
+        let allow = &self.chunk.witness_allows[allowed as usize];
+        ty.witness_ids.iter().any(|id| !allow.contains(id))
+    }
+
     /// Guards an unknown value at a destination. Throws a value that provides a registered witness
     /// the destination does not allow, aborts on a disallowed null, and passes everything else.
     pub(super) fn op_barrier_guard(&mut self) -> Result<(), anyhow::Error> {
-        let null_allowed = self.read_next() != 0;
-        let count = self.read_next() as usize;
-        let mut allow: Vec<*mut ObjString> = Vec::with_capacity(count);
-        for _ in 0..count {
-            let idx = self.read_next() as usize;
-            allow.push(self.chunk.constants[idx].as_object().as_string_ptr());
-        }
+        let (null_allowed, allowed) = self.read_allowed();
         let value = self.stack.peek(0);
         if value.is_null() {
             return if null_allowed { Ok(()) } else { self.error("unexpected null") };
         }
-        if matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
-            let ty = unsafe { &*(*value.as_object().as_instance_ptr()).ty };
-            for &name in &ty.provided {
-                if self.witnesses.contains(&name) && !allow.contains(&name) {
-                    let bad = self.stack.pop();
-                    return self.throw_value(bad);
-                }
-            }
+        if self.carries_disallowed_witness(value, allowed) {
+            let bad = self.stack.pop();
+            return self.throw_value(bad);
         }
         Ok(())
     }
@@ -317,11 +323,10 @@ impl Vm {
     /// `x is T`: pushes whether the receiver's type provides the trait/type named by the constant
     /// operand. Never errors: a non-instance receiver (null/number/dict/…) yields `false`.
     pub(super) fn op_is(&mut self) {
-        let const_idx = self.read_next() as usize;
-        let name = self.chunk.constants[const_idx].as_object().as_string_ptr();
+        let id = u16::from_le_bytes([self.read_next(), self.read_next()]);
         let receiver = self.stack.pop();
         let provides = matches!(receiver.kind(), ValueKind::Object(ObjectKind::Instance))
-            && unsafe { &*(*receiver.as_object().as_instance_ptr()).ty }.provided.contains(&name);
+            && unsafe { &*(*receiver.as_object().as_instance_ptr()).ty }.provided.contains(&id);
         self.stack.push(Value::from(provides));
     }
 

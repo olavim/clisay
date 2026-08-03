@@ -1,16 +1,23 @@
 use super::*;
 
+/// What a member lookup found, for the admission test.
+enum MemberValue {
+    Value(Value),
+    Method,
+}
+
 impl Vm {
     #[inline]
     fn resolve_cached_type_property(&mut self, type_ptr: *mut ObjType, prop: *mut ObjString) -> Option<TypeMember> {
         let site = self.ip as usize;
         let slot = (site >> 4) & (INDEX_CACHE_SIZE - 1);
+        let ty = unsafe { &*type_ptr };
         let entry = unsafe { self.index_cache.get_unchecked_mut(slot) };
-        if entry.site == site && entry.ty == type_ptr {
+        if entry.site == site && entry.ty == ty.id {
             return Some(entry.member);
         }
-        let member = unsafe { &*type_ptr }.resolve(prop)?;
-        *entry = IndexCache { site, ty: type_ptr, member };
+        let member = ty.resolve(prop)?;
+        *entry = IndexCache { site, ty: ty.id, member };
         Some(member)
     }
 
@@ -37,7 +44,7 @@ impl Vm {
             let type_ptr = unsafe { (*receiver.as_object().as_instance_ptr()).ty };
             if let Some(TypeMember::Method(id)) = self.resolve_cached_type_property(type_ptr, name) {
                 let method = unsafe { &*type_ptr }.get_method(id);
-                if method.tag() == objects::TAG_FUNCTION {
+                if matches!(method.tag(), objects::TAG_FUNCTION | objects::TAG_CLOSURE) {
                     return self.invoke_method(method, arg_count);
                 }
             }
@@ -48,39 +55,49 @@ impl Vm {
 
     /// Pushes a frame for an instance method without allocating a bound method.
     fn invoke_method(&mut self, method: Object, arg_count: usize) -> Result<(), anyhow::Error> {
-        let func_ptr = method.as_function_ptr();
-        let func = unsafe { &*func_ptr };
-        if func.mut_receiver {
+        // A capturing method is already a closure bound to the frame that declared its type. Any
+        // other method captures nothing and is closed here.
+        let is_bound = method.tag() == objects::TAG_CLOSURE;
+        let (name, arity, ip_start, mut_receiver) = match is_bound {
+            true => {
+                let closure = unsafe { &*method.as_closure_ptr() };
+                (closure.name, closure.arity, closure.ip_start, closure.mut_receiver)
+            },
+            false => {
+                let func = unsafe { &*method.as_function_ptr() };
+                (func.name, func.arity, func.ip_start, func.mut_receiver)
+            },
+        };
+        if mut_receiver {
             let target = self.stack.peek(arg_count);
             if self.receiver_rejects_mut(target) {
-                return self.error_readonly_receiver(func.name, target);
+                return self.error_readonly_receiver(name, target);
             }
         }
-        if arg_count != func.arity as usize {
-            let name = unsafe { &(*func.name).value };
-            return self.error(format!("{} expects {} arguments, but was called with {}", name, func.arity, arg_count));
+        if arg_count != arity as usize {
+            let text = unsafe { &(*name).value };
+            return self.error(format!("{} expects {} arguments, but was called with {}", text, arity, arg_count));
         }
-        let ip_start = func.ip_start;
-        let closure = self.create_closure(func_ptr);
-        self.push_frame(closure.as_closure_ptr(), self.stack.offset(arg_count), ip_start, true)
+        let closure_ptr = match is_bound {
+            true => method.as_closure_ptr(),
+            false => self.create_closure(method.as_function_ptr()).as_closure_ptr(),
+        };
+        self.push_frame(closure_ptr, self.stack.offset(arg_count), ip_start, true)
     }
 
     fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize) -> Result<(), anyhow::Error> {
-        let mut args: SmallVec<[Value; 4]> = SmallVec::with_capacity(arg_count);
-        for i in (0..arg_count).rev() {
-            args.push(self.stack.peek(i));
-        }
-
-        self.stack.truncate(arg_count);
+        // Resolving the property allocates a bound method, which can collect. The arguments stay
+        // on the stack across it, since a copy held anywhere else would not be a root.
+        let receiver = self.stack.peek(arg_count);
+        self.stack.push(receiver);
         self.stack.push(Value::from(name));
 
         // INVOKE is always a `recv.name(args)`.
         self.op_get_property()?;
 
-        let callable = self.stack.peek(0);
-        for arg in args {
-            self.stack.push(arg);
-        }
+        // The callable takes the receiver's slot, which is where a call reads it from.
+        let callable = self.stack.pop();
+        self.stack.set(arg_count, callable);
         self.call(arg_count, callable, true)
     }
 
@@ -99,10 +116,12 @@ impl Vm {
     }
 
     fn get_property_by_id(&mut self, instance_ref: *mut ObjInstance, id: u8) -> Value {
-        let value = unsafe { (*instance_ref).get(id) };
-        match value.kind() {
-            ValueKind::Object(ObjectKind::Function) => self.bind_method(instance_ref.into(), value.as_object()),
-            _ => value
+        // A capturing method and a field holding a function both sit in the slot as a closure, so
+        // the value cannot say which it is. Fields are numbered before methods, so the id says it.
+        let ty = unsafe { &*(*instance_ref).ty };
+        match id >= ty.field_count {
+            true => self.bind_method(instance_ref.into(), ty.get_method(id)),
+            false => unsafe { (*instance_ref).get(id) },
         }
     }
 
@@ -260,7 +279,8 @@ impl Vm {
     pub(super) fn op_get_index_or_null(&mut self) {
         let const_idx = self.read_next() as usize;
         let key = self.chunk.constants[const_idx];
-        let receiver = self.stack.pop();
+        // The receiver stays on the stack: reading a member can allocate a bound method.
+        let receiver = self.stack.peek(0);
         let value = match receiver.kind() {
             ValueKind::Object(ObjectKind::Dict) => {
                 unsafe { &*receiver.as_object().as_dict_ptr() }.entries.get(&key).copied().unwrap_or(Value::NULL)
@@ -271,13 +291,15 @@ impl Vm {
             },
             _ => Value::NULL,
         };
-        self.stack.push(value);
+        self.stack.set(0, value);
     }
 
     /// Dotted access `target.name`.
     pub(super) fn op_get_property(&mut self) -> Result<(), anyhow::Error> {
-        let prop = self.stack.pop();
-        let target = self.stack.pop();
+        // Both operands stay on the stack: resolving a member can allocate a bound method
+        // and trigger gc, and a receiver held only in a local is not a gc root.
+        let prop = self.stack.peek(0);
+        let target = self.stack.peek(1);
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
@@ -287,7 +309,13 @@ impl Vm {
             ObjectKind::Array => self.get_native_type_index(self.native_types.array, target, prop),
             ObjectKind::Dict => self.get_dict_method(target, prop),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
-        }
+        }?;
+
+        // The callee pushed its result above the operands, which nothing needs once it has.
+        let result = self.stack.pop();
+        self.stack.truncate(2);
+        self.stack.push(result);
+        Ok(())
     }
 
     /// Dotted store `target.name = v`.
@@ -308,6 +336,42 @@ impl Vm {
                 prop.as_object().as_string()
             )),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
+        }
+    }
+
+    /// Whether a member satisfies what its declaration admits.
+    pub(super) fn op_member_admits(&mut self) {
+        let const_idx = self.read_next() as usize;
+        let (null_allowed, allowed) = self.read_allowed();
+        let key = self.chunk.constants[const_idx];
+        let receiver = self.stack.pop();
+
+        let admits = match self.member_value(receiver, key) {
+            // A method is a reference, never null and never a witness, so it always admits.
+            MemberValue::Method => true,
+            MemberValue::Value(value) if value.is_null() => null_allowed,
+            MemberValue::Value(value) => !self.carries_disallowed_witness(value, allowed),
+        };
+        self.stack.push(Value::from(admits));
+    }
+
+    /// A member's value for the admission test.
+    fn member_value(&self, receiver: Value, key: Value) -> MemberValue {
+        match receiver.kind() {
+            ValueKind::Object(ObjectKind::Dict) => {
+                let entries = &unsafe { &*receiver.as_object().as_dict_ptr() }.entries;
+                MemberValue::Value(entries.get(&key).copied().unwrap_or(Value::NULL))
+            },
+            ValueKind::Object(ObjectKind::Instance) if matches!(key.kind(), ValueKind::Object(ObjectKind::String)) => {
+                let instance_ptr = receiver.as_object().as_instance_ptr();
+                let ty = unsafe { &*(*instance_ptr).ty };
+                match ty.resolve(key.as_object().as_string_ptr()) {
+                    Some(TypeMember::Field(id)) => MemberValue::Value(unsafe { (*instance_ptr).get(id) }),
+                    Some(TypeMember::Method(_)) => MemberValue::Method,
+                    None => MemberValue::Value(Value::NULL),
+                }
+            },
+            _ => MemberValue::Value(Value::NULL),
         }
     }
 

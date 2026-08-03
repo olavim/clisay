@@ -302,8 +302,7 @@ impl Vm {
             },
             objects::TAG_TYPE => {
                 let init = unsafe { &*object.as_type_ptr() }.factory();
-                matches!(init, Some(obj) if obj.tag() == objects::TAG_FUNCTION
-                    && unsafe { &*obj.as_function_ptr() }.escapes(position))
+                matches!(init, Some(obj) if callable_escapes(obj, position))
             },
             _ => false,
         }
@@ -379,10 +378,10 @@ impl Vm {
         }
 
         // A construction verifies each `gives` delegate actually provides its trait.
-        for &(field_id, field_name, trait_name) in ty.gives.iter() {
+        for &(field_id, field_name, trait_name, trait_id) in ty.gives.iter() {
             let value = instance.get(field_id);
             let provides = matches!(value.kind(), ValueKind::Object(ObjectKind::Instance))
-                && unsafe { &*(*value.as_object().as_instance_ptr()).ty }.provided.contains(&trait_name);
+                && unsafe { &*(*value.as_object().as_instance_ptr()).ty }.provided.contains(&trait_id);
             if !provides {
                 let msg = format!("Delegate field '{}' does not provide trait '{}'",
                     unsafe { &(*field_name).value }, unsafe { &(*trait_name).value });
@@ -419,6 +418,15 @@ impl Vm {
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure.as_closure_ptr(), stack_start, factory.ip_start, seal)
             },
+            objects::TAG_CLOSURE => {
+                let closure_ptr = factory_obj.as_closure_ptr();
+                let closure = unsafe { &*closure_ptr };
+                check_arity!(self, arg_count, closure.arity, closure.name);
+
+                let instance = self.alloc(ObjInstance::new(type_ptr));
+                let stack_start = self.stack.set(arg_count, Value::from(instance));
+                self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)
+            },
             // A native factory receives the fresh instance as its target and fills its fields.
             objects::TAG_NATIVE_FUNCTION => {
                 let factory_native = factory_obj.as_native_function_ptr();
@@ -428,5 +436,14 @@ impl Vm {
             },
             _ => unsafe { std::hint::unreachable_unchecked() }
         }
+    }
+}
+
+/// Whether a callable persists the argument at `position`.
+fn callable_escapes(obj: Object, position: usize) -> bool {
+    match obj.tag() {
+        objects::TAG_FUNCTION => unsafe { &*obj.as_function_ptr() }.escapes(position),
+        objects::TAG_CLOSURE => unsafe { &*obj.as_closure_ptr() }.escapes(position),
+        _ => false,
     }
 }

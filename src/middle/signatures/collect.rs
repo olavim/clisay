@@ -18,17 +18,21 @@ impl<'a> Collector<'a> {
                 self.expr(&decl.body);
             },
             HirStmt::Type(decl) => {
-                self.sigs.types_by_name.insert(decl.name, *stmt);
+                self.sigs.types_by_name.entry(decl.name).or_default().push(*stmt);
+                self.sigs.decls_by_id.insert(decl.id, *stmt);
                 self.collect_sig(&decl.init);
                 for method in &decl.methods {
                     if let HirStmt::Fn(m) = self.hir.get(method) {
-                        self.sigs.methods_by_type.insert((decl.name, m.name), *method);
+                        self.sigs.methods_by_type.insert((*stmt, m.name), *method);
                     }
-                    self.sigs.method_owner.insert(*method, decl.name);
+                    self.sigs.method_owner.insert(*method, *stmt);
                     self.collect_sig(method);
                 }
             },
-            HirStmt::Trait(_) | HirStmt::Nop => {},
+            HirStmt::Trait(decl) => {
+                self.sigs.decls_by_id.insert(decl.id, *stmt);
+            },
+            HirStmt::Nop => {},
             // A non-declaration statement holds no signatures of its own. Recurse into its children.
             _ => for child in walk::children_of_stmt(self.hir, stmt) {
                 match child {
@@ -57,12 +61,9 @@ impl<'a> Collector<'a> {
     pub(super) fn register_obligations(&mut self) {
         for (name, decl) in self.hir.obligations() {
             self.sigs.rules.insert(name, decl.rules);
-            if let Some(witness) = decl.witness {
-                let w = if self.sigs.is_type(witness) {
-                    Witness::Type(witness)
-                } else {
-                    Witness::Trait(witness)
-                };
+            if let Some(witness) = &decl.witness {
+                let is_trait = self.hir.type_info(witness.id).is_some_and(|info| info.is_trait);
+                let w = if is_trait { Witness::Trait(witness.id) } else { Witness::Type(witness.id) };
                 self.sigs.witnesses.insert(name, w);
             }
         }
@@ -84,7 +85,7 @@ impl<'a> Collector<'a> {
         for stmt in stmts {
             let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
             let admitted: Vec<(usize, Obligations)> = decl.params.iter().enumerate()
-                .filter_map(|(i, p)| Some((i, self.sigs.admitted_obligations(p.pattern.as_ref()?))))
+                .filter_map(|(i, p)| Some((i, self.sigs.admitted_obligations(self.hir, self.bindings, p.pattern.as_ref()?))))
                 .filter(|(_, admits)| !admits.is_empty())
                 .collect();
             let Some(sig) = self.sigs.fns.get_mut(&stmt).filter(|_| !admitted.is_empty()) else { continue };

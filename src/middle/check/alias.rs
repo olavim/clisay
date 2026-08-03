@@ -782,8 +782,8 @@ impl<'a> Checker<'a> {
     }
 
     /// The error for writing a field through a receiver the method did not declare mutable.
-    pub(super) fn readonly_receiver_error(&self, type_name: Symbol, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
-        let name = self.qualified_field(type_name, field);
+    pub(super) fn readonly_receiver_error(&self, decl: &HirId<HirStmt>, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
+        let name = self.qualified_field(decl, field);
         let method = self.fn_ctx.name.map_or("this method".to_string(), |s| format!("`{}`", self.hir.text(s)));
         self.error_help(format!("cannot assign `{name}` through a read-only receiver"), lhs,
             format!("declare {method}'s receiver `this: mut` to let it mutate the instance"))
@@ -791,8 +791,8 @@ impl<'a> Checker<'a> {
 
     /// The declaration a field needs to become mutable, e.g. `pub mut value` or `mut value`,
     /// keeping the field's current visibility.
-    pub(super) fn mut_decl_hint(&self, type_name: Symbol, field: Symbol) -> String {
-        let visibility = self.layout_of(type_name).map_or("", |layout| {
+    pub(super) fn mut_decl_hint(&self, decl: &HirId<HirStmt>, field: Symbol) -> String {
+        let visibility = self.layout_of(decl).map_or("", |layout| {
             if layout.is_public(field) { "pub " } else if layout.is_inner(field) { "inner " } else { "" }
         });
         format!("{visibility}mut {}", self.hir.text(field))
@@ -808,9 +808,9 @@ impl<'a> Checker<'a> {
         self.locals[i].alias.provenance.extend(sources);
     }
 
-    pub(super) fn immutable_field_error(&self, type_name: Symbol, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
-        let name = self.qualified_field(type_name, field);
+    pub(super) fn immutable_field_error(&self, decl: &HirId<HirStmt>, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
+        let name = self.qualified_field(decl, field);
         self.error_help(format!("Cannot assign immutable field `{name}`"), lhs,
-            format!("you can make `{name}` mutable by declaring it as `{};`", self.mut_decl_hint(type_name, field)))
+            format!("you can make `{name}` mutable by declaring it as `{};`", self.mut_decl_hint(decl, field)))
     }
 }

@@ -1,0 +1,39 @@
+// A capturing method sits in its slot as a closure, and so does a field holding a function. What
+// takes a receiver is what the type declares a method, which is what `this.m()` has to ask.
+fn mk(v)! {
+    type T {
+        pub n;
+        init(this) { this.n = v; }
+        pub fn inner(this)! { return this.n + v; }
+        pub fn outer(this)! { return this.inner(); }
+    }
+    return T();
+}
+print(mk(3).outer()); // expect: 6
+
+// @split
+// The same call on a type that captures nothing.
+type T {
+    pub n;
+    init(this) { this.n = 3; }
+    pub fn inner(this)! { return this.n + 1; }
+    pub fn outer(this)! { return this.inner(); }
+}
+print(T().outer()); // expect: 4
+
+// @split
+// A field holding a function is not a method, so calling it through `this` binds no receiver.
+fn helper()! { return 41; }
+type T { pub f; pub fn call(this)! { return this.f(); } init(this) { this.f = helper; } }
+print(T().call()); // expect: 41
+
+// @split
+// A capturing method reached through `this` while the captured value differs per instance.
+fn mk(v)! {
+    type T { pub fn get(this)! { return v; } pub fn call(this)! { return this.get(); } init(this) { } }
+    return T();
+}
+say a = mk(7);
+say b = mk(9);
+print(a.call()); // expect: 7
+print(b.call()); // expect: 9

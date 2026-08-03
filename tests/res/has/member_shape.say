@@ -1,0 +1,62 @@
+// `has T` tests what T declares for each member, not just the member names.
+type Point { pub x; pub y; }
+print({ x: 1, y: 2 } has Point); // expect: true
+print({ x: null, y: 2 } has Point); // expect: false
+print({ x: 1 } has Point); // expect: false
+
+// @split
+// A nullable member admits null, so the shape test is the declaration's and not a blanket non-null.
+type Point { pub x?; pub y; }
+print({ x: null, y: 2 } has Point); // expect: true
+print({ x: 1, y: null } has Point); // expect: false
+
+// @split
+// A real T satisfies T's declarations by construction, so `x is T` still implies `x has T`.
+type Point { pub x; pub y; init(this, a, b) { this.x = a; this.y = b; } }
+say p = Point(1, 2);
+print(p is Point); // expect: true
+print(p has Point); // expect: true
+
+// @split
+// A member is refused when it carries a witness its declaration does not admit, and accepted when
+// the declaration names it.
+type Raw { } obligation taint { witness Raw; discharge to use; }
+type Bare { pub item; }
+type Tainted { pub item: taint; }
+print({ item: Raw() } has Bare); // expect: false
+print({ item: Raw() } has Tainted); // expect: true
+print({ item: 1 } has Tainted); // expect: true
+
+// @split
+// A method member is a reference, not a value, so it stays a name test.
+type Spec { pub v; pub fn go(this)! { return 0; } }
+type Impl { pub v; init(this) { this.v = 1; } pub fn go(this)! { return 2; } }
+type NoGo { pub v; init(this) { this.v = 1; } }
+print(Impl() has Spec); // expect: true
+print(NoGo() has Spec); // expect: false
+
+// @split
+// A type mixing two witness traits carries both, so a slot admitting only one still refuses it.
+trait A { } trait B { }
+obligation oa { witness A; discharge to use; }
+obligation ob { witness B; discharge to use; }
+type Both with A, B { }
+type One with A { }
+
+type NeedsA { pub item: oa; }
+type NeedsBoth { pub item: oa ob; }
+print({ item: One {} } has NeedsA); // expect: true
+print({ item: Both {} } has NeedsA); // expect: false
+print({ item: Both {} } has NeedsBoth); // expect: true
+
+// @split
+// A `[obl]` member puts the debt on its elements, so the member itself admits no witness. Its own
+// nullability is unaffected by the clause, and still tested.
+type Raw { } obligation taint { witness Raw; discharge to use; }
+type Box { pub items: [taint]; }
+type Maybe { pub items?: [taint]; }
+print({ items: [Raw()] } has Box); // expect: true
+print({ items: [1] } has Box); // expect: true
+print({ items: null } has Box); // expect: false
+print({ } has Box); // expect: false
+print({ items: null } has Maybe); // expect: true

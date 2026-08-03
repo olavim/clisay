@@ -15,7 +15,7 @@ use nohash_hasher::IntSet;
 use crate::compiler_error;
 use crate::core::objects::{TypeMember, UpvalueLocation};
 use crate::middle::hir::{
-    BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol,
+    BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt, Symbol,
 };
 use crate::middle::obligations::Obligations;
 
@@ -121,6 +121,11 @@ impl TypeLayout {
         self.resolve_id(name).and_then(|id| self.clauses.get(&id))
     }
 
+    /// Whether the member is a field rather than a method.
+    pub fn is_field(&self, name: Symbol) -> bool {
+        matches!(self.resolve(name), Some(TypeMember::Field(_)))
+    }
+
     pub fn is_public(&self, name: Symbol) -> bool {
         self.resolve_id(name).is_some_and(|id| !self.non_public.contains(&id))
     }
@@ -143,11 +148,16 @@ pub struct Bindings {
     upvalues: FnvHashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
     /// Type declarations => their member layout.
     types: FnvHashMap<HirId<HirStmt>, TypeLayout>,
-    /// Type/trait name => its public member names, for the `x has T` surface form. A type
+    /// Type/trait declaration => its public member names, for the `x has T` surface form. A type
     /// contributes its public members; a trait its declared surface.
-    surfaces: FnvHashMap<Symbol, Vec<Symbol>>,
+    surfaces: FnvHashMap<HirId<HirStmt>, Vec<Symbol>>,
     /// Scope nodes (by HIR node index) => locals to clean up on exit.
     cleanups: FnvHashMap<usize, Vec<Cleanup>>,
+    /// Each type test => the type or trait declaration its name resolves to.
+    type_refs: FnvHashMap<HirId<HirMatcher>, HirId<HirStmt>>,
+    /// Each identifier naming a type => that declaration, so a construction and the tag it
+    /// produces name one declaration rather than a name several may share.
+    expr_types: FnvHashMap<HirId<HirExpr>, HirId<HirStmt>>,
     /// Brace-construction expressions => the resolved member ids of their brace fields.
     construct_fields: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
     /// Nodes that publish matcher binders (a binding `match`, a pattern parameter) => each
@@ -195,8 +205,24 @@ impl Bindings {
         &self.types[id]
     }
 
-    pub fn surface(&self, name: Symbol) -> Option<&[Symbol]> {
-        self.surfaces.get(&name).map(Vec::as_slice)
+    /// A declaration's layout. A trait has none: this index holds concrete types only.
+    pub fn layout_of_decl(&self, id: &HirId<HirStmt>) -> Option<&TypeLayout> {
+        self.types.get(id)
+    }
+
+    pub fn surface(&self, decl: &HirId<HirStmt>) -> Option<&[Symbol]> {
+        self.surfaces.get(decl).map(Vec::as_slice)
+    }
+
+    /// The declaration a type test's name resolves to, either a type or a trait. A name no
+    /// declaration in scope carries answers `None`.
+    pub fn type_ref(&self, id: &HirId<HirMatcher>) -> Option<HirId<HirStmt>> {
+        self.type_refs.get(id).copied()
+    }
+
+    /// The type declaration this expression names, when it is an identifier that resolves to one.
+    pub fn expr_type(&self, id: &HirId<HirExpr>) -> Option<HirId<HirStmt>> {
+        self.expr_types.get(id).copied()
     }
 
     pub fn cleanup<T>(&self, scope: &HirId<T>) -> &[Cleanup] {
@@ -228,6 +254,13 @@ struct Local {
     is_captured: bool,
 }
 
+/// A type declaration visible at some scope depth.
+struct TypeInScope {
+    name: Symbol,
+    decl: HirId<HirStmt>,
+    depth: u8,
+}
+
 struct FnFrame {
     upvalues: Vec<UpvalueLocation>,
     local_offset: u8,
@@ -254,7 +287,8 @@ pub struct Resolver<'a> {
     scope_depth: u8,
     fn_frames: Vec<FnFrame>,
     type_frames: Vec<TypeFrame>,
-    types: FnvHashMap<Symbol, TypeLayout>,
+    /// Every type and trait declaration in scope, innermost last.
+    type_scope: Vec<TypeInScope>,
     /// The trait whose method body is currently being resolved.
     current_trait: Option<Symbol>,
     /// `true` while validating a standalone `trait` against its declared surface.
@@ -269,7 +303,7 @@ pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
         scope_depth: 0,
         fn_frames: Vec::new(),
         type_frames: Vec::new(),
-        types: FnvHashMap::default(),
+        type_scope: Vec::new(),
         current_trait: None,
         validating_trait: false,
     };
@@ -351,12 +385,13 @@ impl<'a> Resolver<'a> {
                 // the next arm reuse the same slots.
                 let block_base = self.locals.len();
                 let binder_slots = arms.iter()
-                    .map(|a| a.matcher.binders().len() + a.guard.as_ref().map_or(0, |g| self.hir.condition_binders(g).len()))
+                    .map(|a| self.hir.get(&a.matcher).binders(self.hir).len() + a.guard.as_ref().map_or(0, |g| self.hir.condition_binders(g).len()))
                     .max().unwrap_or(0);
 
                 let mut arm_binders = Vec::with_capacity(arms.len());
                 for arm in arms {
-                    let names = arm.matcher.binders();
+                    self.resolve_matcher_types(&arm.matcher);
+                    let names = self.hir.get(&arm.matcher).binders(self.hir);
                     let mut slots = Vec::with_capacity(names.len());
                     for name in &names {
                         slots.push((*name, self.declare_local(*name)?));
@@ -425,6 +460,7 @@ impl<'a> Resolver<'a> {
             },
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
+                self.resolve_matcher_types(matcher);
                 let binders = self.declare_binders(matcher)?;
                 if record && !binders.is_empty() {
                     self.bindings.match_binders.insert(*cond, binders);
@@ -452,14 +488,52 @@ impl<'a> Resolver<'a> {
 
     fn hoist_declarations(&mut self, body: &[HirId<HirStmt>]) -> Result<(), anyhow::Error> {
         for stmt_id in body {
-            let name = match self.hir.get(stmt_id) {
-                HirStmt::Fn(decl) => decl.name,
-                HirStmt::Type(decl) => decl.name,
+            // A trait declares a name a test may name, but emits no runtime value, so it takes no
+            // slot. Both kinds are hoisted, so a test may precede the declaration it names.
+            let (name, names_a_type, takes_slot) = match self.hir.get(stmt_id) {
+                HirStmt::Fn(decl) => (decl.name, false, true),
+                HirStmt::Type(decl) => (decl.name, true, decl.builtin.is_none()),
+                HirStmt::Trait(decl) => (decl.name, true, false),
                 _ => continue,
             };
-            self.declare_local(name)?;
+            if names_a_type {
+                self.type_scope.push(TypeInScope { name, decl: *stmt_id, depth: self.scope_depth });
+            }
+            if takes_slot {
+                self.declare_local(name)?;
+            }
         }
         Ok(())
+    }
+
+    /// The type or trait declaration a name refers to here.
+    fn resolve_type_decl(&self, name: Symbol) -> Option<HirId<HirStmt>> {
+        self.type_scope.iter().rev().find(|t| t.name == name).map(|t| t.decl)
+    }
+
+    /// Records which declaration a type test names, for every type node in a matcher.
+    fn resolve_matcher_types(&mut self, matcher: &HirId<HirMatcher>) {
+        match self.hir.get(matcher) {
+            HirMatcher::Type { name, shape, .. } => {
+                self.record_type_ref(matcher, *name);
+                if let Some(shape) = shape {
+                    self.resolve_matcher_types(shape);
+                }
+            },
+            HirMatcher::As(_, inner) => self.resolve_matcher_types(inner),
+            HirMatcher::Shape(fields) => for field in fields { self.resolve_matcher_types(&field.value) },
+            HirMatcher::Array(elements) => for element in elements {
+                if let HirMatchElem::Elem(m) = element { self.resolve_matcher_types(m) }
+            },
+            HirMatcher::Or(parts) | HirMatcher::And(parts) => for part in parts { self.resolve_matcher_types(part) },
+            _ => {},
+        }
+    }
+
+    fn record_type_ref(&mut self, matcher: &HirId<HirMatcher>, name: Symbol) {
+        if let Some(decl) = self.resolve_type_decl(name) {
+            self.bindings.type_refs.insert(*matcher, decl);
+        }
     }
 
     fn expression(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
@@ -484,12 +558,15 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 self.bindings.places.insert(*expr, place);
+                if let Some(decl) = self.resolve_type_decl(*name) {
+                    self.bindings.expr_types.insert(*expr, decl);
+                }
             },
-            // `x is T`: bind the receiver; `T` is a static name resolved at codegen.
-            HirExpr::Is(target, _) => self.expression(target)?,
-            // `x has spec`: bind the left value; the spec is a static shape with no bindings.
-            HirExpr::Has(left, _) => self.expression(left)?,
-            HirExpr::Match(scrutinee, _) => self.expression(scrutinee)?,
+            HirExpr::Match(scrutinee, matcher) => {
+                let (scrutinee, matcher) = (*scrutinee, *matcher);
+                self.resolve_matcher_types(&matcher);
+                self.expression(&scrutinee)?;
+            },
             HirExpr::Construct(callee, args, brace) => {
                 let callee = *callee;
                 let args = args.clone();

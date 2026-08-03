@@ -1,7 +1,7 @@
 use crate::compiler_error;
 use crate::core::value::Value;
-use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, UnOp};
-use crate::middle::ir::{BarrierAllow, Inst, Label};
+use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, TypeId, UnOp};
+use crate::middle::ir::{Inst, Label};
 use crate::middle::bind::{FnKind, Place, Receiver};
 use crate::middle::check::{Barrier, Guard, WitnessSet};
 
@@ -30,16 +30,9 @@ impl<'a> Compiler<'a> {
                 let place = self.bindings.place(expr);
                 self.emit_load(place, expr)?;
             },
-            HirExpr::Is(target, name) => {
-                self.expression(target)?;
-                let name_ref = self.gc.intern(self.hir.text(*name));
-                let idx = self.ir.add_constant(Value::from(name_ref))?;
-                self.emit(Inst::Is(idx), expr);
-            },
             // A plain brace seals inline (seal flag 1).
             HirExpr::Construct(callee, _, brace) => self.construct_expression(expr, callee, brace, 1)?,
             HirExpr::Mut(inner) => self.mut_expression(expr, inner)?,
-            HirExpr::Has(left, matcher) => self.compile_has(left, matcher, expr)?,
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
                 match self.bindings.match_binders(expr) {
@@ -112,28 +105,23 @@ impl<'a> Compiler<'a> {
     /// Emits the boundary guard for an unknown value. The VM throws any registered witness the value provides
     /// that is not among them.
     fn emit_boundary_barrier(&mut self, node: &HirId<HirExpr>, barrier: &Barrier) -> Result<(), anyhow::Error> {
-        let mut names = Vec::with_capacity(barrier.allow_names.len());
-        for &name in &barrier.allow_names {
-            names.push(self.member_constant(name)?);
-        }
-        let idx = self.ir.add_barrier_allow(BarrierAllow { null_allowed: barrier.null_allowed, names })?;
-        self.emit(Inst::BarrierGuard(idx), node);
+        let allow = self.witness_id_set(&barrier.allow_witnesses);
+        let idx = self.ir.add_witness_allow(allow)?;
+        self.emit(Inst::BarrierGuard(barrier.null_allowed, idx), node);
         Ok(())
     }
 
-    fn emit_is_jumps(&mut self, node: &HirId<HirExpr>, names: &[Symbol], target: Label) -> Result<(), anyhow::Error> {
-        for &name in names {
-            let idx = self.member_constant(name)?;
-            self.emit(Inst::JumpIfIs(target, idx), node);
+    fn emit_is_jumps(&mut self, node: &HirId<HirExpr>, witnesses: &[TypeId], target: Label) {
+        for &id in witnesses {
+            self.emit(Inst::JumpIfIs(target, id), node);
         }
-        Ok(())
     }
 
     fn emit_witness_jumps(&mut self, node: &HirId<HirExpr>, set: &WitnessSet, target: Label) -> Result<(), anyhow::Error> {
         if set.null {
             self.emit(Inst::JumpIfNull(target), node);
         }
-        self.emit_is_jumps(node, &set.names, target)?;
+        self.emit_is_jumps(node, &set.witnesses, target);
         Ok(())
     }
 
@@ -203,7 +191,7 @@ impl<'a> Compiler<'a> {
         let Some(set) = self.barriers.witness_set(node) else { return Ok(()) };
         let throw_it = self.ir.new_label();
         let skip = self.ir.new_label();
-        self.emit_is_jumps(operand, &set.names, throw_it)?;
+        self.emit_is_jumps(operand, &set.witnesses, throw_it);
 
         if set.null {
             self.emit(Inst::AssertNonNull, operand);

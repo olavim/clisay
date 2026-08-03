@@ -1,6 +1,6 @@
 use crate::core::objects::{TypeMember, ObjType, ObjFn, ObjString};
 use crate::core::value::Value;
-use crate::middle::hir::{HirTypeDecl, HirId, HirStmt};
+use crate::middle::hir::{HirTypeDecl, HirId, HirStmt, TypeId};
 use crate::middle::ir::Inst;
 use crate::middle::bind::FnKind;
 
@@ -8,6 +8,10 @@ use super::Compiler;
 
 impl<'a> Compiler<'a> {
     pub (super) fn type_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &Box<HirTypeDecl>) -> Result<(), anyhow::Error> {
+        if let Some(builtin) = decl.builtin {
+            self.ir.set_builtin_type_id(builtin, decl.id);
+            return Ok(());
+        }
         let slot = self.bindings.slot(stmt);
 
         // Build the type from the resolver-computed member layout.
@@ -18,32 +22,39 @@ impl<'a> Compiler<'a> {
             let name = self.gc.intern(self.hir.text(sym));
             ty.members.insert(name, member);
         }
+        ty.id = decl.id;
+        ty.field_count = layout.fields.len() as u8;
         for &field_id in &layout.fields {
             ty.fields.insert(field_id);
         }
         ty.member_count = layout.member_count;
 
-        // Each `gives` delegate is verified at construction, so carry its field id and trait name.
+        // Each `gives` delegate is verified at construction, so carry its field id, its name for the
+        // message, and the trait declaration the field must provide.
         let mut gives = Vec::with_capacity(decl.gives.len());
-        for &(field, trait_sym) in &decl.gives {
+        for &(field, trait_sym, trait_id) in &decl.gives {
             let TypeMember::Field(id) = layout.members[&field] else { unreachable!("gives delegate is a field") };
             let field_ref = self.gc.intern(self.hir.text(field));
             let trait_ref = self.gc.intern(self.hir.text(trait_sym));
-            gives.push((id, field_ref, trait_ref));
+            gives.push((id, field_ref, trait_ref, trait_id));
         }
         ty.gives = gives.into_boxed_slice();
 
-        // `x is T`: this type provides its own name and every transitively `with`-mixed trait.
-        for name in &decl.provides {
-            let name_ref = self.gc.intern(self.hir.text(*name));
-            ty.provided.insert(name_ref);
+        // `x is T`: this type provides its own declaration and every transitively `with`-mixed trait.
+        for (_, id) in &decl.provides {
+            ty.provided.insert(*id);
         }
+        // The same set under codegen's dense numbering, for the barrier test.
+        let provided: Vec<TypeId> = decl.provides.iter().map(|(_, id)| *id).collect();
+        ty.witness_ids = self.witness_id_set(&provided);
 
         // Compile the factory into its slot. A factory-less type has none, so its `factory_id`
         // stays None and `K()` on it finds no factory to call.
+        let mut captures = false;
         if let HirStmt::Fn(_) = self.hir.get(&decl.init) {
             ty.factory_id = Some(layout.factory_id);
             let init_ptr = self.compile_fn(&decl.init, FnKind::Factory)?;
+            captures |= !unsafe { &*init_ptr }.upvalues.is_empty();
             ty.methods.insert(layout.factory_id, init_ptr.into());
         }
 
@@ -54,7 +65,7 @@ impl<'a> Compiler<'a> {
             let method_text = self.hir.text(self.fn_decl(stmt_id).name);
             let name = self.gc.intern(method_text);
             let display = self.gc.intern(format!("{type_text}.{method_text}"));
-            self.install_method(&mut ty, stmt_id, name, display)?;
+            captures |= self.install_method(&mut ty, stmt_id, name, display)?;
         }
 
         // Drop non-public members (private/`inner`, and the per-trait renamed `"<Trait>.<name>"`
@@ -70,7 +81,9 @@ impl<'a> Compiler<'a> {
         let ty = self.gc.alloc(ty);
         let idx = self.ir.add_constant(Value::from(ty))?;
         self.types.insert(type_name, ty);
-        self.emit(Inst::PushType(idx), stmt);
+        // A capturing method needs a closure over the frame that declared the type. Such a type is
+        // built per execution. One that captures nothing is the same object every time.
+        self.emit(if captures { Inst::BuildType(idx) } else { Inst::PushType(idx) }, stmt);
 
         // Store the type into the reserved slot and discard the placeholder.
         self.emit(Inst::StoreLocal(slot), stmt);
@@ -86,11 +99,12 @@ impl<'a> Compiler<'a> {
         Ok(func_const.as_object().as_function_ptr())
     }
 
-    fn install_method(&mut self, ty: &mut ObjType, stmt: &HirId<HirStmt>, name: *mut ObjString, display: *mut ObjString) -> Result<(), anyhow::Error> {
+    /// Installs a method, answering whether it captures anything from an enclosing scope.
+    fn install_method(&mut self, ty: &mut ObjType, stmt: &HirId<HirStmt>, name: *mut ObjString, display: *mut ObjString) -> Result<bool, anyhow::Error> {
         let function_ptr = self.compile_fn(stmt, FnKind::Method)?;
         unsafe { (*function_ptr).name = display; }
         let TypeMember::Method(id) = ty.resolve(name).unwrap() else { unreachable!() };
         ty.methods.insert(id, function_ptr.into());
-        Ok(())
+        Ok(!unsafe { &*function_ptr }.upvalues.is_empty())
     }
 }

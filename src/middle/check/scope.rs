@@ -115,7 +115,7 @@ impl<'a> Checker<'a> {
     pub(super) fn param_scope(&self, param: &HirParam) -> Result<BinderScope, anyhow::Error> {
         let Some(pattern) = &param.pattern else { return Ok(BinderScope::default()) };
         Ok(BinderScope {
-            names: pattern.binders(),
+            names: self.hir.get(pattern).binders(self.hir),
             owed: self.matcher_witness_obligations(pattern, &param.name)?,
             // A parameter is lent for the call, and a borrow hands out no writer slot.
             sources: HashMap::new(),
@@ -126,9 +126,9 @@ impl<'a> Checker<'a> {
     /// binder owes what the scrutinee still owes. A destructure binder owes the witnesses on its
     /// or-path, as in `Node { next } | null`.
     pub(super) fn arm_scope(&self, arm: &HirMatchArm, remaining: &Obligations, at: &HirId<HirStmt>, scrutinee: &HirId<HirExpr>) -> Result<BinderScope, anyhow::Error> {
-        let whole = whole_value_binders(&arm.matcher);
+        let whole = whole_value_binders(self.hir, &arm.matcher);
         let witness = self.matcher_witness_obligations(&arm.matcher, at)?;
-        let mut names = arm.matcher.binders();
+        let mut names = self.hir.get(&arm.matcher).binders(self.hir);
         if let Some(guard) = &arm.guard {
             names.extend(self.hir.condition_binders(guard));
         }
@@ -141,7 +141,7 @@ impl<'a> Checker<'a> {
         // that guard matched, which it knows itself.
         let mut sources: HashMap<Symbol, usize> = HashMap::new();
         if let Some(source) = self.local_of(scrutinee).filter(|&i| self.holds_mutable(i)) {
-            sources.extend(arm.matcher.binders().into_iter().map(|name| (name, source)));
+            sources.extend(self.hir.get(&arm.matcher).binders(self.hir).into_iter().map(|name| (name, source)));
         }
         if let Some(guard) = &arm.guard {
             sources.extend(self.binder_sources(guard));
@@ -164,7 +164,7 @@ impl<'a> Checker<'a> {
             // A witness alternative is the real obligation, so `x @ Node | null` owes `opt` exactly
             // as `x: opt` does.
             if let Some(pattern) = &param.pattern {
-                owed.extend(self.sigs.admitted_obligations(pattern));
+                owed.extend(self.sigs.admitted_obligations(self.hir, self.bindings, pattern));
             }
 
             let mut local = Local::param(name, owed, param.mutable);

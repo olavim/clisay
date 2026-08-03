@@ -109,9 +109,11 @@ pub struct MatchField {
 }
 
 /// An element of an array matcher. `Rest` is `..` or `..name`, at most one per array.
+#[derive(Clone, Copy)]
 pub enum MatchElem {
     Elem(AstId<Matcher>),
-    Rest(Option<Symbol>),
+    /// The name a `..name` binds, as a binder node so it carries its own position.
+    Rest(Option<AstId<Matcher>>),
 }
 
 pub enum Matcher {
@@ -268,10 +270,26 @@ pub struct TraitRef {
     pub pos: SourcePosition,
 }
 
+/// A type whose runtime object the VM builds itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinType {
+    Err,
+}
+
+impl BuiltinType {
+    pub const COUNT: usize = 1;
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 pub struct TypeDecl {
     pub name: Symbol,
     /// `true` for a `trait` declaration, `false` for a `type`.
     pub is_trait: bool,
+    /// Which built-in this declares.
+    pub builtin: Option<BuiltinType>,
     /// Traits mixed in via `with T1, T2, ...`.
     pub with_traits: Vec<Symbol>,
     /// Source spans of every `with`/`req`/`gives` trait mention, for conflict diagnostics.

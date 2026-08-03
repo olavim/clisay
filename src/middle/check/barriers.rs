@@ -4,7 +4,7 @@ use crate::middle::diagnose::Diagnose;
 use crate::middle::obligations::{obligation_atoms, quoted_obligation_list};
 use std::collections::{HashMap, HashSet};
 
-use crate::middle::hir::{HirExpr, HirId, Symbol};
+use crate::middle::hir::{HirExpr, HirId, Symbol, TypeId};
 use crate::middle::obligations::Obligations;
 
 use super::{Checker, Flow, Violation};
@@ -14,7 +14,8 @@ use super::{Checker, Flow, Violation};
 #[derive(Clone)]
 pub struct WitnessSet {
     pub null: bool,
-    pub names: Vec<Symbol>,
+    /// The witness declarations the set tests.
+    pub witnesses: Vec<TypeId>,
     /// Whether the set names a witness other than the built-in `Err`, so codegen must use the
     /// `is` test rather than the fast bad/clean ops.
     pub contains_user_witnesses: bool,
@@ -24,7 +25,7 @@ pub struct WitnessSet {
 /// witness it does not allow when an unknown value reaches it.
 pub struct Barrier {
     pub null_allowed: bool,
-    pub allow_names: Vec<Symbol>,
+    pub allow_witnesses: Vec<TypeId>,
 }
 
 /// A runtime check codegen emits for a node, once that node's value is on the stack. The order
@@ -71,9 +72,9 @@ pub struct Barriers {
     pub(super) witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
     /// What each call does to its arguments, keyed by callee node.
     pub(super) arg_marks: HashMap<HirId<HirExpr>, ArgMarks>,
-    /// Every registered object witness name, the VM's registry for recognizing a crossing value
-    /// as a witness at a boundary barrier.
-    pub(super) witness_names: Vec<Symbol>,
+    /// Every registered object witness declaration, the VM's registry for recognizing a crossing
+    /// value as a witness at a boundary barrier.
+    pub(super) witness_decls: Vec<TypeId>,
     /// Immutable container literals with an unknown-capability element, whose elements are checked
     /// for mutability at construction so a mutable value cannot land in an immutable container.
     pub(super) seal_checks: HashSet<HirId<HirExpr>>,
@@ -98,9 +99,9 @@ impl Barriers {
         self.boundary_barriers.get(node)
     }
 
-    /// Every registered object witness name, for the VM's boundary-barrier registry.
-    pub fn witness_names(&self) -> &[Symbol] {
-        &self.witness_names
+    /// Every registered object witness declaration, for the VM's boundary-barrier registry.
+    pub fn witness_decls(&self) -> &[TypeId] {
+        &self.witness_decls
     }
 
     /// The witness set a discharge node tests, when its operand owes an object witness.
@@ -213,13 +214,13 @@ impl<'a> Checker<'a> {
     /// guard allows those obligations' witnesses.
     pub(super) fn record_boundary_barrier(&mut self, node: &HirId<HirExpr>, accepted: &Obligations) {
         let null_allowed = accepted.contains(&self.sigs.opt);
-        let mut allow_names = Vec::new();
-        for (ob, name) in self.sigs.object_witnesses() {
-            if accepted.contains(&ob) && !allow_names.contains(&name) {
-                allow_names.push(name);
+        let mut allow_witnesses = Vec::new();
+        for (ob, id) in self.sigs.object_witnesses() {
+            if accepted.contains(&ob) && !allow_witnesses.contains(&id) {
+                allow_witnesses.push(id);
             }
         }
-        self.out.boundary_barriers.insert(*node, Barrier { null_allowed, allow_names });
+        self.out.boundary_barriers.insert(*node, Barrier { null_allowed, allow_witnesses });
         self.record_guard(node, Guard::Boundary);
     }
 

@@ -9,7 +9,7 @@ mod traits;
 
 use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::diagnose::Diagnose;
-use crate::middle::hir::{Hir, HirExpr, HirId, HirLiteral, HirStmt, HirTypeDecl, Symbol};
+use crate::middle::hir::{Hir, HirExpr, HirId, HirLiteral, HirStmt, HirTypeDecl};
 use crate::middle::signatures::Signatures;
 use crate::middle::walk::{children_of, Child};
 
@@ -72,7 +72,15 @@ impl<'a> Shape<'a> {
     }
 
     /// The layout of a tracked concrete type.
-    fn layout_of(&self, name: Symbol) -> Option<&'a TypeLayout> {
-        self.sigs.types_by_name.get(&name).map(|stmt| self.bindings.type_layout(stmt))
+    fn layout_of(&self, decl: &HirId<HirStmt>) -> Option<&'a TypeLayout> {
+        self.bindings.layout_of_decl(decl)
+    }
+
+    /// A declaration's name.
+    fn type_text(&self, decl: &HirId<HirStmt>) -> &'a str {
+        match self.hir.get(decl) {
+            HirStmt::Type(decl) | HirStmt::Trait(decl) => self.hir.text(decl.name),
+            _ => "",
+        }
     }
 }

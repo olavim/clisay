@@ -22,6 +22,12 @@ pub trait GcTraceable {
     fn fmt(&self) -> String;
     fn mark(&self, gc: &mut Gc);
 
+    /// Marks pointers the object stores past its struct. A reference reaches only the struct's own
+    /// bytes, so these are handed the allocation pointer instead. Defaults to nothing; types whose
+    /// allocation includes a trailing array override this alongside `layout_size`.
+    /// Safety: `ptr` must be the pointer this object was allocated at.
+    unsafe fn mark_trailing(_ptr: *const Self, _gc: &mut Gc) where Self: Sized {}
+
     /// Bytes attributed to this object for GC accounting: the struct plus any heap
     /// it owns separately (e.g. a `Vec`/`String`'s capacity).
     fn size(&self) -> usize;
@@ -114,7 +120,7 @@ impl Gc {
             });
             std::ptr::copy_nonoverlapping(
                 upvalues.as_ptr(),
-                (*closure_ptr).upvalues().as_ptr() as *mut *mut ObjUpvalue,
+                ObjClosure::upvalues_ptr(closure_ptr),
                 count
             );
         }

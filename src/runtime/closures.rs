@@ -2,10 +2,7 @@ use super::*;
 
 impl Vm {
     pub(super) fn get_upvalue(&self, idx: usize) -> *mut ObjUpvalue {
-        unsafe {
-            let closure = &*(*self.frames.top()).closure;
-            closure.upvalue_at(idx)
-        }
+        unsafe { ObjClosure::upvalue_at((*self.frames.top()).closure, idx) }
     }
 
     fn capture_upvalue(&mut self, location: *mut Value) -> *mut ObjUpvalue {
@@ -63,6 +60,40 @@ impl Vm {
         let p = unsafe { (*self.frames.top()).stack_start.add(location) };
         self.close_upvalues(p);
         self.stack.truncate(1);
+    }
+
+    /// Builds a type whose methods capture.
+    pub(super) fn op_build_type(&mut self) -> Result<(), anyhow::Error> {
+        let const_idx = self.read_next() as usize;
+        let template = self.chunk.constants[const_idx].as_object().as_type_ptr();
+
+        // Read the template out in one go.
+        let (mut ty, capturing) = {
+            let template = unsafe { &*template };
+            let capturing: SmallVec<[(u8, *mut ObjFn); 8]> = template.methods.iter()
+                .filter(|(_, method)| method.tag() == objects::TAG_FUNCTION)
+                .map(|(&id, method)| (id, method.as_function_ptr()))
+                .filter(|(_, function)| !unsafe { &**function }.upvalues.is_empty())
+                .collect();
+            (template.duplicate(), capturing)
+        };
+
+        // Capturing can collect, so each new closure is kept on the stack.
+        for &(_, function) in &capturing {
+            let closure = self.create_closure(function);
+            self.stack.push(Value::from(closure));
+        }
+
+        let depth = capturing.len();
+        for (i, &(id, _)) in capturing.iter().enumerate() {
+            ty.methods.insert(id, self.stack.peek(depth - 1 - i).as_object());
+        }
+        ty.build_template();
+
+        let ty = self.gc.alloc(ty);
+        self.stack.truncate(depth);
+        self.stack.push(Value::from(ty));
+        Ok(())
     }
 
     pub(super) fn op_push_closure(&mut self) -> Result<(), anyhow::Error> {

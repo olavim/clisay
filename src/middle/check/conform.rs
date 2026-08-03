@@ -1,6 +1,6 @@
 //! Whether what a value owes conforms to what its destination accepts.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use anyhow::anyhow;
 
@@ -10,6 +10,7 @@ use crate::middle::hir::{builtin_obligation_rules, BinOp, HirExpr, HirFnDecl, Hi
 use crate::middle::obligations::{quoted_obligation_list, sorted_obligation_names, Obligations};
 use crate::middle::native::{self, NativeSig};
 use crate::middle::signatures::{Mutability, RetSig, TypeTag, Witness};
+use crate::middle::hir::TypeId;
 
 use super::{Checker, Flow, Rule, Site, Typed, Violation, WitnessSet};
 
@@ -179,7 +180,10 @@ impl<'a> Checker<'a> {
             HirExpr::Literal(HirLiteral::Boolean(_)) => "boolean".to_string(),
             HirExpr::Literal(HirLiteral::Null) => "null".to_string(),
             _ => match &typed.tag {
-                TypeTag::Concrete(name) => self.hir.text(*name).to_string(),
+                TypeTag::Concrete(decl) => match self.type_name_of(decl) {
+                    Some(name) => self.hir.text(name).to_string(),
+                    None => "value".to_string(),
+                },
                 _ => "value".to_string(),
             },
         }
@@ -188,16 +192,24 @@ impl<'a> Checker<'a> {
     /// The type or trait that witnesses an obligation at runtime, if it has one.
     pub(super) fn witness_name(&self, obligation: Symbol) -> Option<&'a str> {
         match self.sigs.witness(obligation)? {
-            Witness::Type(name) | Witness::Trait(name) => Some(self.hir.text(*name)),
+            Witness::Type(id) | Witness::Trait(id) => self.hir.type_info(*id).map(|info| self.hir.text(info.name)),
             Witness::Null => Some("null"),
         }
     }
 }
 
 impl<'a> Checker<'a> {
-    /// A value owing `fails`: an `Err` witness.
-    pub(super) fn fails_flow(&self) -> Flow {
-        Flow::Bad { obligations: Obligations::from([self.sigs.fails]), definite: false, container: false }
+    /// The flow a fresh instance carries. Constructing a type puts the value in the bad state of
+    /// every obligation that type witnesses, its own and any carried by a trait it mixes.
+    pub(super) fn construction_flow(&self, decl: &HirId<HirStmt>) -> Flow {
+        let obligations = match self.hir.get(decl) {
+            HirStmt::Type(decl) => self.sigs.obligations_witnessed_by_decl(decl),
+            _ => Obligations::new(),
+        };
+        match obligations.is_empty() {
+            true => Flow::Clean,
+            false => Flow::Bad { obligations, definite: true, container: false },
+        }
     }
 
     pub(super) fn owes_object_witness(&self, flow: &Flow) -> bool {
@@ -206,7 +218,7 @@ impl<'a> Checker<'a> {
     }
 
     /// The type witness of the built-in `fails` obligation.
-    pub(super) fn err_witness(&self) -> Option<Symbol> {
+    pub(super) fn err_witness(&self) -> Option<TypeId> {
         match self.sigs.witness(self.sigs.fails) {
             Some(Witness::Type(e)) => Some(*e),
             _ => None,
@@ -217,13 +229,13 @@ impl<'a> Checker<'a> {
     pub(super) fn record_witness_test(&mut self, node: &HirId<HirExpr>, flow: &Flow) {
         let Flow::Bad { obligations, .. } = flow else { return };
         let err = self.err_witness();
-        let mut set = WitnessSet { null: false, names: Vec::new(), contains_user_witnesses: false };
+        let mut set = WitnessSet { null: false, witnesses: Vec::new(), contains_user_witnesses: false };
         for &o in obligations {
             match self.sigs.witness(o) {
                 Some(Witness::Null) => set.null = true,
                 Some(Witness::Type(w) | Witness::Trait(w)) => {
-                    if !set.names.contains(w) {
-                        set.names.push(*w);
+                    if !set.witnesses.contains(w) {
+                        set.witnesses.push(*w);
                     }
                     if Some(*w) != err { set.contains_user_witnesses = true; }
                 },
@@ -232,7 +244,7 @@ impl<'a> Checker<'a> {
         }
         // A recorded set always names an object witness: callers only record when
         // `owes_object_witness` holds. Codegen relies on this to fast-path an opt-only operand.
-        debug_assert!(!set.names.is_empty(), "witness test recorded with no object witness");
+        debug_assert!(!set.witnesses.is_empty(), "witness test recorded with no object witness");
         self.out.witness_tests.insert(*node, set);
     }
 
@@ -249,7 +261,8 @@ impl<'a> Checker<'a> {
             return None;
         }
         obligations.iter().find_map(|o| match self.sigs.witness(*o) {
-            Some(Witness::Type(w)) if w == tag => Some(self.hir.text(*w)),
+            Some(Witness::Type(w)) if self.sigs.decl_of_id(*w) == Some(*tag) =>
+                self.type_name_of(tag).map(|name| self.hir.text(name)),
             _ => None,
         })
     }
@@ -265,7 +278,7 @@ impl<'a> Checker<'a> {
         let mut it = caught.iter();
         match (it.next(), it.next()) {
             (Some(o), None) => match self.sigs.witness(*o) {
-                Some(Witness::Type(name)) => TypeTag::Concrete(*name),
+                Some(Witness::Type(id)) => self.sigs.decl_of_id(*id).map_or(TypeTag::Unknown, TypeTag::Concrete),
                 _ => TypeTag::Unknown,
             },
             _ => TypeTag::Unknown,
@@ -415,8 +428,8 @@ impl<'a> Checker<'a> {
     }
 
     /// Checks a brace-construction value against its field's declared nullability.
-    pub(super) fn check_brace_field(&mut self, type_name: Symbol, field: Symbol, flow: &Flow, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let nullable = match self.layout_of(type_name) {
+    pub(super) fn check_brace_field(&mut self, decl: &HirId<HirStmt>, field: Symbol, flow: &Flow, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let nullable = match self.layout_of(decl) {
             Some(layout) => layout.is_nullable(field),
             None => return Ok(()),
         };
@@ -441,40 +454,20 @@ impl<'a> Checker<'a> {
         self.string_member(member)
     }
 
-    pub(super) fn collect_witness_obligations<T>(&self, matcher: &HirMatcher, at: &HirId<T>, out: &mut HashMap<Symbol, Obligations>) -> Result<(), anyhow::Error> {
-        match matcher {
-            HirMatcher::Or(alternatives) => {
-                let binding = alternatives.iter().find(|a| a.binds_anything());
-                let mut group = HashSet::new();
-                for alt in alternatives {
-                    if alt.binds_anything() {
-                        self.collect_witness_obligations(alt, at, out)?;
-                    } else if let Some(obligation) = self.sigs.bindingless_witness_obligation(alt) {
-                        group.insert(obligation);
-                    } else if binding.is_some() {
-                        return Err(self.error_help("a non-witness alternative beside a destructure is a dead binding".to_string(), at,
-                            "beside a destructure, an alternative must be a witness (`null` or a witness type)"));
-                    }
-                }
-                // Every binder in the binding alternatives owes this group's witnesses.
-                if let Some(binding) = binding {
-                    for name in binding.binders() {
-                        out.entry(name).or_default().extend(&group);
-                    }
-                }
-                Ok(())
-            },
+    pub(super) fn collect_witness_obligations<T>(&self, matcher: &HirId<HirMatcher>, at: &HirId<T>, out: &mut HashMap<Symbol, Obligations>) -> Result<(), anyhow::Error> {
+        match self.hir.get(matcher) {
+            HirMatcher::Or(alternatives) => self.or_witness_obligations(alternatives, at, out),
             HirMatcher::As(name, inner) => {
                 // `x @ p | null` names the whole value, so `x` owes what that or-group admits.
-                let admits = self.sigs.admitted_obligations(inner);
+                let admits = self.sigs.admitted_obligations(self.hir, self.bindings, inner);
                 if !admits.is_empty() {
                     out.entry(*name).or_default().extend(admits);
                 }
                 self.collect_witness_obligations(inner, at, out)
             },
-            HirMatcher::Type { nominal, name, shape: Some(shape) } => {
-                if *nominal {
-                    self.recover_shape_fields(*name, shape, out);
+            HirMatcher::Type { nominal, shape: Some(shape), .. } => {
+                if let (true, Some(decl)) = (*nominal, self.bindings.type_ref(matcher)) {
+                    self.recover_shape_fields(&decl, shape, out);
                 }
                 self.collect_witness_obligations(shape, at, out)
             },
@@ -488,6 +481,34 @@ impl<'a> Checker<'a> {
             HirMatcher::And(parts) => { for part in parts { self.collect_witness_obligations(part, at, out)?; } Ok(()) },
             _ => Ok(()),
         }
+    }
+
+    /// An or-group is one test written in several shapes. At most one alternative binds the value;
+    /// the rest only say what it may be. Those tests are what the binders end up owing.
+    fn or_witness_obligations<T>(&self, alternatives: &[HirId<HirMatcher>], at: &HirId<T>, out: &mut HashMap<Symbol, Obligations>) -> Result<(), anyhow::Error> {
+        // With nothing to bind, there is no name to hand the group to.
+        let Some(binding) = alternatives.iter().find(|a| self.hir.get(*a).binds_anything(self.hir)) else { return Ok(()) };
+
+        let mut admitted = Obligations::new();
+        for alt in alternatives {
+            if self.hir.get(alt).binds_anything(self.hir) {
+                self.collect_witness_obligations(alt, at, out)?;
+                continue;
+            }
+            // A test beside a binding narrows what the binder receives. One that witnesses nothing
+            // narrows nothing, so no value could reach the binder through it.
+            let witnesses = self.sigs.bindingless_witness_obligations(self.hir, self.bindings, alt);
+            if witnesses.is_empty() {
+                return Err(self.error_help("a non-witness alternative beside a destructure is a dead binding".to_string(), at,
+                    "beside a destructure, an alternative must be a witness (`null` or a witness type)"));
+            }
+            admitted.extend(witnesses.iter().copied());
+        }
+
+        for name in self.hir.get(binding).binders(self.hir) {
+            out.entry(name).or_default().extend(admitted.iter().copied());
+        }
+        Ok(())
     }
 
     pub(super) fn collect_condition_witness_obligations(&self, cond: &HirId<HirExpr>, out: &mut HashMap<Symbol, Obligations>) -> Result<(), anyhow::Error> {
@@ -504,7 +525,7 @@ impl<'a> Checker<'a> {
     /// The witness obligations each binder inherits from a bindingless alternative sharing its
     /// or-group. In `Node { next } | null` the `next` binder owes `opt`. A bindingless alternative
     /// beside a destructure must be a witness. A non-witness there is a dead binding.
-    pub(super) fn matcher_witness_obligations<T>(&self, matcher: &HirMatcher, at: &HirId<T>) -> Result<HashMap<Symbol, Obligations>, anyhow::Error> {
+    pub(super) fn matcher_witness_obligations<T>(&self, matcher: &HirId<HirMatcher>, at: &HirId<T>) -> Result<HashMap<Symbol, Obligations>, anyhow::Error> {
         let mut out = HashMap::new();
         self.collect_witness_obligations(matcher, at, &mut out)?;
         Ok(out)

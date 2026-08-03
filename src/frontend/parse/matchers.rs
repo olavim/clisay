@@ -326,7 +326,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let name = match self.tokens.next_if(TokenType::Identifier) {
                     Some(token) => {
                         self.check_name_case(&token.lexeme, NameKind::Binder, &token.pos)?;
-                        Some(self.ast.intern(&token.lexeme))
+                        let name = self.ast.intern(&token.lexeme);
+                        Some(self.ast.add_matcher(Matcher::Binder(name), token.pos.clone()))
                     },
                     None => None
                 };

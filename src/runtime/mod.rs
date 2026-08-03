@@ -17,7 +17,8 @@ use crate::core::stack::{CachedStack, Stack};
 use crate::core::value::Value;
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
-use crate::core::objects::{self, TypeMember, NativeFn, ObjArray, ObjDict, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind};
+use crate::core::objects::{self, TypeMember, NativeFn, ObjArray, ObjDict, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind, TypeId};
+use crate::ast::BuiltinType;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::opcode::{self, OpCode};
@@ -30,7 +31,8 @@ const CALL_CACHE_SIZE: usize = 1024;
 #[derive(Clone, Copy)]
 struct IndexCache {
     site: usize,
-    ty: *mut ObjType,
+    /// The declaration, not the object.
+    ty: TypeId,
     member: TypeMember
 }
 
@@ -112,9 +114,6 @@ pub struct Vm {
     write_owners: Vec<WriteOwner>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
-    /// Every registered object witness name. A boundary barrier throws a crossing value when it
-    /// provides one of these names and that name is not among the destination's allowed witnesses.
-    witnesses: fnv::FnvHashSet<*mut ObjString>,
     index_cache: Box<[IndexCache]>,
     call_cache: Box<[CallCache]>,
     out: Vec<String>
@@ -142,11 +141,24 @@ fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjType 
     gc.alloc(ty)
 }
 
-fn build_err_type(gc: &mut Gc) -> *mut ObjType {
-    let mut ty = ObjType::new(gc.intern("Err"));
+/// Numbers the witnesses a type the VM built itself provides.
+fn apply_witness_ids(ty: &mut ObjType, ids: &[(TypeId, u16)], provided: &[TypeId]) {
+    let mut own: Vec<u16> = ids.iter()
+        .filter(|(decl, _)| provided.contains(decl))
+        .map(|(_, id)| *id)
+        .collect();
+    own.sort_unstable();
+    ty.witness_ids = own.into_boxed_slice();
+}
+
+fn build_err_type(gc: &mut Gc, ids: &[(TypeId, u16)], type_id: TypeId) -> *mut ObjType {
+    let err = gc.intern("Err");
+    let mut ty = ObjType::new(err);
     ty.members.insert(gc.intern("value"), TypeMember::Field(0));
     ty.fields.insert(0);
-    let init = ObjNativeFn::new(gc.intern("Err"), 1, |vm, target, args| {
+    ty.field_count = 1;
+    ty.id = type_id;
+    let init = ObjNativeFn::new(err, 1, |vm, target, args| {
         let instance = target.as_object().as_instance_ptr();
         unsafe { (*instance).set(0, args[0]) };
         // An Err is a plain construction, so it hands back an immutable value like any other.
@@ -157,7 +169,8 @@ fn build_err_type(gc: &mut Gc) -> *mut ObjType {
     ty.methods.insert(1, gc.alloc(init).into());
     ty.factory_id = Some(1);
     ty.member_count = 2;
-    ty.provided.insert(gc.intern("Err"));
+    ty.provided.insert(type_id);
+    apply_witness_ids(&mut ty, ids, &[type_id]);
     ty.build_template();
     gc.alloc(ty)
 }
@@ -199,12 +212,9 @@ impl Vm {
         let native_types = NativeTypes {
             array: build_native_type(&mut gc, NativeArray),
             dict: build_native_type(&mut gc, NativeDict),
-            err: build_err_type(&mut gc)
+            err: build_err_type(&mut gc, &chunk.witness_ids, chunk.builtin_type_ids[BuiltinType::Err.index()])
         };
 
-        let witnesses = chunk.witness_names.iter()
-            .map(|name| name.as_object().as_string_ptr())
-            .collect();
 
         let mut vm = Vm {
             gc,
@@ -218,8 +228,7 @@ impl Vm {
             write_owners: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
-            witnesses,
-            index_cache: vec![IndexCache { site: 0, ty: std::ptr::null_mut(), member: TypeMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
+            index_cache: vec![IndexCache { site: 0, ty: TypeId::MAX, member: TypeMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
             call_cache: vec![CallCache { site: usize::MAX, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0 }; CALL_CACHE_SIZE].into_boxed_slice(),
             out: Vec::new()
         };
@@ -428,17 +437,24 @@ impl Vm {
             value.mark(&mut self.gc);
         }
 
+        for frame in self.frames.iter() {
+            if !frame.closure.is_null() {
+                self.gc.mark_object(frame.closure);
+            }
+        }
+
         // A borrowed value may leave the stack while the call runs, so keep it alive until its
         // matching release restores the borrowed bit on its header.
         for held in &self.write_owners {
             held.value.mark(&mut self.gc);
         }
+
         for (value, _) in &self.borrows {
             value.mark(&mut self.gc);
         }
 
         for entry in self.call_cache.iter_mut() {
-            entry.callee = Value::NULL;
+            entry.site = usize::MAX;
         }
 
         self.gc.collect();

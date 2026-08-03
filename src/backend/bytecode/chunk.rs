@@ -2,6 +2,8 @@ use std::mem;
 
 use crate::frontend::lex::SourcePosition;
 use crate::core::gc::{Gc, GcTraceable};
+use crate::ast::BuiltinType;
+use crate::core::objects::TypeId;
 use crate::core::value::Value;
 
 use super::opcode::{self, OpCode, Operand};
@@ -10,18 +12,26 @@ use super::opcode::{self, OpCode, Operand};
 
 #[derive(Clone)]
 pub struct BytecodeChunk {
+    /// Each registered object witness declaration and its id, for the types the VM builds itself.
+    pub witness_ids: Vec<(TypeId, u16)>,
+    /// Each built-in's declaration id, by `BuiltinType::index`. The VM builds those types itself,
+    /// so it is told which declaration the program gave each one.
+    pub builtin_type_ids: [TypeId; BuiltinType::COUNT],
+    /// The witness ids each barrier allows, by pool index.
+    pub witness_allows: Vec<Box<[u16]>>,
     pub code: Vec<OpCode>,
     pub constants: Vec<Value>,
-    pub witness_names: Vec<Value>,
     pub code_pos: Vec<SourcePosition>
 }
 
 impl BytecodeChunk {
     pub fn new() -> BytecodeChunk {
         BytecodeChunk {
+            witness_ids: Vec::new(),
+            builtin_type_ids: [0; BuiltinType::COUNT],
+            witness_allows: Vec::new(),
             code: Vec::new(),
             constants: Vec::new(),
-            witness_names: Vec::new(),
             code_pos: Vec::new()
         }
     }
@@ -58,6 +68,7 @@ impl GcTraceable for BytecodeChunk {
                     Operand::Local => format!("L{}", byte!()),
                     Operand::Const => self.constants[byte!() as usize].fmt(),
                     Operand::Jump => format!("<{}>", short!()),
+                    Operand::Pool => format!("#{}", short!()),
                     // A count followed by that many raw bytes.
                     Operand::List => {
                         let count = byte!();
@@ -81,16 +92,13 @@ impl GcTraceable for BytecodeChunk {
         for constant in &self.constants {
             constant.mark(gc);
         }
-        for name in &self.witness_names {
-            name.mark(gc);
-        }
     }
 
     fn size(&self) -> usize {
         mem::size_of::<BytecodeChunk>()
             + self.code.capacity() * mem::size_of::<OpCode>()
             + self.constants.capacity() * mem::size_of::<Value>()
-            + self.witness_names.capacity() * mem::size_of::<Value>()
             + self.code_pos.capacity() * mem::size_of::<SourcePosition>()
+            + self.witness_ids.capacity() * mem::size_of::<(TypeId, u16)>()
     }
 }
