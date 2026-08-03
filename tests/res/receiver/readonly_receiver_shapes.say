@@ -1,0 +1,46 @@
+// Every way of mutating through the receiver needs the method to declare `this: mut`, not just a
+// direct field assignment.
+type T { pub mut n; init(this) { this.n = 0; } pub fn f(this) { this.n = 1; } } // error: cannot assign `T.n` through a read-only receiver
+
+// @split
+type T { pub arr; init(this) { this.arr = mut [0]; } pub fn f(this) { this.arr[0] = 1; } } // error: cannot mutate through a read-only receiver
+
+// @split
+type T { pub arr; init(this) { this.arr = mut []; } pub fn f(this) { this.arr.push(1); } } // error: expected mutable receiver
+
+// @split
+fn take(a: mut) { a.push(1); }
+type T { pub arr; init(this) { this.arr = mut []; } pub fn f(this) { take(this.arr); } } // error: expected mutable argument
+
+// @split
+type I { pub mut v; init(this) { this.v = 0; } }
+type T { pub inner; init(this) { this.inner = mut I(); } pub fn f(this) { this.inner.v = 1; } } // error: cannot mutate through a read-only receiver
+
+// @split
+// Naming a member is not calling it. `t.set` is a dispatch site that resolves when it runs, so
+// taking it is allowed whatever the receiver is; only the call asks for a mutable receiver.
+type T { pub mut x?; pub fn set(this: mut, v) { this.x = v; } }
+say t = T {};
+say f = t.set;
+print("named"); // expect: named
+
+// @split
+// The same program with a mutable receiver runs, so the rule refuses only what it should.
+fn take(a: mut) { a.push(1); }
+type I { pub mut v; init(this) { this.v = 0; } }
+type T {
+    pub mut n; pub arr; pub inner;
+    init(this) { this.n = 0; this.arr = mut [0]; this.inner = mut I(); }
+    pub fn f(this: mut) { this.n = 1; this.arr[0] = 2; this.arr.push(3); take(this.arr); this.inner.v = 4; }
+}
+say t = mut T();
+t.f();
+print(t.n); // expect: 1
+print(t.arr[0]); // expect: 2
+print(t.inner.v); // expect: 4
+
+// @split
+// A factory builds the instance, so its own writes are not receiver mutations.
+type T { pub arr; init(this) { this.arr = mut []; this.arr.push(9); this.arr[0] = 8; } }
+say t = mut T();
+print(t.arr[0]); // expect: 8

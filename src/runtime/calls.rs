@@ -334,6 +334,9 @@ impl Vm {
             objects::TAG_CLOSURE => {
                 let closure_ptr = method.as_closure_ptr();
                 let closure = unsafe { &*closure_ptr };
+                if closure.mut_receiver && self.receiver_rejects_mut(bound_method.target) {
+                    return self.error_readonly_receiver(closure.name, bound_method.target);
+                }
                 check_arity!(self, arg_count, closure.arity, closure.name);
                 let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;

@@ -33,8 +33,8 @@ impl<'a> Checker<'a> {
             HirStmt::Return(opt) => match opt {
                 Some(e) => {
                     let typed = self.expr(e)?;
-                    self.check_return_mutability(&typed, e)?;
                     self.check_return_field_move(e)?;
+                    self.check_return_mutability(&typed, e)?;
                     self.check_return(&typed.flow, self.fn_ctx.return_shape, e)?;
                     // Returning a mutable value moves it out to the caller.
                     self.move_source(e);
@@ -440,7 +440,12 @@ impl<'a> Checker<'a> {
                         // A method reference is a non-null value.
                         TypeMember::Method(_) => Flow::Clean,
                     };
-                    return Ok(Typed::of(flow, TypeTag::Unknown));
+                    // A member of an immutable value is reached only through it, so it cannot be
+                    // mutated either.
+                    return Ok(match receiver.mutability {
+                        Mutability::Immutable => Typed::of(flow, TypeTag::Unknown).with_mutability(Mutability::Immutable),
+                        _ => Typed::of(flow, TypeTag::Unknown),
+                    });
                 }
             }
         }
@@ -938,6 +943,11 @@ impl<'a> Checker<'a> {
         // a closure is immutable for writing too, which `effective_mutability` folds in.
         if let Some(i) = slot.filter(|&i| self.effective_mutability(i) == Mutability::Immutable) {
             return Err(self.immutable_mutation_error(target, i));
+        }
+
+        // An immutable base seals every place under it, so `this.arr[0] = 1` in a read-only method is refused.
+        if slot.is_none() && self.sealed_base(target) {
+            return Err(self.sealed_write_error(target));
         }
 
         // Writing through an index is a use of the target, so a moved binding is a use after move.
