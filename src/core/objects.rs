@@ -318,6 +318,8 @@ pub struct ObjFn {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
     pub arity: u8,
+    /// Whether the method declared `this: mut`, so a call has to prove its receiver is mutable.
+    pub mut_receiver: bool,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>,
     /// One bit per parameter, set where the parameter lets its argument escape: it takes it by
@@ -332,11 +334,12 @@ impl ObjFn {
         position < 64 && self.escape_mask & (1u64 << position) != 0
     }
 
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64) -> ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, mut_receiver: bool) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
             arity,
+            mut_receiver,
             ip_start,
             upvalues,
             escape_mask
@@ -403,6 +406,7 @@ pub struct ObjClosure {
     pub name: *mut ObjString,
     pub arity: u8,
     pub upvalue_count: u8,
+    pub mut_receiver: bool,
     pub ip_start: usize,
     pub escape_mask: u64
 }

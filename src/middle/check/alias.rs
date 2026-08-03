@@ -749,6 +749,38 @@ impl<'a> Checker<'a> {
         self.error_labeled("cannot mutate an immutable value".to_string(), target, format!("`{name}` is immutable"))
     }
 
+    /// Whether a write target is reached through a value that cannot be mutated.
+    pub(super) fn sealed_base(&self, target: &HirId<HirExpr>) -> bool {
+        match self.hir.get(target) {
+            // A factory's `this` is still being built, so its mutability is the constructor's to decide.
+            HirExpr::This => !self.checking_factory && self.this_typed().mutability == Mutability::Immutable,
+            HirExpr::Index(inner, _, _) | HirExpr::SafeAccess(inner, _, _) => self.sealed_base(inner),
+            HirExpr::Identifier(name) => self.frame_index_of(*name)
+                .is_some_and(|i| self.effective_mutability(i) == Mutability::Immutable),
+            _ => false,
+        }
+    }
+
+    /// The error for mutating a place under a sealed base.
+    pub(super) fn sealed_write_error(&self, target: &HirId<HirExpr>) -> anyhow::Error {
+        if !self.base_is_this(target) {
+            return self.error_labeled("cannot mutate an immutable value".to_string(), target,
+                "reached through an immutable value");
+        }
+        let method = self.fn_ctx.name.map_or("this method".to_string(), |s| format!("`{}`", self.hir.text(s)));
+        self.error_help("cannot mutate through a read-only receiver".to_string(), target,
+            format!("declare {method}'s receiver `this: mut` to let it mutate the instance"))
+    }
+
+    /// Whether a place is reached from `this` rather than from a named value.
+    fn base_is_this(&self, target: &HirId<HirExpr>) -> bool {
+        match self.hir.get(target) {
+            HirExpr::This => true,
+            HirExpr::Index(inner, _, _) | HirExpr::SafeAccess(inner, _, _) => self.base_is_this(inner),
+            _ => false,
+        }
+    }
+
     /// The error for writing a field through a receiver the method did not declare mutable.
     pub(super) fn readonly_receiver_error(&self, type_name: Symbol, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
         let name = self.qualified_field(type_name, field);

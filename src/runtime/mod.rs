@@ -336,6 +336,25 @@ impl Vm {
         self.raise(diagnostic)
     }
 
+    /// Traps a call whose receiver cannot satisfy the method's declared `this: mut`.
+    pub(super) fn error_readonly_receiver(&self, name: *mut ObjString, target: Value) -> Result<(), anyhow::Error> {
+        let method = unsafe { &(*name).value };
+        let mut diagnostic = Diagnostic::new(format!("`{method}` declares `this: mut`, but its receiver is immutable"),
+            self.get_source_position().clone())
+            .with_label("this receiver cannot be mutated");
+        if let Some(origin) = target.as_object().immutable_origin() {
+            let pos = self.chunk.code_pos[origin as usize].clone();
+            diagnostic = diagnostic.with_context_span(pos, "value made immutable here");
+        }
+        self.raise(diagnostic)
+    }
+
+    /// Whether a receiver fails a method's declared `this: mut`.
+    #[inline]
+    pub(super) fn receiver_rejects_mut(&self, target: Value) -> bool {
+        matches!(target.kind(), ValueKind::Object(_)) && target.as_object().is_immutable()
+    }
+
     /// Traps a mutable element landing in an immutable container at construction.
     fn error_seal(&self) -> Result<(), anyhow::Error> {
         self.raise(Diagnostic::new(objects::MUTABLE_IN_IMMUTABLE, self.get_source_position().clone())

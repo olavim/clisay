@@ -50,6 +50,12 @@ impl Vm {
     fn invoke_method(&mut self, method: Object, arg_count: usize) -> Result<(), anyhow::Error> {
         let func_ptr = method.as_function_ptr();
         let func = unsafe { &*func_ptr };
+        if func.mut_receiver {
+            let target = self.stack.peek(arg_count);
+            if self.receiver_rejects_mut(target) {
+                return self.error_readonly_receiver(func.name, target);
+            }
+        }
         if arg_count != func.arity as usize {
             let name = unsafe { &(*func.name).value };
             return self.error(format!("{} expects {} arguments, but was called with {}", name, func.arity, arg_count));
