@@ -9,7 +9,7 @@ use crate::middle::hir::{
     HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ReturnShape, Symbol,
 };
 
-use super::{FnKind, Resolver, TypeFrame, TypeLayout};
+use super::{FnKind, MemberClause, Resolver, TypeFrame, TypeLayout};
 
 impl<'a> Resolver<'a> {
     /// The per-trait renamed slot for `name` if it's a private member of the trait whose body is
@@ -141,6 +141,12 @@ impl<'a> Resolver<'a> {
             }
             if decl.mut_fields.contains(field) {
                 layout.mutable.insert(next_member_id);
+            }
+            if let Some(clause) = decl.field_clauses.get(field) {
+                let owed = clause.owed();
+                if !owed.is_empty() {
+                    layout.clauses.insert(next_member_id, MemberClause { owed, container: clause.container });
+                }
             }
             next_member_id += 1;
         }

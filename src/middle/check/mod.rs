@@ -87,6 +87,10 @@ struct Local {
     param: bool,
     /// The obligations settled on this binding: discharged here, or handed to a slot that declares them.
     handled: Obligations,
+    /// The obligations discharged on this binding on the current path.
+    discharged: Obligations,
+    /// The obligations discharged per field of this binding, where it holds an immutable value of a known type.
+    field_discharged: HashMap<Symbol, Obligations>,
     /// Where the binding was introduced.
     site: Option<HirId<HirExpr>>,
     /// Everything the one-writer rule tracks about this binding, which `alias` owns.
@@ -97,7 +101,7 @@ impl Local {
     /// A binding with every fact at its neutral default. Each named constructor overrides only the
     /// fields that distinguish it, so a new field is added here once.
     fn base(name: Symbol) -> Local {
-        Local { name, owed: Obligations::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, param: false, handled: Obligations::new(), site: None, alias: AliasLocal::default() }
+        Local { name, owed: Obligations::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, alias: AliasLocal::default() }
     }
 
     fn param(name: Symbol, owed: Obligations, mutable: bool) -> Local {
@@ -121,9 +125,9 @@ impl Local {
     }
 }
 
-/// A narrowable place: a local, a `this` field, or a field of an immutable local receiver.
-#[derive(Clone, PartialEq, Eq, Hash)]
-enum NarrowKey {
+/// Where a narrowing applies: a local, a `this` field, or a field of an immutable local receiver.
+#[derive(Clone, Copy)]
+enum NarrowTarget {
     Local(usize),
     ThisField(Symbol),
     LocalField(usize, Symbol),
@@ -132,7 +136,7 @@ enum NarrowKey {
 /// A flow fact a check establishes for a branch.
 enum NarrowFact {
     /// The place no longer owes this obligation on the branch.
-    Discharge(NarrowKey, Symbol),
+    Discharge(NarrowTarget, Symbol),
     /// The local has the given concrete type.
     Tag(usize, TypeTag),
 }
@@ -186,8 +190,6 @@ struct Checker<'a> {
     /// While checking a factory body, where writing an immutable field is its initialization, not
     /// a mutation.
     checking_factory: bool,
-    /// The obligations discharged per local place on the current path, keyed by local index.
-    narrowed: HashMap<NarrowKey, Obligations>,
     /// Each resolved call site's callee, keyed by the callee node. A later walk of the same value
     /// reads it rather than resolving a receiver's type again.
     resolved_callees: HashMap<HirId<HirExpr>, HirId<HirStmt>>,
@@ -216,7 +218,6 @@ impl<'a> Checker<'a> {
             frame_start: 0,
             current_type: None,
             checking_factory: false,
-            narrowed: HashMap::new(),
             this_narrowed: HashMap::new(),
             current_trait_surface: None,
             fn_ctx: FnContext::default(),

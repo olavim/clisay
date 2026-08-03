@@ -3,7 +3,7 @@
 // uses a user witness, since `fails` cannot live in a field.
 obligation stale { witness Old; discharge to use; }
 type Old { }
-type Node { pub next; init(this, n: stale) { this.next = n; } }
+type Node { pub next: stale; init(this, n: stale) { this.next = n; } }
 
 fn whole(x @ Node | null) {
     print(x ?? "none"); // expect: none

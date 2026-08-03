@@ -11,7 +11,7 @@ use crate::middle::obligations::Obligations;
 use crate::middle::signatures::{Mutability, TypeTag};
 
 use super::scope::FlowSnapshot;
-use super::{Checker, Flow, FnContext, Guard, Local, NarrowKey, ReceiverFacts, Typed};
+use super::{Checker, Flow, FnContext, Guard, Local, ReceiverFacts, Typed};
 
 impl<'a> Checker<'a> {
     pub(super) fn stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
@@ -148,7 +148,7 @@ impl<'a> Checker<'a> {
                     Some((first, rest)) => {
                         self.restore(first);
                         for snap in rest { self.join_in(snap); }
-                        self.narrowed = baseline.narrowed;
+                        self.restore_narrowings(&baseline);
                     },
                     None => self.restore(&baseline),
                 }
@@ -240,7 +240,6 @@ impl<'a> Checker<'a> {
                 let mark = self.locals.len();
                 for s in stmts { self.stmt(s)?; }
                 let dropped = self.check_dropped(mark, expr);
-                self.revive_scoped_sources(mark);
                 if self.scope_holds_write_ownership(mark) {
                     self.record_write_scope(expr);
                 }
@@ -389,10 +388,7 @@ impl<'a> Checker<'a> {
             return Err(self.error(format!("{subject} is used before it is assigned"), expr));
         }
 
-        let owed: Obligations = match self.narrowed.get(&NarrowKey::Local(i)) {
-            Some(discharged) => self.locals[i].owed.difference(discharged).copied().collect(),
-            None => self.locals[i].owed.clone(),
-        };
+        let owed: Obligations = self.locals[i].owed.difference(&self.locals[i].discharged).copied().collect();
         let flow = if owed.is_empty() {
             Flow::Clean
         } else {
@@ -420,14 +416,26 @@ impl<'a> Checker<'a> {
         }
         // A member name never interned as an identifier names no declared member.
         let Some(field) = self.hir.symbol_of(name) else { return Ok(Typed::unknown()) };
-        let key = self.narrowable_field_key(target, field);
+        let narrowing = self.narrowable_field(target, field);
         if let TypeTag::Concrete(type_name) = &receiver.tag {
             if let Some(layout) = self.layout_of(*type_name) {
                 if let Some(member_kind) = layout.members.get(&field).copied() {
                     let flow = match member_kind {
                         TypeMember::Field(_) => {
-                            let narrowed = key.is_some_and(|k| self.discharged(&k, self.sigs.opt));
-                            if layout.is_nullable(field) && !narrowed { self.opt_flow(false) } else { Flow::Clean }
+                            let clause = layout.clause_of(field);
+                            let mut owed = clause.map(|c| c.owed.clone()).unwrap_or_default();
+                            if layout.is_nullable(field) {
+                                owed.insert(self.sigs.opt);
+                            }
+                            if let Some(narrowing) = narrowing {
+                                owed.retain(|ob| !self.discharged(&narrowing, *ob));
+                            }
+                            match owed.is_empty() {
+                                true => Flow::Clean,
+                                // A `[obl]` clause puts the debt on the elements, so reading the
+                                // member yields a container and reading an element yields the debt.
+                                false => Flow::Bad { obligations: owed, definite: false, container: clause.is_some_and(|c| c.container) },
+                            }
                         },
                         // A method reference is a non-null value.
                         TypeMember::Method(_) => Flow::Clean,
@@ -523,10 +531,11 @@ impl<'a> Checker<'a> {
             return Typed::unknown();
         }
 
-        let discharged = self.narrowed.get(&NarrowKey::Local(i)).filter(|_| !local.mutable);
-        let owed: Obligations = match discharged {
-            Some(discharged) => local.owed.difference(discharged).copied().collect(),
-            None => local.owed.clone(),
+        // A mutable binding may have been written since the narrowing, which the enclosing frame
+        // cannot see, so only an immutable one keeps what was proved about it.
+        let owed: Obligations = match local.mutable {
+            true => local.owed.clone(),
+            false => local.owed.difference(&local.discharged).copied().collect(),
         };
 
         let flow = if owed.is_empty() {

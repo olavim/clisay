@@ -7,46 +7,45 @@ use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, HirMatchArm, HirMatc
 use crate::middle::obligations::Obligations;
 use crate::middle::signatures::Witness;
 
-use super::{Checker, NarrowFact, NarrowKey, TypeTag};
+use super::{Checker, NarrowFact, NarrowTarget, TypeTag};
 
 impl<'a> Checker<'a> {
     /// A reassignment drops the binding's narrowing facts. The slot is non-null again only if
     /// the new value is.
     pub(super) fn reset_narrowing(&mut self, i: usize, now_non_null: bool) {
-        self.narrowed.retain(|key, _| !matches!(key, NarrowKey::Local(j) | NarrowKey::LocalField(j, _) if *j == i));
+        self.locals[i].discharged = Obligations::new();
+        self.locals[i].field_discharged.clear();
         if now_non_null {
-            self.narrowed.entry(NarrowKey::Local(i)).or_default().insert(self.sigs.opt);
+            self.locals[i].discharged.insert(self.sigs.opt);
         }
     }
 
     /// Whether `obligation` is discharged for a place on the current path.
-    pub(super) fn discharged(&self, key: &NarrowKey, obligation: Symbol) -> bool {
-        self.narrowed_set(key).is_some_and(|set| set.contains(&obligation))
+    pub(super) fn discharged(&self, target: &NarrowTarget, obligation: Symbol) -> bool {
+        let set = match target {
+            NarrowTarget::Local(i) => Some(&self.locals[*i].discharged),
+            NarrowTarget::ThisField(field) => self.this_narrowed.get(field),
+            NarrowTarget::LocalField(i, field) => self.locals[*i].field_discharged.get(field),
+        };
+        set.is_some_and(|set| set.contains(&obligation))
     }
 
-    /// A place's discharged obligations.
-    pub(super) fn narrowed_set(&self, key: &NarrowKey) -> Option<&Obligations> {
-        match key {
-            NarrowKey::ThisField(field) => self.this_narrowed.get(field),
-            _ => self.narrowed.get(key),
+    /// Records that a place no longer owes an obligation on this path.
+    pub(super) fn discharge(&mut self, target: NarrowTarget, obligation: Symbol) {
+        match target {
+            NarrowTarget::Local(i) => { self.locals[i].discharged.insert(obligation); },
+            NarrowTarget::ThisField(field) => { self.this_narrowed.entry(field).or_default().insert(obligation); },
+            NarrowTarget::LocalField(i, field) => { self.locals[i].field_discharged.entry(field).or_default().insert(obligation); },
         }
     }
 
-    /// A place's discharged set, created empty if the place has none yet.
-    pub(super) fn narrowed_set_or_default(&mut self, key: NarrowKey) -> &mut Obligations {
-        match key {
-            NarrowKey::ThisField(field) => self.this_narrowed.entry(field).or_default(),
-            _ => self.narrowed.entry(key).or_default(),
-        }
-    }
-
-    /// The narrow key for `target.field` when the place can be narrowed: a `this` field, or a
+    /// Where `target.field`'s narrowing lands when the place can be narrowed: a `this` field, or a
     /// field of an immutable local.
-    pub(super) fn narrowable_field_key(&self, target: &HirId<HirExpr>, field: Symbol) -> Option<NarrowKey> {
+    pub(super) fn narrowable_field(&self, target: &HirId<HirExpr>, field: Symbol) -> Option<NarrowTarget> {
         match self.hir.get(target) {
             HirExpr::This => {
                 let type_name = self.current_type?;
-                (!self.field_is_mutable(type_name, field)).then_some(NarrowKey::ThisField(field))
+                (!self.field_is_mutable(type_name, field)).then_some(NarrowTarget::ThisField(field))
             },
             HirExpr::Identifier(name) => {
                 let i = self.frame_index_of(*name)?;
@@ -54,7 +53,7 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let TypeTag::Concrete(type_name) = &self.locals[i].tag else { return None };
-                (!self.field_is_mutable(*type_name, field)).then_some(NarrowKey::LocalField(i, field))
+                (!self.field_is_mutable(*type_name, field)).then_some(NarrowTarget::LocalField(i, field))
             },
             _ => None,
         }
@@ -98,12 +97,12 @@ impl<'a> Checker<'a> {
     pub(super) fn narrow_place(&self, expr: &HirId<HirExpr>) -> Vec<NarrowFact> {
         match self.hir.get(expr) {
             HirExpr::Identifier(name) => match self.frame_index_of(*name) {
-                Some(i) if self.locals[i].func.is_none() => vec![NarrowFact::Discharge(NarrowKey::Local(i), self.sigs.opt)],
+                Some(i) if self.locals[i].func.is_none() => vec![NarrowFact::Discharge(NarrowTarget::Local(i), self.sigs.opt)],
                 _ => Vec::new(),
             },
             HirExpr::Index(target, member, _) => {
-                let key = self.string_member(member).and_then(|field| self.narrowable_field_key(target, field));
-                key.map(|k| vec![NarrowFact::Discharge(k, self.sigs.opt)]).unwrap_or_default()
+                let narrowing = self.string_member(member).and_then(|field| self.narrowable_field(target, field));
+                narrowing.map(|n| vec![NarrowFact::Discharge(n, self.sigs.opt)]).unwrap_or_default()
             },
             _ => Vec::new(),
         }
@@ -122,7 +121,7 @@ impl<'a> Checker<'a> {
         if self.locals[i].func.is_some() {
             return Vec::new();
         }
-        let mut facts = vec![NarrowFact::Discharge(NarrowKey::Local(i), self.sigs.opt)];
+        let mut facts = vec![NarrowFact::Discharge(NarrowTarget::Local(i), self.sigs.opt)];
         if self.sigs.is_type(type_name) || self.sigs.is_witness_type(type_name) {
             facts.push(NarrowFact::Tag(i, TypeTag::Concrete(type_name)));
         }
@@ -137,7 +136,7 @@ impl<'a> Checker<'a> {
             return Vec::new();
         }
         match self.sigs.obligation_for_witness(type_name) {
-            Some(obligation) => vec![NarrowFact::Discharge(NarrowKey::Local(i), obligation)],
+            Some(obligation) => vec![NarrowFact::Discharge(NarrowTarget::Local(i), obligation)],
             None => Vec::new(),
         }
     }
@@ -149,7 +148,7 @@ impl<'a> Checker<'a> {
     pub(super) fn apply_narrowings(&mut self, narrowings: &[NarrowFact]) {
         for fact in narrowings {
             match fact {
-                NarrowFact::Discharge(key, obligation) => { self.narrowed_set_or_default(key.clone()).insert(*obligation); },
+                NarrowFact::Discharge(target, obligation) => self.discharge(*target, *obligation),
                 NarrowFact::Tag(i, tag) => self.locals[*i].tag = tag.clone(),
             }
         }
@@ -188,11 +187,14 @@ impl<'a> Checker<'a> {
         let (HirMatcher::Shape(fields), Some(layout)) = (shape, self.layout_of(type_name)) else { return };
         for field in fields {
             let HirLiteral::String(key) = &field.key else { continue };
-            if !self.hir.symbol_of(key).is_some_and(|sym| layout.is_nullable(sym)) {
-                continue;
+            let Some(sym) = self.hir.symbol_of(key) else { continue };
+            let mut owed = layout.clause_of(sym).map(|c| c.owed.clone()).unwrap_or_default();
+            if layout.is_nullable(sym) {
+                owed.insert(self.sigs.opt);
             }
             for name in whole_value_binders(&field.value) {
-                out.entry(name).or_default().insert(self.sigs.opt);
+                let out = out.entry(name).or_default();
+                for ob in owed.iter() { out.insert(*ob); }
             }
         }
     }
