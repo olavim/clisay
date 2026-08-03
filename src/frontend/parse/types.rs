@@ -175,7 +175,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             self.tokens.expect(TokenType::Semicolon)?;
                             fields.insert(field);
 
-                            let clause_opt = clause.names.iter().any(|n| self.ast.text(*n) == "opt");
+                            // A `[obl]` clause names what the elements owe, so its `opt` makes an
+                            // element nullable and not the field.
+                            let clause_opt = !clause.container && clause.names.iter().any(|n| self.ast.text(*n) == "opt");
                             if nullable || clause_opt { nullable_fields.insert(field); }
                             if mutable { mut_fields.insert(field); }
 
@@ -211,6 +213,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let type_decl = Box::new(TypeDecl {
             name: type_sym,
             is_trait,
+            builtin: None,
             with_traits,
             trait_refs,
             req_traits,
@@ -231,5 +234,34 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         self.current_type = prev_type;
         Ok(self.node_stmt(Stmt::Type(type_decl), pos))
+    }
+
+    /// Declares the built-in `Err` type: `type Err { pub value; }`.
+    pub(super) fn declare_err(&mut self, pos: &SourcePosition) -> AstId<Stmt> {
+        let name = self.ast.intern("Err");
+        let value = self.ast.intern("value");
+        let init_name = self.ast.intern("Err.init");
+        let decl = Box::new(TypeDecl {
+            name,
+            is_trait: false,
+            builtin: Some(BuiltinType::Err),
+            with_traits: Vec::new(),
+            trait_refs: Vec::new(),
+            req_traits: Vec::new(),
+            req_fns: Vec::new(),
+            req_members: Vec::new(),
+            gives: Vec::new(),
+            init_name,
+            init: None,
+            fields: HashSet::from([value]),
+            nullable_fields: HashSet::new(),
+            mut_fields: HashSet::new(),
+            field_clauses: Vec::new(),
+            field_inits: Vec::new(),
+            methods: Vec::new(),
+            pub_members: HashSet::from([value]),
+            inner_members: HashSet::new(),
+        });
+        self.node_stmt(Stmt::Type(decl), pos.clone())
     }
 }

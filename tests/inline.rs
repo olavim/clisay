@@ -46,3 +46,18 @@ fn runtime_error_shows_call_stack_trace() {
     assert!(err.contains("\tat b ("), "{err}");
     assert!(err.contains("\tat a ("), "{err}");
 }
+
+#[test]
+fn type_body_captures_its_declaring_frame() {
+    // Each execution of the declaration builds its own type, so the methods capture separately.
+    let src = "fn mk(v)! { type T { pub fn get(this)! { return v; } } return T { }; }\
+               say a = mk(1); say b = mk(2); print(a.get()); print(b.get());";
+    assert_inline(src, Ok(["1", "2"]));
+}
+
+#[test]
+fn a_capturing_factory_survives_leaving_its_function() {
+    let src = "fn mk(v)! { type T { pub n; init(this) { this.n = v; } } return T; }\
+               say maker = mk(7); say other = mk(9); print(maker().n); print(other().n);";
+    assert_inline(src, Ok(["7", "9"]));
+}

@@ -25,13 +25,22 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     }
 
     let mut chunk = BytecodeChunk::new();
+    chunk.witness_ids = ir.witness_ids().to_vec();
+    chunk.builtin_type_ids = ir.builtin_type_ids();
+    chunk.witness_allows = ir.witness_allows().to_vec();
     chunk.constants = ir.constants().to_vec();
-    chunk.witness_names = ir.witness_names().to_vec();
     for (i, inst) in ir.code().iter().enumerate() {
         encode(inst, &offsets, &ir, &mut chunk, &ir.positions()[i]);
     }
 
     Ok(chunk)
+}
+
+/// Writes a pool index as two little-endian bytes, the way the VM reads it back.
+fn write_pool(chunk: &mut BytecodeChunk, idx: u16, pos: &SourcePosition) {
+    for byte in idx.to_le_bytes() {
+        chunk.write(byte, pos);
+    }
 }
 
 /// The encoded byte length of an instruction: its opcode plus operand bytes. A
@@ -44,11 +53,10 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
             Some(sz) => len += sz,
             None => match *inst {
                 Inst::Construct(fields_idx, _) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
-                Inst::BarrierGuard(idx) => len += 1 + ir.barrier_allow(idx).names.len(), // count byte + name indices
                 Inst::AssertBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
                 Inst::AssertNotConsumed(_, idx) => len += 1 + ir.survive_positions(idx).len(),
                 Inst::MarkBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
-                _ => unreachable!("only Construct, BarrierGuard, AssertBorrow, and MarkBorrow have a List operand"),
+                _ => unreachable!("only Construct, AssertBorrow, AssertNotConsumed, and MarkBorrow have a List operand"),
             },
         }
     }
@@ -87,7 +95,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
 
         Call(b) | CallMut(b)
         | Array(b) | Dict(b)
-        | PushConstant(b) | PushClosure(b) | PushType(b)
+        | PushConstant(b) | PushClosure(b) | PushType(b) | BuildType(b)
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
         | CloseUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
         | GetField(b) | SetField(b) | SetFieldPop(b)
@@ -97,7 +105,9 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | ReleaseWriteOwnership(b)
         | ReleaseWriteOwnershipAt(b)
         | ReleaseBorrow(b)
-        | Is(b) | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
+        | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
+
+        Is(id) => write_pool(chunk, id, pos),
 
         Jump(l)
         | JumpIfFalse(l)
@@ -117,9 +127,9 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(c, pos);
         }
 
-        JumpIfIs(l, c) => {
+        JumpIfIs(l, id) => {
             write_jump(chunk, target_of(l));
-            chunk.write(c, pos);
+            write_pool(chunk, id, pos);
         }
 
         AddLocalConst(local, c) | SubLocalConst(local, c)
@@ -156,13 +166,15 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(seal, pos);
         }
 
-        BarrierGuard(idx) => {
-            let allow = ir.barrier_allow(idx);
-            chunk.write(allow.null_allowed as u8, pos);
-            chunk.write(allow.names.len() as u8, pos);
-            for &i in &allow.names {
-                chunk.write(i, pos);
-            }
+        BarrierGuard(null_allowed, idx) => {
+            chunk.write(null_allowed as u8, pos);
+            write_pool(chunk, idx, pos);
+        }
+
+        MemberAdmits(member, null_allowed, idx) => {
+            chunk.write(member, pos);
+            chunk.write(null_allowed as u8, pos);
+            write_pool(chunk, idx, pos);
         }
 
         SubConstLocal(c, local) | AddConstLocal(c, local) => {

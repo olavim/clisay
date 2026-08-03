@@ -1,0 +1,29 @@
+// A surface test reads the surface of the declaration the name resolves to here, not of whichever
+// declaration sharing the name was recorded last.
+type T { pub a; init(this) { this.a = 1; } }
+fn mk()! {
+    type T { pub b; init(this) { this.b = 2; } }
+    say v = T();
+    print(v has T); // expect: true
+    return v;
+}
+
+say w = T();
+print(w has T); // expect: true
+say inner = mk();
+print(inner has T); // expect: false
+
+// @split
+// The same for a trait's declared surface.
+trait Tr { pub fn one(this)! { return 1; } }
+type Host with Tr { pub a; init(this) { this.a = 1; } }
+fn mk()! {
+    trait Tr { pub fn two(this)! { return 2; } }
+    type Other with Tr { pub b; init(this) { this.b = 2; } }
+    return Other();
+}
+
+say h = Host();
+print(h has Tr); // expect: true
+say other = mk();
+print(other has Tr); // expect: false

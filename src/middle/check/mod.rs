@@ -24,7 +24,7 @@ pub use barriers::{Barrier, Barriers, Guard, WitnessSet};
 pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barriers, anyhow::Error> {
     let mut checker = Checker::new(hir, bindings, sigs);
     checker.stmt(&hir.get_root())?;
-    checker.out.witness_names = sigs.object_witnesses().map(|(_, name)| name).collect();
+    checker.out.witness_decls = sigs.object_witnesses().map(|(_, id)| id).collect();
     Ok(checker.out)
 }
 
@@ -126,7 +126,7 @@ impl Local {
 }
 
 /// Where a narrowing applies: a local, a `this` field, or a field of an immutable local receiver.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum NarrowTarget {
     Local(usize),
     ThisField(Symbol),
@@ -134,6 +134,7 @@ enum NarrowTarget {
 }
 
 /// A flow fact a check establishes for a branch.
+#[derive(PartialEq)]
 enum NarrowFact {
     /// The place no longer owes this obligation on the branch.
     Discharge(NarrowTarget, Symbol),
@@ -186,7 +187,7 @@ struct Checker<'a> {
     /// bindings at or above this, so a closure does not read an enclosing local's flow state.
     frame_start: usize,
     /// The enclosing type's name while checking its methods, for `this` typing and field layout.
-    current_type: Option<Symbol>,
+    current_type: Option<HirId<HirStmt>>,
     /// While checking a factory body, where writing an immutable field is its initialization, not
     /// a mutation.
     checking_factory: bool,
@@ -255,18 +256,20 @@ impl<'a> Checker<'a> {
     }
 
     fn constructor_init(&self, callee: &HirId<HirExpr>) -> Option<HirId<HirStmt>> {
-        let type_name = self.sigs.type_named(self.hir, callee)?;
-        let type_stmt = self.sigs.types_by_name.get(&type_name)?;
-        let HirStmt::Type(decl) = self.hir.get(type_stmt) else { return None };
+        let type_stmt = self.sigs.type_named(self.hir, self.bindings, callee)?;
+        let HirStmt::Type(decl) = self.hir.get(&type_stmt) else { return None };
         Some(decl.init)
     }
 
     /// Whether a type has a factory. A factory-less type (not all-defaulted, no `init`) is built
     /// only by brace, so `T(..)` cannot construct it.
-    fn type_has_factory(&self, name: Symbol) -> bool {
-        self.sigs.types_by_name.get(&name).is_some_and(|stmt| {
-            matches!(self.hir.get(stmt), HirStmt::Type(decl) if matches!(self.hir.get(&decl.init), HirStmt::Fn(_)))
-        })
+    fn type_has_factory(&self, decl: &HirId<HirStmt>) -> bool {
+        match self.hir.get(decl) {
+            // A built-in's factory is the native one the VM installed, which no declaration shows.
+            HirStmt::Type(decl) if decl.builtin.is_some() => true,
+            HirStmt::Type(decl) => matches!(self.hir.get(&decl.init), HirStmt::Fn(_)),
+            _ => false,
+        }
     }
 
     /// The nearest binding of `name` across all frames. Functions resolve across frames so a
@@ -289,8 +292,16 @@ impl<'a> Checker<'a> {
     }
 
     /// The layout of a tracked concrete type.
-    fn layout_of(&self, name: Symbol) -> Option<&'a TypeLayout> {
-        self.sigs.types_by_name.get(&name).map(|stmt| self.bindings.type_layout(stmt))
+    fn layout_of(&self, decl: &HirId<HirStmt>) -> Option<&'a TypeLayout> {
+        self.bindings.layout_of_decl(decl)
+    }
+
+    /// A declaration's name.
+    fn type_name_of(&self, decl: &HirId<HirStmt>) -> Option<Symbol> {
+        match self.hir.get(decl) {
+            HirStmt::Type(decl) | HirStmt::Trait(decl) => Some(decl.name),
+            _ => None,
+        }
     }
 
     /// Inside a trait body, `this` reaches only the surface the trait declares or requires.

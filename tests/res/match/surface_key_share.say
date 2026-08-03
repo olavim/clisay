@@ -1,5 +1,5 @@
-// A shape key and a surface member with the same name are one presence test, so the `{ x }` binder
-// and `has T` share the `x` check.
+// A shape key tests presence, while a surface member of a declared type tests what the declaration
+// admits. They are different tests on the same name, so the `{ x }` arm does not share with `has T`.
 type T { pub x; init(this, a) { this.x = a; } }
 say t = T(1);
 match t {
@@ -33,17 +33,21 @@ match t {
 // 43: LOAD_LOCAL L2
 // 45: GET_INDEX_OR_NULL "x"
 // 47: STORE_LOCAL_POP L3
-// 49: JUMP <55>
-// 52: JUMP <67>
-// 55: PUSH_CONSTANT 0
-// 57: POP
-// 58: JUMP <67>
-// 61: PUSH_CONSTANT 0
-// 63: POP
-// 64: JUMP <67>
-// 67: POP
-// 68: POP
-// 69: POP
+// 49: JUMP <68>
+// 52: LOAD_LOCAL L2
+// 54: MEMBER_ADMITS "x" <0> #0
+// 59: JUMP_IF_FALSE <65>
+// 62: JUMP <74>
+// 65: JUMP <80>
+// 68: PUSH_CONSTANT 0
 // 70: POP
-// 71: PUSH_NULL
-// 72: HALT
+// 71: JUMP <80>
+// 74: PUSH_CONSTANT 0
+// 76: POP
+// 77: JUMP <80>
+// 80: POP
+// 81: POP
+// 82: POP
+// 83: POP
+// 84: PUSH_NULL
+// 85: HALT

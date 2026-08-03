@@ -1,0 +1,49 @@
+// A type body reaches the scope that declared it, so its methods and factory close over that
+// frame. Each execution of the declaration captures separately.
+fn mk(v)! {
+    type T { pub fn get(this)! { return v; } }
+    return T { };
+}
+say a = mk(1);
+say b = mk(2);
+print(a.get()); // expect: 1
+print(b.get()); // expect: 2
+
+// @split
+// A factory captures the same way, once per execution of its declaration.
+fn mk(v)! {
+    type T { pub n; init(this) { this.n = v; } }
+    return T();
+}
+print(mk(7).n); // expect: 7
+print(mk(8).n); // expect: 8
+
+// @split
+// The type itself may leave the function that declared it and still construct with what it caught.
+fn mk(v)! {
+    type T { pub n; init(this) { this.n = v; } }
+    return T;
+}
+say maker = mk(7);
+say other = mk(9);
+print(maker().n); // expect: 7
+print(other().n); // expect: 9
+print(maker().n); // expect: 7
+
+// @split
+// A captured binding is shared, not copied, so a later write shows through.
+say mut count = 5;
+type T { pub fn read(this)! { return count; } }
+say t = T { };
+print(t.read()); // expect: 5
+count = 6;
+print(t.read()); // expect: 6
+
+// @split
+// A method naming another type resolves it without capturing a per-call value.
+fn build()! {
+    type A { pub v; init(this) { this.v = 42; } }
+    type B { pub fn make(this)! { return A(); } }
+    return B { }.make().v;
+}
+print(build()); // expect: 42

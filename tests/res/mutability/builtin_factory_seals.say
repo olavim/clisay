@@ -1,0 +1,4 @@
+// A built-in's factory is native, so no body says what it keeps. It is assumed to keep everything,
+// the same conclusion the escape pass reaches for it.
+say mut m = mut [1, 2];
+say e = Err(m); // error: cannot store a mutable value in an immutable container

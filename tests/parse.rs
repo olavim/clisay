@@ -25,9 +25,10 @@ fn say_value(ast: &Ast) -> AstId<Expr> {
 #[test]
 fn say_nullability_and_mutability() {
     let ast = parse("say a = 1; say b? = 2; say mut c = 3; say mut d? = 4;");
-    let flags: Vec<(bool, bool)> = top_stmts(&ast).iter().map(|s| {
-        let Stmt::Say(f) = ast.get(s) else { panic!("not a say") };
-        (f.nullable, f.mutable)
+    // The root block also carries the built-in declarations, so only the `say`s are read.
+    let flags: Vec<(bool, bool)> = top_stmts(&ast).iter().filter_map(|s| match ast.get(s) {
+        Stmt::Say(f) => Some((f.nullable, f.mutable)),
+        _ => None,
     }).collect();
     assert_eq!(flags, vec![(false, false), (true, false), (false, true), (true, true)]);
 }

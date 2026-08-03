@@ -1,0 +1,40 @@
+// A value's declared facts come from the declaration it was built from, not from another one
+// sharing the name. Mutability, nullability, and what a construction owes all read that declaration.
+fn mk() {
+    type T { pub x; init(this) { this.x = 1; } }
+    say v = mut T();
+    v.x = 99; // error: Cannot assign immutable field `T.x`
+}
+type T { pub mut x; init(this) { this.x = 1; } }
+
+// @split
+fn mk() {
+    type T { pub mut x; init(this) { this.x = 1; } }
+    say v = mut T();
+    v.x = null; // error: Cannot assign null to non-null field 'x'
+}
+type T { pub mut x?; init(this) { this.x = null; } }
+
+// @split
+// The same disagreement the other way round: the value's own declaration allows the write.
+fn mk() {
+    type T { pub mut x; init(this) { this.x = 1; } }
+    say v = mut T();
+    v.x = 2;
+    print(v.x); // expect: 2
+}
+type T { pub x; init(this) { this.x = 1; } }
+mk();
+
+// @split
+// Constructing a type that mixes a trait sharing the witness's name owes nothing, since it is not
+// the witness.
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+fn f() {
+    trait Wt { }
+    type W2 with Wt { }
+    say b = W2();
+    print("built"); // expect: built
+}
+f();

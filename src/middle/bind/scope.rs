@@ -14,6 +14,9 @@ impl<'a> Resolver<'a> {
 
     pub(super) fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
         self.scope_depth -= 1;
+        while self.type_scope.last().is_some_and(|t| t.depth > self.scope_depth) {
+            self.type_scope.pop();
+        }
         let mut cleanups = Vec::new();
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
             if self.locals.last().unwrap().is_captured {
@@ -51,9 +54,9 @@ impl<'a> Resolver<'a> {
     }
 
     /// Declares a matcher's binders as locals, pairing each with the slot it stores into.
-    pub(super) fn declare_binders(&mut self, matcher: &HirMatcher) -> Result<Vec<(Symbol, u8)>, anyhow::Error> {
+    pub(super) fn declare_binders(&mut self, matcher: &HirId<HirMatcher>) -> Result<Vec<(Symbol, u8)>, anyhow::Error> {
         let mut binders = Vec::new();
-        for name in matcher.binders() {
+        for name in self.hir.get(matcher).binders(self.hir) {
             binders.push((name, self.declare_local(name)?));
         }
         Ok(binders)
@@ -225,6 +228,7 @@ impl<'a> Resolver<'a> {
         // The binders live for the whole body. The frame teardown reclaims them.
         for param in patterned {
             let pattern = param.pattern.as_ref().expect("only patterned parameters were collected");
+            self.resolve_matcher_types(pattern);
             let binders = self.declare_binders(pattern)?;
             self.bindings.match_binders.insert(param.name, binders);
         }

@@ -22,7 +22,7 @@ impl<'a> Checker<'a> {
                 self.locals.push(Local::func(decl.name, *stmt));
                 self.function(Some(*stmt), self.sigs.writes.get(stmt), decl)?;
             },
-            HirStmt::Type(decl) => self.type_decl(stmt, Some(decl.name), decl)?,
+            HirStmt::Type(decl) => self.type_decl(stmt, Some(*stmt), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
             HirStmt::Say(field) => self.say(field.name, &field.clause, field.mutable, &field.value)?,
             HirStmt::Expression(e) => {
@@ -131,10 +131,10 @@ impl<'a> Checker<'a> {
                     }
 
                     // An irrefutable guardless arm always matches, so no value slips past unmatched.
-                    exhaustive |= arm.guard.is_none() && arm.matcher.is_irrefutable();
+                    exhaustive |= arm.guard.is_none() && self.hir.get(&arm.matcher).is_irrefutable(self.hir);
                     let ruled = self.arm_rules_out(arm, &remaining);
+                    settled.extend(self.arm_settles(arm, &remaining));
                     remaining.retain(|w| !ruled.contains(w));
-                    settled.extend(ruled);
                 }
 
                 // A non-exhaustive match can fall through with no arm matching, keeping the pre-match
@@ -185,12 +185,16 @@ impl<'a> Checker<'a> {
                     if !immutable {
                         self.check_stored_element(v)?;
                     }
-                    if let TypeTag::Concrete(type_name) = &tag {
-                        self.check_brace_field(*type_name, *name, &typed.flow, v)?;
+                    if let TypeTag::Concrete(decl) = &tag {
+                        self.check_brace_field(&decl.clone(), *name, &typed.flow, v)?;
                     }
                 }
 
-                Typed::of(Flow::Clean, tag).with_mutability(Mutability::Immutable)
+                let flow = match &tag {
+                    TypeTag::Concrete(decl) => self.construction_flow(decl),
+                    _ => Flow::Clean,
+                };
+                Typed::of(flow, tag).with_mutability(Mutability::Immutable)
             },
             HirExpr::Mut(inner) => {
                 // A mutable container may hold mutable elements, so its children skip the
@@ -211,24 +215,10 @@ impl<'a> Checker<'a> {
             HirExpr::Index(target, member, _) => self.member_access(target, member)?,
             HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
             HirExpr::Unary(op, x) => self.unary(*op, x)?,
-            HirExpr::Is(x, witness) => {
-                if let Some(obligation) = self.sigs.obligation_for_witness(*witness) {
-                    self.mark_settled(x, &Obligations::from([obligation]));
-                }
-                self.expr(x)?;
-                Typed::nonnull()
-            },
-            HirExpr::Has(left, _) => {
-                let typed = self.expr(left)?;
-                if typed.flow.is_void() {
-                    return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), left));
-                }
-                Typed::nonnull()
-            },
             HirExpr::Match(scrutinee, matcher) => {
                 let typed = self.expr(scrutinee)?;
                 if let Flow::Bad { obligations, .. } = &typed.flow {
-                    let settled = self.matcher_rules_out(matcher, obligations);
+                    let settled = self.matcher_settles(matcher, obligations);
                     self.mark_settled(scrutinee, &settled);
                 }
                 if typed.flow.is_void() {
@@ -417,8 +407,8 @@ impl<'a> Checker<'a> {
         // A member name never interned as an identifier names no declared member.
         let Some(field) = self.hir.symbol_of(name) else { return Ok(Typed::unknown()) };
         let narrowing = self.narrowable_field(target, field);
-        if let TypeTag::Concrete(type_name) = &receiver.tag {
-            if let Some(layout) = self.layout_of(*type_name) {
+        if let TypeTag::Concrete(decl) = &receiver.tag {
+            if let Some(layout) = self.layout_of(decl) {
                 if let Some(member_kind) = layout.members.get(&field).copied() {
                     let flow = match member_kind {
                         TypeMember::Field(_) => {
@@ -557,12 +547,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub(super) fn type_decl(&mut self, _node: &HirId<HirStmt>, type_name: Option<Symbol>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+    pub(super) fn type_decl(&mut self, _node: &HirId<HirStmt>, type_stmt: Option<HirId<HirStmt>>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         let saved_type = self.current_type;
         let saved_surface = self.current_trait_surface.take();
         let saved_factory = std::mem::replace(&mut self.checking_factory, false);
-        self.current_type = type_name;
-        if let Some(_type_name) = type_name {
+        self.current_type = type_stmt;
+        if type_stmt.is_some() {
             // The factory's field-locals carry definite assignment, and writing an immutable field
             // in it is initialization. A factory-less type has a `Nop` init to skip.
             self.checking_factory = true;
@@ -657,7 +647,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn construct_tag(&self, callee: &HirId<HirExpr>) -> TypeTag {
-        self.sigs.type_named(self.hir, callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
+        self.sigs.type_named(self.hir, self.bindings, callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
     }
 
     /// What the declared `this` says about the receiver.
@@ -677,9 +667,9 @@ impl<'a> Checker<'a> {
         match self.hir.get(callee) {
             HirExpr::Identifier(name) => {
                 let name = *name;
-                if self.sigs.is_type(name) {
+                if let Some(decl) = self.sigs.type_named(self.hir, self.bindings, callee) {
                     // A factory-less type is built only by brace, so a paren call has nothing to run.
-                    if !self.type_has_factory(name) {
+                    if !self.type_has_factory(&decl) {
                         let t = self.hir.text(name);
                         return Err(self.error_help(
                             format!("cannot construct '{t}' with '{t}(..)': '{t}' has no factory"),
@@ -690,8 +680,9 @@ impl<'a> Checker<'a> {
                     let immutable = !std::mem::take(&mut self.mut_construction);
                     if let Some(init) = self.constructor_init(callee) {
                         self.check_call_args(callee, init, &arg_types, args)?;
+                        let opaque = !matches!(self.hir.get(&init), HirStmt::Fn(_));
                         for (i, (typed, arg)) in arg_types.iter().zip(args).enumerate() {
-                            if self.sigs.param_escapes_at(&init, i) {
+                            if opaque || self.sigs.param_escapes_at(&init, i) {
                                 self.check_construct_field(immutable, typed, arg)?;
                                 if !immutable {
                                     self.check_stored_element(arg)?;
@@ -702,10 +693,7 @@ impl<'a> Checker<'a> {
 
                     // Record the construction so codegen tells `mut K(..)` (CALL_MUT) from `mut f()`.
                     self.record_construction(expr);
-                    return Ok(Typed::of(Flow::Clean, TypeTag::Concrete(name)).with_mutability(Mutability::Immutable));
-                }
-                if self.hir.text(name) == "Err" && self.frame_index_of(name).is_none() {
-                    return Ok(Typed::of(self.fails_flow(), TypeTag::Unknown));
+                    return Ok(Typed::of(self.construction_flow(&decl), TypeTag::Concrete(decl)).with_mutability(Mutability::Immutable));
                 }
                 if let Some(stmt) = self.func_of(name) {
                     self.check_call_args(callee, stmt, &arg_types, args)?;
@@ -740,8 +728,8 @@ impl<'a> Checker<'a> {
         if matches!(receiver_typed.tag, TypeTag::SelfType) {
             return self.trait_member(name, member);
         }
-        if let (TypeTag::Concrete(type_name), Some(method)) = (&receiver_typed.tag, self.hir.symbol_of(name)) {
-            if let Some(stmt) = self.sigs.methods_by_type.get(&(*type_name, method)).copied() {
+        if let (TypeTag::Concrete(decl), Some(method)) = (&receiver_typed.tag, self.hir.symbol_of(name)) {
+            if let Some(stmt) = self.sigs.methods_by_type.get(&(*decl, method)).copied() {
                 self.check_receiver(callee, receiver, stmt, &receiver_typed)?;
                 self.check_call_args(callee, stmt, arg_types, args)?;
                 return Ok(self.call_result(stmt, &receiver_typed.tag));
@@ -902,7 +890,7 @@ impl<'a> Checker<'a> {
                         self.record_rebind_release(lhs);
                     }
                     self.reset_narrowing(i, matches!(typed.flow, Flow::Clean));
-                } else if self.sigs.types_by_name.contains_key(&name) {
+                } else if self.sigs.is_type(name) {
                     // A type binding names a declaration, not a reassignable slot.
                     return Err(self.error(format!("Cannot reassign `{}`; it names a type", self.hir.text(name)), lhs));
                 } else {
@@ -970,16 +958,16 @@ impl<'a> Checker<'a> {
 
         let receiver = self.receiver(target)?;
         let Some(field) = self.string_member(member) else { return Ok(()) };
-        if let TypeTag::Concrete(type_name) = &receiver.tag {
-            self.assign_field_external(*type_name, field, value, lhs, rhs)?;
+        if let TypeTag::Concrete(decl) = &receiver.tag {
+            self.assign_field_external(&decl.clone(), field, value, lhs, rhs)?;
         }
         Ok(())
     }
 
     /// Checks an assignment `this.field = value`.
     pub(super) fn assign_field_this(&mut self, field: Symbol, flow: &Flow, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let Some(type_name) = self.current_type else { return Ok(()) };
-        let (is_field, nullable, mutable) = match self.layout_of(type_name) {
+        let Some(type_stmt) = self.current_type else { return Ok(()) };
+        let (is_field, nullable, mutable) = match self.layout_of(&type_stmt) {
             Some(layout) => (matches!(layout.members.get(&field), Some(TypeMember::Field(_))), layout.is_nullable(field), layout.is_mutable(field)),
             None => return Ok(()),
         };
@@ -991,7 +979,7 @@ impl<'a> Checker<'a> {
         // Writing an immutable field in a factory is its initialization. Elsewhere it is a method
         // mutating a finished value, which an immutable field rejects.
         if !mutable && !self.checking_factory {
-            return Err(self.immutable_field_error(type_name, field, lhs));
+            return Err(self.immutable_field_error(&type_stmt, field, lhs));
         }
 
         // Writing a field is a use of the receiver, so an owing `this` has to be discharged first.
@@ -1000,15 +988,15 @@ impl<'a> Checker<'a> {
 
         // Mutating a field is mutating the receiver, so the method has to have asked for one.
         if !self.checking_factory && this.mutability == Mutability::Immutable {
-            return Err(self.readonly_receiver_error(type_name, field, lhs));
+            return Err(self.readonly_receiver_error(&type_stmt, field, lhs));
         }
 
         self.check_into_field(flow, nullable, field, rhs)
     }
 
     /// Checks an external write `obj.field = value` on a known type.
-    pub(super) fn assign_field_external(&mut self, type_name: Symbol, field: Symbol, flow: &Flow, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let field_info = match self.layout_of(type_name) {
+    pub(super) fn assign_field_external(&mut self, type_stmt: &HirId<HirStmt>, field: Symbol, flow: &Flow, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let field_info = match self.layout_of(type_stmt) {
             Some(layout) => match layout.members.get(&field) {
                 Some(TypeMember::Field(_)) => Some((layout.is_public(field), layout.is_nullable(field), layout.is_mutable(field))),
                 _ => None,
@@ -1021,13 +1009,14 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         if !mutable {
-            return Err(self.immutable_field_error(type_name, field, lhs));
+            return Err(self.immutable_field_error(&type_stmt, field, lhs));
         }
         self.check_into_field(flow, nullable, field, rhs)
     }
 
     /// The `Type.field` name shown in field diagnostics.
-    pub(super) fn qualified_field(&self, type_name: Symbol, field: Symbol) -> String {
-        format!("{}.{}", self.hir.text(type_name), self.hir.text(field))
+    pub(super) fn qualified_field(&self, decl: &HirId<HirStmt>, field: Symbol) -> String {
+        let owner = self.type_name_of(decl).map_or("", |name| self.hir.text(name));
+        format!("{owner}.{}", self.hir.text(field))
     }
 }

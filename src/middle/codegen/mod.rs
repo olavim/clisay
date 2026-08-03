@@ -4,9 +4,9 @@ use fnv::FnvHashMap;
 use crate::frontend::lex::Diagnostic;
 
 use crate::core::gc::Gc;
-use crate::core::value::Value;
 use crate::core::objects::ObjType;
 use crate::core::objects::ObjString;
+use crate::middle::hir::TypeId;
 use crate::middle::ir::{Inst, Ir, Label};
 use crate::middle::bind::{Bindings, Cleanup, FnKind};
 use crate::middle::check::Barriers;
@@ -16,6 +16,7 @@ use crate::middle::hir::HirExpr;
 use crate::middle::hir::HirFnDecl;
 use crate::middle::hir::HirId;
 use crate::middle::hir::HirStmt;
+use crate::middle::hir::HirMatcher;
 
 mod expressions;
 mod statements;
@@ -49,6 +50,8 @@ pub struct Compiler<'a> {
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
     types: FnvHashMap<*mut ObjString, *mut ObjType>,
+    /// The id of each registered object witness, by declaration.
+    witness_ids: FnvHashMap<TypeId, u16>,
     /// The slot that will hold the container being built, while its parts are compiled. An element
     /// handed to it takes its writer slot in that slot's name.
     receiving_slot: Option<u8>,
@@ -71,10 +74,11 @@ impl<'a> Compiler<'a> {
             sigs,
             fn_kinds: Vec::new(),
             try_frames: Vec::new(),
-            types: FnvHashMap::default()
+            types: FnvHashMap::default(),
+            witness_ids: FnvHashMap::default()
         };
 
-        compiler.record_witness_registry();
+        compiler.assign_witness_ids();
         let stmt_id = compiler.hir.get_root();
         compiler.statement(&stmt_id)?;
         Ok(compiler.finish())
@@ -84,13 +88,34 @@ impl<'a> Compiler<'a> {
         anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node_id).clone()))
     }
 
-    /// Interns the program's object witness names into the `Ir`, so the VM can recognize a
-    /// crossing value as a witness at a boundary barrier.
-    fn record_witness_registry(&mut self) {
-        let names = self.barriers.witness_names().iter()
-            .map(|name| Value::from(self.gc.intern(self.hir.text(*name))))
-            .collect();
-        self.ir.set_witness_names(names);
+    /// Numbers every registered object witness.
+    fn assign_witness_ids(&mut self) {
+        for &decl in self.barriers.witness_decls() {
+            let next = self.witness_ids.len() as u16;
+            self.witness_ids.entry(decl).or_insert(next);
+        }
+        // The VM builds some types itself, so it needs the numbering to mark them the same way.
+        let ids = self.witness_ids.iter().map(|(decl, id)| (*decl, *id)).collect();
+        self.ir.set_witness_ids(ids);
+    }
+
+    /// The runtime identity of the declaration a type test names.
+    pub(super) fn type_test_id<T: 'static>(&self, matcher: &HirId<HirMatcher>, node: &HirId<T>) -> Result<TypeId, anyhow::Error> {
+        let Some(decl) = self.bindings.type_ref(matcher) else {
+            compiler_error!(self, node, "a type test names no declaration");
+        };
+        match self.hir.get(&decl) {
+            HirStmt::Type(decl) | HirStmt::Trait(decl) => Ok(decl.id),
+            _ => compiler_error!(self, node, "a type test names no declaration"),
+        }
+    }
+
+    /// The witness ids the given declarations are numbered by, sorted.
+    pub(super) fn witness_id_set(&self, decls: &[TypeId]) -> Box<[u16]> {
+        let mut ids: Vec<u16> = decls.iter().filter_map(|decl| self.witness_ids.get(decl)).copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_boxed_slice()
     }
 
     fn finish(mut self) -> Ir {

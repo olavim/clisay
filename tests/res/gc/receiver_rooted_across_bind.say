@@ -1,0 +1,15 @@
+// Resolving a member allocates a bound method, which can collect. The receiver stays on the stack
+// across it, or the instance is swept and a type reachable only through it goes too.
+fn mk()! { say tag = 7; type T { pub v; init(this){this.v=tag;} pub fn read(this)! { return this.v+tag; } } return T(); }
+gcStress(true);
+say f = mk().read;
+print(f()); // expect: 14
+
+// @split
+// The same through the null-tolerant read.
+fn mk()! { say tag = 3; type T { pub v; init(this){this.v=tag;} pub fn read(this)! { return this.v+tag; } } return T(); }
+gcStress(true);
+say mut total = 0;
+say mut i = 0;
+while (i < 20) { total = total + (mk()?.v ?? 0); i = i + 1; }
+print(total); // expect: 60

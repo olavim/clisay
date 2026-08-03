@@ -6,7 +6,7 @@ use std::cmp::Reverse;
 
 use crate::compiler_error;
 use crate::core::value::Value;
-use crate::middle::hir::{HirExpr, HirId, HirMatchArm, HirMatchElem, HirMatcher, HirStmt, Symbol};
+use crate::middle::hir::{Hir, HirExpr, HirId, HirMatchArm, HirMatchElem, HirMatcher, HirStmt, Symbol, TypeId};
 use crate::middle::ir::{Inst, Label};
 
 use super::{slot_of, split_at_rest, Compiler, Scalar};
@@ -27,8 +27,10 @@ pub type Path = Vec<Access>;
 #[derive(Clone, PartialEq)]
 pub enum ValueTest {
     Present(Scalar),
+    /// A declared member, which is present only if it also admits what the declaration allows.
+    Admits { key: Scalar, null_allowed: bool, witnesses: Vec<TypeId> },
     Equal(Scalar),
-    Nominal(Symbol),
+    Nominal(TypeId),
     ArrayLen { min: usize, exact: bool },
     /// The value is a dict or instance, the only kinds a shape matches.
     Shaped,
@@ -36,20 +38,20 @@ pub enum ValueTest {
 
 /// A single step in matching one clause: test a path, bind a path, or run a nested matcher at a path.
 #[derive(Clone)]
-enum MatchStep<'a> {
+enum MatchStep {
     Test(Path, ValueTest),
     Bind(Path, u8),
     /// The decision tree reloads a value's whole path from the scrutinee per step, so a nested pattern
     /// would reload its entire path each time the nested pattern's sub-values are read. A nested matcher
     /// loads the path once, so that such sub-values can be matched efficiently.
-    Nested(Path, &'a HirMatcher),
+    Nested(Path, HirId<HirMatcher>),
 }
 
 /// One alternative's steps: an AND that must all hold for the alternative to match.
-type Steps<'a> = Vec<MatchStep<'a>>;
+type Steps = Vec<MatchStep>;
 
 /// A matcher's alternatives: an OR across step lists. Only an or-matcher yields more than one.
-type Alternatives<'a> = Vec<Steps<'a>>;
+type Alternatives = Vec<Steps>;
 
 /// One clause of the compiled match: a conjunction that, when its tests and nested matchers hold and
 /// its guard passes, binds and runs `body`. An or-matcher expands one arm into several clauses that
@@ -58,7 +60,7 @@ type Alternatives<'a> = Vec<Steps<'a>>;
 #[derive(Clone)]
 pub struct Clause<'a> {
     pub tests: Vec<(Path, ValueTest)>,
-    pub nested: Vec<(Path, &'a HirMatcher)>,
+    pub nested: Vec<(Path, HirId<HirMatcher>)>,
     pub binds: Vec<(Path, u8)>,
     pub guard: Option<HirId<HirExpr>>,
     pub body: Label,
@@ -68,7 +70,7 @@ pub struct Clause<'a> {
 
 impl<'a> Clause<'a> {
     /// Sorts one alternative's flat steps into a clause by step kind.
-    fn from_steps(steps: Steps<'a>, guard: Option<HirId<HirExpr>>, body: Label, binders: &'a [(Symbol, u8)]) -> Clause<'a> {
+    fn from_steps(steps: Steps, guard: Option<HirId<HirExpr>>, body: Label, binders: &'a [(Symbol, u8)]) -> Clause<'a> {
         let mut tests = Vec::new();
         let mut nested = Vec::new();
         let mut binds = Vec::new();
@@ -126,7 +128,7 @@ pub enum DecisionTree<'a> {
     /// A run of equality tests against one path, dispatched from a single load of that path.
     Switch { path: Path, cases: Vec<(Scalar, DecisionTree<'a>)>, default: Box<DecisionTree<'a>> },
     /// A clause-unique nested matcher at a path.
-    Nested { path: Path, matcher: &'a HirMatcher, binders: &'a [(Symbol, u8)], matched: Box<DecisionTree<'a>>, unmatched: Box<DecisionTree<'a>> },
+    Nested { path: Path, matcher: HirId<HirMatcher>, binders: &'a [(Symbol, u8)], matched: Box<DecisionTree<'a>>, unmatched: Box<DecisionTree<'a>> },
 }
 
 impl<'a> Compiler<'a> {
@@ -276,12 +278,14 @@ impl<'a> Compiler<'a> {
                 let idx = self.scalar_constant(key)?;
                 self.emit(Inst::HasMember(idx), node);
             },
-            ValueTest::Equal(lit) => self.emit_equal(lit, node)?,
-            ValueTest::Nominal(name) => {
-                let n = self.gc.intern(self.hir.text(*name));
-                let idx = self.ir.add_constant(Value::from(n))?;
-                self.emit(Inst::Is(idx), node);
+            ValueTest::Admits { key, null_allowed, witnesses } => {
+                let idx = self.scalar_constant(key)?;
+                let allow = self.witness_id_set(witnesses);
+                let allow_idx = self.ir.add_witness_allow(allow)?;
+                self.emit(Inst::MemberAdmits(idx, *null_allowed, allow_idx), node);
             },
+            ValueTest::Equal(lit) => self.emit_equal(lit, node)?,
+            ValueTest::Nominal(id) => self.emit(Inst::Is(*id), node),
             ValueTest::ArrayLen { min, exact } => {
                 self.emit(Inst::ArrayLen, node);
                 let idx = self.ir.add_constant(Value::from(*min as f64))?;
@@ -303,8 +307,8 @@ impl<'a> Compiler<'a> {
 
     /// Lowers a matcher into its alternatives at `path`. Each alternative is an AND of steps, and
     /// the alternatives are an OR. Only an or-matcher yields more than one alternative.
-    fn lower_matcher(&self, matcher: &'a HirMatcher, path: &[Access], binders: &[(Symbol, u8)], node: &HirId<HirStmt>) -> Result<Alternatives<'a>, anyhow::Error> {
-        Ok(match matcher {
+    fn lower_matcher(&self, matcher: &HirId<HirMatcher>, path: &[Access], binders: &[(Symbol, u8)], node: &HirId<HirStmt>) -> Result<Alternatives, anyhow::Error> {
+        Ok(match self.hir.get(matcher) {
             HirMatcher::Wildcard => vec![vec![]],
             HirMatcher::Literal(lit) => vec![vec![MatchStep::Test(path.to_vec(), ValueTest::Equal(lit.into()))]],
             HirMatcher::Binder(name) => vec![vec![MatchStep::Bind(path.to_vec(), slot_of(binders, *name))]],
@@ -314,7 +318,7 @@ impl<'a> Compiler<'a> {
                 prepend_step(&[bind], &mut alts);
                 alts
             },
-            HirMatcher::Type { nominal, name, shape } => self.lower_type(*nominal, *name, shape, path, binders, node)?,
+            HirMatcher::Type { nominal, name, shape } => self.lower_type(matcher, *nominal, *name, shape, path, binders, node)?,
             HirMatcher::Shape(fields) if fields.is_empty() => vec![vec![MatchStep::Test(path.to_vec(), ValueTest::Shaped)]],
             HirMatcher::Shape(fields) => {
                 let mut groups = Vec::with_capacity(fields.len());
@@ -325,7 +329,7 @@ impl<'a> Compiler<'a> {
                     let mut field_alts = self.lower_value(&field.value, field_path, binders, node)?;
 
                     // A value test that rejects null already fails on an absent key.
-                    if !matcher_rejects_null(&field.value) {
+                    if !matcher_rejects_null(self.hir, &field.value) {
                         prepend_step(&[MatchStep::Test(path.to_vec(), ValueTest::Present(key))], &mut field_alts);
                     }
 
@@ -355,9 +359,9 @@ impl<'a> Compiler<'a> {
     /// Lowers a shape field or array element value at `path`. A value that reads itself more than
     /// once becomes one `Nested` step so its path is loaded once. A simple value is lowered in
     /// place, keeping its single test shareable across arms.
-    fn lower_value(&self, matcher: &'a HirMatcher, path: Vec<Access>, binders: &[(Symbol, u8)], node: &HirId<HirStmt>) -> Result<Alternatives<'a>, anyhow::Error> {
-        if needs_nested_matcher(matcher) {
-            Ok(vec![vec![MatchStep::Nested(path, matcher)]])
+    fn lower_value(&self, matcher: &HirId<HirMatcher>, path: Vec<Access>, binders: &[(Symbol, u8)], node: &HirId<HirStmt>) -> Result<Alternatives, anyhow::Error> {
+        if needs_nested_matcher(self.hir, matcher) {
+            Ok(vec![vec![MatchStep::Nested(path, *matcher)]])
         } else {
             self.lower_matcher(matcher, &path, binders, node)
         }
@@ -365,16 +369,26 @@ impl<'a> Compiler<'a> {
 
     /// Lowers a type matcher: the type test, then the optional shape that destructures it further.
     /// A nominal type is one `is` test. A structural one tests each surface member's presence.
-    fn lower_type(&self, nominal: bool, name: Symbol, shape: &'a Option<Box<HirMatcher>>, path: &[Access], binders: &[(Symbol, u8)], node: &HirId<HirStmt>) -> Result<Alternatives<'a>, anyhow::Error> {
+    fn lower_type(&self, matcher: &HirId<HirMatcher>, nominal: bool, name: Symbol, shape: &Option<HirId<HirMatcher>>, path: &[Access], binders: &[(Symbol, u8)], node: &HirId<HirStmt>) -> Result<Alternatives, anyhow::Error> {
         let base = if nominal {
-            vec![MatchStep::Test(path.to_vec(), ValueTest::Nominal(name))]
+            vec![MatchStep::Test(path.to_vec(), ValueTest::Nominal(self.type_test_id(matcher, node)?))]
         } else {
-            let members = match self.bindings.surface(name) {
+            let decl = self.bindings.type_ref(matcher);
+            let members = match decl.and_then(|d| self.bindings.surface(&d)) {
                 Some(members) => members.to_vec(),
                 None => compiler_error!(self, node, "'{}' is not a type or trait", self.hir.text(name)),
             };
+            // A declared surface says what each member admits.
+            let layout = decl.and_then(|d| self.bindings.layout_of_decl(&d));
             members.iter()
-                .map(|member| MatchStep::Test(path.to_vec(), ValueTest::Present(Scalar::Str(self.hir.text(*member).to_string()))))
+                .map(|member| {
+                    let key = Scalar::Str(self.hir.text(*member).to_string());
+                    let test = match layout.and_then(|l| self.member_admits(l, *member)) {
+                        Some((null_allowed, witnesses)) => ValueTest::Admits { key, null_allowed, witnesses },
+                        None => ValueTest::Present(key),
+                    };
+                    MatchStep::Test(path.to_vec(), test)
+                })
                 .collect()
         };
 
@@ -386,7 +400,7 @@ impl<'a> Compiler<'a> {
         Ok(alts)
     }
 
-    fn lower_array(&self, elements: &'a [HirMatchElem], path: &[Access], binders: &[(Symbol, u8)], node: &HirId<HirStmt>) -> Result<Alternatives<'a>, anyhow::Error> {
+    fn lower_array(&self, elements: &'a [HirMatchElem], path: &[Access], binders: &[(Symbol, u8)], node: &HirId<HirStmt>) -> Result<Alternatives, anyhow::Error> {
         let (prefix, rest, suffix) = split_at_rest(elements);
 
         // The length is the first test, so an array test always precedes any element load.
@@ -460,7 +474,7 @@ pub fn build_tree<'a>(clauses: &[Clause<'a>]) -> DecisionTree<'a> {
             _ => build_test(clauses, path.clone(), test.clone()),
         }
     } else if let Some((path, matcher)) = first.nested.first() {
-        build_nested(clauses, path.clone(), matcher, first.binders)
+        build_nested(clauses, path.clone(), *matcher, first.binders)
     } else {
         build_leaf(clauses)
     }
@@ -551,7 +565,7 @@ fn build_switch_or_test<'a>(clauses: &[Clause<'a>], path: Path, test: ValueTest)
 /// Runs a clause-unique nested matcher. Only its owning clause (the first) takes the matched branch,
 /// minus the nested step. The clauses below the owner take both branches, since the nested match does
 /// not decide them.
-fn build_nested<'a>(clauses: &[Clause<'a>], path: Path, matcher: &'a HirMatcher, binders: &'a [(Symbol, u8)]) -> DecisionTree<'a> {
+fn build_nested<'a>(clauses: &[Clause<'a>], path: Path, matcher: HirId<HirMatcher>, binders: &'a [(Symbol, u8)]) -> DecisionTree<'a> {
     let (mut matched, unmatched) = partition(&clauses[1..], |_| Branch::Both);
     matched.insert(0, clauses[0].without_nested(0));
     DecisionTree::Nested {
@@ -579,8 +593,8 @@ fn build_leaf<'a>(clauses: &[Clause<'a>]) -> DecisionTree<'a> {
 /// reloads a value's whole path from the scrutinee per step, so a nested pattern would reload its
 /// entire path each time the nested pattern's sub-values are read. A nested matcher loads the path
 /// once, so that such sub-values can be matched efficiently.
-fn needs_nested_matcher(matcher: &HirMatcher) -> bool {
-    match matcher {
+fn needs_nested_matcher(hir: &Hir, matcher: &HirId<HirMatcher>) -> bool {
+    match hir.get(matcher) {
         // Atoms read their value at most once.
         HirMatcher::Wildcard
         | HirMatcher::Literal(_)
@@ -614,22 +628,22 @@ fn tests_conflict(selected: &ValueTest, other: &ValueTest) -> bool {
 /// Whether a matcher fails against null. A shape field whose value rejects null needs no separate
 /// presence test: an absent key loads as null, which the value test already rejects. Wildcards,
 /// binders, and a `null` literal accept null, so those keep their presence test.
-fn matcher_rejects_null(matcher: &HirMatcher) -> bool {
+fn matcher_rejects_null(hir: &Hir, matcher: &HirId<HirMatcher>) -> bool {
     use crate::middle::hir::HirLiteral;
-    match matcher {
+    match hir.get(matcher) {
         HirMatcher::Wildcard | HirMatcher::Binder(_) => false,
         HirMatcher::Literal(HirLiteral::Null) => false,
         HirMatcher::Literal(_) => true,
         HirMatcher::Type { .. } | HirMatcher::Array(_) => true,
         HirMatcher::Shape(_) => true,
-        HirMatcher::As(_, inner) => matcher_rejects_null(inner),
-        HirMatcher::And(parts) => parts.iter().any(matcher_rejects_null),
-        HirMatcher::Or(alternatives) => alternatives.iter().all(matcher_rejects_null),
+        HirMatcher::As(_, inner) => matcher_rejects_null(hir, inner),
+        HirMatcher::And(parts) => parts.iter().any(|p| matcher_rejects_null(hir, p)),
+        HirMatcher::Or(alternatives) => alternatives.iter().all(|a| matcher_rejects_null(hir, a)),
     }
 }
 
 /// Prepends a fixed conjunction of steps to the front of every alternative.
-fn prepend_step<'a>(prefix: &[MatchStep<'a>], alts: &mut Alternatives<'a>) {
+fn prepend_step<'a>(prefix: &[MatchStep], alts: &mut Alternatives) {
     for alt in alts.iter_mut() {
         alt.splice(0..0, prefix.iter().cloned());
     }
