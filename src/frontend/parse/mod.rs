@@ -154,12 +154,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         let pos = parser.tokens.peek(0).pos.clone();
-        let mut stmts: Vec<AstId<Stmt>> = Vec::new();
+
+        // A built-in is declared like any other type, ahead of the program.
+        let mut stmts: Vec<AstId<Stmt>> = vec![parser.declare_err(&pos)];
         while parser.tokens.has_next() {
             stmts.push(parser.parse_stmt()?);
         }
-
-        stmts.push(parser.declare_err(&pos));
         let block = parser.ast.add_expr(Expr::Block(stmts), pos.clone());
         ast.add_stmt(Stmt::Expression(block), pos);
 

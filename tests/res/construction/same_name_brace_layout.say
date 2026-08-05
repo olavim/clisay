@@ -1,20 +1,22 @@
 // A brace builds the declaration its name resolves to here. Another declaration sharing the name
 // has its own member ids, and reading the value back through the wrong ones swaps the fields.
-type P { pub a; pub b; }
 fn f() {
     type P { pub a; pub b; pub fn m(this)! { return 1; } }
     say q = P { a: 8, b: 9 };
     print(q.a); // expect: 8
     print(q.b); // expect: 9
 }
+fn g() {
+    type P { pub a; pub b; }
+    say p = P { a: 1, b: 2 };
+    print(p.a); // expect: 1
+    print(p.b); // expect: 2
+}
 f();
-
-say p = P { a: 1, b: 2 };
-print(p.a); // expect: 1
-print(p.b); // expect: 2
+g();
 
 // @split
-// The outer declaration lacks a field the inner one declares, so naming it is an error.
-type Q { pub a; }
+// A sibling declaration lacking a field the other declares does not lend it, so naming it here
+// is an error.
 fn f() { type Q { pub a; pub extra; } say r = Q { a: 1, extra: 2 }; print(r.extra); }
-say s = Q { a: 1, extra: 2 }; // error: 'Q' has no field 'extra'
+fn g() { type Q { pub a; } say s = Q { a: 1, extra: 2 }; } // error: 'Q' has no field 'extra'

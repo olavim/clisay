@@ -4,6 +4,7 @@ use super::*;
 enum MemberValue {
     Value(Value),
     Method,
+    Absent,
 }
 
 impl Vm {
@@ -13,11 +14,11 @@ impl Vm {
         let slot = (site >> 4) & (INDEX_CACHE_SIZE - 1);
         let ty = unsafe { &*type_ptr };
         let entry = unsafe { self.index_cache.get_unchecked_mut(slot) };
-        if entry.site == site && entry.ty == ty.id {
+        if entry.site == site && entry.prop == prop && entry.ty == ty.id {
             return Some(entry.member);
         }
         let member = ty.resolve(prop)?;
-        *entry = IndexCache { site, ty: ty.id, member };
+        *entry = IndexCache { site, prop, ty: ty.id, member };
         Some(member)
     }
 
@@ -120,7 +121,10 @@ impl Vm {
         // the value cannot say which it is. Fields are numbered before methods, so the id says it.
         let ty = unsafe { &*(*instance_ref).ty };
         match id >= ty.field_count {
-            true => self.bind_method(instance_ref.into(), ty.get_method(id)),
+            true => match ty.methods.get(&id) {
+                Some(method) => self.bind_method(instance_ref.into(), *method),
+                None => unsafe { (*instance_ref).get(id) },
+            },
             false => unsafe { (*instance_ref).get(id) },
         }
     }
@@ -224,23 +228,42 @@ impl Vm {
         let value = self.stack.pop();
         self.ensure_not_borrowed(value)?;
         let instance = unsafe { &mut *target.as_object().as_instance_ptr() };
+
+        #[cfg(debug_assertions)]
+        assert_field_slot(instance, member_id);
+
         instance.set(member_id, value);
         Ok(())
     }
 
     pub(super) fn op_get_index(&mut self) -> Result<(), anyhow::Error> {
-        let prop = self.stack.pop();
-        let target = self.stack.pop();
+        // Both operands stay on the stack: resolving a member can allocate a bound method,
+        // which can trigger gc, and a receiver held only in a local is not a root.
+        let prop = self.stack.peek(0);
+        let target = self.stack.peek(1);
+        let base = self.stack.len() - 2;
         let ValueKind::Object(object_kind) = target.kind() else {
+            self.stack.truncate(2);
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
 
-        match object_kind {
+        let outcome = match object_kind {
             ObjectKind::Instance => self.get_instance_index(target, prop),
             ObjectKind::Array => self.get_native_type_index(self.native_types.array, target, prop),
             ObjectKind::Dict => self.get_dict_index(target, prop),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
+        };
+
+        // The operands are dropped on either outcome. A failed lookup that left the stack deeper
+        // than it found it would resume a catch on a stack that is not the one it left.
+        if outcome.is_err() {
+            self.stack.truncate(self.stack.len() - base);
+            return outcome;
         }
+        let result = self.stack.pop();
+        self.stack.truncate(self.stack.len() - base);
+        self.stack.push(result);
+        Ok(())
     }
 
     fn ensure_mutable(&self, target: Value) -> Result<(), anyhow::Error> {
@@ -283,7 +306,7 @@ impl Vm {
         let receiver = self.stack.peek(0);
         let value = match receiver.kind() {
             ValueKind::Object(ObjectKind::Dict) => {
-                unsafe { &*receiver.as_object().as_dict_ptr() }.entries.get(&key).copied().unwrap_or(Value::NULL)
+                unsafe { &*receiver.as_object().as_dict_ptr() }.entries.get(&DictKey(key)).copied().unwrap_or(Value::NULL)
             },
             ValueKind::Object(ObjectKind::Instance) if matches!(key.kind(), ValueKind::Object(ObjectKind::String)) => {
                 let instance = receiver.as_object().as_instance_ptr();
@@ -300,20 +323,27 @@ impl Vm {
         // and trigger gc, and a receiver held only in a local is not a gc root.
         let prop = self.stack.peek(0);
         let target = self.stack.peek(1);
+        let base = self.stack.len() - 2;
         let ValueKind::Object(object_kind) = target.kind() else {
+            self.stack.truncate(2);
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
 
-        match object_kind {
+        let outcome = match object_kind {
             ObjectKind::Instance => self.get_instance_index(target, prop),
             ObjectKind::Array => self.get_native_type_index(self.native_types.array, target, prop),
             ObjectKind::Dict => self.get_dict_method(target, prop),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
-        }?;
+        };
 
-        // The callee pushed its result above the operands, which nothing needs once it has.
+        // The operands are dropped on either outcome. A failed lookup that left the stack deeper
+        // than it found it would resume a catch on a stack that is not the one it left.
+        if outcome.is_err() {
+            self.stack.truncate(self.stack.len() - base);
+            return outcome;
+        }
         let result = self.stack.pop();
-        self.stack.truncate(2);
+        self.stack.truncate(self.stack.len() - base);
         self.stack.push(result);
         Ok(())
     }
@@ -349,6 +379,8 @@ impl Vm {
         let admits = match self.member_value(receiver, key) {
             // A method is a reference, never null and never a witness, so it always admits.
             MemberValue::Method => true,
+            // A surface asks for a member, so a receiver without one exposes no surface.
+            MemberValue::Absent => false,
             MemberValue::Value(value) if value.is_null() => null_allowed,
             MemberValue::Value(value) => !self.carries_disallowed_witness(value, allowed),
         };
@@ -360,7 +392,10 @@ impl Vm {
         match receiver.kind() {
             ValueKind::Object(ObjectKind::Dict) => {
                 let entries = &unsafe { &*receiver.as_object().as_dict_ptr() }.entries;
-                MemberValue::Value(entries.get(&key).copied().unwrap_or(Value::NULL))
+                match entries.get(&DictKey(key)) {
+                    Some(value) => MemberValue::Value(*value),
+                    None => MemberValue::Absent,
+                }
             },
             ValueKind::Object(ObjectKind::Instance) if matches!(key.kind(), ValueKind::Object(ObjectKind::String)) => {
                 let instance_ptr = receiver.as_object().as_instance_ptr();
@@ -368,10 +403,10 @@ impl Vm {
                 match ty.resolve(key.as_object().as_string_ptr()) {
                     Some(TypeMember::Field(id)) => MemberValue::Value(unsafe { (*instance_ptr).get(id) }),
                     Some(TypeMember::Method(_)) => MemberValue::Method,
-                    None => MemberValue::Value(Value::NULL),
+                    None => MemberValue::Absent,
                 }
             },
-            _ => MemberValue::Value(Value::NULL),
+            _ => MemberValue::Absent,
         }
     }
 
@@ -381,7 +416,7 @@ impl Vm {
         let receiver = self.stack.pop();
         let present = match receiver.kind() {
             ValueKind::Object(ObjectKind::Dict) => {
-                unsafe { &*receiver.as_object().as_dict_ptr() }.entries.contains_key(&key)
+                unsafe { &*receiver.as_object().as_dict_ptr() }.entries.contains_key(&DictKey(key))
             },
             ValueKind::Object(ObjectKind::Instance) if matches!(key.kind(), ValueKind::Object(ObjectKind::String)) => {
                 let ty = unsafe { &*(*receiver.as_object().as_instance_ptr()).ty };
@@ -425,7 +460,7 @@ impl Vm {
     /// Reads `dict[key]` by value key. A missing key yields `null`.
     fn get_dict_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let dict = unsafe { &*target.as_object().as_dict_ptr() };
-        let value = dict.entries.get(&prop).copied().unwrap_or(Value::NULL);
+        let value = dict.entries.get(&DictKey(prop)).copied().unwrap_or(Value::NULL);
         self.stack.push(value);
         Ok(())
     }
@@ -435,7 +470,7 @@ impl Vm {
     fn set_dict_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let value = self.stack.peek(0);
         let dict = unsafe { &mut *target.as_object().as_dict_ptr() };
-        dict.entries.insert(prop, value);
+        dict.entries.insert(DictKey(prop), value);
         Ok(())
     }
 
@@ -466,7 +501,19 @@ impl Vm {
         let value = self.stack.peek(0);
         self.ensure_not_borrowed(value)?;
         let instance = unsafe { &mut *instance_ref };
+
+        #[cfg(debug_assertions)]
+        assert_field_slot(instance, member_id);
+
         instance.set(member_id, value);
         Ok(())
     }
+}
+
+/// A static member id reaching a write must name a field. Fields are numbered before methods, so a
+/// higher id means the check pass let a write into a method slot through.
+#[cfg(debug_assertions)]
+fn assert_field_slot(instance: &ObjInstance, member_id: u8) {
+    let ty = unsafe { &*instance.ty };
+    debug_assert!(member_id < ty.field_count, "write to method slot {member_id} of {}", unsafe { &*ty.name }.value);
 }

@@ -314,7 +314,7 @@ impl<'a> Collector<'a> {
 
     /// The declaration a callee expression names, when the pass can name one.
     fn resolved_callee(&self, callee: &HirId<HirExpr>, owner: Option<HirId<HirStmt>>) -> Option<HirId<HirStmt>> {
-        if self.sigs.type_named(self.hir, self.bindings, callee).is_some() {
+        if self.resolved().type_named(callee).is_some() {
             return None;
         }
         match self.hir.get(callee) {
@@ -455,7 +455,7 @@ impl<'a> Collector<'a> {
     /// the resolved method's parameters.
     fn escapes_at_call(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], facts: &mut EscapeFacts, owner: Option<HirId<HirStmt>>) {
         // A constructor stores its arguments into the new object, so they persist.
-        if self.sigs.type_named(self.hir, self.bindings, callee).is_some() {
+        if self.resolved().type_named(callee).is_some() {
             for arg in args { self.mark_persisted(arg, facts); }
             return;
         }
@@ -559,8 +559,7 @@ impl<'a> Collector<'a> {
                 self.escapes_at_call(callee, args, facts, owner);
                 self.mark_call_writes(callee, args, owner, facts);
             },
-            HirExpr::Construct(_, args, brace) => if mode == EscapeCollectMode::Escape {
-                for arg in args { self.mark_persisted(arg, facts); }
+            HirExpr::Construct(_, brace) => if mode == EscapeCollectMode::Escape {
                 for (_, value) in brace { self.mark_persisted(value, facts); }
             },
             _ => {},

@@ -1,0 +1,33 @@
+// A branch resolves an obligation either by handling it or by proving the value is not in its bad
+// state. Resolved on both paths is resolved before the drop, whichever way each path did it.
+type T { }
+fn f(): fails { return Err("e"); }
+say x: fails = f();
+say y = T { };
+if (x == y) { say z = x; print("clean"); }
+else { print(x ?? "handled"); } // expect: handled
+print("end"); // expect: end
+
+// @split
+// The same where the narrowing comes from a literal.
+fn f(): fails { return Err("e"); }
+say x: fails = f();
+if (x == 5) { say z = x; print("five"); }
+else { print(x ?? "handled"); } // expect: handled
+print("end"); // expect: end
+
+// @split
+// One path resolving is not enough: with no else, the other drops it unresolved.
+type T { }
+fn f(): fails { return Err("e"); }
+say x: fails = f(); // error: 'x' owes 'fails' and is never discharged
+say y = T { };
+if (x == y) { say z = x; }
+
+// @split
+// Both paths handling it is the case that already worked, and still does.
+fn f(): fails { return Err("e"); }
+say x: fails = f();
+if (x ~ Err) { print(x ?? "a"); } // expect: a
+else { print(x ?? "b"); }
+print("end"); // expect: end

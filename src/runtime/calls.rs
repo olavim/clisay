@@ -54,6 +54,7 @@ impl Vm {
             objects::TAG_NATIVE_FUNCTION => self.call_native(arg_count, object.as_native_function_ptr()),
             objects::TAG_BOUND_METHOD => self.call_bound_method(arg_count, object.as_bound_method_ptr(), seal),
             objects::TAG_TYPE => self.call_type(arg_count, object.as_type_ptr(), seal),
+            objects::TAG_FUNCTION => self.error(format!("{} is not callable", value.fmt())),
             _ => unsafe { std::hint::unreachable_unchecked() }
         }
     }
@@ -427,12 +428,18 @@ impl Vm {
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)
             },
-            // A native factory receives the fresh instance as its target and fills its fields.
+            // A native factory receives the fresh instance as its target and fills its fields. The
+            // seal is applied here rather than in the native, so `mut K(..)` reaches a built-in
+            // type the same way `RETURN_FAC` carries it out of a script factory.
             objects::TAG_NATIVE_FUNCTION => {
                 let factory_native = factory_obj.as_native_function_ptr();
                 let instance = self.alloc(ObjInstance::new(type_ptr));
                 self.stack.set(arg_count, Value::from(instance));
-                self.call_native(arg_count, factory_native)
+                self.call_native(arg_count, factory_native)?;
+                if seal {
+                    objects::freeze_value(self.stack.peek(0), self.current_pos_index());
+                }
+                Ok(())
             },
             _ => unsafe { std::hint::unreachable_unchecked() }
         }

@@ -4,6 +4,7 @@ use crate::frontend::lex::SourcePosition;
 use crate::core::gc::{Gc, GcTraceable};
 use crate::ast::BuiltinType;
 use crate::core::objects::TypeId;
+use crate::core::objects::BuiltinLayout;
 use crate::core::value::Value;
 
 use super::opcode::{self, OpCode, Operand};
@@ -14,9 +15,8 @@ use super::opcode::{self, OpCode, Operand};
 pub struct BytecodeChunk {
     /// Each registered object witness declaration and its id, for the types the VM builds itself.
     pub witness_ids: Vec<(TypeId, u16)>,
-    /// Each built-in's declaration id, by `BuiltinType::index`. The VM builds those types itself,
-    /// so it is told which declaration the program gave each one.
-    pub builtin_type_ids: [TypeId; BuiltinType::COUNT],
+    /// Each built-in's member layout, by [`BuiltinType::index`].
+    pub builtin_layouts: [Option<BuiltinLayout>; BuiltinType::COUNT],
     /// The witness ids each barrier allows, by pool index.
     pub witness_allows: Vec<Box<[u16]>>,
     pub code: Vec<OpCode>,
@@ -28,7 +28,7 @@ impl BytecodeChunk {
     pub fn new() -> BytecodeChunk {
         BytecodeChunk {
             witness_ids: Vec::new(),
-            builtin_type_ids: [0; BuiltinType::COUNT],
+            builtin_layouts: std::array::from_fn(|_| None),
             witness_allows: Vec::new(),
             code: Vec::new(),
             constants: Vec::new(),
@@ -69,6 +69,7 @@ impl GcTraceable for BytecodeChunk {
                     Operand::Const => self.constants[byte!() as usize].fmt(),
                     Operand::Jump => format!("<{}>", short!()),
                     Operand::Pool => format!("#{}", short!()),
+                    Operand::TypeId => format!("<type {}>", short!()),
                     // A count followed by that many raw bytes.
                     Operand::List => {
                         let count = byte!();

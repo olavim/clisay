@@ -14,10 +14,10 @@ use crate::core::native::array::NativeArray;
 use crate::core::native::dict::NativeDict;
 use crate::core::native::NativeType;
 use crate::core::stack::{CachedStack, Stack};
-use crate::core::value::Value;
+use crate::core::value::{DictKey, Value};
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
-use crate::core::objects::{self, TypeMember, NativeFn, ObjArray, ObjDict, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind, TypeId};
+use crate::core::objects::{self, BuiltinLayout, TypeMember, NativeFn, ObjArray, ObjDict, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind, TypeId};
 use crate::ast::BuiltinType;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
@@ -30,7 +30,11 @@ const CALL_CACHE_SIZE: usize = 1024;
 
 #[derive(Clone, Copy)]
 struct IndexCache {
+    /// The bytecode site, or `EMPTY_SITE` for an entry that answers nothing. A live site is an
+    /// instruction pointer.
     site: usize,
+    /// The member asked for.
+    prop: *mut ObjString,
     /// The declaration, not the object.
     ty: TypeId,
     member: TypeMember
@@ -44,6 +48,22 @@ struct CallCache {
     callee: Value,
     closure: *mut ObjClosure,
     ip_start: usize
+}
+
+/// A site no instruction pointer can be, which is how an entry says it answers nothing.
+const EMPTY_SITE: usize = usize::MAX;
+
+impl IndexCache {
+    const fn empty() -> IndexCache {
+        IndexCache { site: EMPTY_SITE, prop: std::ptr::null_mut(), ty: TypeId::MAX, member: TypeMember::Field(0) }
+    }
+}
+
+impl CallCache {
+    /// An entry naming nothing. A collection resets to this, since what it named may be freed.
+    const fn empty() -> CallCache {
+        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0 }
+    }
 }
 
 struct NativeTypes {
@@ -129,7 +149,7 @@ mod properties;
 mod ops;
 mod threaded;
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "capture_output"))]
 fn disassemble(chunk: &BytecodeChunk) {
     Output::println("=== Bytecode ===");
     Output::println(chunk.fmt());
@@ -151,26 +171,27 @@ fn apply_witness_ids(ty: &mut ObjType, ids: &[(TypeId, u16)], provided: &[TypeId
     ty.witness_ids = own.into_boxed_slice();
 }
 
-fn build_err_type(gc: &mut Gc, ids: &[(TypeId, u16)], type_id: TypeId) -> *mut ObjType {
+/// Builds `Err`'s runtime object from the layout the compiler resolved for its declaration.
+fn build_err_type(gc: &mut Gc, ids: &[(TypeId, u16)], layout: &BuiltinLayout) -> *mut ObjType {
     let err = gc.intern("Err");
     let mut ty = ObjType::new(err);
-    ty.members.insert(gc.intern("value"), TypeMember::Field(0));
-    ty.fields.insert(0);
-    ty.field_count = 1;
-    ty.id = type_id;
+    for (name, member) in &layout.members {
+        ty.members.insert(gc.intern(name), *member);
+    }
+    ty.field_count = layout.field_count;
+    ty.id = layout.id;
+    ty.member_count = layout.member_count;
+
     let init = ObjNativeFn::new(err, 1, |vm, target, args| {
         let instance = target.as_object().as_instance_ptr();
         unsafe { (*instance).set(0, args[0]) };
-        // An Err is a plain construction, so it hands back an immutable value like any other.
-        target.as_object().set_immutable(vm.code_index());
         vm.push(target);
         Ok(())
     });
-    ty.methods.insert(1, gc.alloc(init).into());
-    ty.factory_id = Some(1);
-    ty.member_count = 2;
-    ty.provided.insert(type_id);
-    apply_witness_ids(&mut ty, ids, &[type_id]);
+    ty.methods.insert(layout.factory_id, gc.alloc(init).into());
+    ty.factory_id = Some(layout.factory_id);
+    ty.provided.insert(layout.id);
+    apply_witness_ids(&mut ty, ids, &[layout.id]);
     ty.build_template();
     gc.alloc(ty)
 }
@@ -205,14 +226,19 @@ impl Host for Vm {
 
 impl Vm {
     pub fn execute(chunk: BytecodeChunk, mut gc: Gc) -> Result<Vec<String>, anyhow::Error> {
-        #[cfg(debug_assertions)] {
+        // The test harness reads this dump, so `capture_output` has to produce it in release too.
+        #[cfg(any(debug_assertions, feature = "capture_output"))] {
             disassemble(&chunk);
         }
 
         let native_types = NativeTypes {
             array: build_native_type(&mut gc, NativeArray),
             dict: build_native_type(&mut gc, NativeDict),
-            err: build_err_type(&mut gc, &chunk.witness_ids, chunk.builtin_type_ids[BuiltinType::Err.index()])
+            err: {
+                let layout = chunk.builtin_layouts[BuiltinType::Err.index()].as_ref()
+                    .expect("assembly rejects a chunk with a built-in layout missing");
+                build_err_type(&mut gc, &chunk.witness_ids, layout)
+            }
         };
 
 
@@ -228,8 +254,8 @@ impl Vm {
             write_owners: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
-            index_cache: vec![IndexCache { site: 0, ty: TypeId::MAX, member: TypeMember::Field(0) }; INDEX_CACHE_SIZE].into_boxed_slice(),
-            call_cache: vec![CallCache { site: usize::MAX, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0 }; CALL_CACHE_SIZE].into_boxed_slice(),
+            index_cache: vec![IndexCache::empty(); INDEX_CACHE_SIZE].into_boxed_slice(),
+            call_cache: vec![CallCache::empty(); CALL_CACHE_SIZE].into_boxed_slice(),
             out: Vec::new()
         };
 
@@ -420,7 +446,26 @@ impl Vm {
         self.globals.insert(name_ref, value);
     }
 
+    /// Checks the pointer invariants a collection rests on. A root outside the live stack is either
+    /// marked from dead slots or never closed. Both corrupt a value far from where the mistake is.
+    #[cfg(debug_assertions)]
+    fn verify_roots(&self) {
+        let (bottom, top) = (self.stack.bottom(), self.stack.top());
+        for &upvalue in &self.open_upvalues {
+            let location = unsafe { (*upvalue).location };
+            assert!(location >= bottom && location < top, "an open upvalue points outside the live stack");
+        }
+        let mut previous = bottom;
+        for frame in self.frames.iter() {
+            assert!(frame.stack_start >= bottom && frame.stack_start <= top, "a frame starts outside the live stack");
+            assert!(frame.stack_start >= previous, "frames are out of order");
+            previous = frame.stack_start;
+        }
+    }
+
     fn start_gc(&mut self) {
+        #[cfg(debug_assertions)]
+        self.verify_roots();
         self.chunk.mark(&mut self.gc);
         self.native_types.mark(&mut self.gc);
 
@@ -453,8 +498,13 @@ impl Vm {
             value.mark(&mut self.gc);
         }
 
+        // Both caches key on raw pointers. A sweep can free an interned string or a type and the
+        // next allocation can reuse the block, so a surviving entry would answer for another name.
         for entry in self.call_cache.iter_mut() {
-            entry.site = usize::MAX;
+            *entry = CallCache::empty();
+        }
+        for entry in self.index_cache.iter_mut() {
+            *entry = IndexCache::empty();
         }
 
         self.gc.collect();

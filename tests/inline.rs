@@ -61,3 +61,11 @@ fn a_capturing_factory_survives_leaving_its_function() {
                say maker = mk(7); say other = mk(9); print(maker().n); print(other().n);";
     assert_inline(src, Ok(["7", "9"]));
 }
+
+#[test]
+fn member_ids_are_capped_at_one_byte() {
+    // A member id is one byte, and the factory takes one whether or not the type declares one.
+    let fields = |n: usize| (0..n).map(|i| format!("pub f{i};")).collect::<Vec<_>>().join(" ");
+    assert_inline(&format!("type Big {{ {} }} print(\"ok\");", fields(254)), Ok(["ok"]));
+    assert_inline::<0>(&format!("type Big {{ {} }}", fields(255)), Err("Too many members in type 'Big'".to_string()));
+}

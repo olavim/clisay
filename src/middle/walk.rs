@@ -48,9 +48,8 @@ pub fn children_of_expr(hir: &Hir, node: &HirId<HirExpr>) -> Vec<Child> {
             out.push(Child::Expr(*callee));
             for a in args { out.push(Child::Expr(*a)); }
         },
-        HirExpr::Construct(callee, args, brace) => {
+        HirExpr::Construct(callee, brace) => {
             out.push(Child::Expr(*callee));
-            for a in args { out.push(Child::Expr(*a)); }
             for (_, v) in brace { out.push(Child::Expr(*v)); }
         },
         HirExpr::Block(stmts) => for s in stmts { out.push(Child::Stmt(*s)); },

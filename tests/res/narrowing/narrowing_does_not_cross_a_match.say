@@ -1,0 +1,13 @@
+// Both arms prove `x` is not null, and the narrowing still does not survive the match. Without the
+// reset, a mutation run showed nothing catching it: every other test here happens to pass either way.
+fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
+fn run(k) {
+    say x: opt = maybe(k);
+    match k {
+        1 => { if (x == null) { return; } print("a"); },
+        _ => { if (x == null) { return; } print("b"); },
+    }
+    say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+run(2);

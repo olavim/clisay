@@ -1,3 +1,4 @@
+use std::hash::{Hash, Hasher};
 use std::{fmt, mem};
 
 use super::gc::{Gc, GcTraceable};
@@ -74,10 +75,27 @@ impl Value {
     /// other kind falls back to bit equality (object identity, bool/null value).
     pub fn value_eq(self, other: Self) -> bool {
         if self.is_number() && other.is_number() {
-            self.as_number() == other.as_number()
-        } else {
-            self == other
+            return self.as_number() == other.as_number();
         }
+        self == other || self.names_the_same_type(other)
+    }
+
+    /// Whether both values are types built from one declaration.
+    fn names_the_same_type(self, other: Self) -> bool {
+        match (self.type_identity(), other.type_identity()) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// The declaration a type value came from. A declaration can have more than one type object,
+    /// so two values naming one type share this and nothing else.
+    fn type_identity(self) -> Option<objects::TypeId> {
+        if !matches!(self.kind(), ValueKind::Object(ObjectKind::Type)) {
+            return None;
+        }
+        let id = unsafe { (*self.as_object().as_type_ptr()).id };
+        (id != objects::TypeId::MAX).then_some(id)
     }
 
     pub fn is_bool(self) -> bool {
@@ -165,5 +183,31 @@ impl fmt::Display for Value {
         // The type name; `ValueKind: Display` delegates object kinds to
         // `ObjectKind: Display`, so there's one place per kind.
         write!(f, "{}", self.kind())
+    }
+}
+
+/// A dict key. Equality and hashing follow `Value::value_eq`, so a lookup answers the way `==`
+/// does. Keying on the raw bits instead misses wherever two of them are one value.
+#[derive(Clone, Copy)]
+pub struct DictKey(pub Value);
+
+impl PartialEq for DictKey {
+    /// The bit test comes first so a key always equals itself. `value_eq` says `NaN != NaN`, which
+    /// would leave a stored key unreachable by the very value that stored it.
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 || self.0.value_eq(other.0)
+    }
+}
+
+impl Eq for DictKey {}
+
+impl Hash for DictKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self.0.type_identity() {
+            Some(id) => id.hash(state),
+            // `-0.0 == 0.0`, so the two have to hash alike.
+            None if self.0.is_number() && self.0.as_number() == 0.0 => 0f64.to_bits().hash(state),
+            None => self.0.hash(state),
+        }
     }
 }

@@ -1,6 +1,6 @@
 //! Factory lowering.
 
-use std::collections::HashSet;
+use indexmap::IndexSet;
 
 use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl, SlotClause};
 use crate::frontend::lex::SourcePosition;
@@ -32,11 +32,11 @@ impl<'a> Lowerer<'a> {
 
         // A factory body and its field defaults name `this` only as `this.<field>`, and each field
         // access desugars to the field's local. A param shadows a same-named field's bare access.
-        let params_set: HashSet<Symbol> = match &decl.init {
+        let params_set: IndexSet<Symbol> = match &decl.init {
             Some(init_id) => self.ast_fn(init_id).params.iter()
                 .filter_map(|p| p.binder(self.ast))
                 .collect(),
-            None => HashSet::new(),
+            None => IndexSet::new(),
         };
         let saved_in_factory = self.in_factory.replace((decl.fields.clone(), params_set));
 

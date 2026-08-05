@@ -1,0 +1,13 @@
+trait Tr { pub fn go(this)! { return "outer"; } }
+fn f() {
+    trait Tr { pub fn other(this)! { return "inner"; } }
+    type H with Tr { pub v; init(this) { this.v = 1; } }
+}
+// error(full):
+// error: 'Tr' shadows a type or trait declared in an enclosing scope
+//  --> shadowed_type_declaration.say:3:5
+//   |
+// 2 | fn f() {
+// 3 |     trait Tr { pub fn other(this)! { return "inner"; } }
+//   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+//   = help: rename it, since the outer declaration cannot be named here

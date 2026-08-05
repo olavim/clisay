@@ -103,9 +103,7 @@ impl TypeLayout {
     }
 
     fn resolve_id(&self, name: Symbol) -> Option<u8> {
-        self.resolve(name).map(|m| match m {
-            TypeMember::Field(id) | TypeMember::Method(id) => id,
-        })
+        self.resolve(name).map(|m| m.id())
     }
 
     pub fn is_nullable(&self, name: Symbol) -> bool {
@@ -254,10 +252,10 @@ struct Local {
     is_captured: bool,
 }
 
-/// A type declaration visible at some scope depth.
+/// A type or trait name visible at some scope depth. This is the order
+/// to drop them in when the scope closes.
 struct TypeInScope {
     name: Symbol,
-    decl: HirId<HirStmt>,
     depth: u8,
 }
 
@@ -289,6 +287,8 @@ pub struct Resolver<'a> {
     type_frames: Vec<TypeFrame>,
     /// Every type and trait declaration in scope, innermost last.
     type_scope: Vec<TypeInScope>,
+    /// What each visible type or trait name declares.
+    type_index: FnvHashMap<Symbol, HirId<HirStmt>>,
     /// The trait whose method body is currently being resolved.
     current_trait: Option<Symbol>,
     /// `true` while validating a standalone `trait` against its declared surface.
@@ -304,6 +304,7 @@ pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
         fn_frames: Vec::new(),
         type_frames: Vec::new(),
         type_scope: Vec::new(),
+        type_index: FnvHashMap::default(),
         current_trait: None,
         validating_trait: false,
     };
@@ -497,7 +498,8 @@ impl<'a> Resolver<'a> {
                 _ => continue,
             };
             if names_a_type {
-                self.type_scope.push(TypeInScope { name, decl: *stmt_id, depth: self.scope_depth });
+                self.type_scope.push(TypeInScope { name, depth: self.scope_depth });
+                self.type_index.insert(name, *stmt_id);
             }
             if takes_slot {
                 self.declare_local(name)?;
@@ -508,7 +510,7 @@ impl<'a> Resolver<'a> {
 
     /// The type or trait declaration a name refers to here.
     fn resolve_type_decl(&self, name: Symbol) -> Option<HirId<HirStmt>> {
-        self.type_scope.iter().rev().find(|t| t.name == name).map(|t| t.decl)
+        self.type_index.get(&name).copied()
     }
 
     /// Records which declaration a type test names, for every type node in a matcher.
@@ -567,11 +569,10 @@ impl<'a> Resolver<'a> {
                 self.resolve_matcher_types(&matcher);
                 self.expression(&scrutinee)?;
             },
-            HirExpr::Construct(callee, args, brace) => {
+            HirExpr::Construct(callee, brace) => {
                 let callee = *callee;
-                let args = args.clone();
                 let brace = brace.clone();
-                self.construct(expr, &callee, &args, &brace)?;
+                self.construct(expr, &callee, &brace)?;
             },
             HirExpr::Mut(inner) => self.expression(inner)?,
             HirExpr::This => self.resolve_this(expr)?,

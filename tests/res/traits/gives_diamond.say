@@ -1,0 +1,10 @@
+// Two delegations reaching one method through a shared base is a diamond, not a clash, so it
+// folds once like the `with` spelling does.
+trait Base { pub fn hello(this)! { return "base"; } }
+trait A with Base { }
+trait B with Base { }
+type IA with A { init(this) {} }
+type IB with B { init(this) {} }
+type H { a gives A; b gives B; init(this) { this.a = IA(); this.b = IB(); } }
+say h = H();
+print(h.hello()); // expect: base

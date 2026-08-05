@@ -18,9 +18,24 @@ macro_rules! rs {
     }}
 }
 
-/// Push onto the stack top.
+/// Push onto the stack top. Every unbounded growth of the value stack runs through here, so this
+/// is where the stack's limit is enforced.
 macro_rules! push {
-    ($top:ident, $v:expr) => {{ let v = $v; unsafe { *$top = v; } $top = unsafe { $top.add(1) }; }}
+    ($vm:ident, $ip:ident, $top:ident, $v:expr) => {{
+        let v = $v;
+        if $top >= $vm.stack.end() { return overflowed($vm, $ip, $top); }
+        unsafe { *$top = v; }
+        $top = unsafe { $top.add(1) };
+    }}
+}
+
+/// Reports a value-stack overflow.
+#[cold]
+#[inline(never)]
+fn overflowed(vm: &mut Vm, ip: *const OpCode, top: *mut Value) -> R {
+    vm.stack.set_top(top);
+    vm.ip = ip;
+    Err(vm.stack_overflow())
 }
 
 /// Pop from the stack top.
@@ -162,7 +177,7 @@ fn load_local(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value)
     let mut ip = ip;
     let mut top = top;
     let idx = rb!(ip) as usize;
-    push!(top, unsafe { *base.add(idx) });
+    push!(vm, ip, top, unsafe { *base.add(idx) });
     become dispatch(vm, ip, top, base)
 }
 
@@ -188,7 +203,7 @@ fn load_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Valu
     let mut top = top;
     let idx = rb!(ip) as usize;
     let upvalue = vm.get_upvalue(idx);
-    push!(top, unsafe { *(*upvalue).location });
+    push!(vm, ip, top, unsafe { *(*upvalue).location });
     become dispatch(vm, ip, top, base)
 }
 
@@ -226,25 +241,25 @@ fn push_constant(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Val
     let mut ip = ip;
     let mut top = top;
     let idx = rb!(ip) as usize;
-    push!(top, vm.chunk.constants[idx]);
+    push!(vm, ip, top, vm.chunk.constants[idx]);
     become dispatch(vm, ip, top, base)
 }
 
 fn push_null(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut top = top;
-    push!(top, Value::NULL);
+    push!(vm, ip, top, Value::NULL);
     become dispatch(vm, ip, top, base)
 }
 
 fn push_true(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut top = top;
-    push!(top, Value::TRUE);
+    push!(vm, ip, top, Value::TRUE);
     become dispatch(vm, ip, top, base)
 }
 
 fn push_false(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut top = top;
-    push!(top, Value::FALSE);
+    push!(vm, ip, top, Value::FALSE);
     become dispatch(vm, ip, top, base)
 }
 
@@ -358,8 +373,8 @@ fn store_local_add(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut V
     if a.is_number() && b.is_number() {
         unsafe { *base.add(dst) = Value::from(a.as_number() + b.as_number()) };
     } else {
-        push!(top, a);
-        push!(top, b);
+        push!(vm, ip, top, a);
+        push!(vm, ip, top, b);
         vm.stack.set_top(top);
         vm.ip = ip;
         vm.op_add()?;
@@ -383,8 +398,8 @@ macro_rules! inc_dec_fn {
             if a.is_number() && b.is_number() {
                 unsafe { *base.add(l) = Value::from(a.as_number() $op b.as_number()) };
             } else {
-                push!(top, a);
-                push!(top, b);
+                push!(vm, ip, top, a);
+                push!(vm, ip, top, b);
                 vm.stack.set_top(top);
                 vm.ip = ip;
                 vm.$slow()?;
@@ -411,10 +426,10 @@ macro_rules! fused_lc_fn {
             let a = unsafe { *base.add(a_idx) };
             let b = vm.chunk.constants[b_idx];
             if a.is_number() && b.is_number() {
-                push!(top, Value::from(a.as_number() $op b.as_number()));
+                push!(vm, ip, top, Value::from(a.as_number() $op b.as_number()));
             } else {
-                push!(top, a);
-                push!(top, b);
+                push!(vm, ip, top, a);
+                push!(vm, ip, top, b);
                 vm.stack.set_top(top);
                 vm.ip = ip;
                 vm.$slow()?;
@@ -436,10 +451,10 @@ macro_rules! fused_cl_fn {
             let a = vm.chunk.constants[a_idx];
             let b = unsafe { *base.add(b_idx) };
             if a.is_number() && b.is_number() {
-                push!(top, Value::from(a.as_number() $op b.as_number()));
+                push!(vm, ip, top, Value::from(a.as_number() $op b.as_number()));
             } else {
-                push!(top, a);
-                push!(top, b);
+                push!(vm, ip, top, a);
+                push!(vm, ip, top, b);
                 vm.stack.set_top(top);
                 vm.ip = ip;
                 vm.$slow()?;
@@ -463,7 +478,7 @@ macro_rules! num_binop_fn {
             let a = peek!(top, 1);
             if a.is_number() && b.is_number() {
                 top = unsafe { top.sub(2) };
-                push!(top, Value::from(a.as_number() $op b.as_number()));
+                push!(vm, ip, top, Value::from(a.as_number() $op b.as_number()));
             } else {
                 vm.stack.set_top(top);
                 vm.ip = ip;
@@ -557,12 +572,12 @@ fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R 
 fn not(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut top = top;
     let v = pop!(top);
-    push!(top, Value::from(v.is_falsy()));
+    push!(vm, ip, top, Value::from(v.is_falsy()));
     become dispatch(vm, ip, top, base)
 }
 
 fn dup(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut top = top;
-    push!(top, peek!(top, 0));
+    push!(vm, ip, top, peek!(top, 0));
     become dispatch(vm, ip, top, base)
 }

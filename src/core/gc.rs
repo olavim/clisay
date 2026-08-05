@@ -2,6 +2,8 @@ use std::alloc::{self, Layout};
 use std::mem;
 
 use fnv::FnvHashMap;
+#[cfg(debug_assertions)]
+use fnv::FnvHashSet;
 
 use super::objects::{ObjClosure, ObjString, ObjUpvalue, ObjectHeader, ObjectKind, Object, FLAG_MARKED};
 
@@ -13,9 +15,8 @@ const OBJ_ALIGN: usize = 8;
 /// The collection threshold floor, and the value `next_gc` starts at.
 const INITIAL_GC_THRESHOLD: usize = 1024 * 1024;
 
-/// After each collection, the next threshold is set to the live heap times this
-/// factor, so collection frequency scales with the live set instead of firing on
-/// every allocation once the heap exceeds a fixed size.
+/// After each collection the next threshold is the live heap times this factor. Collection
+/// frequency then scales with the live set instead of firing on every allocation.
 const GC_GROW_FACTOR: usize = 2;
 
 pub trait GcTraceable {
@@ -23,9 +24,8 @@ pub trait GcTraceable {
     fn mark(&self, gc: &mut Gc);
 
     /// Marks pointers the object stores past its struct. A reference reaches only the struct's own
-    /// bytes, so these are handed the allocation pointer instead. Defaults to nothing; types whose
-    /// allocation includes a trailing array override this alongside `layout_size`.
-    /// Safety: `ptr` must be the pointer this object was allocated at.
+    /// bytes, so these are handed the allocation pointer instead. An object with a trailing array
+    /// overrides this alongside `layout_size`. Safety: `ptr` must be where the object was allocated.
     unsafe fn mark_trailing(_ptr: *const Self, _gc: &mut Gc) where Self: Sized {}
 
     /// Bytes attributed to this object for GC accounting: the struct plus any heap
@@ -62,7 +62,11 @@ pub struct Gc {
     pub bytes_allocated: usize,
     next_gc: usize,
     /// When true, GC runs on every allocation.
-    pub stress: bool
+    pub stress: bool,
+    /// Blocks sitting on a free list. A pointer to one is dangling until the block is handed out
+    /// again, so traversing one means `mark` missed the pointer that should have kept it alive.
+    #[cfg(debug_assertions)]
+    freed_blocks: FnvHashSet<usize>
 }
 
 impl Gc {
@@ -74,8 +78,20 @@ impl Gc {
             free_lists: FnvHashMap::default(),
             bytes_allocated: 0,
             next_gc: INITIAL_GC_THRESHOLD,
-            stress: false
+            // Collecting on every allocation is what makes the verifier see every intermediate
+            // state, so a whole corpus can be run under it from the environment.
+            stress: std::env::var_os("CLISAY_GC_STRESS").is_some(),
+            #[cfg(debug_assertions)]
+            freed_blocks: FnvHashSet::default()
         }
+    }
+
+    /// Refuses a pointer to a block already handed back to a free list. Every traversal goes
+    /// through `mark_object`, so this catches a dangling pointer wherever it is still reachable.
+    #[cfg(debug_assertions)]
+    fn assert_not_freed(&self, obj: Object) {
+        assert!(!self.freed_blocks.contains(&(obj.as_header_ptr() as usize)),
+            "traversed a pointer to a freed block");
     }
 
     pub fn alloc<T: GcTraceable>(&mut self, obj: T) -> *mut T
@@ -133,6 +149,8 @@ impl Gc {
     /// object before it can be marked or freed.
     fn take_block(&mut self, size: usize) -> *mut u8 {
         if let Some(block) = self.free_lists.get_mut(&size).and_then(Vec::pop) {
+            #[cfg(debug_assertions)]
+            self.freed_blocks.remove(&(block as usize));
             return block;
         }
         let layout = unsafe { Layout::from_size_align_unchecked(size, OBJ_ALIGN) };
@@ -156,6 +174,8 @@ impl Gc {
 
     pub fn mark_object<T: Into<Object>>(&mut self, obj: T) {
         let obj: Object = obj.into();
+        #[cfg(debug_assertions)]
+        self.assert_not_freed(obj);
         unsafe {
             if !(*obj.as_header_ptr()).has(FLAG_MARKED) {
                 (*obj.as_header_ptr()).set(FLAG_MARKED, true);
@@ -168,8 +188,7 @@ impl Gc {
         self.mark_reachable();
         self.sweep_strings();
         self.sweep_objects();
-        // Scale the next threshold to the surviving live set so collection
-        // frequency tracks live size, never below the initial floor.
+        // Scale the next threshold to the surviving live set, so collection frequency tracks live size.
         self.next_gc = self.bytes_allocated.saturating_mul(GC_GROW_FACTOR).max(INITIAL_GC_THRESHOLD);
     }
 
@@ -183,26 +202,31 @@ impl Gc {
         self.strings.retain(|_, &mut obj_ptr| unsafe { (*obj_ptr).header.has(FLAG_MARKED) });
     }
 
+    /// Frees the unmarked and recounts what survived; An object can grow after it's allocated.
     fn sweep_objects(&mut self) {
+        let mut live = 0;
         for i in (0..self.refs.len()).rev() {
-            let obj = &self.refs[i];
+            let obj = self.refs[i];
             unsafe {
                 if (*obj.as_header_ptr()).has(FLAG_MARKED) {
                     (*obj.as_header_ptr()).set(FLAG_MARKED, false);
+                    live += obj.size();
                 } else {
                     self.free(i);
                 }
             }
         }
+        self.bytes_allocated = live;
     }
 
     fn free(&mut self, idx: usize) {
         let obj = self.refs[idx];
         let block = obj.as_header_ptr() as *mut u8;
-        let (accounted, layout_size) = obj.free();
-        self.bytes_allocated -= accounted;
+        let layout_size = obj.free();
         // Retain the block for reuse rather than handing it back to the system allocator.
         self.free_lists.entry(layout_size).or_default().push(block);
+        #[cfg(debug_assertions)]
+        self.freed_blocks.insert(block as usize);
         self.refs.swap_remove(idx);
     }
 
@@ -216,7 +240,7 @@ impl Drop for Gc {
         // Drop all live objects
         for &obj in &self.refs {
             let block = obj.as_header_ptr() as *mut u8;
-            let (_, layout_size) = obj.free();
+            let layout_size = obj.free();
             unsafe { alloc::dealloc(block, Layout::from_size_align_unchecked(layout_size, OBJ_ALIGN)) };
         }
         // Free memory of recycled blocks

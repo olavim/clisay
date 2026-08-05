@@ -1,13 +1,14 @@
 //! Flow-sensitive semantic checks: what a program does on the way to each point.
 
-mod alias;
+pub(crate) mod alias;
 mod barriers;
 mod conform;
 mod narrow;
 mod returns;
-mod scope;
+pub(crate) mod scope;
 mod walk;
 
+use indexmap::IndexSet;
 use std::collections::{HashMap, HashSet};
 
 use crate::frontend::lex::SourcePosition;
@@ -15,6 +16,7 @@ use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{Hir, HirExpr, HirId, HirStmt, ReturnShape, Symbol};
 use crate::middle::obligations::{Obligations, Rule, Site};
+use crate::middle::signatures::Resolved;
 use crate::middle::signatures::{Mutability, Signatures, TypeTag};
 
 use alias::{AliasLocal, ElementKey, MovedAt};
@@ -197,7 +199,7 @@ struct Checker<'a> {
     /// The obligations discharged per `this` field on the current path. Keyed by name rather than
     /// by slot, so it is scoped to the frame instead of to a local.
     this_narrowed: HashMap<Symbol, Obligations>,
-    current_trait_surface: Option<HashSet<Symbol>>,
+    current_trait_surface: Option<IndexSet<Symbol>>,
     /// The function currently being checked.
     fn_ctx: FnContext<'a>,
     /// Set while descending into a `mut` construction.
@@ -209,6 +211,10 @@ impl<'a> Diagnose for Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
+    fn resolved(&self) -> Resolved<'a> {
+        Resolved { hir: self.hir, bindings: self.bindings, sigs: self.sigs }
+    }
+
     fn new(hir: &'a Hir, bindings: &'a Bindings, sigs: &'a Signatures) -> Checker<'a> {
         Checker {
             hir,
@@ -256,7 +262,7 @@ impl<'a> Checker<'a> {
     }
 
     fn constructor_init(&self, callee: &HirId<HirExpr>) -> Option<HirId<HirStmt>> {
-        let type_stmt = self.sigs.type_named(self.hir, self.bindings, callee)?;
+        let type_stmt = self.resolved().type_named(callee)?;
         let HirStmt::Type(decl) = self.hir.get(&type_stmt) else { return None };
         Some(decl.init)
     }

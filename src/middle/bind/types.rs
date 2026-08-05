@@ -1,7 +1,10 @@
 //! Type and trait layout: building each type's runtime member layout, resolving `this`-member
 //! accesses, and validating brace construction.
 
+use indexmap::IndexSet;
 use std::collections::HashSet;
+
+use anyhow::bail;
 
 use crate::compiler_error;
 use crate::core::objects::TypeMember;
@@ -41,9 +44,8 @@ impl<'a> Resolver<'a> {
 
     /// Resolves and validates a brace construction `C { field: value, ... }`: the type must be
     /// known, and each brace field must be a distinct `pub` field.
-    pub(super) fn construct(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
+    pub(super) fn construct(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
         self.expression(callee)?;
-        for a in args { self.expression(a)?; }
         for (_, v) in brace { self.expression(v)?; }
 
         let HirExpr::Identifier(type_name) = self.hir.get(callee) else {
@@ -51,12 +53,13 @@ impl<'a> Resolver<'a> {
         };
         let type_name = *type_name;
         let decl = self.resolve_type_decl(type_name);
-        let layout = decl.and_then(|decl| self.bindings.layout_of_decl(&decl)).cloned();
+
+        if decl.is_some_and(|decl| self.is_builtin_type(&decl)) {
+            compiler_error!(self, callee, "'{}' cannot be built with a brace", self.hir.text(type_name));
+        }
+
         // A trait resolves to a declaration but has no layout, so a brace cannot build one.
-        let Some(layout) = layout else {
-            if decl.is_some_and(|decl| self.is_builtin_type(&decl)) {
-                compiler_error!(self, callee, "'{}' cannot be built with a brace", self.hir.text(type_name));
-            }
+        let Some(layout) = decl.and_then(|decl| self.bindings.layout_of_decl(&decl)).cloned() else {
             compiler_error!(self, callee, "'{}' is not a type", self.hir.text(type_name));
         };
 
@@ -134,7 +137,12 @@ impl<'a> Resolver<'a> {
 
     /// Builds a type's runtime [`TypeLayout`], assigning each member its id: own fields,
     /// methods, then the factory.
-    fn build_layout(&self, decl: &HirTypeDecl) -> TypeLayout {
+    fn build_layout(&self, decl: &HirTypeDecl) -> Result<TypeLayout, anyhow::Error> {
+        // Member ids are one byte, and one is reserved for the factory even when none is declared.
+        if decl.fields.len() + decl.methods.len() >= u8::MAX as usize {
+            bail!("Too many members in type '{}'", self.hir.text(decl.name));
+        }
+
         let mut layout = TypeLayout::empty(decl.name);
 
         let mut next_member_id: u8 = 0;
@@ -178,7 +186,7 @@ impl<'a> Resolver<'a> {
         next_member_id += 1;
         layout.member_count = next_member_id;
 
-        layout
+        Ok(layout)
     }
 
     /// Pushes the type frame that method bodies resolve against, deriving the private-name set
@@ -200,7 +208,7 @@ impl<'a> Resolver<'a> {
         }
         self.enter_scope();
 
-        let layout = self.build_layout(decl);
+        let layout = self.build_layout(decl)?;
         self.push_type_frame(layout.clone(), decl);
 
         // Method bodies resolve under the declaring trait's private scope (host members: none).
@@ -227,12 +235,10 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// Records a type/trait's public member names for the `x has T` surface form, in a stable
-    /// order so codegen emits the membership checks deterministically.
-    fn record_surface(&mut self, stmt: &HirId<HirStmt>, members: &HashSet<Symbol>) {
-        let mut members: Vec<Symbol> = members.iter().copied().collect();
-        members.sort_by_key(|s| s.index());
-        self.bindings.surfaces.insert(*stmt, members);
+    /// Records a type/trait's public member names for the `x has T` surface form. Codegen emits one
+    /// membership check per name in this order, so it is the declaration order the set was built in.
+    fn record_surface(&mut self, stmt: &HirId<HirStmt>, members: &IndexSet<Symbol>) {
+        self.bindings.surfaces.insert(*stmt, members.iter().copied().collect());
     }
 
     /// Validates a standalone `trait`: resolves its method bodies against a layout built from its

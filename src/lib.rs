@@ -1,12 +1,15 @@
 // Tail-call dispatch (`become`) in the VM needs this. Nightly-only until it stabilizes.
 #![feature(explicit_tail_calls)]
+#![feature(variant_count)]
 #![allow(incomplete_features)]
 
-#[cfg(debug_assertions)]
-#[cfg_attr(debug_assertions, path = "debug_output.rs")]
+// Capture is a debug facility, and `capture_output` turns it on in release so the test harness can
+// collect `print` output there too.
+#[cfg(any(debug_assertions, feature = "capture_output"))]
+#[cfg_attr(any(debug_assertions, feature = "capture_output"), path = "debug_output.rs")]
 mod output;
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(any(debug_assertions, feature = "capture_output")))]
 mod output {
     pub struct Output;
     impl Output {
@@ -36,13 +39,23 @@ pub mod internals {
     pub use crate::middle::hir::{
         Hir, HirMatchArm, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, HirTypeDecl,
     };
+    pub use crate::core::objects::TypeMember;
     pub use crate::middle::bind::{Bindings, TypeLayout};
     pub use crate::middle::check::Barriers;
+    pub use crate::middle::check::scope::{intersect_narrowings, merge_flow, LocalFlow};
+    pub use crate::middle::check::alias::{ElementKey, MoveCause, MovedAt};
+    pub use crate::middle::obligations::Obligations;
+    pub use crate::middle::signatures::{Mutability, TypeTag};
+
     pub use crate::middle::codegen::matching::{Scalar, tree::{build_tree, Access, Clause, DecisionTree, Path, ValueTest}};
     pub use crate::middle::ir::{Ir, Label};
 
     use crate::frontend::lex::{tokenize, TokenStream};
     use crate::frontend::parse::Parser;
+
+    pub fn symbol(id: u32) -> Symbol {
+        Symbol::from_raw(id)
+    }
 
     pub fn lex(src: &str) -> Vec<Token> {
         tokenize(String::new(), src.to_string()).expect("lex error")
@@ -101,7 +114,24 @@ use crate::middle::optimize::optimize;
 use crate::middle::bind::resolve as resolve_bindings;
 use crate::middle::signatures::collect as collect_signatures;
 
+/// How the pipeline is built for one run. The default is the shipped pipeline.
+#[derive(Clone, Copy)]
+pub struct RunConfig {
+    /// Whether the peephole pass runs.
+    pub optimize: bool,
+}
+
+impl Default for RunConfig {
+    fn default() -> RunConfig {
+        RunConfig { optimize: true }
+    }
+}
+
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
+    run_with(file_name, src, RunConfig::default())
+}
+
+pub fn run_with(file_name: &str, src: &str, config: RunConfig) -> Result<Vec<String>, anyhow::Error> {
     let mut gc = Gc::new();
 
     let tokens = tokenize(String::from(file_name), String::from(src))?;
@@ -114,8 +144,8 @@ pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
     check_shape(&hir, &bindings, &sigs)?;
     let barriers = check(&hir, &bindings, &sigs)?;
     let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs)?;
-    let ir = optimize(ir);
-    
+    let ir = if config.optimize { optimize(ir) } else { ir };
+
     let chunk = assemble(ir)?;
     runtime::execute(chunk, gc)
 }

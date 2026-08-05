@@ -1,5 +1,6 @@
 //! `type`/`trait` declaration parsing.
 
+use indexmap::IndexSet;
 use super::*;
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
@@ -87,14 +88,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let body_open = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
 
-        let mut fields: HashSet<Symbol> = HashSet::default();
+        let mut fields: IndexSet<Symbol> = IndexSet::default();
         let mut nullable_fields: HashSet<Symbol> = HashSet::default();
         let mut mut_fields: HashSet<Symbol> = HashSet::default();
         let mut field_clauses: Vec<(Symbol, SlotClause)> = Vec::new();
         let mut field_inits: Vec<(Symbol, AstId<Expr>)> = Vec::new();
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
-        let mut pub_members: HashSet<Symbol> = HashSet::default();
-        let mut inner_members: HashSet<Symbol> = HashSet::default();
+        let mut pub_members: IndexSet<Symbol> = IndexSet::default();
+        let mut inner_members: IndexSet<Symbol> = IndexSet::default();
         let mut req_fns: Vec<ReqFn> = Vec::new();
         let mut req_members: Vec<Symbol> = Vec::new();
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
@@ -236,11 +237,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.node_stmt(Stmt::Type(type_decl), pos))
     }
 
-    /// Declares the built-in `Err` type: `type Err { pub value; }`.
+    /// Declares the built-in `Err` type: `type Err { pub value; init(this, value) { this.value = value; } }`.
     pub(super) fn declare_err(&mut self, pos: &SourcePosition) -> AstId<Stmt> {
         let name = self.ast.intern("Err");
         let value = self.ast.intern("value");
         let init_name = self.ast.intern("Err.init");
+        let init = Some(self.declare_err_init(init_name, value, pos));
         let decl = Box::new(TypeDecl {
             name,
             is_trait: false,
@@ -252,16 +254,41 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             req_members: Vec::new(),
             gives: Vec::new(),
             init_name,
-            init: None,
-            fields: HashSet::from([value]),
+            init,
+            fields: IndexSet::from([value]),
             nullable_fields: HashSet::new(),
             mut_fields: HashSet::new(),
             field_clauses: Vec::new(),
             field_inits: Vec::new(),
             methods: Vec::new(),
-            pub_members: HashSet::from([value]),
-            inner_members: HashSet::new(),
+            pub_members: IndexSet::from([value]),
+            inner_members: IndexSet::new(),
         });
         self.node_stmt(Stmt::Type(decl), pos.clone())
+    }
+
+    /// The factory that Err's declaration would have if it were written out. The VM supplies the
+    /// implementation, and this is what the passes that read a factory's signature read.
+    fn declare_err_init(&mut self, init_name: Symbol, value: Symbol, pos: &SourcePosition) -> AstId<Stmt> {
+        let pattern = self.ast.add_matcher(Matcher::Binder(value), pos.clone());
+        let param = Param { pattern, pos: pos.clone(), nullable: false, mutable: false, clause: SlotClause::default() };
+
+        let this = self.ast.add_expr(Expr::This, pos.clone());
+        let key = self.ast.add_expr(Expr::Literal(Literal::String("value".to_string())), pos.clone());
+        let target = self.ast.add_expr(Expr::Index(this, key, true), pos.clone());
+        let source = self.ast.add_expr(Expr::Identifier(value), pos.clone());
+        let assign = self.ast.add_expr(Expr::Binary(Operator::Assign, target, source), pos.clone());
+        let stmt = self.ast.add_stmt(Stmt::Expression(assign), pos.clone());
+        let body = self.ast.add_expr(Expr::Block(vec![stmt]), pos.clone());
+
+        self.ast.add_stmt(Stmt::Fn(FnDecl {
+            name: init_name,
+            sig_pos: pos.clone(),
+            receiver: Some(Receiver { pos: pos.clone(), clause: SlotClause::default() }),
+            params: vec![param],
+            body,
+            ret: ReturnShape::default(),
+            clause: SlotClause::default(),
+        }), pos.clone())
     }
 }

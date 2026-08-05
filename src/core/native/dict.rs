@@ -3,7 +3,7 @@ use crate::core::host::Host;
 use anyhow::bail;
 
 use crate::core::objects::{NativeFn, ObjNativeFn, ObjString, IMMUTABLE_MUTATION};
-use crate::core::value::Value;
+use crate::core::value::{DictKey, Value};
 
 use super::NativeType;
 
@@ -19,7 +19,7 @@ impl NativeDict {
 
     fn contains_key(host: &mut dyn Host, target: Value, key: Value) -> Result<(), anyhow::Error> {
         let dict = unsafe { &*target.as_object().as_dict_ptr() };
-        host.push(if dict.entries.contains_key(&key) { Value::TRUE } else { Value::FALSE });
+        host.push(if dict.entries.contains_key(&DictKey(key)) { Value::TRUE } else { Value::FALSE });
         Ok(())
     }
 
@@ -28,7 +28,7 @@ impl NativeDict {
             bail!("{IMMUTABLE_MUTATION}");
         }
         let dict = unsafe { &mut *target.as_object().as_dict_ptr() };
-        let removed = dict.entries.remove(&key).unwrap_or(Value::NULL);
+        let removed = dict.entries.remove(&DictKey(key)).unwrap_or(Value::NULL);
         host.push(removed);
         Ok(())
     }

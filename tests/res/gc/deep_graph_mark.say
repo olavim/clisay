@@ -2,7 +2,10 @@
 // host stack. Build a 50000-node linked list kept live via `head`, then force a
 // full collection while it is reachable. Recursive marking overflows the native
 // stack here; iterative (worklist) marking handles it. Walking the list and
-// counting proves every node survived the collection.
+// counting proves every node survived the collection. The claim is about one deep mark, so
+// collecting on every allocation just marks the same list 50000 times.
+gcStress(false);
+
 type Node {
     pub next?;
     init(this, n?) {

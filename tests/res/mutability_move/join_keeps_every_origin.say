@@ -1,0 +1,14 @@
+// `x` reads out of `a` on one path and `b` on the other, so it may write an element of either. `y`
+// writes the same element of `b`, which is a second writer whichever way the branch went. Keeping
+// only the first origin let this compile and fail at run time, and only when `k` took the else path.
+fn run(k) {
+    say a = mut [mut [1]];
+    say b = mut [mut [2]];
+    say mut x = mut [0];
+    if (k == 1) { x = a[0]; } else { x = b[0]; }
+    say y = b[0];
+    x[0] = 9;
+    y[0] = 8; // error: cannot write an element another name already writes
+    print(b[0][0]);
+}
+run(1);

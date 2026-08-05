@@ -4,8 +4,6 @@ use fnv::FnvHashMap;
 use crate::frontend::lex::Diagnostic;
 
 use crate::core::gc::Gc;
-use crate::core::objects::ObjType;
-use crate::core::objects::ObjString;
 use crate::middle::hir::TypeId;
 use crate::middle::ir::{Inst, Ir, Label};
 use crate::middle::bind::{Bindings, Cleanup, FnKind};
@@ -49,7 +47,6 @@ pub struct Compiler<'a> {
     /// The kind of each enclosing function, for factory return handling.
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
-    types: FnvHashMap<*mut ObjString, *mut ObjType>,
     /// The id of each registered object witness, by declaration.
     witness_ids: FnvHashMap<TypeId, u16>,
     /// The slot that will hold the container being built, while its parts are compiled. An element
@@ -74,7 +71,6 @@ impl<'a> Compiler<'a> {
             sigs,
             fn_kinds: Vec::new(),
             try_frames: Vec::new(),
-            types: FnvHashMap::default(),
             witness_ids: FnvHashMap::default()
         };
 

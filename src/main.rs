@@ -1,7 +1,7 @@
 use std::env;
 use std::io::IsTerminal;
 
-use clisay::run;
+use clisay::{run_with, RunConfig};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -13,6 +13,7 @@ fn main() {
 
     // Color diagnostics only when stderr is a terminal, so piped output stays plain.
     let color = std::io::stderr().is_terminal();
+    let config = RunConfig { optimize: env::var_os("CLISAY_NO_OPTIMIZE").is_none() };
 
     let file = args[1].as_str();
     let src = std::fs::read_to_string(file).unwrap();
@@ -26,7 +27,7 @@ fn main() {
             // A diagnostic renders to a string on this worker thread as the error is built,
             // so the color flag must be set here, not on the main thread.
             clisay::enable_color(color);
-            run(&file, &src)
+            run_with(&file, &src, config)
         })
         .unwrap()
         .join()

@@ -108,7 +108,8 @@ enum DeclKind {
 /// One lexical scope.
 struct Scope {
     declared: HashMap<Symbol, DeclKind>,
-    /// A type or trait name to the trait it names, or `None` where a type masks an outer trait.
+    /// A type or trait name to its declaration. A `type` records `None`, so its name answers
+    /// that it is declared and is not a trait.
     traits: HashMap<Symbol, Option<AstId<Stmt>>>,
     /// Every `type`/`trait` name in scope, with the declaration it names.
     types: HashMap<Symbol, Option<AstId<Stmt>>>,
@@ -197,6 +198,16 @@ impl<'a> Resolver<'a> {
         }
         scope.declared.insert(name, kind);
         Ok(())
+    }
+
+    /// Refuses a `type`/`trait` that shadows one declared outside its scope.
+    fn reject_shadowed_type(&self, name: Symbol, at: &AstId<Stmt>) -> Result<(), anyhow::Error> {
+        let enclosing = self.scopes.len() - 1;
+        if !self.scopes[..enclosing].iter().any(|scope| scope.types.contains_key(&name)) {
+            return Ok(());
+        }
+        Err(self.error_help(format!("'{}' shadows a type or trait declared in an enclosing scope", self.ast.text(name)), at,
+            "rename it, since the outer declaration cannot be named here"))
     }
 
     fn reject_builtin_name<T>(&self, name: Symbol, at: &AstId<T>) -> Result<(), anyhow::Error> {
@@ -335,6 +346,9 @@ impl<'a> Resolver<'a> {
             if let Some((name, kind)) = self.decl_name(stmt) {
                 self.declare(name, kind, stmt)?;
             }
+            if let Stmt::Type(decl) = self.ast.get(stmt) {
+                self.reject_shadowed_type(decl.name, stmt)?;
+            }
         }
         for s in stmts {
             self.visit_stmt(s)?;
@@ -432,6 +446,13 @@ impl<'a> Resolver<'a> {
     /// Resolves a `type` or `trait`.
     fn visit_type(&mut self, stmt: &AstId<Stmt>, decl: &TypeDecl) -> Result<(), anyhow::Error> {
         let with = self.flatten_traits(&decl.with_traits, stmt)?;
+        // What a trait mixes is settled where it is declared. Recording it here stops a later composition
+        // from re-resolving those names in its own scope, where they may mean something else.
+        if decl.is_trait {
+            let mut flattened = with.clone();
+            flattened.push((decl.name, *stmt));
+            self.trait_flatten_cache.insert(*stmt, flattened);
+        }
         let req = self.resolve_reqs(decl, stmt)?;
         let gives = self.resolve_gives(decl, stmt)?;
         self.out.type_traits.insert(*stmt, ResolvedTraits { with, req, gives });
@@ -502,7 +523,11 @@ impl<'a> Resolver<'a> {
                 for arg in args { self.visit_expr(arg)?; }
             },
             Expr::Propagate(operand) => self.visit_expr(operand)?,
-            Expr::Handle(scrutinee, _, handler) => { self.visit_expr(scrutinee)?; self.visit_expr(handler)?; },
+            Expr::Handle(scrutinee, name, handler) => {
+                self.visit_expr(scrutinee)?;
+                self.reject_builtin_name(*name, e)?;
+                self.visit_expr(handler)?;
+            },
             Expr::Assert(operand) => self.visit_expr(operand)?,
             Expr::Has(left, _) => self.visit_expr(left)?,
             Expr::Match(scrutinee, matcher) => {
@@ -613,7 +638,7 @@ impl<'a> Resolver<'a> {
         let mut path = Vec::new();
         for trait_name in with_traits {
             for entry in self.flatten_trait(*trait_name, &mut path, stmt)? {
-                if seen.insert(entry.0) { out.push(entry); }
+                if seen.insert(entry.1) { out.push(entry); }
             }
         }
         Ok(out)
@@ -635,14 +660,14 @@ impl<'a> Resolver<'a> {
         let Stmt::Type(type_decl) = self.ast.get(&trait_stmt) else { unreachable!("trait scope holds only type/trait declarations") };
         path.push(trait_name);
         let mut out: Vec<(Symbol, AstId<Stmt>)> = Vec::new();
-        let mut seen: HashSet<Symbol> = HashSet::new();
+        let mut seen: HashSet<AstId<Stmt>> = HashSet::new();
         for sub in &type_decl.with_traits {
             for entry in self.flatten_trait(*sub, path, stmt)? {
-                if seen.insert(entry.0) { out.push(entry); }
+                if seen.insert(entry.1) { out.push(entry); }
             }
         }
         path.pop();
-        if seen.insert(trait_name) { out.push((trait_name, trait_stmt)); }
+        if seen.insert(trait_stmt) { out.push((trait_name, trait_stmt)); }
         self.trait_flatten_cache.insert(trait_stmt, out.clone());
         Ok(out)
     }

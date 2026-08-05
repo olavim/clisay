@@ -1,4 +1,4 @@
-say d = { k: 0 };
+say d = mut { k: 0 };
 say s = "x";
 say mut i = 0;
 say mut sum = 0;

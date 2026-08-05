@@ -1,0 +1,16 @@
+// Locals are pushed one at a time by the dispatch loop, so that is where the value stack's
+// limit has to hold. 80 locals over 201 frames outgrow it before the frame stack fills.
+fn rec(n) {
+    say a00 = 0; say a01 = 0; say a02 = 0; say a03 = 0; say a04 = 0; say a05 = 0; say a06 = 0; say a07 = 0;
+    say a10 = 0; say a11 = 0; say a12 = 0; say a13 = 0; say a14 = 0; say a15 = 0; say a16 = 0; say a17 = 0;
+    say a20 = 0; say a21 = 0; say a22 = 0; say a23 = 0; say a24 = 0; say a25 = 0; say a26 = 0; say a27 = 0;
+    say a30 = 0; say a31 = 0; say a32 = 0; say a33 = 0; say a34 = 0; say a35 = 0; say a36 = 0; say a37 = 0;
+    say a40 = 0; say a41 = 0; say a42 = 0; say a43 = 0; say a44 = 0; say a45 = 0; say a46 = 0; say a47 = 0;
+    say a50 = 0; say a51 = 0; say a52 = 0; say a53 = 0; say a54 = 0; say a55 = 0; say a56 = 0; say a57 = 0;
+    say a60 = 0; say a61 = 0; say a62 = 0; say a63 = 0; say a64 = 0; say a65 = 0; say a66 = 0; say a67 = 0;
+    say a70 = 0; say a71 = 0; say a72 = 0; say a73 = 0; say a74 = 0; say a75 = 0; say a76 = 0; say a77 = 0; // error: Stack overflow
+    say a80 = 0; say a81 = 0; say a82 = 0; say a83 = 0; say a84 = 0; say a85 = 0; say a86 = 0; say a87 = 0;
+    say a90 = 0; say a91 = 0; say a92 = 0; say a93 = 0; say a94 = 0; say a95 = 0; say a96 = 0; say a97 = 0;
+    if (n > 0) { rec(n - 1); }
+}
+rec(200);

@@ -3,6 +3,7 @@
 mod init;
 mod traits;
 
+use indexmap::IndexSet;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
@@ -53,7 +54,7 @@ struct Lowerer<'a> {
     /// While lowering a factory body or its field defaults, the enclosing type's field names and the
     /// factory's param names. Inside a factory `this` is not a value, and each `this.<field>` or bare
     /// field name (not shadowed by a param) is the field's synthetic local.
-    in_factory: Option<(HashSet<Symbol>, HashSet<Symbol>)>,
+    in_factory: Option<(IndexSet<Symbol>, IndexSet<Symbol>)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -70,8 +71,6 @@ impl<'a> Lowerer<'a> {
         anyhow!("{}", Diagnostic::new(msg, pos.clone()).with_help(help))
     }
 
-    /// A declaration's identity. Whichever site asks first assigns it, so a type mixing a trait
-    /// declared later still names the same id that trait gets when it gets lowered.
     /// The name a binder node carries. A rest element holds one so its name has a position.
     fn binder_name(&self, binder: &AstId<Matcher>) -> Symbol {
         match self.ast.get(binder) {
@@ -80,12 +79,16 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A declaration's identity. Whichever site asks first assigns it, so a type mixing a trait
+    /// declared later still names the same id that trait gets when it gets lowered.
     fn type_id(&mut self, decl: AstId<Stmt>) -> Result<TypeId, anyhow::Error> {
         if let Some(id) = self.type_ids.get(&decl) {
             return Ok(*id);
         }
-        let Ok(next) = TypeId::try_from(self.type_ids.len()) else {
-            return Err(self.error(format!("a program may declare at most {} types and traits", TypeId::MAX as usize + 1), &decl));
+        // `TypeId::MAX` marks a type the VM builds for itself, so it is not handed out.
+        let next = TypeId::try_from(self.type_ids.len()).ok().filter(|id| *id < TypeId::MAX);
+        let Some(next) = next else {
+            return Err(self.error(format!("a program may declare at most {} types and traits", TypeId::MAX as usize), &decl));
         };
         self.type_ids.insert(decl, next);
         Ok(next)
@@ -244,17 +247,17 @@ impl<'a> Lowerer<'a> {
                 HirExpr::Match(target, self.hir.add(matcher, pos.clone()))
             },
             Expr::Construct(callee, fields) => {
-                // The callee is a bare type name `C` or a call `C(args)`. Split off the args; the
-                // remaining type expression is evaluated to the type value at runtime.
-                let (callee, args) = match self.ast.get(callee) {
-                    Expr::Call(c, a) => (self.expr(c)?, self.exprs(a)?),
-                    _ => (self.expr(callee)?, Vec::new()),
+                // The callee is a bare type name `C` or an empty call `C()`. The parser rejects
+                // arguments beside a brace, so only the type expression is left to evaluate.
+                let callee = match self.ast.get(callee) {
+                    Expr::Call(c, _) => self.expr(c)?,
+                    _ => self.expr(callee)?,
                 };
                 let mut brace = Vec::with_capacity(fields.len());
                 for (name, value) in fields {
                     brace.push((*name, self.expr(value)?));
                 }
-                HirExpr::Construct(callee, args, brace)
+                HirExpr::Construct(callee, brace)
             },
             Expr::Mut(inner) => return self.lower_value_mut(expr_id, inner),
             Expr::This => {

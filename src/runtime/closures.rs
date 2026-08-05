@@ -17,6 +17,7 @@ impl Vm {
     }
 
     pub(super) fn close_upvalues(&mut self, after: *const Value) {
+        debug_assert!(after <= self.stack.top() as *const Value, "closing upvalues above the live stack top");
         for idx in (0..self.open_upvalues.len()).rev() {
             unsafe {
                 let upvalue = *self.open_upvalues.get_unchecked(idx);
@@ -26,6 +27,8 @@ impl Vm {
                 }
             }
         }
+        debug_assert!(!self.open_upvalues.iter().any(|&u| after <= unsafe { (*u).location }),
+            "an upvalue at or above the closed slot stayed open");
     }
 
     pub(super) fn create_closure(&mut self, function: *mut ObjFn) -> Object {
@@ -58,6 +61,7 @@ impl Vm {
     pub(super) fn op_close_upvalue(&mut self) {
         let location = self.read_next() as usize;
         let p = unsafe { (*self.frames.top()).stack_start.add(location) };
+        debug_assert!((p as *const Value) < self.stack.top() as *const Value, "CLOSE_UPVALUE operand is not a live local");
         self.close_upvalues(p);
         self.stack.truncate(1);
     }
@@ -77,6 +81,10 @@ impl Vm {
                 .collect();
             (template.duplicate(), capturing)
         };
+
+        if !self.stack.has_room(capturing.len() + 1) {
+            return Err(self.stack_overflow());
+        }
 
         // Capturing can collect, so each new closure is kept on the stack.
         for &(_, function) in &capturing {

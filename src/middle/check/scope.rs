@@ -8,6 +8,7 @@ use crate::middle::obligations::Obligations;
 use crate::middle::signatures::{Mutability, TypeTag};
 
 use super::narrow::whole_value_binders;
+use super::alias::MoveCause;
 use super::{ElementKey, MovedAt};
 use super::{Checker, Local};
 
@@ -21,17 +22,17 @@ pub(super) struct BinderScope {
 }
 
 /// The flow state of one local.
-#[derive(Clone)]
-pub(super) struct LocalFlow {
-    pub(super) assigned: bool,
-    pub(super) tag: TypeTag,
-    pub(super) mutability: Mutability,
-    pub(super) move_site: Option<MovedAt>,
-    pub(super) provenance: Vec<usize>,
-    pub(super) extracted_from: Option<(usize, Option<ElementKey>)>,
-    pub(super) handled: Obligations,
-    pub(super) discharged: Obligations,
-    pub(super) field_discharged: HashMap<Symbol, Obligations>,
+#[derive(Clone, PartialEq)]
+pub struct LocalFlow {
+    pub assigned: bool,
+    pub tag: TypeTag,
+    pub mutability: Mutability,
+    pub move_site: Option<MovedAt>,
+    pub provenance: Vec<usize>,
+    pub extracted_from: Vec<(usize, Option<ElementKey>)>,
+    pub handled: Obligations,
+    pub discharged: Obligations,
+    pub field_discharged: HashMap<Symbol, Obligations>,
 }
 
 /// A snapshot of flow facts that branches widen back at a join.
@@ -43,8 +44,17 @@ pub(super) struct FlowSnapshot {
 
 
 impl<'a> Checker<'a> {
+    /// The locals of the current frame.
+    pub(super) fn frame_locals(&self) -> &[Local] {
+        &self.locals[self.frame_start..]
+    }
+
+    pub(super) fn frame_locals_mut(&mut self) -> &mut [Local] {
+        &mut self.locals[self.frame_start..]
+    }
+
     pub(super) fn frame_index_of(&self, name: Symbol) -> Option<usize> {
-        self.locals[self.frame_start..].iter().rposition(|l| l.name == name)
+        self.frame_locals().iter().rposition(|l| l.name == name)
             .map(|i| self.frame_start + i)
     }
 
@@ -72,7 +82,7 @@ impl<'a> Checker<'a> {
             let mut local = Local::binder_owing(name, scope.owed.get(&name).cloned().unwrap_or_default());
             // The matcher shape could name which element this is, but it does not have to: the
             // runtime slot tells one element from another by identity.
-            local.alias.extracted_from = scope.sources.get(&name).map(|&source| (source, None));
+            local.alias.extracted_from = scope.sources.get(&name).map(|&source| (source, None)).into_iter().collect();
             self.locals.push(local);
         }
     }
@@ -164,7 +174,7 @@ impl<'a> Checker<'a> {
             // A witness alternative is the real obligation, so `x @ Node | null` owes `opt` exactly
             // as `x: opt` does.
             if let Some(pattern) = &param.pattern {
-                owed.extend(self.sigs.admitted_obligations(self.hir, self.bindings, pattern));
+                owed.extend(self.resolved().admitted_obligations(pattern));
             }
 
             let mut local = Local::param(name, owed, param.mutable);
@@ -206,77 +216,146 @@ impl<'a> Checker<'a> {
 
     pub(super) fn snapshot(&self) -> FlowSnapshot {
         FlowSnapshot {
-            locals: self.locals.iter().map(|l| LocalFlow {
-                assigned: l.assigned,
-                tag: l.tag.clone(),
-                mutability: l.alias.mutability,
-                move_site: l.alias.move_site,
-                provenance: l.alias.provenance.clone(),
-                extracted_from: l.alias.extracted_from,
-                handled: l.handled.clone(),
-                discharged: l.discharged.clone(),
-                field_discharged: l.field_discharged.clone(),
-            }).collect(),
+            locals: self.locals.iter().map(flow_of).collect(),
             this_narrowed: self.this_narrowed.clone(),
         }
     }
 
+    /// Puts flow back exactly as the snapshot had it.
     pub(super) fn restore(&mut self, flow: &FlowSnapshot) {
-        self.restore_keeping_moves(flow);
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
-            local.alias.move_site = snap.move_site;
-            local.alias.provenance = snap.provenance.clone();
-            local.alias.extracted_from = snap.extracted_from;
-        }
-    }
-
-    /// Restores flow but keeps each local's move site and give-back sources.
-    pub(super) fn restore_keeping_moves(&mut self, flow: &FlowSnapshot) {
-        for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
-            local.assigned = snap.assigned;
-            local.tag = snap.tag.clone();
-            local.alias.mutability = snap.mutability;
-            local.alias.move_site = local.alias.move_site.or(snap.move_site);
-            local.handled = snap.handled.clone();
-            local.discharged = snap.discharged.clone();
-            local.field_discharged = snap.field_discharged.clone();
+            restore_flow(local, snap);
         }
         self.this_narrowed = flow.this_narrowed.clone();
     }
 
-    /// Puts each local's narrowings back.
+    /// Restores flow but keeps each local's move site and give-back sources. A branch that ran
+    /// still moved what it moved, whatever the restore says.
+    pub(super) fn restore_keeping_moves(&mut self, flow: &FlowSnapshot) {
+        for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
+            let LocalFlow {
+                assigned, tag, mutability, move_site, provenance: _kept,
+                extracted_from: _also_kept, handled, discharged, field_discharged,
+            } = snap;
+            local.assigned = *assigned;
+            local.tag = tag.clone();
+            local.alias.mutability = *mutability;
+            local.alias.move_site = local.alias.move_site.or(*move_site);
+            local.handled = handled.clone();
+            local.discharged = discharged.clone();
+            local.field_discharged = field_discharged.clone();
+        }
+        self.this_narrowed = flow.this_narrowed.clone();
+    }
+
+    /// Keeps only the narrowings the snapshot also had, leaving every other fact where it is.
     pub(super) fn restore_narrowings(&mut self, flow: &FlowSnapshot) {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
-            local.discharged = snap.discharged.clone();
-            local.field_discharged = snap.field_discharged.clone();
+            let LocalFlow {
+                assigned: _, tag: _, mutability: _, move_site: _, provenance: _,
+                extracted_from: _, handled: _, discharged, field_discharged,
+            } = snap;
+            local.discharged.retain(|ob| discharged.contains(ob));
+            intersect_narrowings(&mut local.field_discharged, field_discharged);
         }
     }
 
-    /// Merges another branch's end state into the current local flow.
+    /// Merges one outcome's end state into the current flow. Every join is a fold of this, so a
+    /// field it fails to merge is one outcome's fact surviving as if all of them proved it.
     pub(super) fn join_in(&mut self, other: &FlowSnapshot) {
-        for (local, o) in self.locals.iter_mut().zip(&other.locals) {
-            local.assigned = local.assigned && o.assigned;
-            local.tag = if local.tag == o.tag { local.tag.clone() } else { TypeTag::Unknown };
-            local.alias.mutability = if local.alias.mutability == o.mutability { local.alias.mutability } else { Mutability::Unknown };
-            local.alias.move_site = local.alias.move_site.or(o.move_site);
-            local.alias.provenance.retain(|s| o.provenance.contains(s));
-            local.handled.retain(|ob| o.handled.contains(ob));
+        debug_assert!(other.locals.len() == self.locals.len());
+        for (local, snap) in self.locals.iter_mut().zip(&other.locals) {
+            let mut merged = flow_of(local);
+            merge_flow(&mut merged, &local.owed, snap);
+            restore_flow(local, &merged);
         }
+        intersect_narrowings(&mut self.this_narrowed, &other.this_narrowed);
     }
+}
 
-    /// Merges two branch snapshots.
-    pub(super) fn join(&mut self, then_snap: &FlowSnapshot, else_snap: &FlowSnapshot) {
-        debug_assert!(then_snap.locals.len() == self.locals.len() && else_snap.locals.len() == self.locals.len());
-        for (i, local) in self.locals.iter_mut().enumerate() {
-            let (then_local, else_local) = (&then_snap.locals[i], &else_snap.locals[i]);
-            local.assigned = then_local.assigned && else_local.assigned;
-            local.tag = if then_local.tag == else_local.tag { then_local.tag.clone() } else { TypeTag::Unknown };
-            local.alias.mutability = if then_local.mutability == else_local.mutability
-                { then_local.mutability } else
-                { Mutability::Unknown };
-            local.alias.move_site = then_local.move_site.or(else_local.move_site);
-            local.alias.provenance = then_local.provenance.iter().copied().filter(|s| else_local.provenance.contains(s)).collect();
-            local.handled = then_local.handled.intersection(&else_local.handled).copied().collect();
+/// The flow facts a local carries right now.
+pub(super) fn flow_of(local: &Local) -> LocalFlow {
+    LocalFlow {
+        assigned: local.assigned,
+        tag: local.tag.clone(),
+        mutability: local.alias.mutability,
+        move_site: local.alias.move_site,
+        provenance: local.alias.provenance.clone(),
+        extracted_from: local.alias.extracted_from.clone(),
+        handled: local.handled.clone(),
+        discharged: local.discharged.clone(),
+        field_discharged: local.field_discharged.clone(),
+    }
+}
+
+/// Puts flow facts onto a local. The inverse of `flow_of`, and the pair has to round-trip.
+pub(super) fn restore_flow(local: &mut Local, flow: &LocalFlow) {
+    let LocalFlow {
+        assigned, tag, mutability, move_site, provenance,
+        extracted_from, handled, discharged, field_discharged,
+    } = flow;
+    local.assigned = *assigned;
+    local.tag = tag.clone();
+    local.alias.mutability = *mutability;
+    local.alias.move_site = *move_site;
+    local.alias.provenance = provenance.clone();
+    local.alias.extracted_from = extracted_from.clone();
+    local.handled = handled.clone();
+    local.discharged = discharged.clone();
+    local.field_discharged = field_discharged.clone();
+}
+
+/// Merges one outcome into another, for a single local.
+pub fn merge_flow(into: &mut LocalFlow, owed: &Obligations, other: &LocalFlow) {
+    let LocalFlow {
+        assigned, tag, mutability, move_site, provenance,
+        extracted_from, handled, discharged, field_discharged,
+    } = other;
+    into.assigned = into.assigned && *assigned;
+    into.tag = if into.tag == *tag { into.tag.clone() } else { TypeTag::Unknown };
+    into.mutability = if into.mutability == *mutability { into.mutability } else { Mutability::Unknown };
+    into.move_site = merge_moves(into.move_site, *move_site);
+    // Either branch could have run, so the binding may have come out of any origin either of them
+    // named. An origin is a restriction, so the join keeps them all.
+    for origin in extracted_from {
+        if !into.extracted_from.contains(origin) {
+            into.extracted_from.push(*origin);
         }
     }
+    into.provenance.retain(|s| provenance.contains(s));
+    // An outcome resolves an obligation either by handling it or by proving the value is not in its
+    // bad state. Only what every outcome resolved survives the join.
+    let both: Obligations = owed.iter().copied()
+        .filter(|ob| (into.handled.contains(ob) || into.discharged.contains(ob))
+            && (handled.contains(ob) || discharged.contains(ob)))
+        .collect();
+    into.handled = both;
+    into.discharged.retain(|ob| discharged.contains(ob));
+    intersect_narrowings(&mut into.field_discharged, field_discharged);
+}
+
+/// Merges the move sites of two outcomes.
+fn merge_moves(into: Option<MovedAt>, other: Option<MovedAt>) -> Option<MovedAt> {
+    match (into, other) {
+        (None, site) | (site, None) => site,
+        (Some(a), Some(b)) if a == b => Some(a),
+        (Some(a), Some(b)) => {
+            // The lower node keeps the blame, so the answer does not depend on which outcome the
+            // caller restored first.
+            let blame = if a.node.index() <= b.node.index() { a.node } else { b.node };
+            Some(MovedAt { node: blame, cause: MoveCause::Value })
+        },
+    }
+}
+
+/// Keeps only the field narrowings both sides proved. A field the other side says nothing about
+/// was not narrowed there, so it does not survive.
+pub fn intersect_narrowings(into: &mut HashMap<Symbol, Obligations>, other: &HashMap<Symbol, Obligations>) {
+    into.retain(|field, obligations| match other.get(field) {
+        Some(theirs) => {
+            obligations.retain(|ob| theirs.contains(ob));
+            !obligations.is_empty()
+        },
+        None => false,
+    });
 }

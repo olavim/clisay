@@ -1,6 +1,7 @@
 //! The signature-building walk: records every function and method signature, registers obligations,
 //! and infers each function's declared return shape.
 
+use super::Resolved;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnShape};
 use crate::middle::obligations::Obligations;
 
@@ -9,6 +10,10 @@ use crate::middle::walk::Child;
 use crate::middle::walk;
 
 impl<'a> Collector<'a> {
+    pub(super) fn resolved(&self) -> Resolved<'_> {
+        Resolved { hir: self.hir, bindings: self.bindings, sigs: &self.sigs }
+    }
+
     pub(super) fn stmt(&mut self, stmt: &HirId<HirStmt>) {
         match self.hir.get(stmt) {
             HirStmt::Fn(decl) => {
@@ -85,7 +90,7 @@ impl<'a> Collector<'a> {
         for stmt in stmts {
             let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
             let admitted: Vec<(usize, Obligations)> = decl.params.iter().enumerate()
-                .filter_map(|(i, p)| Some((i, self.sigs.admitted_obligations(self.hir, self.bindings, p.pattern.as_ref()?))))
+                .filter_map(|(i, p)| Some((i, self.resolved().admitted_obligations(p.pattern.as_ref()?))))
                 .filter(|(_, admits)| !admits.is_empty())
                 .collect();
             let Some(sig) = self.sigs.fns.get_mut(&stmt).filter(|_| !admitted.is_empty()) else { continue };

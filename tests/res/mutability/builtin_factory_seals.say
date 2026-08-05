@@ -1,4 +1,10 @@
-// A built-in's factory is native, so no body says what it keeps. It is assumed to keep everything,
-// the same conclusion the escape pass reaches for it.
+// A built-in's factory is declared like any other, so it keeps its argument the way a written one
+// would, and a mutable value handed to it is refused at the call.
 say mut m = mut [1, 2];
-say e = Err(m); // error: cannot store a mutable value in an immutable container
+say e = Err(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+
+// @split
+// The same shape over a user type, which is the behaviour it is matched against.
+type Box { pub v; init(this, v) { this.v = v; } }
+say mut m = mut [1, 2];
+say b = Box(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'

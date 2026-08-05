@@ -1,0 +1,13 @@
+// One branch moves `a` into an opaque callee, which a later read can settle. The other moves it for
+// good. The join has to report the definite move, or the read below erases it and `sink` and `c`
+// both write the same array.
+fn eat(x) { }
+fn run(k, g) {
+    say mut a = mut [1];
+    say mut sink = mut [0];
+    if (k == 1) { g(a); } else { sink = a; }
+    say c = a; // error: value used after it was moved
+    c[0] = 99;
+    print(sink[0]);
+}
+run(2, eat);

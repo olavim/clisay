@@ -31,7 +31,7 @@ impl<'a> Compiler<'a> {
                 self.emit_load(place, expr)?;
             },
             // A plain brace seals inline (seal flag 1).
-            HirExpr::Construct(callee, _, brace) => self.construct_expression(expr, callee, brace, 1)?,
+            HirExpr::Construct(callee, brace) => self.construct_expression(expr, callee, brace, 1)?,
             HirExpr::Mut(inner) => self.mut_expression(expr, inner)?,
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
@@ -276,7 +276,7 @@ impl<'a> Compiler<'a> {
     fn mut_expression(&mut self, expr: &HirId<HirExpr>, inner: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match self.hir.get(inner) {
             // `mut K{..}` builds the brace unsealed (seal flag 0), so it stays mutable.
-            HirExpr::Construct(callee, _, brace) => return self.construct_expression(inner, callee, brace, 0),
+            HirExpr::Construct(callee, brace) => return self.construct_expression(inner, callee, brace, 0),
             // `mut K(..)` is a factory call left unsealed via CALL_MUT.
             HirExpr::Call(callee, args) if self.barriers.is_construction(inner) => {
                 return self.call_expression(callee, args, true);

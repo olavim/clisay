@@ -1,0 +1,35 @@
+// A name bound to the whole scrutinee inherits everything the scrutinee owes, not just what the matcher names.
+// @split
+trait Wt { }
+trait Tt { }
+obligation warned { witness Wt; discharge before drop; }
+obligation tainted { witness Tt; discharge before drop; }
+type Both with Wt, Tt { }
+fn f() {
+    say b: warned tainted = Both { };
+    match (b) { seen @ Wt => { print("as"); }, _ => { print("other"); } } // error: 'seen' owes 'tainted', 'warned' and is never discharged
+}
+f();
+// @split
+trait Wt { }
+trait Tt { }
+obligation warned { witness Wt; discharge before drop; }
+obligation tainted { witness Tt; discharge before drop; }
+type Both with Wt, Tt { }
+fn f() {
+    say b: warned tainted = Both { };
+    match (b) { (p @ Wt) & (q @ Wt) => { print("and"); }, _ => { print("other"); } } // error: 'p' owes 'tainted', 'warned' and is never discharged
+}
+f();
+// @split
+trait Wt { }
+trait Tt { }
+obligation warned { witness Wt; discharge before drop; }
+obligation tainted { witness Tt; discharge before drop; }
+type Both with Wt, Tt { }
+type Only with Wt { }
+fn f() {
+    say b: warned tainted = Both { };
+    match (b) { (x @ Wt) | (x @ Only) => { print("or"); }, _ => { print("other"); } } // error: 'x' owes 'tainted', 'warned' and is never discharged
+}
+f();

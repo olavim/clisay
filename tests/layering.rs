@@ -13,6 +13,23 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ("runtime", &[]),
 ];
 
+/// The first path segment of every `crate::` reference on a line. A brace group contributes the
+/// leading segment of each of its members, so `use crate::{a, b::c};` names both `a` and `b`.
+fn named_after_crate(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for tail in line.split("crate::").skip(1) {
+        let members: Vec<&str> = match tail.strip_prefix('{') {
+            Some(group) => group.split(&[',', '}'][..]).collect(),
+            None => vec![tail],
+        };
+        out.extend(members.iter().filter_map(|m| {
+            let seg: String = m.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            (!seg.is_empty()).then_some(seg)
+        }));
+    }
+    out
+}
+
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display())) {
         let path = entry.expect("dir entry").path();
@@ -39,9 +56,9 @@ fn a_layer_names_only_the_layers_below_it() {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                for other in *forbidden {
-                    if line.contains(&format!("crate::{other}::")) {
-                        violations.push(format!("{}:{} names crate::{other}", file.display(), i + 1));
+                for named in named_after_crate(line) {
+                    if forbidden.contains(&named.as_str()) {
+                        violations.push(format!("{}:{} names crate::{named}", file.display(), i + 1));
                     }
                 }
             }

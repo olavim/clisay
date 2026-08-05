@@ -3,17 +3,19 @@
 trait Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn mk(): warned { type T with Wt { } return T { }; }
-type T { }
-
-say v: warned = mk();
-if (v is T) { say y = v; }
-print("ok"); // expect: ok
+fn probe() {
+    type T { }
+    say v: warned = mk();
+    if (v is T) { say y = v; }
+    print("ok"); // expect: ok
+}
+probe();
 
 // @split
 // The same pair the other way round: the test names the declaration that does witness.
 trait Wt { }
 obligation warned { witness Wt; discharge to use; }
-type T { }
+fn other() { type T { } }
 fn probe(): warned {
     type T with Wt { }
     say v: warned = T { };
@@ -24,19 +26,7 @@ fn probe(): warned {
 }
 
 // @split
-// A shape read against the witness declaration. The obligation names the 'Wt' in its own scope, so
-// the one inside 'mk' is an unrelated type sharing the name. The witness has no 'zzz', so a value
-// carrying one is not the witness.
-obligation warned { witness Wt; discharge to use; }
-fn mk(): warned { type Wt { pub zzz; init(this) { this.zzz = 1; } } return Wt(); }
-type Wt { pub a; init(this) { this.a = 1; } }
-
-say v: warned = mk();
-if (v ~ { zzz: _ }) { say y = v; }
-print("ok"); // expect: ok
-
-// @split
-// The same shape against a witness that does expose the member rules nothing out.
+// A shape against a witness that exposes the member rules nothing out.
 obligation warned { witness Wt; discharge to use; }
 type Wt { pub a; init(this) { this.a = 1; } }
 fn mk(): warned { return Wt(); }
@@ -53,7 +43,6 @@ trait Wt { }
 type Both with Tr, Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn mk(): warned { return Both { }; }
-fn hidden() { type Tr { } }
 
 say v: warned = mk();
 if (v is Tr) {
@@ -98,28 +87,15 @@ if (v ~ T) { say y = v; }
 print("ok"); // expect: ok
 
 // @split
-// A shape on a shadowed name reads the declaration the test named, so it rules the witness out too.
+// A shape on a sibling declaration's name reads the declaration the test named, so it rules the
+// witness out too.
 trait Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn getT(): warned { type T with Wt { pub x; init(this) { this.x = 0; } } return T(); }
-type T { pub y; init(this) { this.y = 0; } }
-
-say v: warned = getT();
-if (v ~ T { y: _ }) { say z = v; }
-print("ok"); // expect: ok
-
-// @split
-// A matcher naming a different declaration of the witness's name is not total over that witness,
-// so a failed match rules nothing out.
-trait Wt { }
-obligation warned { witness Wt; discharge to use; }
-type W with Wt { }
-fn src(): warned { return W { }; }
-
-fn probe(v: warned) {
-    trait Wt { }
-    if (v ~ Wt) { print("matched"); }
-    else {
-        say y = v; // error: cannot assign a value owing 'warned' to 'y'
-    }
+fn probe() {
+    type T { pub y; init(this) { this.y = 0; } }
+    say v: warned = getT();
+    if (v ~ T { y: _ }) { say z = v; }
+    print("ok"); // expect: ok
 }
+probe();

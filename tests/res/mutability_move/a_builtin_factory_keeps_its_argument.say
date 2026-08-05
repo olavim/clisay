@@ -1,0 +1,20 @@
+// A built-in's factory carries the same parameter facts a written one does, so a mutable argument
+// it keeps is refused at the call rather than becoming a second writer of the same array.
+say a = mut [1];
+say e: fails = mut Err(a); // error: 'a' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+e ?? 0;
+a[0] = 2;
+
+// @split
+// The same shape over a user type, which is the behaviour it is matched against.
+type Box { pub v; init(this, v) { this.v = v; } }
+say a = mut [1];
+say b = mut Box(a); // error: 'a' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+a[0] = 2;
+
+// @split
+// Taking the argument by `*mut` is the way to hand it over, and it moves out of the caller.
+say a = mut [1];
+say e: fails = mut Err(freeze(a));
+e ?? 0;
+print(a[0]); // expect: 1

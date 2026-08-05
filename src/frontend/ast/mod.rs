@@ -2,6 +2,7 @@
 
 mod operator;
 
+use indexmap::IndexSet;
 use core::fmt;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
@@ -277,7 +278,7 @@ pub enum BuiltinType {
 }
 
 impl BuiltinType {
-    pub const COUNT: usize = 1;
+    pub const COUNT: usize = std::mem::variant_count::<BuiltinType>();
 
     pub fn index(self) -> usize {
         self as usize
@@ -304,15 +305,15 @@ pub struct TypeDecl {
     pub gives: Vec<(Symbol, Symbol)>,
     pub init_name: Symbol,
     pub init: Option<AstId<Stmt>>,
-    pub fields: HashSet<Symbol>,
+    pub fields: IndexSet<Symbol>,
     pub nullable_fields: HashSet<Symbol>,
     pub mut_fields: HashSet<Symbol>,
     pub field_clauses: Vec<(Symbol, SlotClause)>,
     /// Field defaults (`field = value`), applied by the factory during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,
-    pub pub_members: HashSet<Symbol>,
-    pub inner_members: HashSet<Symbol>,
+    pub pub_members: IndexSet<Symbol>,
+    pub inner_members: IndexSet<Symbol>,
 }
 
 pub struct MatchArm {

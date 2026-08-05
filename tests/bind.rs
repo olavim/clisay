@@ -5,7 +5,9 @@ fn first_type_layout<'a>(hir: &Hir, bindings: &'a clisay::internals::Bindings) -
     let root = hir.get_root();
     let HirStmt::Expression(block) = hir.get(&root) else { panic!("root is not an expression statement") };
     let clisay::internals::HirExpr::Block(stmts) = hir.get(block) else { panic!("root is not a block") };
-    let stmt = stmts.iter().find(|s| matches!(hir.get(*s), HirStmt::Type(_))).expect("no type declaration");
+    let stmt = stmts.iter()
+        .find(|s| matches!(hir.get(*s), HirStmt::Type(decl) if decl.builtin.is_none()))
+        .expect("no type declaration");
     bindings.type_layout(stmt)
 }
 
@@ -40,12 +42,21 @@ fn method_return_nullability_on_layout() {
     assert!(!layout.is_nullable(always));
 }
 
-/// The top-level statements of a bound program (unwraps the root block).
+/// The declaration the compiler supplies for a built-in, which `top_stmts` leaves out.
+fn builtin_type_stmt(hir: &Hir) -> clisay::internals::HirId<HirStmt> {
+    let root = hir.get_root();
+    let HirStmt::Expression(block) = hir.get(&root) else { panic!("root is not an expression statement") };
+    let clisay::internals::HirExpr::Block(stmts) = hir.get(block) else { panic!("root is not a block") };
+    *stmts.iter().find(|s| matches!(hir.get(*s), HirStmt::Type(decl) if decl.builtin.is_some()))
+        .expect("no built-in type declaration")
+}
+
+/// The statements the program wrote. The compiler declares its own built-ins in the same block.
 fn top_stmts(hir: &Hir) -> Vec<clisay::internals::HirId<HirStmt>> {
     let root = hir.get_root();
     let HirStmt::Expression(block) = hir.get(&root) else { panic!("root is not an expression statement") };
     let clisay::internals::HirExpr::Block(stmts) = hir.get(block) else { panic!("root is not a block") };
-    stmts.clone()
+    stmts.iter().filter(|s| !matches!(hir.get(*s), HirStmt::Type(decl) if decl.builtin.is_some())).copied().collect()
 }
 
 /// The value expression of the `say` statement at `index`.
@@ -54,45 +65,49 @@ fn say_value(hir: &Hir, stmts: &[clisay::internals::HirId<HirStmt>], index: usiz
     field.value.expect("say has no value")
 }
 
-const SHADOWED: &str = "\
+const SAME_NAME: &str = "\
 fn mk()! { type T { pub x; } return T { x: 1 }; }
-type T { pub y; }
-say v = mk();
-say b = v is T;
-say c = v ~ T;
+fn probe() { type T { pub y; } say v = mk(); say b = v is T; say c = v ~ T; }
 ";
 
-/// A type test names the declaration in scope where it is written. The inner `T` is unspellable
-/// there, so the outer one is the only thing `T` can mean.
+/// The statements of the function declared at top-level `index`.
+fn fn_body(hir: &Hir, stmts: &[clisay::internals::HirId<HirStmt>], index: usize) -> Vec<clisay::internals::HirId<HirStmt>> {
+    let HirStmt::Fn(decl) = hir.get(&stmts[index]) else { panic!("statement is not a function") };
+    let clisay::internals::HirExpr::Block(body) = hir.get(&decl.body) else { panic!("function body is not a block") };
+    body.clone()
+}
+
+/// A type test names the declaration in scope where it is written. A sibling function's `T` is
+/// unspellable there, so the local one is the only thing `T` can mean.
 #[test]
 fn a_type_test_resolves_to_the_declaration_in_scope() {
     use clisay::internals::HirExpr;
-    let (hir, bindings) = bind(SHADOWED);
+    let (hir, bindings) = bind(SAME_NAME);
     let stmts = top_stmts(&hir);
-    let outer = stmts[1];
-    let HirStmt::Fn(decl) = hir.get(&stmts[0]) else { panic!("first statement is not a function") };
-    let HirExpr::Block(body) = hir.get(&decl.body) else { panic!("function body is not a block") };
-    let inner = body[0];
-    assert!(matches!(hir.get(&outer), HirStmt::Type(_)), "second statement is not a type");
-    assert!(matches!(hir.get(&inner), HirStmt::Type(_)), "nested statement is not a type");
+    let sibling = fn_body(&hir, &stmts, 0)[0];
+    let body = fn_body(&hir, &stmts, 1);
+    let local = body[0];
+    assert!(matches!(hir.get(&sibling), HirStmt::Type(_)), "sibling statement is not a type");
+    assert!(matches!(hir.get(&local), HirStmt::Type(_)), "nested statement is not a type");
 
-    let is_expr = say_value(&hir, &stmts, 3);
+    let is_expr = say_value(&hir, &body, 2);
     let HirExpr::Match(_, matcher) = hir.get(&is_expr) else { panic!("`is` is not a match") };
-    assert_eq!(bindings.type_ref(matcher).map(|d| d.index()), Some(outer.index()));
-    assert_ne!(bindings.type_ref(matcher).map(|d| d.index()), Some(inner.index()));
+    assert_eq!(bindings.type_ref(matcher).map(|d| d.index()), Some(local.index()));
+    assert_ne!(bindings.type_ref(matcher).map(|d| d.index()), Some(sibling.index()));
 }
 
 /// A matcher's type node resolves the same way, since each node carries its own answer.
 #[test]
 fn a_matcher_type_resolves_to_the_declaration_in_scope() {
     use clisay::internals::HirExpr;
-    let (hir, bindings) = bind(SHADOWED);
+    let (hir, bindings) = bind(SAME_NAME);
     let stmts = top_stmts(&hir);
-    let outer = stmts[1];
+    let body = fn_body(&hir, &stmts, 1);
+    let local = body[0];
 
-    let match_expr = say_value(&hir, &stmts, 4);
+    let match_expr = say_value(&hir, &body, 3);
     let HirExpr::Match(_, matcher) = hir.get(&match_expr) else { panic!("not a `~` expression") };
-    assert_eq!(bindings.type_ref(matcher).map(|d| d.index()), Some(outer.index()));
+    assert_eq!(bindings.type_ref(matcher).map(|d| d.index()), Some(local.index()));
 }
 
 /// A trait test resolves to its trait declaration. A trait takes no runtime slot, so the scope is
@@ -113,10 +128,24 @@ fn a_test_on_a_builtin_resolves_to_its_declaration() {
     use clisay::internals::HirExpr;
     let (hir, bindings) = bind("fn src(): fails { return Err(\"e\"); }\nsay v: fails = src();\nsay b = v is Err;");
     let stmts = top_stmts(&hir);
-    let err = stmts.iter().find(|s| matches!(hir.get(*s), HirStmt::Type(decl) if decl.builtin.is_some()))
-        .expect("no built-in type declaration");
+    let err = builtin_type_stmt(&hir);
 
     let is_expr = say_value(&hir, &stmts, 2);
     let HirExpr::Match(_, matcher) = hir.get(&is_expr) else { panic!("`is` is not a match") };
     assert_eq!(bindings.type_ref(matcher).map(|d| d.index()), Some(err.index()));
+}
+
+/// Members are numbered in declaration order, not in the order their names happen to be interned.
+/// A name mentioned earlier in the program interns earlier, which must not reorder the fields.
+#[test]
+fn field_ids_follow_declaration_order() {
+    use clisay::internals::TypeMember;
+    let (hir, bindings) = bind("say b = 0;\nsay a = 0;\ntype T { pub a; pub b; pub c; }");
+    let layout = first_type_layout(&hir, &bindings);
+
+    for (name, expected) in [("a", 0), ("b", 1), ("c", 2)] {
+        let sym = hir.symbol_of(name).expect("field name not interned");
+        let member = layout.members.get(&sym).copied();
+        assert!(matches!(member, Some(TypeMember::Field(id)) if id == expected), "field '{name}' is not id {expected}");
+    }
 }

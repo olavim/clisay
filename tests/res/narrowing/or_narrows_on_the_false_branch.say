@@ -1,0 +1,15 @@
+// Neither operand of an `||` holds on the false branch, so both are narrowed there.
+fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
+fn run(k) {
+    say a: opt = maybe(k);
+    say b: opt = maybe(k);
+    if (a == null || b == null) {
+        print("some null");
+    } else {
+        say ya = a;
+        say yb = b;
+        print(ya); // expect: v
+        print(yb); // expect: v
+    }
+}
+run(2);

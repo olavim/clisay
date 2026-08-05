@@ -1,0 +1,394 @@
+// Building a type with capturing methods pushes one closure per method, so the burst is checked
+// up front. Tuned to the stack bound: 241 locals over 67 frames leaves less room than 140 methods.
+fn deep(n) {
+    say a0 = n;
+    say a1 = n;
+    say a2 = n;
+    say a3 = n;
+    say a4 = n;
+    say a5 = n;
+    say a6 = n;
+    say a7 = n;
+    say a8 = n;
+    say a9 = n;
+    say a10 = n;
+    say a11 = n;
+    say a12 = n;
+    say a13 = n;
+    say a14 = n;
+    say a15 = n;
+    say a16 = n;
+    say a17 = n;
+    say a18 = n;
+    say a19 = n;
+    say a20 = n;
+    say a21 = n;
+    say a22 = n;
+    say a23 = n;
+    say a24 = n;
+    say a25 = n;
+    say a26 = n;
+    say a27 = n;
+    say a28 = n;
+    say a29 = n;
+    say a30 = n;
+    say a31 = n;
+    say a32 = n;
+    say a33 = n;
+    say a34 = n;
+    say a35 = n;
+    say a36 = n;
+    say a37 = n;
+    say a38 = n;
+    say a39 = n;
+    say a40 = n;
+    say a41 = n;
+    say a42 = n;
+    say a43 = n;
+    say a44 = n;
+    say a45 = n;
+    say a46 = n;
+    say a47 = n;
+    say a48 = n;
+    say a49 = n;
+    say a50 = n;
+    say a51 = n;
+    say a52 = n;
+    say a53 = n;
+    say a54 = n;
+    say a55 = n;
+    say a56 = n;
+    say a57 = n;
+    say a58 = n;
+    say a59 = n;
+    say a60 = n;
+    say a61 = n;
+    say a62 = n;
+    say a63 = n;
+    say a64 = n;
+    say a65 = n;
+    say a66 = n;
+    say a67 = n;
+    say a68 = n;
+    say a69 = n;
+    say a70 = n;
+    say a71 = n;
+    say a72 = n;
+    say a73 = n;
+    say a74 = n;
+    say a75 = n;
+    say a76 = n;
+    say a77 = n;
+    say a78 = n;
+    say a79 = n;
+    say a80 = n;
+    say a81 = n;
+    say a82 = n;
+    say a83 = n;
+    say a84 = n;
+    say a85 = n;
+    say a86 = n;
+    say a87 = n;
+    say a88 = n;
+    say a89 = n;
+    say a90 = n;
+    say a91 = n;
+    say a92 = n;
+    say a93 = n;
+    say a94 = n;
+    say a95 = n;
+    say a96 = n;
+    say a97 = n;
+    say a98 = n;
+    say a99 = n;
+    say a100 = n;
+    say a101 = n;
+    say a102 = n;
+    say a103 = n;
+    say a104 = n;
+    say a105 = n;
+    say a106 = n;
+    say a107 = n;
+    say a108 = n;
+    say a109 = n;
+    say a110 = n;
+    say a111 = n;
+    say a112 = n;
+    say a113 = n;
+    say a114 = n;
+    say a115 = n;
+    say a116 = n;
+    say a117 = n;
+    say a118 = n;
+    say a119 = n;
+    say a120 = n;
+    say a121 = n;
+    say a122 = n;
+    say a123 = n;
+    say a124 = n;
+    say a125 = n;
+    say a126 = n;
+    say a127 = n;
+    say a128 = n;
+    say a129 = n;
+    say a130 = n;
+    say a131 = n;
+    say a132 = n;
+    say a133 = n;
+    say a134 = n;
+    say a135 = n;
+    say a136 = n;
+    say a137 = n;
+    say a138 = n;
+    say a139 = n;
+    say a140 = n;
+    say a141 = n;
+    say a142 = n;
+    say a143 = n;
+    say a144 = n;
+    say a145 = n;
+    say a146 = n;
+    say a147 = n;
+    say a148 = n;
+    say a149 = n;
+    say a150 = n;
+    say a151 = n;
+    say a152 = n;
+    say a153 = n;
+    say a154 = n;
+    say a155 = n;
+    say a156 = n;
+    say a157 = n;
+    say a158 = n;
+    say a159 = n;
+    say a160 = n;
+    say a161 = n;
+    say a162 = n;
+    say a163 = n;
+    say a164 = n;
+    say a165 = n;
+    say a166 = n;
+    say a167 = n;
+    say a168 = n;
+    say a169 = n;
+    say a170 = n;
+    say a171 = n;
+    say a172 = n;
+    say a173 = n;
+    say a174 = n;
+    say a175 = n;
+    say a176 = n;
+    say a177 = n;
+    say a178 = n;
+    say a179 = n;
+    say a180 = n;
+    say a181 = n;
+    say a182 = n;
+    say a183 = n;
+    say a184 = n;
+    say a185 = n;
+    say a186 = n;
+    say a187 = n;
+    say a188 = n;
+    say a189 = n;
+    say a190 = n;
+    say a191 = n;
+    say a192 = n;
+    say a193 = n;
+    say a194 = n;
+    say a195 = n;
+    say a196 = n;
+    say a197 = n;
+    say a198 = n;
+    say a199 = n;
+    say a200 = n;
+    say a201 = n;
+    say a202 = n;
+    say a203 = n;
+    say a204 = n;
+    say a205 = n;
+    say a206 = n;
+    say a207 = n;
+    say a208 = n;
+    say a209 = n;
+    say a210 = n;
+    say a211 = n;
+    say a212 = n;
+    say a213 = n;
+    say a214 = n;
+    say a215 = n;
+    say a216 = n;
+    say a217 = n;
+    say a218 = n;
+    say a219 = n;
+    say a220 = n;
+    say a221 = n;
+    say a222 = n;
+    say a223 = n;
+    say a224 = n;
+    say a225 = n;
+    say a226 = n;
+    say a227 = n;
+    say a228 = n;
+    say a229 = n;
+    say a230 = n;
+    say a231 = n;
+    say a232 = n;
+    say a233 = n;
+    say a234 = n;
+    say a235 = n;
+    say a236 = n;
+    say a237 = n;
+    say a238 = n;
+    say a239 = n;
+    say a240 = n;
+    if (n > 0) { deep(n - 1); return; }
+    say cap = n;
+    type T { // error: Stack overflow
+        pub v;
+        init(this) { this.v = cap; }
+        pub fn m0(this)! { return cap; }
+        pub fn m1(this)! { return cap; }
+        pub fn m2(this)! { return cap; }
+        pub fn m3(this)! { return cap; }
+        pub fn m4(this)! { return cap; }
+        pub fn m5(this)! { return cap; }
+        pub fn m6(this)! { return cap; }
+        pub fn m7(this)! { return cap; }
+        pub fn m8(this)! { return cap; }
+        pub fn m9(this)! { return cap; }
+        pub fn m10(this)! { return cap; }
+        pub fn m11(this)! { return cap; }
+        pub fn m12(this)! { return cap; }
+        pub fn m13(this)! { return cap; }
+        pub fn m14(this)! { return cap; }
+        pub fn m15(this)! { return cap; }
+        pub fn m16(this)! { return cap; }
+        pub fn m17(this)! { return cap; }
+        pub fn m18(this)! { return cap; }
+        pub fn m19(this)! { return cap; }
+        pub fn m20(this)! { return cap; }
+        pub fn m21(this)! { return cap; }
+        pub fn m22(this)! { return cap; }
+        pub fn m23(this)! { return cap; }
+        pub fn m24(this)! { return cap; }
+        pub fn m25(this)! { return cap; }
+        pub fn m26(this)! { return cap; }
+        pub fn m27(this)! { return cap; }
+        pub fn m28(this)! { return cap; }
+        pub fn m29(this)! { return cap; }
+        pub fn m30(this)! { return cap; }
+        pub fn m31(this)! { return cap; }
+        pub fn m32(this)! { return cap; }
+        pub fn m33(this)! { return cap; }
+        pub fn m34(this)! { return cap; }
+        pub fn m35(this)! { return cap; }
+        pub fn m36(this)! { return cap; }
+        pub fn m37(this)! { return cap; }
+        pub fn m38(this)! { return cap; }
+        pub fn m39(this)! { return cap; }
+        pub fn m40(this)! { return cap; }
+        pub fn m41(this)! { return cap; }
+        pub fn m42(this)! { return cap; }
+        pub fn m43(this)! { return cap; }
+        pub fn m44(this)! { return cap; }
+        pub fn m45(this)! { return cap; }
+        pub fn m46(this)! { return cap; }
+        pub fn m47(this)! { return cap; }
+        pub fn m48(this)! { return cap; }
+        pub fn m49(this)! { return cap; }
+        pub fn m50(this)! { return cap; }
+        pub fn m51(this)! { return cap; }
+        pub fn m52(this)! { return cap; }
+        pub fn m53(this)! { return cap; }
+        pub fn m54(this)! { return cap; }
+        pub fn m55(this)! { return cap; }
+        pub fn m56(this)! { return cap; }
+        pub fn m57(this)! { return cap; }
+        pub fn m58(this)! { return cap; }
+        pub fn m59(this)! { return cap; }
+        pub fn m60(this)! { return cap; }
+        pub fn m61(this)! { return cap; }
+        pub fn m62(this)! { return cap; }
+        pub fn m63(this)! { return cap; }
+        pub fn m64(this)! { return cap; }
+        pub fn m65(this)! { return cap; }
+        pub fn m66(this)! { return cap; }
+        pub fn m67(this)! { return cap; }
+        pub fn m68(this)! { return cap; }
+        pub fn m69(this)! { return cap; }
+        pub fn m70(this)! { return cap; }
+        pub fn m71(this)! { return cap; }
+        pub fn m72(this)! { return cap; }
+        pub fn m73(this)! { return cap; }
+        pub fn m74(this)! { return cap; }
+        pub fn m75(this)! { return cap; }
+        pub fn m76(this)! { return cap; }
+        pub fn m77(this)! { return cap; }
+        pub fn m78(this)! { return cap; }
+        pub fn m79(this)! { return cap; }
+        pub fn m80(this)! { return cap; }
+        pub fn m81(this)! { return cap; }
+        pub fn m82(this)! { return cap; }
+        pub fn m83(this)! { return cap; }
+        pub fn m84(this)! { return cap; }
+        pub fn m85(this)! { return cap; }
+        pub fn m86(this)! { return cap; }
+        pub fn m87(this)! { return cap; }
+        pub fn m88(this)! { return cap; }
+        pub fn m89(this)! { return cap; }
+        pub fn m90(this)! { return cap; }
+        pub fn m91(this)! { return cap; }
+        pub fn m92(this)! { return cap; }
+        pub fn m93(this)! { return cap; }
+        pub fn m94(this)! { return cap; }
+        pub fn m95(this)! { return cap; }
+        pub fn m96(this)! { return cap; }
+        pub fn m97(this)! { return cap; }
+        pub fn m98(this)! { return cap; }
+        pub fn m99(this)! { return cap; }
+        pub fn m100(this)! { return cap; }
+        pub fn m101(this)! { return cap; }
+        pub fn m102(this)! { return cap; }
+        pub fn m103(this)! { return cap; }
+        pub fn m104(this)! { return cap; }
+        pub fn m105(this)! { return cap; }
+        pub fn m106(this)! { return cap; }
+        pub fn m107(this)! { return cap; }
+        pub fn m108(this)! { return cap; }
+        pub fn m109(this)! { return cap; }
+        pub fn m110(this)! { return cap; }
+        pub fn m111(this)! { return cap; }
+        pub fn m112(this)! { return cap; }
+        pub fn m113(this)! { return cap; }
+        pub fn m114(this)! { return cap; }
+        pub fn m115(this)! { return cap; }
+        pub fn m116(this)! { return cap; }
+        pub fn m117(this)! { return cap; }
+        pub fn m118(this)! { return cap; }
+        pub fn m119(this)! { return cap; }
+        pub fn m120(this)! { return cap; }
+        pub fn m121(this)! { return cap; }
+        pub fn m122(this)! { return cap; }
+        pub fn m123(this)! { return cap; }
+        pub fn m124(this)! { return cap; }
+        pub fn m125(this)! { return cap; }
+        pub fn m126(this)! { return cap; }
+        pub fn m127(this)! { return cap; }
+        pub fn m128(this)! { return cap; }
+        pub fn m129(this)! { return cap; }
+        pub fn m130(this)! { return cap; }
+        pub fn m131(this)! { return cap; }
+        pub fn m132(this)! { return cap; }
+        pub fn m133(this)! { return cap; }
+        pub fn m134(this)! { return cap; }
+        pub fn m135(this)! { return cap; }
+        pub fn m136(this)! { return cap; }
+        pub fn m137(this)! { return cap; }
+        pub fn m138(this)! { return cap; }
+        pub fn m139(this)! { return cap; }
+    }
+    say t = T();
+    print(t.m0());
+}
+deep(66);

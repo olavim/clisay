@@ -1,0 +1,31 @@
+// An `@` binder wraps a matcher without changing what the test decides about the scrutinee.
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+type W2 with Wt { }
+type Other { }
+fn f() {
+    say b: warned = W2 { };
+    if (b ~ n @ Other) { say z = b; print("disjoint"); }
+    else { print(b ?? "handled"); }
+}
+f(); // expect: handled
+
+// @split
+// The wrapper asks the question for the scrutinee, so only the name it introduces is left owing.
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+type W2 with Wt { }
+fn f() {
+    say b: warned = W2 { };
+    if (b ~ seen @ W2) { print(seen ?? "handled"); }
+}
+f(); // expect: handled
+
+// @split
+// A failed wrapped test rules out whatever its inner matcher covers.
+fn f(x?) {
+    if (x ~ n @ null) { print("null"); }
+    else { print(x + 1); }
+}
+f(1); // expect: 2
+f(null); // expect: null

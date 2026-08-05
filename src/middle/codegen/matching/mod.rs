@@ -7,10 +7,16 @@
 mod linear;
 pub mod tree;
 
+use crate::compiler_error;
 use crate::core::value::Value;
-use crate::middle::hir::{HirLiteral, HirMatchElem, Symbol};
+use crate::middle::hir::{HirId, HirLiteral, HirMatchElem, HirMatcher, Symbol, TypeId};
 
 use super::Compiler;
+
+/// One member of a tested surface, with what it admits: whether null is allowed and which
+/// witnesses. A method, or a trait's member, declares no shape and answers `None`, so only its
+/// presence can be asked about.
+pub type SurfaceMember = (Symbol, Option<(bool, Vec<TypeId>)>);
 
 /// A matcher literal or shape key.
 #[derive(Clone, PartialEq)]
@@ -37,6 +43,20 @@ impl From<&HirLiteral> for Scalar {
 }
 
 impl<'a> Compiler<'a> {
+    /// What a structural type test asks of a value: one entry per surface member. An empty answer
+    /// asks for nothing beyond a shaped value, exactly as the `{ }` matcher does.
+    pub(super) fn surface_members<T: 'static>(&self, matcher: &HirId<HirMatcher>, name: Symbol, node: &HirId<T>) -> Result<Vec<SurfaceMember>, anyhow::Error> {
+        let decl = self.bindings.type_ref(matcher);
+        let Some(members) = decl.and_then(|d| self.bindings.surface(&d)) else {
+            compiler_error!(self, node, "'{}' is not a type or trait", self.hir.text(name));
+        };
+        // A trait has no layout, so its surface is tested by name.
+        let layout = decl.and_then(|d| self.bindings.layout_of_decl(&d));
+        Ok(members.to_vec().into_iter()
+            .map(|member| (member, layout.and_then(|l| self.member_admits(l, member))))
+            .collect())
+    }
+
     /// Interns a member name (a string key) into the constant pool, returning its index.
     pub(in crate::middle::codegen) fn member_constant(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
         let name_ref = self.gc.intern(self.hir.text(name));

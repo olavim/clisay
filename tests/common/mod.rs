@@ -2,7 +2,7 @@ use std::fmt;
 use std::panic;
 
 use anyhow::Error;
-use clisay::run;
+use clisay::{run, run_with, RunConfig};
 use clisay::Output;
 use libtest_mimic::Failed;
 use regex::Regex;
@@ -36,46 +36,55 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
     let name = std::path::Path::new(file).file_name().and_then(|n| n.to_str()).unwrap_or(file);
 
     for section in sections {
-        let result = run(name, section);
-        let out = Output::get_output();
-        let asm_end_pos = if out.len() > 0 && out[0] == "=== Bytecode ===" {
-            Some(out.iter().position(|s| s == "================").unwrap() + 1)
-        } else {
-            None
-        };
-        let asm = asm_end_pos
-            .map(|pos| out[1..pos - 1].to_vec())
-            .map(|v| v.iter().flat_map(|line| line.lines()).map(String::from).collect());
-        let out = match asm_end_pos {
-             Some(pos) => out[pos..].to_vec(),
-             None => out
-        };
+        check_section(name, section, RunConfig::default(), true)?;
+        check_section(name, section, RunConfig { optimize: false }, false)
+            .map_err(|failure| Failed::from(format!("with the optimizer off: {failure:?}")))?;
+    }
 
-        if let Some(expected_full) = parse_expected_error_full(section) {
-            match result {
-                Ok(_) => return Err("Expected an error, but the program ran".into()),
-                Err(err) => eq_or_fail(expected_full, err.to_string())?
-            }
-        } else if let Some(expected_error) = parse_expected_error(section) {
-            match result {
-                Ok(_) => return Err(format!("Expected error: {expected_error}").into()),
-                Err(err) => eq_or_fail(expected_error, parse_error_message(err))?
-            }
-        } else if let Err(err) = result {
-            println!("{}", err.backtrace());
-            return Err(format!("Unexpected error: {err}").into());
+    Ok(())
+}
+
+fn check_section(name: &str, section: &str, config: RunConfig, check_asm: bool) -> Result<(), Failed> {
+    let result = run_with(name, section, config);
+    let out = Output::get_output();
+    let asm_end_pos = if out.len() > 0 && out[0] == "=== Bytecode ===" {
+        Some(out.iter().position(|s| s == "================").unwrap() + 1)
+    } else {
+        None
+    };
+    let asm = asm_end_pos
+        .map(|pos| out[1..pos - 1].to_vec())
+        .map(|v| v.iter().flat_map(|line| line.lines()).map(String::from).collect());
+    let out = match asm_end_pos {
+         Some(pos) => out[pos..].to_vec(),
+         None => out
+    };
+
+    if let Some(expected_full) = parse_expected_error_full(section) {
+        match result {
+            Ok(_) => return Err("Expected an error, but the program ran".into()),
+            Err(err) => eq_or_fail(expected_full, err.to_string())?
         }
+    } else if let Some(expected_error) = parse_expected_error(section) {
+        match result {
+            Ok(_) => return Err(format!("Expected error: {expected_error}").into()),
+            Err(err) => eq_or_fail(expected_error, parse_error_message(err))?
+        }
+    } else if let Err(err) = result {
+        println!("{}", err.backtrace());
+        return Err(format!("Unexpected error: {err}").into());
+    }
 
-        let expected_out = parse_expected_output(section);
-        eq_or_fail(expected_out.into_iter().map(String::from).collect::<Vec<String>>(), out)?;
+    let expected_out = parse_expected_output(section);
+    eq_or_fail(expected_out.into_iter().map(String::from).collect::<Vec<String>>(), out)?;
 
+    if check_asm {
         if let Some(expected_asm) = parse_expected_asm(section) {
             eq_or_fail(expected_asm.into_iter().map(String::from).collect::<Vec<String>>(), asm.unwrap())?;
         }
-
-        Output::clear();
     }
 
+    Output::clear();
     Ok(())
 }
 

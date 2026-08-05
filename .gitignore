@@ -2,3 +2,4 @@
 /scripts
 /.vscode/settings.json/pgo-data
 /.vscode/settings.json
+mutants.out*

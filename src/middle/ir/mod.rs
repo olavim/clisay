@@ -1,10 +1,11 @@
 //! The intermediate representation: a flat stream of `Inst`s with symbolic
 //! jump `Label`s and a constant pool.
 
+use std::collections::HashSet;
 use anyhow::bail;
 use fnv::FnvHashMap;
 
-use crate::core::objects::ObjFn;
+use crate::core::objects::{BuiltinLayout, ObjFn};
 use crate::ast::BuiltinType;
 use crate::core::objects::TypeId;
 use crate::core::value::Value;
@@ -158,7 +159,7 @@ pub enum Inst {
 pub struct Ir {
     /// Each registered object witness name and its id.
     witness_ids: Vec<(TypeId, u16)>,
-    builtin_type_ids: [TypeId; BuiltinType::COUNT],
+    builtin_layouts: [Option<BuiltinLayout>; BuiltinType::COUNT],
     /// The witness ids each barrier allows.
     witness_allows: Vec<Box<[u16]>>,
     code: Vec<Inst>,
@@ -177,7 +178,7 @@ impl Ir {
     pub fn new() -> Ir {
         Ir {
             witness_ids: Vec::new(),
-            builtin_type_ids: [0; BuiltinType::COUNT],
+            builtin_layouts: std::array::from_fn(|_| None),
             witness_allows: Vec::new(),
             code: Vec::new(),
             positions: Vec::new(),
@@ -246,12 +247,16 @@ impl Ir {
         self.witness_ids = ids;
     }
 
-    pub fn set_builtin_type_id(&mut self, builtin: BuiltinType, id: TypeId) {
-        self.builtin_type_ids[builtin.index()] = id;
+    pub fn set_builtin_layout(&mut self, builtin: BuiltinType, layout: BuiltinLayout) {
+        self.builtin_layouts[builtin.index()] = Some(layout);
     }
 
-    pub fn builtin_type_ids(&self) -> [TypeId; BuiltinType::COUNT] {
-        self.builtin_type_ids
+    pub fn builtin_layouts(&self) -> &[Option<BuiltinLayout>; BuiltinType::COUNT] {
+        &self.builtin_layouts
+    }
+
+    pub fn into_builtin_layouts(self) -> [Option<BuiltinLayout>; BuiltinType::COUNT] {
+        self.builtin_layouts
     }
 
     pub fn witness_ids(&self) -> &[(TypeId, u16)] {
@@ -314,9 +319,16 @@ impl Ir {
         let mut positions = Vec::with_capacity(self.code.len());
         let mut old_to_new = vec![0usize; self.code.len() + 1];
 
+        // Fusing a set of instructions leaves one instruction, so every jump into that set ends up
+        // pointing at it. That's correct for a jump to the run's first instruction, but not for a jump
+        // to a later one.
+        let targeted: HashSet<usize> = self.labels.iter().flatten().copied().collect();
+
         let mut i = 0;
         while i < self.code.len() {
-            let (inst, len) = fuse(&self.code, i).unwrap_or((self.code[i], 1));
+            let fused = fuse(&self.code, i)
+                .filter(|(_, len)| !(1..*len).any(|k| targeted.contains(&(i + k))));
+            let (inst, len) = fused.unwrap_or((self.code[i], 1));
             let new_idx = code.len();
             for k in 0..len {
                 old_to_new[i + k] = new_idx;
@@ -341,7 +353,7 @@ impl Ir {
             construct_fields: self.construct_fields,
             survive_positions: self.survive_positions,
             witness_ids: self.witness_ids,
-            builtin_type_ids: self.builtin_type_ids,
+            builtin_layouts: self.builtin_layouts,
             witness_allows: self.witness_allows,
         }
     }

@@ -36,19 +36,24 @@ macro_rules! unary_op_methods {
 }
 
 impl Vm {
+    /// Lowers the stack out of a frame. Every exit goes through this, because one that lowers the
+    /// stack without closing upvalues first leaves a root pointing above the live top.
+    fn unwind_to(&mut self, stack_start: *mut Value, write_depth: usize) {
+        self.close_upvalues(stack_start);
+        self.release_writes_above(write_depth);
+        self.stack.set_top(stack_start);
+    }
+
     pub(super) fn op_return(&mut self) -> Result<bool, anyhow::Error> {
         if self.frames.len() == 1 {
             return Ok(false);
         }
 
         let frame = self.frames.pop();
-
         self.ip = frame.return_ip;
-        self.close_upvalues(frame.stack_start);
-        self.release_writes_above(frame.write_depth);
 
         let value = self.stack.pop();
-        self.stack.set_top(frame.stack_start);
+        self.unwind_to(frame.stack_start, frame.write_depth);
         self.stack.push(value);
         Ok(true)
     }
@@ -58,14 +63,12 @@ impl Vm {
     pub(super) fn op_return_fac(&mut self) {
         let frame = self.frames.pop();
         self.ip = frame.return_ip;
-        self.close_upvalues(frame.stack_start);
-        self.release_writes_above(frame.write_depth);
 
         let value = self.stack.pop();
+        self.unwind_to(frame.stack_start, frame.write_depth);
         if frame.seal {
             crate::core::objects::freeze_value(value, self.current_pos_index());
         }
-        self.stack.set_top(frame.stack_start);
         self.stack.push(value);
     }
 
@@ -81,13 +84,12 @@ impl Vm {
 
         let frame = self.try_frames.pop().unwrap();
         // Restore borrows marked since the `try` began, whose `RELEASE_BORROW` the unwind skips.
-        self.release_writes_above(frame.write_depth);
         while self.borrows.len() > frame.borrow_depth {
             let (v, prev) = self.borrows.pop().unwrap();
             if v.is_object() { v.as_object().set_borrowed(prev); }
         }
         self.frames.set_top(frame.origin);
-        self.stack.set_top(frame.stack_start);
+        self.unwind_to(frame.stack_start, frame.write_depth);
         self.ip = frame.handler_ip;
         self.stack.push(value);
         Ok(())
@@ -151,8 +153,10 @@ impl Vm {
     }
 
     fn is_err(&self, value: Value) -> bool {
-        matches!(value.kind(), ValueKind::Object(ObjectKind::Instance))
-            && unsafe { (*value.as_object().as_instance_ptr()).ty == self.native_types.err }
+        let ValueKind::Object(ObjectKind::Instance) = value.kind() else { return false };
+        let err_id = unsafe { &*self.native_types.err }.id;
+        let ty = unsafe { &*(*value.as_object().as_instance_ptr()).ty };
+        ty.provided.contains(&err_id)
     }
 
     /// A discharge test: keep the top value and jump when it is clean.
@@ -269,7 +273,7 @@ impl Vm {
             let start = self.stack.top().sub(n);
             let pairs = std::slice::from_raw_parts(start, n);
             for pair in pairs.chunks_exact(2) {
-                entries.insert(pair[0], pair[1]);
+                entries.insert(DictKey(pair[0]), pair[1]);
             }
         }
         let dict = self.alloc(ObjDict::new(entries));
