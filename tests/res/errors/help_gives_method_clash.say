@@ -1,0 +1,17 @@
+trait Spin { pub fn go(this)! { return "spin"; } }
+trait Roll { pub fn go(this)! { return "roll"; } }
+type Engine with Spin { init(this) {} }
+type Wheel with Roll { init(this) {} }
+type Car {
+    engine gives Spin;
+    wheel gives Roll;
+    init(this) { this.engine = Engine(); this.wheel = Wheel(); }
+}
+// error(full):
+// error: Delegated method 'go' clashes between traits 'Spin' and 'Roll'
+//  --> help_gives_method_clash.say:5:1
+//   |
+// 4 | type Wheel with Roll { init(this) {} }
+// 5 | type Car {
+//   | ^^^^^^^^^^
+//   = help: declare 'go' in the host type to resolve it

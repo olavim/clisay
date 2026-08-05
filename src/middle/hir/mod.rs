@@ -1,6 +1,7 @@
 //! The high-level IR (HIR): a post-lowering node hierarchy in which surface-only
 //! constructs are unrepresentable.
 
+use indexmap::IndexSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
@@ -95,7 +96,7 @@ pub enum HirExpr {
     Identifier(Symbol),
     /// Brace construction `C { field: value, ... }`: the callee type expression, an unused args
     /// slot (the combined form is retired), then the brace fields.
-    Construct(HirId<HirExpr>, Vec<HirId<HirExpr>>, Vec<(Symbol, HirId<HirExpr>)>),
+    Construct(HirId<HirExpr>, Vec<(Symbol, HirId<HirExpr>)>),
     /// A `mut`-minted construction (`mut {}`, `mut []`, `mut Ctor()`).
     Mut(HirId<HirExpr>),
     This,
@@ -184,6 +185,20 @@ impl HirMatcher {
             HirMatcher::And(parts) => parts.iter().all(|p| hir.get(p).is_irrefutable(hir)),
             HirMatcher::Or(alternatives) => alternatives.iter().any(|a| hir.get(a).is_irrefutable(hir)),
             _ => false,
+        }
+    }
+
+    /// Whether matching this proves the value is not null. A bare binder, a wildcard, and a `null`
+    /// literal each admit null, so they prove nothing.
+    pub fn rejects_null(&self, hir: &Hir) -> bool {
+        match self {
+            HirMatcher::Wildcard | HirMatcher::Binder(_) => false,
+            HirMatcher::Literal(HirLiteral::Null) => false,
+            HirMatcher::Literal(_) => true,
+            HirMatcher::Type { .. } | HirMatcher::Shape(_) | HirMatcher::Array(_) => true,
+            HirMatcher::As(_, inner) => hir.get(inner).rejects_null(hir),
+            HirMatcher::And(parts) => parts.iter().any(|p| hir.get(p).rejects_null(hir)),
+            HirMatcher::Or(alternatives) => alternatives.iter().all(|a| hir.get(a).rejects_null(hir)),
         }
     }
 
@@ -309,7 +324,7 @@ pub struct HirTypeDecl {
     pub name: Symbol,
     pub id: TypeId,
     pub init: HirId<HirStmt>,
-    pub fields: HashSet<Symbol>,
+    pub fields: IndexSet<Symbol>,
     /// Fields declared nullable with a `?` marker (`next?;`).
     pub nullable_fields: HashSet<Symbol>,
     /// Fields declared reassignable with a `mut` modifier (`mut count;`).
@@ -318,19 +333,16 @@ pub struct HirTypeDecl {
     pub field_clauses: HashMap<Symbol, HirSlotClause>,
     pub methods: Vec<HirId<HirStmt>>,
     pub req_fns: Vec<HirReqFn>,
+    /// The declaring trait of each method in `methods`.
     pub method_traits: Vec<Option<Symbol>>,
-    pub pub_members: HashSet<Symbol>,
-    pub inner_members: HashSet<Symbol>,
+    pub pub_members: IndexSet<Symbol>,
+    pub inner_members: IndexSet<Symbol>,
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
     /// Which built-in this declares, if any.
     pub builtin: Option<BuiltinType>,
-    /// For a standalone trait (`HirStmt::Trait`): its **declared surface**.
-    pub surface: HashSet<Symbol>,
-    /// What this type **provides** for `x is T`: its own declaration plus every transitively
-    /// `with`-mixed trait, each as its name and its declaration id.
+    /// A trait's declared surface. Ordered since a surface test emits one check per name in this order.
+    pub surface: IndexSet<Symbol>,
     pub provides: Vec<(Symbol, TypeId)>,
-    /// The `gives` delegations, `(field, trait name, trait declaration)`. A construction verifies
-    /// each field provides its trait.
     pub gives: Vec<(Symbol, Symbol, TypeId)>,
 }
 

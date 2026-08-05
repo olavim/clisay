@@ -1,0 +1,19 @@
+// The right operand of a short-circuit runs on a path through the condition, not instead of one,
+// so a value it moved is moved after the condition too.
+fn eats(x: *mut)! { return 1; }
+say a = mut [1];
+if (true && eats(a) == 1) { }
+print(a[0]); // error: value used after it was moved
+
+// @split
+fn eats(x: *mut)! { return 1; }
+say a = mut [1];
+if (false || eats(a) == 1) { }
+print(a[0]); // error: value used after it was moved
+
+// @split
+// A condition that moves nothing leaves the value readable.
+fn reads(x)! { return 1; }
+say a = mut [1];
+if (true && reads(a[0]) == 1) { }
+print(a[0]); // expect: 1

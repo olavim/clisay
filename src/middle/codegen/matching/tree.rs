@@ -4,7 +4,6 @@
 
 use std::cmp::Reverse;
 
-use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{Hir, HirExpr, HirId, HirMatchArm, HirMatchElem, HirMatcher, HirStmt, Symbol, TypeId};
 use crate::middle::ir::{Inst, Label};
@@ -329,7 +328,7 @@ impl<'a> Compiler<'a> {
                     let mut field_alts = self.lower_value(&field.value, field_path, binders, node)?;
 
                     // A value test that rejects null already fails on an absent key.
-                    if !matcher_rejects_null(self.hir, &field.value) {
+                    if !self.hir.get(&field.value).rejects_null(self.hir) {
                         prepend_step(&[MatchStep::Test(path.to_vec(), ValueTest::Present(key))], &mut field_alts);
                     }
 
@@ -373,23 +372,20 @@ impl<'a> Compiler<'a> {
         let base = if nominal {
             vec![MatchStep::Test(path.to_vec(), ValueTest::Nominal(self.type_test_id(matcher, node)?))]
         } else {
-            let decl = self.bindings.type_ref(matcher);
-            let members = match decl.and_then(|d| self.bindings.surface(&d)) {
-                Some(members) => members.to_vec(),
-                None => compiler_error!(self, node, "'{}' is not a type or trait", self.hir.text(name)),
-            };
-            // A declared surface says what each member admits.
-            let layout = decl.and_then(|d| self.bindings.layout_of_decl(&d));
-            members.iter()
-                .map(|member| {
-                    let key = Scalar::Str(self.hir.text(*member).to_string());
-                    let test = match layout.and_then(|l| self.member_admits(l, *member)) {
-                        Some((null_allowed, witnesses)) => ValueTest::Admits { key, null_allowed, witnesses },
-                        None => ValueTest::Present(key),
-                    };
-                    MatchStep::Test(path.to_vec(), test)
-                })
-                .collect()
+            let members = self.surface_members(matcher, name, node)?;
+            match members.is_empty() {
+                true => vec![MatchStep::Test(path.to_vec(), ValueTest::Shaped)],
+                false => members.into_iter()
+                    .map(|(member, admits)| {
+                        let key = Scalar::Str(self.hir.text(member).to_string());
+                        let test = match admits {
+                            Some((null_allowed, witnesses)) => ValueTest::Admits { key, null_allowed, witnesses },
+                            None => ValueTest::Present(key),
+                        };
+                        MatchStep::Test(path.to_vec(), test)
+                    })
+                    .collect(),
+            }
         };
 
         let mut alts = match shape {
@@ -622,23 +618,6 @@ fn tests_conflict(selected: &ValueTest, other: &ValueTest) -> bool {
             (false, false) => false,
         },
         _ => false,
-    }
-}
-
-/// Whether a matcher fails against null. A shape field whose value rejects null needs no separate
-/// presence test: an absent key loads as null, which the value test already rejects. Wildcards,
-/// binders, and a `null` literal accept null, so those keep their presence test.
-fn matcher_rejects_null(hir: &Hir, matcher: &HirId<HirMatcher>) -> bool {
-    use crate::middle::hir::HirLiteral;
-    match hir.get(matcher) {
-        HirMatcher::Wildcard | HirMatcher::Binder(_) => false,
-        HirMatcher::Literal(HirLiteral::Null) => false,
-        HirMatcher::Literal(_) => true,
-        HirMatcher::Type { .. } | HirMatcher::Array(_) => true,
-        HirMatcher::Shape(_) => true,
-        HirMatcher::As(_, inner) => matcher_rejects_null(hir, inner),
-        HirMatcher::And(parts) => parts.iter().any(|p| matcher_rejects_null(hir, p)),
-        HirMatcher::Or(alternatives) => alternatives.iter().all(|a| matcher_rejects_null(hir, a)),
     }
 }
 

@@ -57,7 +57,11 @@ impl<'a> Checker<'a> {
                 for _ in 0..2 {
                     self.apply_narrowings(&body_narrow);
                     self.with_binders(&scope, body, |c| c.expr(body))?;
+                    let after_body = self.snapshot();
                     self.restore_keeping_moves(&pre);
+                    // The body may have run, so a narrowing a rebind inside it invalidated stays
+                    // invalidated after the loop.
+                    self.restore_narrowings(&after_body);
                 }
             },
             HirStmt::If(cond, then, otherwise) => {
@@ -68,28 +72,33 @@ impl<'a> Checker<'a> {
                 let then_snap = self.narrow_branch(&then_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
                     c.with_binders(&scope, then, |c| c.expr(then))?;
                     Ok(c.snapshot())
-                })?;
+                }).0?;
                 let else_snap = self.narrow_branch(&else_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
                     if let Some(otherwise) = otherwise {
                         c.stmt(otherwise)?;
                     }
                     Ok(c.snapshot())
-                })?;
+                }).0?;
 
                 // A branch that returns or throws never reaches the code after the if, so its end
                 // state is not merged.
                 let then_diverges = self.hir.definitely_returns(then);
                 let else_diverges = otherwise.as_ref().is_some_and(|o| self.hir.stmt_returns(o));
                 match (then_diverges, else_diverges) {
-                    (false, false) => self.join(&then_snap, &else_snap),
+                    // Joining two branches is restoring one and folding the other into it.
+                    (false, false) => { self.restore(&then_snap); self.join_in(&else_snap); },
                     (true, false) => self.restore(&else_snap),
                     (false, true) => self.restore(&then_snap),
                     (true, true) => {},
                 }
             },
             HirStmt::Try(body, catch, finally) => {
+                let pre = self.snapshot();
                 self.expr(body)?;
+                let after_body = self.snapshot();
                 if let Some(catch) = catch {
+                    // A throw can leave the body anywhere, so nothing the body narrowed holds here.
+                    self.restore_narrowings(&pre);
                     let mark = self.locals.len();
                     if let Some(param) = catch.param {
                         let name = self.hir.ident_sym(&param);
@@ -98,6 +107,9 @@ impl<'a> Checker<'a> {
                     self.expr(&catch.body)?;
                     self.close_scope(mark, &catch.body)?;
                 }
+                // Either the body or the catch reaches the code below, so only what both leave
+                // standing survives.
+                self.restore_narrowings(&after_body);
                 if let Some(finally) = finally { self.expr(finally)?; }
             },
             HirStmt::Match(scrutinee, arms) => {
@@ -174,11 +186,10 @@ impl<'a> Checker<'a> {
             HirExpr::This => self.this_typed(),
             HirExpr::Assign(lhs, rhs) => self.assign(lhs, rhs)?,
             HirExpr::Call(callee, args) => self.call(expr, callee, args)?,
-            HirExpr::Construct(callee, args, brace) => {
+            HirExpr::Construct(callee, brace) => {
                 // A plain brace is immutable, so a mutable field value is refused here.
                 let immutable = !std::mem::take(&mut self.mut_construction);
                 let tag = self.construct_tag(callee);
-                for a in args { self.expr(a)?; }
                 for (name, v) in brace {
                     let typed = self.expr(v)?;
                     self.check_construct_field(immutable, &typed, v)?;
@@ -330,7 +341,7 @@ impl<'a> Checker<'a> {
         local.site = *value;
         local.alias.mutability = mutability;
         local.alias.provenance = provenance;
-        local.alias.extracted_from = value.and_then(|v| self.extraction_of(&v));
+        local.alias.extracted_from = value.and_then(|v| self.extraction_of(&v)).into_iter().collect();
         local.alias.shared_origin = value.is_some_and(|v| self.shared_origin(&v));
         self.locals.push(local);
         Ok(())
@@ -466,8 +477,16 @@ impl<'a> Checker<'a> {
             // narrows where the left holds (true), `or` where it fails (false).
             BinOp::And | BinOp::Or => {
                 self.expr(l)?;
-                let narrow = self.narrowings(l, matches!(op, BinOp::And));
-                self.narrow_branch(&narrow, |c| c.expr(r))?;
+                let runs_when = matches!(op, BinOp::And);
+                let (_, on_skip) = self.narrow_branch(&self.narrowings(l, !runs_when), |_| ());
+                let into_right = self.narrowings(l, runs_when);
+                let (result, on_run) = self.narrow_operand(&into_right, |c| c.expr(r));
+                result?;
+                // A left that cannot skip the right leaves one path through the condition.
+                match self.right_operand_always_runs(l, runs_when) {
+                    true => self.mark_resolved_on_all(&[on_run]),
+                    false => self.mark_resolved_on_all(&[on_skip, on_run]),
+                }
                 Ok(Typed::nonnull())
             },
             // Equality is a boolean context; a possibly-null operand is fine.
@@ -647,7 +666,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn construct_tag(&self, callee: &HirId<HirExpr>) -> TypeTag {
-        self.sigs.type_named(self.hir, self.bindings, callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
+        self.resolved().constructed_tag(callee)
     }
 
     /// What the declared `this` says about the receiver.
@@ -667,7 +686,7 @@ impl<'a> Checker<'a> {
         match self.hir.get(callee) {
             HirExpr::Identifier(name) => {
                 let name = *name;
-                if let Some(decl) = self.sigs.type_named(self.hir, self.bindings, callee) {
+                if let Some(decl) = self.resolved().type_named(callee) {
                     // A factory-less type is built only by brace, so a paren call has nothing to run.
                     if !self.type_has_factory(&decl) {
                         let t = self.hir.text(name);
@@ -680,9 +699,8 @@ impl<'a> Checker<'a> {
                     let immutable = !std::mem::take(&mut self.mut_construction);
                     if let Some(init) = self.constructor_init(callee) {
                         self.check_call_args(callee, init, &arg_types, args)?;
-                        let opaque = !matches!(self.hir.get(&init), HirStmt::Fn(_));
                         for (i, (typed, arg)) in arg_types.iter().zip(args).enumerate() {
-                            if opaque || self.sigs.param_escapes_at(&init, i) {
+                            if self.sigs.param_escapes_at(&init, i) {
                                 self.check_construct_field(immutable, typed, arg)?;
                                 if !immutable {
                                     self.check_stored_element(arg)?;
@@ -881,7 +899,7 @@ impl<'a> Checker<'a> {
                     // The slot takes on whatever sources the new value reaches, and names whatever
                     // element the new value came out of. Any writer slot the old value held is let go.
                     self.locals[i].alias.provenance = self.provenance_of(rhs);
-                    self.locals[i].alias.extracted_from = self.extraction_of(rhs);
+                    self.locals[i].alias.extracted_from = self.extraction_of(rhs).into_iter().collect();
                     self.locals[i].alias.shared_origin = self.shared_origin(rhs);
                     // The old value keeps its runtime slot until told otherwise, so a rebind that
                     // drops a held slot has to give it back where the value changes.
@@ -967,13 +985,15 @@ impl<'a> Checker<'a> {
     /// Checks an assignment `this.field = value`.
     pub(super) fn assign_field_this(&mut self, field: Symbol, flow: &Flow, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let Some(type_stmt) = self.current_type else { return Ok(()) };
-        let (is_field, nullable, mutable) = match self.layout_of(&type_stmt) {
-            Some(layout) => (matches!(layout.members.get(&field), Some(TypeMember::Field(_))), layout.is_nullable(field), layout.is_mutable(field)),
+        let (member, nullable, mutable) = match self.layout_of(&type_stmt) {
+            Some(layout) => (layout.members.get(&field).copied(), layout.is_nullable(field), layout.is_mutable(field)),
             None => return Ok(()),
         };
 
-        if !is_field {
-            return Ok(());
+        match member {
+            Some(TypeMember::Field(_)) => {},
+            Some(TypeMember::Method(_)) => return Err(self.method_slot_error(field, lhs)),
+            None => return Ok(()),
         }
 
         // Writing an immutable field in a factory is its initialization. Elsewhere it is a method
@@ -999,7 +1019,8 @@ impl<'a> Checker<'a> {
         let field_info = match self.layout_of(type_stmt) {
             Some(layout) => match layout.members.get(&field) {
                 Some(TypeMember::Field(_)) => Some((layout.is_public(field), layout.is_nullable(field), layout.is_mutable(field))),
-                _ => None,
+                Some(TypeMember::Method(_)) => return Err(self.method_slot_error(field, lhs)),
+                None => None,
             },
             None => None,
         };

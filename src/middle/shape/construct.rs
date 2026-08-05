@@ -17,7 +17,7 @@ struct FieldInfo {
 impl<'a> Shape<'a> {
     /// The fields a brace supplies, against the fields the type declares.
     pub(super) fn construct(&self, callee: &HirId<HirExpr>, brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
-        let Some(decl) = self.sigs.type_named(self.hir, self.bindings, callee) else { return Ok(()) };
+        let Some(decl) = self.resolved().type_named(callee) else { return Ok(()) };
         let braced: Obligations = brace.iter().map(|(name, _)| *name).collect();
         self.check_construction(&decl, &braced, callee)
     }

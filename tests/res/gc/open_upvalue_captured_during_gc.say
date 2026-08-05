@@ -1,4 +1,6 @@
-// Regression test for a use-after-free in the GC.
+// Regression test for a use-after-free in the GC. It reproduces the bug on its own, so collecting
+// on every allocation would only repeat a settled assertion at a hundred times the cost.
+gcStress(false);
 
 fn makeAdder(a, b, c, d, e)! {
     say mut sum = 0;

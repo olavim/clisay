@@ -71,7 +71,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         self.tokens.expect_close(TokenType::RightBrace, &open)?;
 
         if let Expr::Call(_, args) = self.ast.get(&callee) {
-            if !args.is_empty() && !fields.is_empty() {
+            if !args.is_empty() {
                 return Err(self.error("cannot mix constructor arguments and brace fields; use `K(..)` or `K { .. }`", &open));
             }
         }

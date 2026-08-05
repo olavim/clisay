@@ -156,40 +156,12 @@ impl Signatures {
         self.types_by_name.contains_key(&name)
     }
 
-    /// The declaration a type name stands for.
+    /// The declaration a type name stands for, when it stands for exactly one. A shadowed name
+    /// names no declaration in particular, and the last one walked is not an answer.
     pub(crate) fn type_decl(&self, name: Symbol) -> Option<HirId<HirStmt>> {
-        self.types_by_name.get(&name).and_then(|decls| decls.last()).copied()
-    }
-
-    /// The obligations a matcher admits on the value it matches: one per bindingless witness among
-    /// its alternatives. `Node | null` admits `opt`, so a name bound to that value owes `opt`.
-    pub(crate) fn admitted_obligations(&self, hir: &Hir, bindings: &Bindings, matcher: &HirId<HirMatcher>) -> Obligations {
-        match hir.get(matcher) {
-            HirMatcher::Or(alternatives) => alternatives.iter()
-                .flat_map(|alt| self.bindingless_witness_obligations(hir, bindings, alt))
-                .collect(),
-            HirMatcher::Type { .. } => self.obligations_witnessed_by_test(hir, bindings, matcher),
-            HirMatcher::As(_, inner) => self.admitted_obligations(hir, bindings, inner),
-            _ => Obligations::new(),
-        }
-    }
-
-    /// The obligations a bindingless alternative witnesses. `null` witnesses `opt`. A bare witness
-    /// type witnesses its own. A non-witness alternative yields nothing.
-    pub(crate) fn bindingless_witness_obligations(&self, hir: &Hir, bindings: &Bindings, alt: &HirId<HirMatcher>) -> Obligations {
-        match hir.get(alt) {
-            HirMatcher::Literal(HirLiteral::Null) => Obligations::from([self.opt]),
-            HirMatcher::Type { shape: None, .. } => self.obligations_witnessed_by_test(hir, bindings, alt),
-            _ => Obligations::new(),
-        }
-    }
-
-    /// The obligations the declaration a type test names witnesses.
-    pub(crate) fn obligations_witnessed_by_test(&self, hir: &Hir, bindings: &Bindings, matcher: &HirId<HirMatcher>) -> Obligations {
-        let Some(stmt) = bindings.type_ref(matcher) else { return Obligations::new() };
-        match hir.get(&stmt) {
-            HirStmt::Type(decl) | HirStmt::Trait(decl) => self.obligations_witnessed_by_decl(decl),
-            _ => Obligations::new(),
+        match self.types_by_name.get(&name) {
+            Some(decls) if decls.len() == 1 => decls.first().copied(),
+            _ => None,
         }
     }
 
@@ -268,10 +240,57 @@ impl Signatures {
         self.rules.get(&obligation).copied().unwrap_or_default()
     }
 
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Resolved<'a> {
+    pub(crate) hir: &'a Hir,
+    pub(crate) bindings: &'a Bindings,
+    pub(crate) sigs: &'a Signatures,
+}
+
+impl<'a> Resolved<'a> {
+    /// The obligations a matcher admits on the value it matches: one per bindingless witness among
+    /// its alternatives. `Node | null` admits `opt`, so a name bound to that value owes `opt`.
+    pub(crate) fn admitted_obligations(&self, matcher: &HirId<HirMatcher>) -> Obligations {
+        match self.hir.get(matcher) {
+            HirMatcher::Or(alternatives) => alternatives.iter()
+                .flat_map(|alt| self.bindingless_witness_obligations(alt))
+                .collect(),
+            HirMatcher::Type { .. } => self.obligations_witnessed_by_test(matcher),
+            HirMatcher::As(_, inner) => self.admitted_obligations(inner),
+            _ => Obligations::new(),
+        }
+    }
+
+    /// The obligations a bindingless alternative witnesses. `null` witnesses `opt`. A bare witness
+    /// type witnesses its own. A non-witness alternative yields nothing.
+    pub(crate) fn bindingless_witness_obligations(&self, alt: &HirId<HirMatcher>) -> Obligations {
+        match self.hir.get(alt) {
+            HirMatcher::Literal(HirLiteral::Null) => Obligations::from([self.sigs.opt]),
+            HirMatcher::Type { shape: None, .. } => self.obligations_witnessed_by_test(alt),
+            _ => Obligations::new(),
+        }
+    }
+
+    /// The obligations the declaration a type test names witnesses.
+    fn obligations_witnessed_by_test(&self, matcher: &HirId<HirMatcher>) -> Obligations {
+        let Some(stmt) = self.bindings.type_ref(matcher) else { return Obligations::new() };
+        match self.hir.get(&stmt) {
+            HirStmt::Type(decl) | HirStmt::Trait(decl) => self.sigs.obligations_witnessed_by_decl(decl),
+            _ => Obligations::new(),
+        }
+    }
+
     /// The declaration a callee names, when it is an identifier naming a declared type.
-    pub(crate) fn type_named(&self, hir: &Hir, bindings: &Bindings, callee: &HirId<HirExpr>) -> Option<HirId<HirStmt>> {
-        let decl = bindings.expr_type(callee)?;
-        matches!(hir.get(&decl), HirStmt::Type(_)).then_some(decl)
+    pub(crate) fn type_named(&self, callee: &HirId<HirExpr>) -> Option<HirId<HirStmt>> {
+        let decl = self.bindings.expr_type(callee)?;
+        matches!(self.hir.get(&decl), HirStmt::Type(_)).then_some(decl)
+    }
+
+    /// The tag a construction on this callee produces. A callee naming no type says nothing.
+    pub(crate) fn constructed_tag(&self, callee: &HirId<HirExpr>) -> TypeTag {
+        self.type_named(callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
     }
 }
 

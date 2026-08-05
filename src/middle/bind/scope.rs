@@ -15,12 +15,15 @@ impl<'a> Resolver<'a> {
     pub(super) fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
         self.scope_depth -= 1;
         while self.type_scope.last().is_some_and(|t| t.depth > self.scope_depth) {
-            self.type_scope.pop();
+            let gone = self.type_scope.pop().expect("just checked");
+            self.type_index.remove(&gone.name);
         }
+
+        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
         let mut cleanups = Vec::new();
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
             if self.locals.last().unwrap().is_captured {
-                cleanups.push(super::Cleanup::CloseUpvalue(self.locals.len() as u8 - 1));
+                cleanups.push(super::Cleanup::CloseUpvalue((self.locals.len() - 1) as u8 - local_offset));
             } else {
                 cleanups.push(super::Cleanup::Pop);
             }

@@ -89,22 +89,18 @@ impl<'a> Compiler<'a> {
             self.emit(Inst::Is(id), node);
             return Ok(());
         }
-        let Some(decl) = self.bindings.type_ref(matcher) else {
-            compiler_error!(self, node, "'{}' is not a type or trait", self.hir.text(name));
-        };
-        let members = match self.bindings.surface(&decl) {
-            Some(members) => members.to_vec(),
-            None => compiler_error!(self, node, "'{}' is not a type or trait", self.hir.text(name)),
-        };
-        // A trait has no layout, so its surface is tested by name.
-        let layout = self.bindings.layout_of_decl(&decl);
+        let members = self.surface_members(matcher, name, node)?;
+        if members.is_empty() {
+            self.emit(Inst::IsShaped, node);
+            return Ok(());
+        }
         self.compile_test_and(members.len(), node, &|c, i, n| {
-            let member = members[i];
-            let idx = c.member_constant(member)?;
-            let inst = match layout.and_then(|l| c.member_admits(l, member)) {
+            let (member, admits) = &members[i];
+            let idx = c.member_constant(*member)?;
+            let inst = match admits {
                 Some((null_allowed, witnesses)) => {
-                    let allow = c.witness_id_set(&witnesses);
-                    Inst::MemberAdmits(idx, null_allowed, c.ir.add_witness_allow(allow)?)
+                    let allow = c.witness_id_set(witnesses);
+                    Inst::MemberAdmits(idx, *null_allowed, c.ir.add_witness_allow(allow)?)
                 },
                 None => Inst::HasMember(idx),
             };
@@ -244,25 +240,18 @@ impl<'a> Compiler<'a> {
                 self.emit(Inst::HasMember(key_idx), node);
                 Ok(())
             },
-            HirMatcher::Literal(HirLiteral::Null) => self.compile_test_and(2, node, &|c, i, n| match i {
-                0 => { c.emit(Inst::HasMember(key_idx), n); Ok(()) },
-                _ => {
-                    c.emit(Inst::GetIndexOrNull(key_idx), n);
-                    c.emit(Inst::PushNull, n);
-                    c.emit(Inst::Equal, n);
-                    Ok(())
-                },
-            }),
-            HirMatcher::Literal(lit) => {
-                self.emit(Inst::GetIndexOrNull(key_idx), node);
-                self.literal(node, lit)?;
-                self.emit(Inst::Equal, node);
-                Ok(())
-            },
-            _ => {
+            // A test that rejects null already fails on an absent key, which reads as null.
+            _ if self.hir.get(value).rejects_null(self.hir) => {
                 self.emit(Inst::GetIndexOrNull(key_idx), node);
                 self.compile_matcher(value, binders, node)
             },
+            _ => self.compile_test_and(2, node, &|c, i, n| match i {
+                0 => { c.emit(Inst::HasMember(key_idx), n); Ok(()) },
+                _ => {
+                    c.emit(Inst::GetIndexOrNull(key_idx), n);
+                    c.compile_matcher(value, binders, n)
+                },
+            }),
         }
     }
 }

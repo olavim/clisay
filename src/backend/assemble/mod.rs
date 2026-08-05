@@ -2,8 +2,10 @@
 
 use anyhow::bail;
 
+use crate::ast::BuiltinType;
 use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::opcode;
+use crate::core::objects::TypeMember;
 use crate::frontend::lex::SourcePosition;
 use crate::middle::ir::{Inst, Ir, Label};
 
@@ -26,19 +28,29 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
 
     let mut chunk = BytecodeChunk::new();
     chunk.witness_ids = ir.witness_ids().to_vec();
-    chunk.builtin_type_ids = ir.builtin_type_ids();
+    if ir.builtin_layouts().iter().any(Option::is_none) {
+        bail!("a built-in type reached assembly with no layout");
+    }
+
+    // `Err`'s native factory writes field 0 and nothing else, so its declaration has to match.
+    let err = ir.builtin_layouts()[BuiltinType::Err.index()].as_ref().expect("every built-in layout is present");
+    if err.field_count != 1 || !err.members.iter().any(|(name, m)| name == "value" && matches!(m, TypeMember::Field(0))) {
+        bail!("Err's native factory writes one field, so its declaration must have exactly `value` at id 0");
+    }
+
     chunk.witness_allows = ir.witness_allows().to_vec();
     chunk.constants = ir.constants().to_vec();
     for (i, inst) in ir.code().iter().enumerate() {
         encode(inst, &offsets, &ir, &mut chunk, &ir.positions()[i]);
     }
+    chunk.builtin_layouts = ir.into_builtin_layouts();
 
     Ok(chunk)
 }
 
-/// Writes a pool index as two little-endian bytes, the way the VM reads it back.
-fn write_pool(chunk: &mut BytecodeChunk, idx: u16, pos: &SourcePosition) {
-    for byte in idx.to_le_bytes() {
+/// Writes a declaration id as two little-endian bytes.
+fn write_u16(chunk: &mut BytecodeChunk, value: u16, pos: &SourcePosition) {
+    for byte in value.to_le_bytes() {
         chunk.write(byte, pos);
     }
 }
@@ -69,10 +81,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
     chunk.write(opcode::opcode_of(inst), pos);
 
     let target_of = |label: Label| offsets[ir.label_target(label)] as u16;
-    let write_jump = |chunk: &mut BytecodeChunk, target: u16| {
-        chunk.write(target as u8, pos);
-        chunk.write((target >> 8) as u8, pos);
-    };
+    let write_jump = |chunk: &mut BytecodeChunk, target: u16| write_u16(chunk, target, pos);
 
     match *inst {
         Return | ReturnFac
@@ -107,7 +116,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | ReleaseBorrow(b)
         | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
 
-        Is(id) => write_pool(chunk, id, pos),
+        Is(id) => write_u16(chunk, id, pos),
 
         Jump(l)
         | JumpIfFalse(l)
@@ -129,7 +138,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
 
         JumpIfIs(l, id) => {
             write_jump(chunk, target_of(l));
-            write_pool(chunk, id, pos);
+            write_u16(chunk, id, pos);
         }
 
         AddLocalConst(local, c) | SubLocalConst(local, c)
@@ -168,13 +177,13 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
 
         BarrierGuard(null_allowed, idx) => {
             chunk.write(null_allowed as u8, pos);
-            write_pool(chunk, idx, pos);
+            write_u16(chunk, idx, pos);
         }
 
         MemberAdmits(member, null_allowed, idx) => {
             chunk.write(member, pos);
             chunk.write(null_allowed as u8, pos);
-            write_pool(chunk, idx, pos);
+            write_u16(chunk, idx, pos);
         }
 
         SubConstLocal(c, local) | AddConstLocal(c, local) => {

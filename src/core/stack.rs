@@ -1,17 +1,20 @@
 use std::marker::PhantomData;
 
+/// Slots allocated past `end`.
+const SLACK: usize = 256;
+
 pub struct Stack<T, const N: usize> {
     values: Vec<T>,
     top: *mut T,
     bottom: *mut T,
-    /// One past the last slot.
+    /// One past the last slot a program may use.
     end: *mut T
 }
 
 impl<'a, T: Copy, const N: usize> Stack<T, N> {
     pub fn new() -> Self {
         Self {
-            values: vec![unsafe { std::mem::zeroed() }; N],
+            values: vec![unsafe { std::mem::zeroed() }; N + SLACK],
             top: std::ptr::null_mut(),
             bottom: std::ptr::null_mut(),
             end: std::ptr::null_mut()
@@ -24,9 +27,22 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
         self.end = unsafe { self.values.as_mut_ptr().add(N) };
     }
 
+    /// One past the last slot a program may use.
+    #[inline]
+    pub fn end(&self) -> *mut T {
+        self.end
+    }
+
     #[inline]
     pub fn top(&self) -> *mut T {
         self.top
+    }
+
+    /// Only the debug root verifier needs the floor.
+    #[cfg(debug_assertions)]
+    #[inline]
+    pub fn bottom(&self) -> *mut T {
+        self.bottom
     }
 
     #[inline]
@@ -39,12 +55,21 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
         unsafe { self.top.sub(offset + 1) }
     }
 
+    /// Writes without checking, because this is the hottest write in the VM. A push past `end` is
+    /// over budget but still in bounds. Running past the slack as well is what this catches.
     #[inline]
     pub fn push(&mut self, value: T) {
+        debug_assert!(self.top < unsafe { self.end.add(SLACK) }, "stack overflow: push past the slack");
         unsafe {
             *self.top = value;
             self.top = self.top.add(1);
         }
+    }
+
+    /// Whether `count` more values fit.
+    #[inline]
+    pub fn has_room(&self, count: usize) -> bool {
+        (self.end as usize).saturating_sub(self.top as usize) / std::mem::size_of::<T>() >= count
     }
 
     #[inline]

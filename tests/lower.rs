@@ -1,11 +1,12 @@
 use clisay::internals::{lower, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt, ReturnShape};
 
 /// The top-level statements of a lowered program (unwraps the root block).
+/// The statements the program wrote. The compiler declares its own built-ins in the same block.
 fn top_stmts(hir: &Hir) -> Vec<HirId<HirStmt>> {
     let root = hir.get_root();
     let HirStmt::Expression(block) = hir.get(&root) else { panic!("root is not an expression statement") };
     let HirExpr::Block(stmts) = hir.get(block) else { panic!("root expression is not a block") };
-    stmts.clone()
+    stmts.iter().filter(|s| !matches!(hir.get(*s), HirStmt::Type(decl) if decl.builtin.is_some())).copied().collect()
 }
 
 fn first_arm_matcher(hir: &Hir) -> &HirMatcher {
@@ -150,17 +151,22 @@ fn a_mixed_trait_keeps_one_id_in_either_declaration_order() {
 }
 
 /// Two declarations sharing a name are two ids, which is what lets a type test tell them apart.
+/// Sibling scopes are where a name can reach two declarations, since neither shadows the other.
 #[test]
 fn same_named_declarations_get_distinct_ids() {
-    let hir = lower("fn mk()! { type T { pub x; } return T { x: 1 }; }\ntype T { pub y; }");
+    let hir = lower("fn mk()! { type T { pub x; } return T { x: 1 }; }\nfn probe() { type T { pub y; } }");
     let stmts = top_stmts(&hir);
-    let HirStmt::Fn(decl) = hir.get(&stmts[0]) else { panic!("first statement is not a function") };
-    let HirExpr::Block(body) = hir.get(&decl.body) else { panic!("function body is not a block") };
-    let HirStmt::Type(inner) = hir.get(&body[0]) else { panic!("nested statement is not a type") };
-    let HirStmt::Type(outer) = hir.get(&stmts[1]) else { panic!("second statement is not a type") };
+    let nested_type = |index: usize| {
+        let HirStmt::Fn(decl) = hir.get(&stmts[index]) else { panic!("statement is not a function") };
+        let HirExpr::Block(body) = hir.get(&decl.body) else { panic!("function body is not a block") };
+        let HirStmt::Type(ty) = hir.get(&body[0]) else { panic!("nested statement is not a type") };
+        (ty.name, ty.id)
+    };
+    let (first_name, first_id) = nested_type(0);
+    let (second_name, second_id) = nested_type(1);
 
-    assert!(inner.name == outer.name, "the two declarations should share a name");
-    assert_ne!(inner.id, outer.id);
+    assert!(first_name == second_name, "the two declarations should share a name");
+    assert_ne!(first_id, second_id);
 }
 
 /// An obligation's witness names a declaration, so it carries that declaration's id.

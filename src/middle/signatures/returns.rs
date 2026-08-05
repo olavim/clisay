@@ -100,16 +100,16 @@ impl<'a> Collector<'a> {
             HirExpr::This => TypeTag::SelfType,
             // A `: mut` factory returns `mut Ctor()`, so classify the wrapped construction.
             HirExpr::Mut(inner) => self.classify_return(inner),
-            HirExpr::Construct(callee, _, _) => {
-                self.sigs.type_named(self.hir, self.bindings, callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
-            },
-            HirExpr::Call(callee, _) => match self.hir.get(callee) {
-                _ if self.sigs.type_named(self.hir, self.bindings, callee).is_some() =>
-                    self.sigs.type_named(self.hir, self.bindings, callee).map_or(TypeTag::Unknown, TypeTag::Concrete),
-                HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
-                    .and_then(|stmt| self.sigs.ret_tags.get(stmt).cloned())
-                    .unwrap_or(TypeTag::Unknown),
-                _ => TypeTag::Unknown,
+            HirExpr::Construct(callee, _) => self.resolved().constructed_tag(callee),
+            // A callee naming a type is a factory call, so it reports the type it builds.
+            HirExpr::Call(callee, _) => match self.resolved().type_named(callee) {
+                Some(decl) => TypeTag::Concrete(decl),
+                None => match self.hir.get(callee) {
+                    HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
+                        .and_then(|stmt| self.sigs.ret_tags.get(stmt).cloned())
+                        .unwrap_or(TypeTag::Unknown),
+                    _ => TypeTag::Unknown,
+                },
             },
             _ => TypeTag::Unknown,
         }

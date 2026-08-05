@@ -3,11 +3,12 @@ use std::collections::HashSet;
 use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Capability, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
+/// The statements the program wrote. The compiler declares its own built-ins in the same block.
 fn top_stmts(ast: &Ast) -> Vec<AstId<Stmt>> {
     let root = ast.get_root();
     let Stmt::Expression(block) = ast.get(&root) else { panic!("root is not an expression statement") };
     let Expr::Block(stmts) = ast.get(block) else { panic!("root expression is not a block") };
-    stmts.clone()
+    stmts.iter().filter(|s| !matches!(ast.get(*s), Stmt::Type(decl) if decl.builtin.is_some())).copied().collect()
 }
 
 fn nth_fn<'a>(ast: &'a Ast, stmts: &[AstId<Stmt>], i: usize) -> &'a FnDecl {

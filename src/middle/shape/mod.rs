@@ -10,6 +10,7 @@ mod traits;
 use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{Hir, HirExpr, HirId, HirLiteral, HirStmt, HirTypeDecl};
+use crate::middle::signatures::Resolved;
 use crate::middle::signatures::Signatures;
 use crate::middle::walk::{children_of, Child};
 
@@ -29,6 +30,10 @@ impl<'a> Diagnose for Shape<'a> {
 }
 
 impl<'a> Shape<'a> {
+    fn resolved(&self) -> Resolved<'a> {
+        Resolved { hir: self.hir, bindings: self.bindings, sigs: self.sigs }
+    }
+
     fn visit(&self, node: Child) -> Result<(), anyhow::Error> {
         match node {
             Child::Expr(e) => self.expr(&e)?,
@@ -42,7 +47,7 @@ impl<'a> Shape<'a> {
 
     fn expr(&self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match self.hir.get(node) {
-            HirExpr::Construct(callee, _, brace) => self.construct(callee, brace)?,
+            HirExpr::Construct(callee, brace) => self.construct(callee, brace)?,
             HirExpr::Literal(HirLiteral::Lambda(decl)) => self.visit(Child::Expr(decl.body))?,
             _ => {},
         }

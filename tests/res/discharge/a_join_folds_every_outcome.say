@@ -1,0 +1,26 @@
+// A join is a fold, so an outcome that resolves nothing has to knock the obligation out however
+// many outcomes follow it. The middle arm only prints, so the match resolves nothing.
+fn f(): fails { return Err("e"); }
+fn run(k) {
+    say x: fails = f(); // error: 'x' owes 'fails' and is never discharged
+    match (k) {
+        1 => { x ?? 0; },
+        2 => { print("mid"); },
+        _ => { x ?? 0; },
+    }
+}
+run(2);
+
+// @split
+// Every outcome resolving it is the case that works.
+fn f(): fails { return Err("e"); }
+fn run(k) {
+    say x: fails = f();
+    match (k) {
+        1 => { x ?? 0; },
+        2 => { x ?? 0; },
+        _ => { x ?? 0; },
+    }
+    print("end");
+}
+run(2); // expect: end

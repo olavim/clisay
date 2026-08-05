@@ -15,6 +15,8 @@ pub enum Operand {
     List,
     /// A 16-bit index into a side table, little-endian.
     Pool,
+    /// A 16-bit declaration id, little-endian.
+    TypeId,
 }
 
 impl Operand {
@@ -24,7 +26,7 @@ impl Operand {
         match self {
             Operand::Byte | Operand::Local | Operand::Const => Some(1),
             Operand::Jump => Some(2),
-            Operand::Pool => Some(2),
+            Operand::Pool | Operand::TypeId => Some(2),
             Operand::List => None,
         }
     }
@@ -75,7 +77,7 @@ opcodes! {
     JumpIfNull => JUMP_IF_NULL(Jump),
     JumpIfClean => JUMP_IF_CLEAN(Jump),
     JumpIfBad => JUMP_IF_BAD(Jump),
-    JumpIfIs => JUMP_IF_IS(Jump, Pool),
+    JumpIfIs => JUMP_IF_IS(Jump, TypeId),
     JumpIfGe => JUMP_IF_GE(Jump),
     JumpIfGt => JUMP_IF_GT(Jump),
     JumpIfLe => JUMP_IF_LE(Jump),
@@ -170,7 +172,7 @@ opcodes! {
     LessThanEqual => LESS_THAN_EQUAL,
     GreaterThan => GREATER_THAN,
     GreaterThanEqual => GREATER_THAN_EQUAL,
-    Is => IS(Pool),
+    Is => IS(TypeId),
     HasMember => HAS_MEMBER(Const),
     MemberAdmits => MEMBER_ADMITS(Const, Byte, Pool),
     IsShaped => IS_SHAPED,

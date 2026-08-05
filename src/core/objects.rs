@@ -5,7 +5,7 @@ use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
 use super::host::Host;
-use super::value::{Value, ValueKind};
+use super::value::{DictKey, Value, ValueKind};
 
 /// The runtime diagnostic raised when a mutation hits an immutable value.
 pub const IMMUTABLE_MUTATION: &str = "cannot mutate an immutable value";
@@ -50,7 +50,7 @@ pub fn freeze_value(value: Value, origin: u32) {
         ObjectKind::Instance => {
             let instance = unsafe { &*object.as_instance_ptr() };
             let ty = unsafe { &*instance.ty };
-            for &id in &ty.fields { freeze_value(instance.get(id), origin); }
+            for id in 0..ty.field_count { freeze_value(instance.get(id), origin); }
         },
         _ => {},
     }
@@ -156,8 +156,7 @@ macro_rules! objects {
                 }
             }
 
-            /// Marks everything the object owns. Dispatching on the concrete type keeps the
-            /// allocation pointer, which whatever an object stores past its struct needs.
+            /// Marks everything the object owns.
             fn mark_owned(&self, gc: &mut Gc) {
                 match self.kind() {
                     $(
@@ -170,18 +169,26 @@ macro_rules! objects {
                 }
             }
 
-            /// Drops the object's owned data in place but does **not** deallocate
-            /// the backing block, which is left to the GC's free list so the
-            /// allocation can be recycled.
-            pub fn free(self) -> (usize, usize) {
+            /// What the object occupies now, which includes anything it grew into after it was
+            /// allocated.
+            pub fn size(self) -> usize {
+                match self.kind() {
+                    $(
+                        ObjectKind::$kind => unsafe { (*self.$accessor()).size() }
+                    ),+
+                }
+            }
+
+            /// Drops the object's owned data in place but doesn't deallocate
+            /// the backing block.
+            pub fn free(self) -> usize {
                 match self.kind() {
                     $(
                         ObjectKind::$kind => {
                             let ptr = self.$accessor();
-                            let accounted = unsafe { (*ptr).size() };
                             let layout = unsafe { (*ptr).layout_size() };
                             unsafe { std::ptr::drop_in_place(ptr) };
-                            (accounted, layout)
+                            layout
                         }
                     ),+
                 }
@@ -521,6 +528,23 @@ pub enum TypeMember {
     Method(MemberId)
 }
 
+impl TypeMember {
+    pub fn id(&self) -> MemberId {
+        let (TypeMember::Field(id) | TypeMember::Method(id)) = self;
+        *id
+    }
+}
+
+#[derive(Clone)]
+pub struct BuiltinLayout {
+    pub id: TypeId,
+    pub members: Vec<(String, TypeMember)>,
+    /// Members below this id are fields and the rest are methods, as on `ObjType`.
+    pub field_count: MemberId,
+    pub factory_id: MemberId,
+    pub member_count: MemberId,
+}
+
 #[repr(align(8))]
 #[repr(C)]
 pub struct ObjType {
@@ -529,15 +553,9 @@ pub struct ObjType {
     /// Members below this id are fields and the rest are methods.
     pub field_count: MemberId,
     pub id: TypeId,
-    /// Field and regular-method names. The accessors/factory are *not* here;
-    /// they're addressed structurally via the id fields below.
     pub members: FnvHashMap<*mut ObjString, TypeMember>,
-    pub fields: IntSet<MemberId>,
     pub methods: IntMap<MemberId, Object>,
-    /// The declaration id of every trait/type this type provides: its own, plus every `with`-mixed trait.
     pub provided: IntSet<TypeId>,
-    /// The obligation witnesses this type provides, by id, sorted. Almost always empty: a type
-    /// provides one per witness trait it mixes, and most types mix none.
     pub witness_ids: Box<[u16]>,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
@@ -557,7 +575,6 @@ impl ObjType {
             header: ObjectHeader::new(ObjectKind::Type),
             name,
             members: FnvHashMap::default(),
-            fields: IntSet::default(),
             field_count: 0,
             id: TypeId::MAX,
             methods: IntMap::default(),
@@ -579,7 +596,6 @@ impl ObjType {
             header: ObjectHeader::new(ObjectKind::Type),
             name: self.name,
             members: self.members.clone(),
-            fields: self.fields.clone(),
             field_count: self.field_count,
             id: self.id,
             methods: self.methods.clone(),
@@ -589,7 +605,7 @@ impl ObjType {
             getter_id: self.getter_id,
             setter_id: self.setter_id,
             factory_id: self.factory_id,
-            template: self.template.clone(),
+            template: Box::new([]),
             gives: self.gives.clone(),
         }
     }
@@ -654,7 +670,6 @@ impl GcTraceable for ObjType {
     fn size(&self) -> usize {
         mem::size_of::<ObjType>()
             + self.members.capacity() * (mem::size_of::<*mut String>() + mem::size_of::<TypeMember>())
-            + self.fields.capacity() * mem::size_of::<MemberId>()
             + self.methods.capacity() * (mem::size_of::<MemberId>() + mem::size_of::<Object>())
             + self.provided.capacity() * mem::size_of::<TypeId>()
             + self.witness_ids.len() * mem::size_of::<u16>()
@@ -784,11 +799,11 @@ impl GcTraceable for ObjArray {
 #[repr(C)]
 pub struct ObjDict {
     pub header: ObjectHeader,
-    pub entries: FnvHashMap<Value, Value>
+    pub entries: FnvHashMap<DictKey, Value>
 }
 
 impl ObjDict {
-    pub fn new(entries: FnvHashMap<Value, Value>) -> ObjDict {
+    pub fn new(entries: FnvHashMap<DictKey, Value>) -> ObjDict {
         ObjDict {
             header: ObjectHeader::new(ObjectKind::Dict),
             entries
@@ -803,7 +818,7 @@ impl GcTraceable for ObjDict {
 
     fn mark(&self, gc: &mut Gc) {
         for (key, value) in &self.entries {
-            key.mark(gc);
+            key.0.mark(gc);
             value.mark(gc);
         }
     }

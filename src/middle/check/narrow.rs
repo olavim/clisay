@@ -7,6 +7,7 @@ use crate::middle::hir::{BinOp, Hir, HirExpr, HirId, HirLiteral, HirMatchArm, Hi
 use crate::middle::obligations::Obligations;
 use crate::middle::signatures::Witness;
 
+use super::scope::FlowSnapshot;
 use super::{Checker, NarrowFact, NarrowTarget, TypeTag};
 
 /// What the compiler can tell about a condition's truth without running it.
@@ -89,6 +90,9 @@ impl<'a> Checker<'a> {
             // `x != null` narrows when true; `x == null` narrows when false.
             HirExpr::Binary(BinOp::NotEqual, l, r) if positive => self.narrow_null_compare(l, r),
             HirExpr::Binary(BinOp::Equal, l, r) if !positive => self.narrow_null_compare(l, r),
+            // `x == <clean>` narrows when true; `x != <clean>` narrows when false.
+            HirExpr::Binary(BinOp::Equal, l, r) if positive => self.narrow_equal_compare(l, r),
+            HirExpr::Binary(BinOp::NotEqual, l, r) if !positive => self.narrow_equal_compare(l, r),
             // Both sides of a conjunction hold, so their facts combine.
             HirExpr::Binary(BinOp::And, l, r) if positive => {
                 let mut narrow = self.narrowings(l, true);
@@ -161,6 +165,40 @@ impl<'a> Checker<'a> {
         self.narrow_non_null(place)
     }
 
+    /// What `x == <clean>` proves, where the other side is a literal or a binding owing nothing.
+    pub(super) fn narrow_equal_compare(&self, l: &HirId<HirExpr>, r: &HirId<HirExpr>) -> Vec<NarrowFact> {
+        let place = match (self.proves_clean(l), self.proves_clean(r)) {
+            (true, false) => r,
+            (false, true) => l,
+            _ => return Vec::new(),
+        };
+        let Some(target) = self.narrow_target(place) else { return Vec::new() };
+        let mut facts = vec![NarrowFact::Discharge(target, self.sigs.opt)];
+        if let NarrowTarget::Local(i) = target {
+            facts.extend(self.object_witnessed(i).map(|o| NarrowFact::Discharge(target, o)));
+        }
+        facts
+    }
+
+    /// The obligations a local owes whose witness is an object. An obligation without one is a
+    /// fact about the slot's history, which knowing what the value is says nothing about.
+    fn object_witnessed(&self, i: usize) -> impl Iterator<Item = Symbol> + '_ {
+        self.locals[i].owed.iter().copied()
+            .filter(|o| matches!(self.sigs.witness(*o), Some(Witness::Type(_) | Witness::Trait(_))))
+    }
+
+    /// Whether being equal to this operand proves a value is in no witness's bad state.
+    fn proves_clean(&self, expr: &HirId<HirExpr>) -> bool {
+        match self.hir.get(expr) {
+            HirExpr::Literal(HirLiteral::Number(_) | HirLiteral::String(_) | HirLiteral::Boolean(_)) => true,
+            HirExpr::Identifier(name) => self.frame_index_of(*name).is_some_and(|i| {
+                let local = &self.locals[i];
+                local.func.is_none() && local.owed.difference(&local.discharged).next().is_none()
+            }),
+            _ => false,
+        }
+    }
+
     /// The place an expression names, when a narrowing can land on one.
     pub(super) fn narrow_target(&self, expr: &HirId<HirExpr>) -> Option<NarrowTarget> {
         match self.hir.get(expr) {
@@ -186,7 +224,7 @@ impl<'a> Checker<'a> {
 
     /// The true branch of `x ~ M`.
     pub(super) fn narrow_match_positive(&self, scrutinee: &HirId<HirExpr>, matcher: &HirId<HirMatcher>) -> Vec<NarrowFact> {
-        let mut facts = match self.matcher_implies_non_null(matcher) {
+        let mut facts = match self.hir.get(matcher).rejects_null(self.hir) {
             true => self.narrow_non_null(scrutinee),
             false => Vec::new(),
         };
@@ -201,10 +239,9 @@ impl<'a> Checker<'a> {
                 facts.push(NarrowFact::Tag(i, TypeTag::Concrete(stmt)));
             }
         }
-        facts.extend(self.locals[i].owed.iter()
-            .filter(|o| matches!(self.sigs.witness(**o), Some(Witness::Type(_) | Witness::Trait(_))))
-            .filter(|o| self.matcher_disjoint_from(matcher, **o))
-            .map(|o| NarrowFact::Discharge(NarrowTarget::Local(i), *o)));
+        facts.extend(self.object_witnessed(i)
+            .filter(|o| self.matcher_disjoint_from(matcher, *o))
+            .map(|o| NarrowFact::Discharge(NarrowTarget::Local(i), o)));
         facts
     }
 
@@ -308,28 +345,58 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Applies flow facts, runs `f` under them, then restores the prior flow state. Returns
-    /// `f`'s result so a branch can snapshot its end state before the restore.
-    pub(super) fn narrow_branch<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> R {
+    /// Whether the right operand of a short-circuit always runs, because the left cannot take the
+    /// outcome that skips it.
+    pub(super) fn right_operand_always_runs(&self, l: &HirId<HirExpr>, runs_when: bool) -> bool {
+        match runs_when {
+            true => self.never_fails(l),
+            false => self.never_holds(l),
+        }
+    }
+
+    /// What each local has resolved right now: an obligation it handled, or one the path proved it
+    /// is not in the bad state of.
+    pub(super) fn resolved_now(&self) -> Vec<Obligations> {
+        self.frame_locals().iter()
+            .map(|l| l.owed.iter().copied().filter(|o| l.handled.contains(o) || l.discharged.contains(o)).collect())
+            .collect()
+    }
+
+    /// Records what every path through a construct resolved, which is what the construct resolved.
+    pub(super) fn mark_resolved_on_all(&mut self, paths: &[Vec<Obligations>]) {
+        for (i, local) in self.frame_locals_mut().iter_mut().enumerate() {
+            let on_all: Vec<Symbol> = match paths.split_first() {
+                Some((first, rest)) => first.get(i).into_iter().flatten().copied()
+                    .filter(|o| rest.iter().all(|p| p.get(i).is_some_and(|r| r.contains(o))))
+                    .collect(),
+                None => Vec::new(),
+            };
+            local.handled.extend(on_all);
+        }
+    }
+
+    /// Applies flow facts, runs `f` under them, then restores the prior flow state. Returns `f`'s
+    /// result, so a branch can snapshot its end state before the restore. Also returns what each
+    /// local resolved while the facts held. A sibling branch may run instead of this one, so a move
+    /// it made does not survive.
+    pub(super) fn narrow_branch<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> (R, Vec<Obligations>) {
+        self.narrow_under(facts, f, Checker::restore)
+    }
+
+    /// The same, for the right operand of a short-circuit. That operand runs on a path through the
+    /// condition rather than instead of one, so a value it moved stays moved after the condition.
+    pub(super) fn narrow_operand<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> (R, Vec<Obligations>) {
+        self.narrow_under(facts, f, Checker::restore_keeping_moves)
+    }
+
+    fn narrow_under<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R,
+                       unwind: fn(&mut Self, &FlowSnapshot)) -> (R, Vec<Obligations>) {
         let pre = self.snapshot();
         self.apply_narrowings(facts);
         let r = f(self);
-        self.restore(&pre);
-        r
-    }
-
-    /// Whether matching this matcher proves the scrutinee non-null. A bare binder, a wildcard, and
-    /// a `null` literal each admit null, so they prove nothing.
-    fn matcher_implies_non_null(&self, matcher: &HirId<HirMatcher>) -> bool {
-        match self.hir.get(matcher) {
-            HirMatcher::Wildcard | HirMatcher::Binder(_) => false,
-            HirMatcher::Literal(HirLiteral::Null) => false,
-            HirMatcher::Literal(_) => true,
-            HirMatcher::Type { .. } | HirMatcher::Shape(_) | HirMatcher::Array(_) => true,
-            HirMatcher::As(_, inner) => self.matcher_implies_non_null(inner),
-            HirMatcher::And(parts) => parts.iter().any(|p| self.matcher_implies_non_null(p)),
-            HirMatcher::Or(alternatives) => alternatives.iter().all(|a| self.matcher_implies_non_null(a)),
-        }
+        let resolved = self.resolved_now();
+        unwind(self, &pre);
+        (r, resolved)
     }
 
     /// Recovers a nominal destructure's declared field facts onto the names its shape binds. A
@@ -384,8 +451,18 @@ impl<'a> Checker<'a> {
     fn matcher_examines(&self, matcher: &HirId<HirMatcher>, remaining: &Obligations) -> Obligations {
         match self.hir.get(matcher) {
             HirMatcher::As(_, inner) => self.matcher_examines(inner, remaining),
-            HirMatcher::Or(parts) | HirMatcher::And(parts) => parts.iter()
-                .flat_map(|part| self.matcher_examines(part, remaining))
+            // `And` stops at the first part that fails, so only that one is sure to run.
+            HirMatcher::And(parts) => parts.first()
+                .map_or_else(Obligations::new, |part| self.matcher_examines(part, remaining)),
+            // `Or` tries alternatives until one matches, so whichever it stops at has to answer.
+            // An alternative answers by asking, or by ruling the witness out if it matches. An
+            // alternative that only rules out asked nothing, so at least one has to ask.
+            HirMatcher::Or(parts) => remaining.iter().copied()
+                .filter(|o| {
+                    let answers = |p: &HirId<HirMatcher>| self.matcher_examines(p, remaining).contains(o);
+                    parts.iter().any(answers)
+                        && parts.iter().all(|p| self.matcher_disjoint_from(p, *o) || answers(p))
+                })
                 .collect(),
             HirMatcher::Type { nominal: true, shape, .. } => {
                 let Some((stmt, decl)) = self.tested_decl(matcher) else { return Obligations::new() };
@@ -417,7 +494,9 @@ impl<'a> Checker<'a> {
             HirMatcher::Or(alternatives) => alternatives.iter().any(|m| self.total_over_witness(m, witness)),
             HirMatcher::And(parts) => parts.iter().all(|m| self.total_over_witness(m, witness)),
             HirMatcher::Literal(HirLiteral::Null) => matches!(witness, Witness::Null),
-            HirMatcher::Type { shape, .. } => {
+            // A structural test reads a surface a real witness can fail, so it covers nothing.
+            HirMatcher::Type { nominal: false, .. } => false,
+            HirMatcher::Type { nominal: true, shape, .. } => {
                 let Some((stmt, decl)) = self.tested_decl(matcher) else { return false };
                 match witness {
                     Witness::Type(id) => decl.id == *id

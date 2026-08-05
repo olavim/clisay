@@ -1,12 +1,16 @@
-trait Tagged { pub fn tag(this)! { return "TOP"; } }
-
 fn makeInner()! {
     trait Tagged { pub fn tag(this)! { return "INNER"; } }
     type Widget with Tagged { init(this) {} }
     return Widget();
 }
-
-type OuterThing with Tagged { init(this) {} }
-
+fn makeOuter()! {
+    trait Tagged { pub fn tag(this)! { return "OUTER"; } }
+    type Thing with Tagged { init(this) {} }
+    return Thing();
+}
 print(makeInner().tag()); // expect: INNER
-print(OuterThing().tag()); // expect: TOP
+print(makeOuter().tag()); // expect: OUTER
+
+// @split
+fn makeInner()! { trait Tagged { pub fn tag(this)! { return "INNER"; } } type Widget with Tagged { init(this) {} } return Widget(); }
+type Thing with Tagged { init(this) {} } // error: Trait 'Tagged' is not declared

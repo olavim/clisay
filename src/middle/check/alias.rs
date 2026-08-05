@@ -14,8 +14,8 @@ use crate::middle::hir::{Capability, HirExpr, HirId, HirLiteral, HirStmt, Symbol
 use super::{Checker, Flow, Guard, Mutability, Site, Typed};
 
 /// Why a mutable binding was moved.
-#[derive(Clone, Copy)]
-pub(super) enum MoveCause {
+#[derive(Clone, Copy, PartialEq)]
+pub enum MoveCause {
     /// Bound, stored, returned, or passed to a consuming parameter.
     Value,
     /// Passed to a callee this pass cannot resolve, which may or may not have consumed it. Reading
@@ -25,16 +25,16 @@ pub(super) enum MoveCause {
 }
 
 /// Where and why a mutable binding was moved out.
-#[derive(Clone, Copy)]
-pub(super) struct MovedAt {
-    pub(super) node: HirId<HirExpr>,
-    pub(super) cause: MoveCause,
+#[derive(Clone, Copy, PartialEq)]
+pub struct MovedAt {
+    pub node: HirId<HirExpr>,
+    pub cause: MoveCause,
 }
 
 /// Which element within an aggregate a name holds. A dict keys on any value, so a key is any
 /// literal, not just an index.
-#[derive(Clone, Copy)]
-pub(super) enum ElementKey {
+#[derive(Clone, Copy, PartialEq)]
+pub enum ElementKey {
     Number(f64),
     Bool(bool),
     Null,
@@ -57,8 +57,9 @@ pub(super) struct AliasLocal {
     pub(super) provenance: Vec<usize>,
     /// The closure that took over writing this binding's value, and where it writes it.
     pub(super) write_owner: Option<(Symbol, HirId<HirExpr>)>,
-    /// The aggregate slot and key this binding read its value out of.
-    pub(super) extracted_from: Option<(usize, Option<ElementKey>)>,
+    /// Every aggregate slot and key this binding may have read its value out of. A join keeps both
+    /// sides, because either branch could have run and an origin is a restriction.
+    pub(super) extracted_from: Vec<(usize, Option<ElementKey>)>,
     /// Whether this binding holds a runtime writer slot.
     pub(super) slot_taken: bool,
     /// Whether the value may already be named somewhere this pass cannot see.
@@ -303,26 +304,32 @@ impl<'a> Checker<'a> {
     /// Takes the one writer slot for the element this binding reads, so a second writer for the
     /// same element is rejected. A binding that is not an extraction writes whatever it owns.
     pub(super) fn claim_element_write(&mut self, i: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let Some((container, key)) = self.locals[i].alias.extracted_from else {
+        let origins = self.locals[i].alias.extracted_from.clone();
+        if origins.is_empty() {
             // A value from somewhere unproven has no element to name, but still needs the slot.
             return match self.locals[i].alias.shared_origin {
                 true => self.claim_at_runtime(i, node),
                 false => Ok(()),
             };
-        };
-        // A key this pass can name conflicts here, before the program runs.
-        if let Some(key) = key {
+        }
+
+        // A key this pass can name conflicts here, before the program runs. Every origin is checked,
+        // because the binding may have come out of any of them.
+        for (container, key) in origins {
+            let Some(key) = key else { continue };
             if let Some(holder) = (0..self.locals.len()).find(|&j| j != i && self.writes_element(j, container, &key)) {
                 return Err(self.second_writer_error(i, holder, container, node));
             }
         }
+
         self.claim_at_runtime(i, node)
     }
 
     /// Whether a binding already holds the writer slot for this element of this aggregate.
     pub(super) fn writes_element(&self, local: usize, container: usize, key: &ElementKey) -> bool {
         self.locals[local].alias.wrote_at.is_some()
-            && matches!(self.locals[local].alias.extracted_from, Some((c, Some(k))) if c == container && self.same_key(&k, key))
+            && self.locals[local].alias.extracted_from.iter()
+                .any(|(c, k)| *c == container && k.is_some_and(|k| self.same_key(&k, key)))
     }
 
     /// Takes the runtime writer slot, whether or not this pass could name the element. Leaving it
@@ -446,10 +453,7 @@ impl<'a> Checker<'a> {
                 }
             },
             // A brace also persists its field values into the new instance, so each escapes.
-            HirExpr::Construct(callee, args, brace) => {
-                self.reachable_call_args(callee, args, out);
-                for (_, v) in brace { self.reachable_sources(v, out); }
-            },
+            HirExpr::Construct(_, brace) => for (_, v) in brace { self.reachable_sources(v, out); },
             HirExpr::Call(callee, args) => self.reachable_call_args(callee, args, out),
             _ => for c in self.hir.ownership_children(node) { self.reachable_sources(&c, out); },
         }
@@ -806,6 +810,11 @@ impl<'a> Checker<'a> {
         let Some(i) = self.frame_index_of(*name) else { return };
         let sources = self.source_indices(rhs);
         self.locals[i].alias.provenance.extend(sources);
+    }
+
+    /// The error for writing to a method member.
+    pub(super) fn method_slot_error(&self, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
+        self.error(format!("Cannot assign to method '{}'", self.hir.text(field)), lhs)
     }
 
     pub(super) fn immutable_field_error(&self, decl: &HirId<HirStmt>, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {

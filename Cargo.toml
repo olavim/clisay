@@ -11,6 +11,7 @@ build_fib39 = "./scripts/build-and-run ./benches/fib39.say"
 [dependencies]
 anyhow = "1.0.96"
 fnv = "1.0.7"
+indexmap = "2.14.0"
 nohash-hasher = "0.2.0"
 regex = "1.11.1"
 rustc-hash = "2.1.1"

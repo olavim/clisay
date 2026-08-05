@@ -459,7 +459,7 @@ impl<'a> Checker<'a> {
             HirMatcher::Or(alternatives) => self.or_witness_obligations(alternatives, at, out),
             HirMatcher::As(name, inner) => {
                 // `x @ p | null` names the whole value, so `x` owes what that or-group admits.
-                let admits = self.sigs.admitted_obligations(self.hir, self.bindings, inner);
+                let admits = self.resolved().admitted_obligations(inner);
                 if !admits.is_empty() {
                     out.entry(*name).or_default().extend(admits);
                 }
@@ -497,7 +497,7 @@ impl<'a> Checker<'a> {
             }
             // A test beside a binding narrows what the binder receives. One that witnesses nothing
             // narrows nothing, so no value could reach the binder through it.
-            let witnesses = self.sigs.bindingless_witness_obligations(self.hir, self.bindings, alt);
+            let witnesses = self.resolved().bindingless_witness_obligations(alt);
             if witnesses.is_empty() {
                 return Err(self.error_help("a non-witness alternative beside a destructure is a dead binding".to_string(), at,
                     "beside a destructure, an alternative must be a witness (`null` or a witness type)"));
