@@ -1,10 +1,10 @@
-// A built-in's factory is declared like any other, so it keeps its argument the way a written one
-// would, and a mutable value handed to it is refused at the call.
+// A built-in's factory seals what it builds, so a mutable value handed to it would sit inside an
+// immutable container.
 say mut m = mut [1, 2];
-say e = Err(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+say e = Err(m); // error: cannot store a mutable value in an immutable container
 
 // @split
 // The same shape over a user type, which is the behaviour it is matched against.
 type Box { pub v; init(this, v) { this.v = v; } }
 say mut m = mut [1, 2];
-say b = Box(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+say b = Box(m); // error: cannot store a mutable value in an immutable container

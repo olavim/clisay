@@ -19,12 +19,13 @@ use crate::middle::obligations::{Obligations, Rule, Site};
 use crate::middle::signatures::Resolved;
 use crate::middle::signatures::{Mutability, Signatures, TypeTag};
 
-use alias::{AliasLocal, ElementKey, MovedAt};
+use alias::{AliasLocal, ElementKey, TransferSite};
 
 pub use barriers::{Barrier, Barriers, Guard, WitnessSet};
 
-pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures) -> Result<Barriers, anyhow::Error> {
+pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures, force_checks: bool) -> Result<Barriers, anyhow::Error> {
     let mut checker = Checker::new(hir, bindings, sigs);
+    checker.force_checks = force_checks;
     checker.stmt(&hir.get_root())?;
     checker.out.witness_decls = sigs.object_witnesses().map(|(_, id)| id).collect();
     Ok(checker.out)
@@ -62,14 +63,22 @@ enum Violation {
 struct Typed {
     flow: Flow,
     tag: TypeTag,
+    /// What the value is: whether anything may mutate it at all.
     mutability: Mutability,
+    /// Whether this name may write it. A binding that a closure took write-permission from may not.
+    writable: Mutability,
 }
 
 impl Typed {
-    fn unknown() -> Typed { Typed { flow: Flow::Unknown, tag: TypeTag::Unknown, mutability: Mutability::Unknown } }
-    fn nonnull() -> Typed { Typed { flow: Flow::Clean, tag: TypeTag::Unknown, mutability: Mutability::Unknown } }
-    fn of(flow: Flow, tag: TypeTag) -> Typed { Typed { flow, tag, mutability: Mutability::Unknown } }
-    fn with_mutability(mut self, mutability: Mutability) -> Typed { self.mutability = mutability; self }
+    fn unknown() -> Typed { Typed { flow: Flow::Unknown, tag: TypeTag::Unknown, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
+    fn nonnull() -> Typed { Typed { flow: Flow::Clean, tag: TypeTag::Unknown, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
+    fn of(flow: Flow, tag: TypeTag) -> Typed { Typed { flow, tag, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
+    fn with_mutability(mut self, mutability: Mutability) -> Typed {
+        self.mutability = mutability;
+        self.writable = mutability;
+        self
+    }
+    fn with_writable(mut self, writable: Mutability) -> Typed { self.writable = writable; self }
 }
 
 /// A tracked binding in the current function frame.
@@ -206,9 +215,16 @@ struct Checker<'a> {
     fn_ctx: FnContext<'a>,
     /// Set while descending into a `mut` construction.
     pub(super) mut_construction: bool,
+    /// Whether to record the runtime checks the pass proves unnecessary, so codegen can emit them anyway.
+    force_checks: bool,
     /// Locals a call in the expression being walked may have rebound. Read once, where a condition
     /// turns into the facts it proves.
     rebound_in_expr: HashSet<usize>,
+    /// How many times an element's writer slot has been handed to a container, which is what
+    /// `Guard::StoreIntoContainer` records. A construction takes its elements before it is assigned,
+    /// so the container is often not a local yet, and a scope compares this at entry and exit rather
+    /// than asking which local received them.
+    elements_handed_over: usize,
 }
 
 impl<'a> Diagnose for Checker<'a> {
@@ -226,7 +242,9 @@ impl<'a> Checker<'a> {
             bindings,
             sigs,
             resolved_callees: HashMap::new(),
+            force_checks: false,
             rebound_in_expr: HashSet::new(),
+            elements_handed_over: 0,
             locals: Vec::new(),
             frame_start: 0,
             current_type: None,

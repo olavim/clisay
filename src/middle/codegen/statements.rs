@@ -3,7 +3,7 @@ use crate::middle::hir::{HirCatchClause, HirExpr, HirFieldInit, HirId, HirStmt};
 use crate::middle::ir::Inst;
 use crate::middle::bind::FnKind;
 
-use super::{Compiler, TryCatchPosition, TryFrame};
+use super::{Compiler, WriteOwnershipHolderPlace, TryCatchPosition, TryFrame};
 
 
 impl<'a> Compiler<'a> {
@@ -109,7 +109,7 @@ impl<'a> Compiler<'a> {
                 let slot = self.bindings.slot(stmt_id);
 
                 let inst = if let Some(expr) = value {
-                    let saved = self.receiving_slot.replace(slot);
+                    let saved = self.receiving_slot.replace(WriteOwnershipHolderPlace::Local(slot));
                     let compiled = self.expression(expr);
                     self.receiving_slot = saved;
                     compiled?;

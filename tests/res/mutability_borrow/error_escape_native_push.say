@@ -1,4 +1,5 @@
-// A borrowed value pushed into a container traps at the store site at runtime.
+// Pushing a parameter into a container keeps it past the call, which the callee may not do with a
+// value it borrowed.
 fn stash(bin: mut, item) { bin.push(item); } // error: cannot persist a borrowed value
 say sink = mut [];
 say m = mut [1, 2];

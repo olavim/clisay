@@ -35,9 +35,12 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
 
     let name = std::path::Path::new(file).file_name().and_then(|n| n.to_str()).unwrap_or(file);
 
+    // A pinned disassembly describes the shipped pipeline. Forcing adds the checks the pass
+    // elided, so the stream it produces is a different one by design.
+    let force_checks = std::env::var_os("CLISAY_FORCE_CHECKS").is_some();
     for section in sections {
-        check_section(name, section, RunConfig::default(), true)?;
-        check_section(name, section, RunConfig { optimize: false }, false)
+        check_section(name, section, RunConfig { force_checks, ..RunConfig::default() }, !force_checks)?;
+        check_section(name, section, RunConfig { optimize: false, force_checks }, false)
             .map_err(|failure| Failed::from(format!("with the optimizer off: {failure:?}")))?;
     }
 
@@ -86,6 +89,16 @@ fn check_section(name: &str, section: &str, config: RunConfig, check_asm: bool) 
 
     Output::clear();
     Ok(())
+}
+
+/// Runs a program with every elided check forced back on, so a proof the pass made is put on
+/// trial. Answers the program's output, or the refusal a forced check raised.
+pub fn run_forced(src: &str) -> Result<Vec<String>, String> {
+    Output::clear();
+    let config = RunConfig { force_checks: true, ..RunConfig::default() };
+    let result = run_with("forced", src, config).map_err(|e| e.to_string());
+    Output::clear();
+    result
 }
 
 pub fn assert_inline<const COUNT: usize>(src: &str, r: Result<[&str; COUNT], String>) {

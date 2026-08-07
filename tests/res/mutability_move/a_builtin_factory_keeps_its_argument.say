@@ -1,19 +1,19 @@
-// A built-in's factory carries the same parameter facts a written one does, so a mutable argument
-// it keeps is refused at the call rather than becoming a second writer of the same array.
+// A built-in's factory carries the same parameter facts a written one does. Handing it a mutable
+// value moves the write-ownership into what it builds, so the caller may not write it afterwards.
 say a = mut [1];
-say e: fails = mut Err(a); // error: 'a' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+say e: fails = mut Err(a);
 e ?? 0;
-a[0] = 2;
+a[0] = 2; // error: cannot write `a`, which gave its write-ownership away
 
 // @split
 // The same shape over a user type, which is the behaviour it is matched against.
 type Box { pub v; init(this, v) { this.v = v; } }
 say a = mut [1];
-say b = mut Box(a); // error: 'a' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
-a[0] = 2;
+say b = mut Box(a);
+a[0] = 2; // error: cannot write `a`, which gave its write-ownership away
 
 // @split
-// Taking the argument by `*mut` is the way to hand it over, and it moves out of the caller.
+// Freezing the argument first hands over nothing, so the name keeps reading it.
 say a = mut [1];
 say e: fails = mut Err(freeze(a));
 e ?? 0;

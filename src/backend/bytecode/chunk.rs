@@ -1,5 +1,7 @@
 use std::mem;
 
+use fnv::FnvHashSet;
+
 use crate::frontend::lex::SourcePosition;
 use crate::core::gc::{Gc, GcTraceable};
 use crate::ast::BuiltinType;
@@ -21,12 +23,16 @@ pub struct BytecodeChunk {
     pub witness_allows: Vec<Box<[u16]>>,
     pub code: Vec<OpCode>,
     pub constants: Vec<Value>,
-    pub code_pos: Vec<SourcePosition>
+    pub code_pos: Vec<SourcePosition>,
+    /// Byte offsets of the checks forcing put back. Empty unless forcing is on, which is what keeps
+    /// an ordinary run from paying for the lookup.
+    pub elisions: FnvHashSet<usize>,
 }
 
 impl BytecodeChunk {
     pub fn new() -> BytecodeChunk {
         BytecodeChunk {
+            elisions: FnvHashSet::default(),
             witness_ids: Vec::new(),
             builtin_layouts: std::array::from_fn(|_| None),
             witness_allows: Vec::new(),

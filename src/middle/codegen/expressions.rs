@@ -1,11 +1,11 @@
 use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, TypeId, UnOp};
-use crate::middle::ir::{Inst, Label};
+use crate::middle::ir::{Inst, Label, WRITE_ROOT_LOCAL, WRITE_ROOT_NONE, WRITE_ROOT_UPVALUE};
 use crate::middle::bind::{FnKind, Place, Receiver};
 use crate::middle::check::{Barrier, Guard, WitnessSet};
 
-use super::Compiler;
+use super::{Compiler, WriteOwnershipHolderPlace, PathRoot};
 
 /// How an index / property expression (`a.b`, `a[b]`) is being accessed.
 #[derive(Clone, Copy)]
@@ -18,6 +18,21 @@ enum IndexOp {
 
 impl<'a> Compiler<'a> {
     pub (super) fn expression(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        // A barrier compares the element against the root it was reached through, and fires once
+        // the path is built, by which point indexing has consumed that root. So a root no binding
+        // can name is marked here and copied by the node that produces it.
+        if self.barriers.guards(expr).contains(&Guard::WriteThroughPath) {
+            let (root, kind) = self.path_root(expr);
+            // A node that is its own root would be compared against itself, and the move rule keeps
+            // a container from ever holding itself, so that could only fail. Copying it is waste.
+            if kind == PathRoot::Unnamed && root != *expr {
+                // The root is the first thing the path compiles, so a previous mark is always taken
+                // before the next one is made. One still pending means a mark found no node.
+                debug_assert!(self.dup_root.is_none(), "a path root was marked for copying and never copied");
+                self.dup_root = Some(root);
+            }
+        }
+
         match self.hir.get(expr) {
             HirExpr::Block(stmts) => self.scoped_body(stmts, expr)?,
             HirExpr::Unary(op, operand) => self.unary_expression(*op, operand)?,
@@ -49,27 +64,68 @@ impl<'a> Compiler<'a> {
             HirExpr::Assert(operand) => self.assert(expr, operand)?,
         };
 
+        // The copy rides the stack, so a nested path write before the barrier cannot disturb it.
+        if self.dup_root == Some(*expr) {
+            self.dup_root = None;
+            self.emit(Inst::Dup, expr);
+        }
+
         // Each runtime check this node carries, in the order the check pass put them in.
         for guard in self.barriers.guards(expr) {
             self.emit_guard(expr, *guard)?;
         }
+
+        // Under check-forcing, the checks the pass proved unnecessary are emitted too.
+        for guard in self.barriers.elided(expr) {
+            let at = self.ir.next_index();
+            self.emit_guard(expr, *guard)?;
+            self.ir.mark_elisions_from(at);
+        }
         Ok(())
     }
 
-    /// The slot of the binding a path is rooted in, if it has one. A write through a path is the
-    /// container's own when they share a root.
-    fn root_slot(&self, node: &HirId<HirExpr>) -> Option<u8> {
+    /// The node a path is rooted in, and how a barrier can name it. `this` names a place like any
+    /// other binding, so a write through it has a named root.
+    fn path_root(&self, node: &HirId<HirExpr>) -> (HirId<HirExpr>, PathRoot) {
         let mut current = *node;
         loop {
             match self.hir.get(&current) {
                 HirExpr::Index(target, _, _) | HirExpr::SafeAccess(target, _, _) => current = *target,
                 HirExpr::Assert(inner) | HirExpr::Propagate(inner) | HirExpr::Mut(inner) => current = *inner,
-                HirExpr::Identifier(_) => return match self.bindings.place(&current) {
-                    Place::Local(slot) => Some(slot),
-                    _ => None,
-                },
-                _ => return None,
+                HirExpr::Identifier(_) | HirExpr::This => return (current, match self.bindings.place(&current) {
+                    Place::Local(slot) => PathRoot::Local(slot),
+                    Place::Upvalue(idx) => PathRoot::Upvalue(idx),
+                    _ => PathRoot::Unnamed,
+                }),
+                _ => return (current, PathRoot::Unnamed),
             }
+        }
+    }
+
+    /// The binding a receiver is rooted in, for the container that takes an argument's writer slot.
+    fn root_holder(&self, node: &HirId<HirExpr>) -> Option<WriteOwnershipHolderPlace> {
+        match self.path_root(node).1 {
+            PathRoot::Local(slot) => Some(WriteOwnershipHolderPlace::Local(slot)),
+            PathRoot::Upvalue(idx) => Some(WriteOwnershipHolderPlace::Upvalue(idx)),
+            PathRoot::Unnamed => None,
+        }
+    }
+
+    /// The root a field store on `this` names. The receiver is the root, and its place says where.
+    fn receiver_root_operands(receiver: Receiver) -> (u8, u8) {
+        match receiver {
+            Receiver::Slot => (WRITE_ROOT_LOCAL, 0),
+            Receiver::Upvalue(idx) => (WRITE_ROOT_UPVALUE, idx),
+        }
+    }
+
+    /// The root a store names, encoded for the store's own operands. A root no binding names is
+    /// left to the path barrier, which codegen already emits for every one of those writes.
+    fn write_root_operands(&self, node: &HirId<HirExpr>) -> (u8, u8) {
+        match self.path_root(node).1 {
+            PathRoot::Local(slot) => (WRITE_ROOT_LOCAL, slot),
+            PathRoot::Upvalue(idx) => (WRITE_ROOT_UPVALUE, idx),
+            PathRoot::Unnamed => (WRITE_ROOT_NONE, 0),
         }
     }
 
@@ -83,14 +139,19 @@ impl<'a> Compiler<'a> {
             Guard::NonNull => self.emit(Inst::AssertNonNull, node),
             // The receiving container takes the element's writer slot, so the aggregate it came
             // from keeps reading it and stops writing it.
-            Guard::StoreIntoContainer => if let Some(slot) = self.receiving_slot {
-                self.emit(Inst::TransferWriteOwnership(slot), node);
+            Guard::StoreIntoContainer => match self.receiving_slot {
+                Some(WriteOwnershipHolderPlace::Local(slot)) => self.emit(Inst::TransferWriteOwnership(slot), node),
+                Some(WriteOwnershipHolderPlace::Upvalue(idx)) => self.emit(Inst::TransferWriteOwnershipUp(idx), node),
+                Some(WriteOwnershipHolderPlace::Stack(depth)) => self.emit(Inst::TransferWriteOwnershipAt(depth), node),
+                None => {},
             },
-            // A path rooted in no binding has no slot that could be its holder, so it asks the
-            // stricter question: that nothing holds the element at all.
-            Guard::WriteThroughPath => match self.root_slot(node) {
-                Some(base) => self.emit(Inst::AssertNoOtherWriter(base), node),
-                None => self.emit(Inst::AssertNoWriter, node),
+            // A root no binding names was copied while the path was built. A path that is its own
+            // root was reached through nothing, so it asks instead that nothing holds the element.
+            Guard::WriteThroughPath => match self.path_root(node) {
+                (_, PathRoot::Local(slot)) => self.emit(Inst::AssertNoOtherWriter(slot), node),
+                (_, PathRoot::Upvalue(idx)) => self.emit(Inst::AssertNoOtherWriterUp(idx), node),
+                (root, PathRoot::Unnamed) if root != *node => self.emit(Inst::AssertNoOtherWriterRoot, node),
+                (_, PathRoot::Unnamed) => self.emit(Inst::AssertNoWriter, node),
             },
             Guard::Immutable => self.emit(Inst::AssertImmutable, node),
             Guard::Unborrowed => self.emit(Inst::AssertNotBorrowed, node),
@@ -277,6 +338,10 @@ impl<'a> Compiler<'a> {
         match self.hir.get(inner) {
             // `mut K{..}` builds the brace unsealed (seal flag 0), so it stays mutable.
             HirExpr::Construct(callee, brace) => return self.construct_expression(inner, callee, brace, 0),
+            // `mut [..]` and `mut {..}` build unsealed.
+            HirExpr::Literal(literal @ (HirLiteral::Array(_) | HirLiteral::Dict(_))) => {
+                return self.container_literal(inner, literal, 0);
+            },
             // `mut K(..)` is a factory call left unsealed via CALL_MUT.
             HirExpr::Call(callee, args) if self.barriers.is_construction(inner) => {
                 return self.call_expression(callee, args, true);
@@ -326,7 +391,11 @@ impl<'a> Compiler<'a> {
             },
             Place::Field(id, receiver) => {
                 self.emit_receiver(receiver, node);
-                self.emit(if discarded { Inst::SetFieldPop(id) } else { Inst::SetField(id) }, node);
+                let (kind, operand) = Self::receiver_root_operands(receiver);
+                self.emit(match discarded {
+                    true => Inst::SetFieldPop(id, kind, operand),
+                    false => Inst::SetField(id, kind, operand),
+                }, node);
             },
             Place::Global(_) => unreachable!("assignment to a global is rejected during resolution"),
         }
@@ -402,7 +471,13 @@ impl<'a> Compiler<'a> {
                 self.expression(&rhs)?;
                 self.expression(target)?;
                 self.expression(member_expr_id)?;
-                self.emit(if is_dot { Inst::SetProperty } else { Inst::SetIndex }, target);
+                let (root_kind, root_operand) = self.write_root_operands(target);
+                let store = match is_dot {
+                    true => Inst::SetProperty(root_kind, root_operand),
+                    // The store asks the write-ownership question itself.
+                    false => Inst::SetIndex(root_kind, root_operand),
+                };
+                self.emit(store, target);
                 if discarded {
                     self.emit(Inst::Pop, target);
                 }
@@ -420,7 +495,11 @@ impl<'a> Compiler<'a> {
             IndexOp::Store { rhs, discarded } => {
                 self.expression(&rhs)?;
                 self.expression(target_expr)?;
-                self.emit(if discarded { Inst::SetFieldPop(member_id) } else { Inst::SetField(member_id) }, target_expr);
+                let (kind, operand) = self.write_root_operands(target_expr);
+                self.emit(match discarded {
+                    true => Inst::SetFieldPop(member_id, kind, operand),
+                    false => Inst::SetField(member_id, kind, operand),
+                }, target_expr);
             }
         }
         Ok(())
@@ -432,17 +511,25 @@ impl<'a> Compiler<'a> {
         // resolution) and the member is a literal name.
         if let Some((target, name)) = self.as_method_invoke(callee) {
             self.expression(&target)?;
-            // The receiver is the container an argument it keeps is handed to, so it is the slot
-            // that takes the writer slot for that argument.
-            let receiver = self.root_slot(&target);
+            // The receiver is the container an argument it keeps is handed to, so it takes the
+            // writer slot for that argument. A receiver no binding names is still on the stack,
+            // one past the arguments pushed so far, so it is reached by depth instead.
+            let receiver = self.root_holder(&target);
             let saved = std::mem::replace(&mut self.receiving_slot, receiver);
-            let compiled = args.iter().try_for_each(|arg| self.expression(arg));
+            let compiled = args.iter().enumerate().try_for_each(|(i, arg)| {
+                if receiver.is_none() {
+                    self.receiving_slot = Some(WriteOwnershipHolderPlace::Stack(i as u8 + 1));
+                }
+                self.expression(arg)
+            });
             self.receiving_slot = saved;
             compiled?;
             let name_ref = self.gc.intern(name);
             let idx = self.ir.add_constant(Value::from(name_ref))?;
             let marked = self.emit_mark_borrow(callee, args)?;
-            self.emit(Inst::Invoke(idx, args.len() as u8), callee);
+            // A method that writes its receiver asks the write-ownership question.
+            let (kind, operand) = self.write_root_operands(&target);
+            self.emit(Inst::Invoke(idx, args.len() as u8, kind, operand), callee);
             self.emit_release_borrow(marked, callee);
             return Ok(());
         }
@@ -528,6 +615,29 @@ impl<'a> Compiler<'a> {
     }
 
 
+    fn container_literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral, seal: u8) -> Result<(), anyhow::Error> {
+        match literal {
+            HirLiteral::Array(elements) => {
+                for element in elements {
+                    self.expression(element)?;
+                }
+                self.emit(Inst::Array(elements.len() as u8, seal), expr);
+            },
+            HirLiteral::Dict(pairs) => {
+                for (key, value) in pairs {
+                    self.expression(key)?;
+                    self.expression(value)?;
+                }
+                self.emit(Inst::Dict(pairs.len() as u8, seal), expr);
+            },
+            _ => unreachable!("only an array or dict literal builds a container"),
+        }
+        if seal != 0 {
+            self.seal_check(expr);
+        }
+        Ok(())
+    }
+
     pub (super) fn literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral) -> Result<(), anyhow::Error> {
         match literal {
             HirLiteral::Number(num) => {
@@ -542,21 +652,7 @@ impl<'a> Compiler<'a> {
             HirLiteral::Null => { self.emit(Inst::PushNull, expr); },
             HirLiteral::Boolean(true) => { self.emit(Inst::PushTrue, expr); },
             HirLiteral::Boolean(false) => { self.emit(Inst::PushFalse, expr); },
-            HirLiteral::Array(elements) => {
-                for element in elements {
-                    self.expression(element)?;
-                }
-                self.emit(Inst::Array(elements.len() as u8), expr);
-                self.seal_check(expr);
-            },
-            HirLiteral::Dict(pairs) => {
-                for (key, value) in pairs {
-                    self.expression(key)?;
-                    self.expression(value)?;
-                }
-                self.emit(Inst::Dict(pairs.len() as u8), expr);
-                self.seal_check(expr);
-            },
+            HirLiteral::Array(_) | HirLiteral::Dict(_) => self.container_literal(expr, literal, 1)?,
             HirLiteral::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };
 

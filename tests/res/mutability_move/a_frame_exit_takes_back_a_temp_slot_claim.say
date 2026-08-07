@@ -1,0 +1,27 @@
+// A `*mut` hand-off through an opaque callee keys its claim to a slot the frame's top has already
+// fallen back below. The exit takes it back all the same, so the claim never names a dead slot.
+fn keep(c: *mut)! { return c; }
+fn run(g, c: *mut)! { return g(c); }
+say a = mut [mut [0]];
+say w = run(keep, a[0]);
+w[0] = 3;
+print(w[0]); // expect: 3
+
+// @split
+// The source may not write what the hand-off took.
+fn keep(c: *mut)! { return c; }
+fn run(g, c: *mut)! { return g(c); }
+say a = mut [mut [0]];
+say w = run(keep, a[0]);
+w[0] = 3;
+a[0][0] = 9; // error: cannot write an element another name already writes
+
+// @split
+// A callee that hands it to nothing ends the hand-off at the container that holds the element,
+// which is still free to write it.
+fn drop(c: *mut) { }
+fn run(g, c: *mut) { g(c); }
+say a = mut [mut [0]];
+run(drop, a[0]);
+a[0][0] = 9;
+print(a[0][0]); // expect: 9

@@ -1,5 +1,5 @@
-// A constructor argument is moved into the new instance, so the source is dead afterward.
+// A constructor argument gives the new instance its write-ownership. The source reads it still.
 type Box { pub mut item; init(this, x: *mut) { this.item = x; } }
 say a = mut [1];
 say b = mut Box(a);
-print(a[0]); // error: value used after it was moved
+print(a[0]); // expect: 1

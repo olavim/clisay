@@ -35,6 +35,8 @@ struct EscapeFacts {
     returned: HashSet<Symbol>,
     /// Names mutated in place through an index or field write.
     mutates: HashSet<Symbol>,
+    /// Names stored somewhere where a second name can write them.
+    stored_away: HashSet<Symbol>,
     /// Names a call writes through its own effect: a native mutate or persist, or a conservative
     /// write by an opaque callee. A known callee's writes ride `forwards` instead.
     call_writes: HashSet<Symbol>,
@@ -237,6 +239,9 @@ impl<'a> Collector<'a> {
         for name in &facts.mutates {
             for p in carriers.get(name).into_iter().flatten() { row[param_position(params, *p)].mutates = true; }
         }
+        for name in &facts.stored_away {
+            for p in carriers.get(name).into_iter().flatten() { row[param_position(params, *p)].stored_away = true; }
+        }
         for forward in &facts.forwards {
             let callee_fact = self.sigs.param_fact(&forward.callee, forward.callee_param);
             for p in carriers.get(&forward.arg).into_iter().flatten() {
@@ -244,6 +249,7 @@ impl<'a> Collector<'a> {
                 fact.escapes |= callee_fact.escapes;
                 fact.beyond_return |= callee_fact.beyond_return;
                 fact.mutates |= callee_fact.mutates;
+                fact.stored_away |= callee_fact.stored_away;
             }
         }
         row
@@ -453,6 +459,7 @@ impl<'a> Collector<'a> {
     /// Records every name a persisted value keeps reachable as a direct escape.
     fn mark_persisted(&self, value: &HirId<HirExpr>, facts: &mut EscapeFacts) {
         facts.direct.extend(self.reachable_names(value));
+        facts.stored_away.extend(self.reachable_names(value));
     }
 
     /// Records how a call reaches its arguments. A known free function forwards each argument to its
@@ -515,6 +522,9 @@ impl<'a> Collector<'a> {
                     if sig.effect.mutates_receiver { self.reachable_into(recv, &mut facts.call_writes); }
                     if sig.effect.writes_args {
                         for arg in args { self.reachable_into(arg, &mut facts.call_writes); }
+                    }
+                    if sig.effect.persists_args {
+                        for arg in args { self.mark_persisted(arg, facts); }
                     }
                     return;
                 }

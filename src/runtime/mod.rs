@@ -7,6 +7,7 @@ use smallvec::SmallVec;
 
 use crate::Output;
 use crate::core::objects::{ObjBoundMethod, ObjInstance};
+use fnv::FnvHashSet;
 use crate::core::value::ValueKind;
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
@@ -22,6 +23,7 @@ use crate::ast::BuiltinType;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::opcode::{self, OpCode};
+use crate::middle::ir;
 
 const MAX_STACK: usize = 16384;
 const MAX_FRAMES: usize = 256;
@@ -47,7 +49,9 @@ struct CallCache {
     site: usize,
     callee: Value,
     closure: *mut ObjClosure,
-    ip_start: usize
+    ip_start: usize,
+    /// The callee's `*mut` positions.
+    move_mask: u64
 }
 
 /// A site no instruction pointer can be, which is how an entry says it answers nothing.
@@ -62,7 +66,7 @@ impl IndexCache {
 impl CallCache {
     /// An entry naming nothing. A collection resets to this, since what it named may be freed.
     const fn empty() -> CallCache {
-        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0 }
+        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0, move_mask: 0 }
     }
 }
 
@@ -100,14 +104,38 @@ pub struct CallFrame {
     write_depth: usize,
 }
 
-/// Write-ownership of one element, held by a name or by a container. `given` says how the holder
-/// came by it: two names writing one element reads differently from a name writing one it gave away.
+/// Who holds an element's writer slot. A name lives in a frame slot, so its claim dies with the
+/// frame. A container is identified by its value, whose lifetime that frame does not bound.
 #[derive(Clone, Copy)]
-pub struct WriteOwner {
+pub enum WriteOwnershipHolder {
+    Name(*mut Value),
+    Container(Value),
+    /// A container gc found unreachable.
+    Dead,
+    /// A `*mut` parameter whose frame is gone. The write-ownership was handed over and the taker
+    /// never handed it on, so it belongs to nobody.
+    Retired,
+}
+
+/// Write-ownership of one element, held by a name or by a container.
+#[derive(Clone, Copy)]
+pub struct WriteOwnership {
     pub value: Value,
-    pub holder: *mut Value,
+    pub holder: WriteOwnershipHolder,
     pub at: u32,
-    pub given: bool,
+    pub how: WriteOwnershipSource,
+}
+
+/// How a holder came by write-ownership, which is what a scope exit needs to dispose of it.
+#[derive(Clone, Copy, PartialEq)]
+pub enum WriteOwnershipSource {
+    /// A name binding the value. The write-ownership returns to the source when the name dies.
+    Bound,
+    /// A store into a container. The claim re-keys to the container, which outlives the name.
+    Given,
+    /// A `*mut` hand-off to a parameter. The write-ownership does not come back, so the claim
+    /// follows the value out of the frame or retires with it.
+    Taken,
 }
 
 #[derive(Clone, Copy)]
@@ -121,6 +149,22 @@ pub struct TryFrame {
 }
 
 pub struct Vm {
+    /// Forced checks this run reached, for the coverage report.
+    elisions_reached: FnvHashSet<usize>,
+    /// Write barriers that had to collect before they could answer, split by what the collection
+    /// then said. A trace the barrier did not need is an escape no primitive recorded, so only
+    /// those sites are worth naming.
+    write_barrier_missed_sites: FnvHashSet<usize>,
+    write_barrier_traced_missed: usize,
+    write_barrier_traced_refused: usize,
+    /// The write-ownership a scope exit would have released, each with the site it would have
+    /// released at. Nothing acts on a prediction, so a wrong one costs a report rather than a
+    /// second writer. The next collection settles the list and clears it, since none of it is a
+    /// root.
+    predicted_write_ownership_releases: Vec<(Value, usize)>,
+    predicted_write_ownership_release_sites: FnvHashSet<usize>,
+    refuted_write_ownership_release_sites: FnvHashSet<usize>,
+    refuted_write_ownership_releases: usize,
     pub(crate) gc: Gc,
     ip: *const OpCode,
     chunk: BytecodeChunk,
@@ -131,7 +175,7 @@ pub struct Vm {
     /// Values marked borrowed for an active call, each with its prior bit for nesting.
     borrows: Vec<(Value, bool)>,
     /// Values whose element writer slot is held, innermost last.
-    write_owners: Vec<WriteOwner>,
+    write_ownerships: Vec<WriteOwnership>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     index_cache: Box<[IndexCache]>,
@@ -251,11 +295,19 @@ impl Vm {
             frames: CachedStack::new(),
             try_frames: Vec::new(),
             borrows: Vec::new(),
-            write_owners: Vec::new(),
+            write_ownerships: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
             index_cache: vec![IndexCache::empty(); INDEX_CACHE_SIZE].into_boxed_slice(),
             call_cache: vec![CallCache::empty(); CALL_CACHE_SIZE].into_boxed_slice(),
+            elisions_reached: FnvHashSet::default(),
+            write_barrier_missed_sites: FnvHashSet::default(),
+            write_barrier_traced_missed: 0,
+            write_barrier_traced_refused: 0,
+            predicted_write_ownership_releases: Vec::new(),
+            predicted_write_ownership_release_sites: FnvHashSet::default(),
+            refuted_write_ownership_release_sites: FnvHashSet::default(),
+            refuted_write_ownership_releases: 0,
             out: Vec::new()
         };
 
@@ -327,7 +379,77 @@ impl Vm {
         let ip = vm.ip;
         let top = vm.stack.top();
         let base = unsafe { (*vm.frames.top()).stack_start };
-        Ok(threaded::dispatch(&mut vm, ip, top, base)?)
+        let result = threaded::dispatch(&mut vm, ip, top, base);
+
+        // A release is only settled by a collection, and a program can make its last allocation
+        // before its last release. Collect once more so nothing pending goes unchecked.
+        if result.is_ok() && std::env::var_os("CLISAY_BARRIER_TRACES").is_some() {
+            // The script's own locals are still rooted here, so a release the root scope made would
+            // read as reachable. Drop them first, or every top-level container refutes.
+            vm.stack.set_top(vm.stack.bottom());
+            vm.start_gc();
+        }
+
+        vm.report_elision_coverage();
+        vm.report_barrier_traces();
+        Ok(result?)
+    }
+
+    /// How often a write barrier had to collect to answer. Every trace but a genuine refusal is an
+    /// escape that reached no recording point, so this is the list of primitives still to cover.
+    fn report_barrier_traces(&self) {
+        if std::env::var_os("CLISAY_BARRIER_TRACES").is_none() {
+            return;
+        }
+
+        // The two signals are independent. A wrongly released claim lets the write through, so it
+        // takes no trace at all, and gating one report on the other hides exactly that case.
+        if self.write_barrier_traced_missed > 0 || self.write_barrier_traced_refused > 0 {
+            eprintln!("barrier traces: {} ({} missed release over {} sites, {} refused)",
+                self.write_barrier_traced_missed + self.write_barrier_traced_refused, self.write_barrier_traced_missed,
+                self.write_barrier_missed_sites.len(), self.write_barrier_traced_refused);
+        }
+        if self.refuted_write_ownership_releases > 0 {
+            eprintln!("write-ownership release: {} refuted at {} sites",
+                self.refuted_write_ownership_releases, self.refuted_write_ownership_release_sites.len());
+        }
+        for &site in self.refuted_write_ownership_release_sites.iter() {
+            let pos = &self.chunk.code_pos[site];
+            eprintln!("  refuted {}:{} {}", pos.source.name, pos.line, pos.snippet());
+        }
+        for &site in self.write_barrier_missed_sites.iter() {
+            let pos = &self.chunk.code_pos[site];
+            eprintln!("  {}:{} {}", pos.source.name, pos.line, pos.snippet());
+        }
+    }
+
+    /// How many of the forced checks the run actually reached.
+    fn report_elision_coverage(&self) {
+        if self.chunk.elisions.is_empty() {
+            return;
+        }
+        eprintln!("forced checks: {} of {} elided sites reached",
+            self.elisions_reached.len(), self.chunk.elisions.len());
+    }
+
+    /// Whether the instruction now executing is a check the analysis elided and forcing put back.
+    fn at_elided_site(&mut self) -> bool {
+        if self.chunk.elisions.is_empty() {
+            return false;
+        }
+        let site = self.code_index_at(self.ip);
+        let forced = self.chunk.elisions.contains(&site);
+        if forced {
+            self.elisions_reached.insert(site);
+        }
+        forced
+    }
+
+    /// Error for a forced check that failed.
+    #[cold]
+    fn refuted_elision(&self, what: &str) -> Result<(), anyhow::Error> {
+        self.raise(Diagnostic::new(format!("unsound elision: {what}"), self.get_source_position().clone())
+            .with_help("the check pass proved this check unnecessary, and forcing it back on refuted that"))
     }
 
     fn stringify_frame(&self, frame: &CallFrame, ip: *const OpCode) -> String {
@@ -488,12 +610,6 @@ impl Vm {
             }
         }
 
-        // A borrowed value may leave the stack while the call runs, so keep it alive until its
-        // matching release restores the borrowed bit on its header.
-        for held in &self.write_owners {
-            held.value.mark(&mut self.gc);
-        }
-
         for (value, _) in &self.borrows {
             value.mark(&mut self.gc);
         }
@@ -507,7 +623,40 @@ impl Vm {
             *entry = IndexCache::empty();
         }
 
-        self.gc.collect();
+        self.gc.trace();
+        self.refute_predicted_write_ownership_releases();
+        self.prune_write_ownerships();
+        self.gc.sweep();
+    }
+
+    /// Refutes the write-ownership a scope exit would have released. A container still reachable
+    /// here was reachable when the release would have fired, so firing it would have been wrong.
+    fn refute_predicted_write_ownership_releases(&mut self) {
+        #[cfg(debug_assertions)]
+        assert!(self.gc.marks_valid(), "a prediction settled outside the window where marks say what survived");
+        for (container, site) in std::mem::take(&mut self.predicted_write_ownership_releases) {
+            if container.is_object() && container.as_object().is_marked() {
+                self.refuted_write_ownership_release_sites.insert(site);
+                self.refuted_write_ownership_releases += 1;
+            }
+        }
+    }
+
+    /// Drops the write-ownership records a collection made pointless.
+    fn prune_write_ownerships(&mut self) {
+        #[cfg(debug_assertions)]
+        assert!(self.gc.marks_valid(), "a claim pruned outside the window where marks say what survived");
+        self.write_ownerships.retain_mut(|held| {
+            if !held.value.is_object() || !held.value.as_object().is_marked() {
+                return false;
+            }
+            if let WriteOwnershipHolder::Container(container) = held.holder {
+                if !container.is_object() || !container.as_object().is_marked() {
+                    held.holder = WriteOwnershipHolder::Dead;
+                }
+            }
+            true
+        });
     }
 
     #[inline]

@@ -25,6 +25,8 @@ pub const ESCAPED_BORROW: &str = "cannot pass a borrowed argument to a callee th
 pub const PERSISTED_BORROW: &str = "cannot persist a borrowed value";
 pub const SECOND_ELEMENT_WRITER: &str = "cannot write an element another name already writes";
 pub const WROTE_GIVEN_ELEMENT: &str = "cannot write an element whose write-ownership moved to another container";
+pub const WROTE_TRANSFERRED_ELEMENT: &str = "cannot write a value whose write-ownership was given away";
+pub const GAVE_TRANSFERRED_ELEMENT: &str = "cannot give away a value whose write-ownership was given away";
 /// A value read again after a call the compiler could not resolve turned out to consume it.
 pub const CONSUMED_ARGUMENT: &str = "value used after a call consumed it";
 
@@ -33,6 +35,61 @@ pub const CONSUMED_ARGUMENT: &str = "value used after a call consumed it";
 pub fn is_mutable_container(value: Value) -> bool {
     matches!(value.kind(), ValueKind::Object(ObjectKind::Array | ObjectKind::Dict | ObjectKind::Instance))
         && !value.as_object().is_immutable()
+}
+
+/// Marks a value that left its frame without being stored in a container. A store already moves
+/// the write-ownership to that container, so this covers the other ways out. Nothing reads the bit on
+/// an immutable value, since the question it answers is whether to release a writer slot and only
+/// a mutable container holds one.
+pub fn record_escape(value: Value) {
+    if is_mutable_container(value) {
+        unsafe { (*value.as_object().as_header_ptr()).set(FLAG_ESCAPED, true); }
+    }
+}
+
+/// Moves `value`'s write-ownership to `container`. Returns true if the give succeeded, false if not.
+#[must_use]
+pub fn give_container_write_ownership(container: Value, value: Value) -> bool {
+    if !is_mutable_container(value) || value == container {
+        return true;
+    }
+    // A retired value has no write-ownership to give.
+    if value.as_object().is_write_retired() {
+        return false;
+    }
+    value.as_object().set_container_write_owner(container);
+    true
+}
+
+/// Whether `root` write-owns `value`, directly or through the containers between them. A false
+/// says nothing about whether `root` contains it, only about who may write it.
+pub fn write_ownership_reaches(value: Value, root: Value) -> bool {
+    // A path that starts at its own target reached through nothing, so there is no container
+    // between them to disagree with.
+    if value == root {
+        return true;
+    }
+    if !root.is_object() {
+        return false;
+    }
+    // Two walkers at different speeds. A container reachable from its own element is a cycle a
+    // single walker would follow forever.
+    let (mut slow, mut fast) = (value, value);
+    loop {
+        for _ in 0..2 {
+            if !fast.is_object() {
+                return false;
+            }
+            fast = fast.as_object().container_write_owner();
+            if fast == root {
+                return true;
+            }
+        }
+        slow = slow.as_object().container_write_owner();
+        if slow == fast {
+            return false;
+        }
+    }
 }
 
 /// Marks a value immutable, then its container children. `origin` is the code index of the freeze
@@ -67,6 +124,13 @@ pub const FLAG_IMMUTABLE: u8 = 1 << 1;
 pub const FLAG_BORROWED: u8 = 1 << 2;
 /// Set while one name holds the writer slot for this value, so a second writer traps.
 pub const FLAG_WRITE_OWNED: u8 = 1 << 3;
+/// Set where a value left the frame that built it without being stored in a container. A return, a
+/// throw, a store through an upvalue, and a capture all do that. Never cleared, so the bit only
+/// ever holds back a release a scope exit would have made.
+pub const FLAG_ESCAPED: u8 = 1 << 4;
+/// Set where the value's write-ownership went to a `*mut` parameter that never handed it on, so
+/// every write to it traps.
+pub const FLAG_WRITE_RETIRED: u8 = 1 << 5;
 
 #[repr(C)]
 pub struct ObjectHeader {
@@ -273,6 +337,18 @@ impl Object {
         unsafe { (*self.as_header_ptr()).set(FLAG_BORROWED, value); }
     }
 
+    /// Whether the last trace reached this object. Only meaningful between a trace and its sweep.
+    #[inline]
+    pub fn is_marked(&self) -> bool {
+        unsafe { (*self.as_header_ptr()).has(FLAG_MARKED) }
+    }
+
+    /// Whether this value left its frame by a route no container records.
+    #[inline]
+    pub fn is_escaped(&self) -> bool {
+        unsafe { (*self.as_header_ptr()).has(FLAG_ESCAPED) }
+    }
+
     #[inline]
     pub fn is_write_owned(&self) -> bool {
         unsafe { (*self.as_header_ptr()).has(FLAG_WRITE_OWNED) }
@@ -281,6 +357,49 @@ impl Object {
     #[inline]
     pub fn set_write_owned(&self, value: bool) {
         unsafe { (*self.as_header_ptr()).set(FLAG_WRITE_OWNED, value); }
+    }
+
+    #[inline]
+    pub fn is_write_retired(&self) -> bool {
+        unsafe { (*self.as_header_ptr()).has(FLAG_WRITE_RETIRED) }
+    }
+
+    #[inline]
+    pub fn set_write_retired(&self, value: bool) {
+        unsafe { (*self.as_header_ptr()).set(FLAG_WRITE_RETIRED, value); }
+    }
+
+    /// The container this value was last stored into, or null.
+    #[inline]
+    pub fn container_write_owner(&self) -> Value {
+        unsafe {
+            match (*self.as_header_ptr()).kind {
+                ObjectKind::Array => (*self.as_array_ptr()).container_write_owner,
+                ObjectKind::Dict => (*self.as_dict_ptr()).container_write_owner,
+                ObjectKind::Instance => (*self.as_instance_ptr()).container_write_owner,
+                _ => Value::NULL,
+            }
+        }
+    }
+
+    /// Every caller reaches this behind a check that the value is one of the three kinds, so a
+    /// fourth arriving means one of those checks let go of the kind it was guarding.
+    /// Whether some container write-owns this value. A kind that takes no writer slot answers no.
+    #[inline]
+    pub fn has_container_write_owner(&self) -> bool {
+        self.container_write_owner().is_object()
+    }
+
+    #[inline]
+    pub fn set_container_write_owner(&self, owner: Value) {
+        unsafe {
+            match (*self.as_header_ptr()).kind {
+                ObjectKind::Array => (*self.as_array_ptr()).container_write_owner = owner,
+                ObjectKind::Dict => (*self.as_dict_ptr()).container_write_owner = owner,
+                ObjectKind::Instance => (*self.as_instance_ptr()).container_write_owner = owner,
+                kind => unreachable!("{kind} takes no writer slot, so it has no owner to set"),
+            }
+        }
     }
 
     #[inline]
@@ -350,7 +469,10 @@ pub struct ObjFn {
     pub upvalues: Vec<UpvalueLocation>,
     /// One bit per parameter, set where the parameter lets its argument escape: it takes it by
     /// `*mut` or persists it. Parameters past 63 are read as borrowing.
-    pub escape_mask: u64
+    pub escape_mask: u64,
+    /// One bit per parameter taking its argument by `*mut`, so the call can transfer each one's
+    /// write-ownership without codegen naming the positions.
+    pub move_mask: u64
 }
 
 impl ObjFn {
@@ -360,7 +482,7 @@ impl ObjFn {
         position < 64 && self.escape_mask & (1u64 << position) != 0
     }
 
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, mut_receiver: bool) -> ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, move_mask: u64, mut_receiver: bool) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
@@ -368,7 +490,8 @@ impl ObjFn {
             mut_receiver,
             ip_start,
             upvalues,
-            escape_mask
+            escape_mask,
+            move_mask
         }
     }
 }
@@ -395,15 +518,28 @@ pub struct ObjNativeFn {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
     pub arity: u8,
+    /// Whether the method writes its receiver.
+    pub mutates: bool,
     pub function: NativeFn
 }
 
 impl ObjNativeFn {
     pub fn new(name: *mut ObjString, arity: u8, function: NativeFn) -> ObjNativeFn {
+        ObjNativeFn::of(name, arity, false, function)
+    }
+
+    /// A native that writes its receiver. Named apart from `new` so a mutator cannot be declared
+    /// without saying so.
+    pub fn mutating(name: *mut ObjString, arity: u8, function: NativeFn) -> ObjNativeFn {
+        ObjNativeFn::of(name, arity, true, function)
+    }
+
+    fn of(name: *mut ObjString, arity: u8, mutates: bool, function: NativeFn) -> ObjNativeFn {
         ObjNativeFn {
             header: ObjectHeader::new(ObjectKind::NativeFunction),
             name,
             arity,
+            mutates,
             function
         }
     }
@@ -434,7 +570,8 @@ pub struct ObjClosure {
     pub upvalue_count: u8,
     pub mut_receiver: bool,
     pub ip_start: usize,
-    pub escape_mask: u64
+    pub escape_mask: u64,
+    pub move_mask: u64
 }
 
 impl ObjClosure {
@@ -693,6 +830,10 @@ impl GcTraceable for ObjType {
 #[repr(C)]
 pub struct ObjInstance {
     pub header: ObjectHeader,
+    /// The container that write-owns this instance, or null. Weak, so a collection clears it.
+    /// A binding can write-own one too, but a frame slot is not reachable from the heap, so that
+    /// half lives in the write-ownership table instead.
+    pub container_write_owner: Value,
     pub ty: *mut ObjType,
     /// Member values indexed directly by member id.
     pub values: Box<[Value]>
@@ -703,6 +844,7 @@ impl ObjInstance {
         let ty = unsafe { &*type_ptr };
         ObjInstance {
             header: ObjectHeader::new(ObjectKind::Instance),
+            container_write_owner: Value::NULL,
             ty: type_ptr,
             values: ty.template.clone()
         }
@@ -778,6 +920,10 @@ impl GcTraceable for ObjUpvalue {
 #[repr(C)]
 pub struct ObjArray {
     pub header: ObjectHeader,
+    /// The container that write-owns this array, or null. Weak, so a collection clears it.
+    /// A binding can write-own one too, but a frame slot is not reachable from the heap, so that
+    /// half lives in the write-ownership table instead.
+    pub container_write_owner: Value,
     pub values: Vec<Value>
 }
 
@@ -785,6 +931,7 @@ impl ObjArray {
     pub fn new(values: Vec<Value>) -> ObjArray {
         ObjArray {
             header: ObjectHeader::new(ObjectKind::Array),
+            container_write_owner: Value::NULL,
             values
         }
     }
@@ -813,6 +960,10 @@ impl GcTraceable for ObjArray {
 #[repr(C)]
 pub struct ObjDict {
     pub header: ObjectHeader,
+    /// The container that write-owns this dict, or null. Weak, so a collection clears it.
+    /// A binding can write-own one too, but a frame slot is not reachable from the heap, so that
+    /// half lives in the write-ownership table instead.
+    pub container_write_owner: Value,
     pub entries: FnvHashMap<DictKey, Value>
 }
 
@@ -820,6 +971,7 @@ impl ObjDict {
     pub fn new(entries: FnvHashMap<DictKey, Value>) -> ObjDict {
         ObjDict {
             header: ObjectHeader::new(ObjectKind::Dict),
+            container_write_owner: Value::NULL,
             entries
         }
     }

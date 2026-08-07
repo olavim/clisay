@@ -38,6 +38,8 @@ impl Vm {
     pub(super) fn op_invoke(&mut self) -> Result<(), anyhow::Error> {
         let name_idx = self.read_next() as usize;
         let arg_count = self.read_next() as usize;
+        let root_kind = self.read_next();
+        let root_operand = self.read_next();
         let name = self.chunk.constants[name_idx].as_object().as_string_ptr();
         let receiver = self.stack.peek(arg_count);
 
@@ -46,16 +48,16 @@ impl Vm {
             if let Some(TypeMember::Method(id)) = self.resolve_cached_type_property(type_ptr, name) {
                 let method = unsafe { &*type_ptr }.get_method(id);
                 if matches!(method.tag(), objects::TAG_FUNCTION | objects::TAG_CLOSURE) {
-                    return self.invoke_method(method, arg_count);
+                    return self.invoke_method(method, arg_count, root_kind, root_operand);
                 }
             }
         }
 
-        self.invoke_member_slow(name, arg_count)
+        self.invoke_member_slow(name, arg_count, root_kind, root_operand)
     }
 
     /// Pushes a frame for an instance method without allocating a bound method.
-    fn invoke_method(&mut self, method: Object, arg_count: usize) -> Result<(), anyhow::Error> {
+    fn invoke_method(&mut self, method: Object, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
         // A capturing method is already a closure bound to the frame that declared its type. Any
         // other method captures nothing and is closed here.
         let is_bound = method.tag() == objects::TAG_CLOSURE;
@@ -74,6 +76,7 @@ impl Vm {
             if self.receiver_rejects_mut(target) {
                 return self.error_readonly_receiver(name, target);
             }
+            self.ensure_writer_is_root(target, root_kind, root_operand)?;
         }
         if arg_count != arity as usize {
             let text = unsafe { &(*name).value };
@@ -83,10 +86,14 @@ impl Vm {
             true => method.as_closure_ptr(),
             false => self.create_closure(method.as_function_ptr()).as_closure_ptr(),
         };
-        self.push_frame(closure_ptr, self.stack.offset(arg_count), ip_start, true)
+        let stack_start = self.stack.offset(arg_count);
+        self.push_frame(closure_ptr, stack_start, ip_start, true)?;
+        let move_mask = unsafe { (*closure_ptr).move_mask };
+        self.transfer_argument_write_ownership(move_mask, stack_start, arg_count);
+        Ok(())
     }
 
-    fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize) -> Result<(), anyhow::Error> {
+    fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
         // Resolving the property allocates a bound method, which can collect. The arguments stay
         // on the stack across it, since a copy held anywhere else would not be a root.
         let receiver = self.stack.peek(arg_count);
@@ -98,6 +105,9 @@ impl Vm {
 
         // The callable takes the receiver's slot, which is where a call reads it from.
         let callable = self.stack.pop();
+        if self.callable_writes_receiver(callable) {
+            self.ensure_writer_is_root(receiver, root_kind, root_operand)?;
+        }
         self.stack.set(arg_count, callable);
         self.call(arg_count, callable, true)
     }
@@ -219,14 +229,18 @@ impl Vm {
 
     pub(super) fn op_set_field_pop(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
+        let root_kind = self.read_next();
+        let root_operand = self.read_next();
         let target = self.stack.pop();
         if !matches!(target.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         }
         self.ensure_mutable(target)?;
+        self.ensure_writer_is_root(target, root_kind, root_operand)?;
 
         let value = self.stack.pop();
         self.ensure_not_borrowed(value)?;
+        self.give_write_ownership(target, value)?;
         let instance = unsafe { &mut *target.as_object().as_instance_ptr() };
 
         #[cfg(debug_assertions)]
@@ -267,10 +281,26 @@ impl Vm {
     }
 
     fn ensure_mutable(&self, target: Value) -> Result<(), anyhow::Error> {
-        if matches!(target.kind(), ValueKind::Object(_)) && target.as_object().is_immutable() {
+        if !matches!(target.kind(), ValueKind::Object(_)) {
+            return Ok(());
+        }
+        if target.as_object().is_immutable() {
             return self.error_immutable(target);
         }
+        if target.as_object().is_write_retired() {
+            let label = format!("`{}` is written here", self.get_source_position().snippet());
+            return self.error_labeled(objects::WROTE_TRANSFERRED_ELEMENT, label);
+        }
         Ok(())
+    }
+
+    pub(super) fn give_write_ownership(&self, container: Value, value: Value) -> Result<(), anyhow::Error> {
+        if objects::give_container_write_ownership(container, value) {
+            return Ok(());
+        }
+        self.raise(Diagnostic::new(objects::GAVE_TRANSFERRED_ELEMENT, self.get_source_position().clone())
+            .with_label("this store would hand the container a writer")
+            .with_help("write-ownership was given away and nothing handed it back; reading the value is still fine"))
     }
 
     /// Traps a store of a borrowed value: it may not be persisted while it is borrowed.
@@ -283,20 +313,28 @@ impl Vm {
     }
 
     pub(super) fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
+        let root_kind = self.read_next();
+        let root_operand = self.read_next();
         let prop = self.stack.pop();
         let target = self.stack.pop();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.ensure_not_borrowed(self.stack.peek(0))?;
+        self.ensure_writer_is_root(target, root_kind, root_operand)?;
+        let stored = self.stack.peek(0);
+        self.ensure_not_borrowed(stored)?;
 
-        match object_kind {
+        let outcome = match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target),
             ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop),
             ObjectKind::Dict => self.set_dict_index(target, prop),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
+        };
+        if outcome.is_ok() {
+            self.give_write_ownership(target, stored)?;
         }
+        outcome
     }
 
     pub(super) fn op_get_index_or_null(&mut self) {
@@ -350,15 +388,19 @@ impl Vm {
 
     /// Dotted store `target.name = v`.
     pub(super) fn op_set_property(&mut self) -> Result<(), anyhow::Error> {
+        let root_kind = self.read_next();
+        let root_operand = self.read_next();
         let prop = self.stack.pop();
         let target = self.stack.pop();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.ensure_not_borrowed(self.stack.peek(0))?;
+        self.ensure_writer_is_root(target, root_kind, root_operand)?;
+        let stored = self.stack.peek(0);
+        self.ensure_not_borrowed(stored)?;
 
-        match object_kind {
+        let outcome = match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target),
             ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop),
             ObjectKind::Dict => self.error(format!(
@@ -366,7 +408,11 @@ impl Vm {
                 prop.as_object().as_string()
             )),
             _ => self.error(format!("Invalid property access: {}", target.fmt()))
+        };
+        if outcome.is_ok() {
+            self.give_write_ownership(target, stored)?;
         }
+        outcome
     }
 
     /// Whether a member satisfies what its declaration admits.
@@ -490,22 +536,25 @@ impl Vm {
 
     pub(super) fn op_set_field(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
+        let root_kind = self.read_next();
+        let root_operand = self.read_next();
         let value = self.stack.pop();
         if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
         self.ensure_mutable(value)?;
+        self.ensure_writer_is_root(value, root_kind, root_operand)?;
 
-        let object = value.as_object();
-        let instance_ref = object.as_instance_ptr();
-        let value = self.stack.peek(0);
-        self.ensure_not_borrowed(value)?;
+        let instance_ref = value.as_object().as_instance_ptr();
+        let stored = self.stack.peek(0);
+        self.ensure_not_borrowed(stored)?;
+        self.give_write_ownership(value, stored)?;
         let instance = unsafe { &mut *instance_ref };
 
         #[cfg(debug_assertions)]
         assert_field_slot(instance, member_id);
 
-        instance.set(member_id, value);
+        instance.set(member_id, stored);
         Ok(())
     }
 }

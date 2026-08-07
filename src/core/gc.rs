@@ -6,6 +6,7 @@ use fnv::FnvHashMap;
 use fnv::FnvHashSet;
 
 use super::objects::{ObjClosure, ObjString, ObjUpvalue, ObjectHeader, ObjectKind, Object, FLAG_MARKED};
+use super::value::Value;
 
 /// Every heap object is `repr(align(8))`, so a freed block can back any later
 /// object of the same size regardless of its concrete type. Blocks are bucketed
@@ -66,7 +67,11 @@ pub struct Gc {
     /// Blocks sitting on a free list. A pointer to one is dangling until the block is handed out
     /// again, so traversing one means `mark` missed the pointer that should have kept it alive.
     #[cfg(debug_assertions)]
-    freed_blocks: FnvHashSet<usize>
+    freed_blocks: FnvHashSet<usize>,
+    /// Set by a trace and cleared by the sweep that consumes it. Only in that window do the marks
+    /// say what survived, which is the only window a weak reference may be pruned in.
+    #[cfg(debug_assertions)]
+    traced: bool
 }
 
 impl Gc {
@@ -82,7 +87,9 @@ impl Gc {
             // state, so a whole corpus can be run under it from the environment.
             stress: std::env::var_os("CLISAY_GC_STRESS").is_some(),
             #[cfg(debug_assertions)]
-            freed_blocks: FnvHashSet::default()
+            freed_blocks: FnvHashSet::default(),
+            #[cfg(debug_assertions)]
+            traced: false
         }
     }
 
@@ -117,6 +124,7 @@ impl Gc {
         ip_start: usize,
         upvalues: &[*mut ObjUpvalue],
         escape_mask: u64,
+        move_mask: u64,
         mut_receiver: bool
     ) -> *mut ObjClosure {
         let count = upvalues.len();
@@ -132,7 +140,8 @@ impl Gc {
                 upvalue_count: count as u8,
                 mut_receiver,
                 ip_start,
-                escape_mask
+                escape_mask,
+                move_mask
             });
             std::ptr::copy_nonoverlapping(
                 upvalues.as_ptr(),
@@ -185,16 +194,47 @@ impl Gc {
     }
 
     pub fn collect(&mut self) {
-        self.mark_reachable();
+        self.trace();
+        self.sweep();
+    }
+
+    /// Reaches everything the marked roots lead to. Nothing is freed yet, so a caller holding a
+    /// weak reference can see whether its target survived before the sweep takes it.
+    pub fn trace(&mut self) {
+        while let Some(obj) = self.reachable_refs.pop() {
+            obj.mark(self);
+        }
+        #[cfg(debug_assertions)]
+        { self.traced = true; }
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn marks_valid(&self) -> bool {
+        self.traced
+    }
+
+    /// Frees whatever the trace did not reach.
+    pub fn sweep(&mut self) {
+        #[cfg(debug_assertions)]
+        assert!(self.traced, "a sweep with no trace before it reads marks from the last cycle");
+        self.prune_container_write_owners();
         self.sweep_strings();
         self.sweep_objects();
         // Scale the next threshold to the surviving live set, so collection frequency tracks live size.
         self.next_gc = self.bytes_allocated.saturating_mul(GC_GROW_FACTOR).max(INITIAL_GC_THRESHOLD);
+        #[cfg(debug_assertions)]
+        { self.traced = false; }
     }
 
-    fn mark_reachable(&mut self) {
-        while let Some(obj) = self.reachable_refs.pop() {
-            obj.mark(self);
+    /// Drops the owner links this collection invalidates. An owner is weak, so an element that
+    /// outlives the container it was stored into is nobody's element again. Runs before the sweep,
+    /// while the marks still say what survived.
+    fn prune_container_write_owners(&mut self) {
+        for obj in &self.refs {
+            let owner = obj.container_write_owner();
+            if owner.is_object() && !owner.as_object().is_marked() {
+                obj.set_container_write_owner(Value::NULL);
+            }
         }
     }
 

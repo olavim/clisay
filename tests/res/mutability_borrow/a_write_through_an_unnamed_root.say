@@ -1,0 +1,31 @@
+// The container that took an element writes it, whether or not a binding names it. Indexing a
+// call result consumes it, so the path keeps the root to compare against.
+say sink = mut [];
+fn get()! { return sink; }
+say a = mut [mut [0]];
+get().push(a[0]);
+get()[0][0] = 1;
+print(sink[0][0]); // expect: 1
+
+// @split
+// A different unnamed root reaching the same element is still a second writer.
+say sink = mut [];
+say a = mut [mut [0]];
+fn get()! { return sink; }
+fn geta()! { return a; }
+get().push(a[0]);
+geta()[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// The named root is unchanged, and answers by its slot.
+say sink = mut [];
+say a = mut [mut [0]];
+sink.push(a[0]);
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// An element nobody took is written through an unnamed root freely.
+say sink = mut [mut [0]];
+fn get()! { return sink; }
+get()[0][0] = 5;
+print(sink[0][0]); // expect: 5

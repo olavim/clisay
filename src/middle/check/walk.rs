@@ -38,7 +38,7 @@ impl<'a> Checker<'a> {
                     self.check_return_mutability(&typed, e)?;
                     self.check_return(&typed.flow, self.fn_ctx.return_shape, e)?;
                     // Returning a mutable value moves it out to the caller.
-                    self.move_source(e);
+                    self.transfer_write_ownership(e)?;
                 },
                 // A `!` function falls back to null on a bare return, which it may not.
                 None if self.fn_ctx.return_shape == ReturnShape::NonNull => {
@@ -243,9 +243,10 @@ impl<'a> Checker<'a> {
             },
             HirExpr::Block(stmts) => {
                 let mark = self.locals.len();
+                let handed_over = self.elements_handed_over;
                 for s in stmts { self.stmt(s)?; }
                 let dropped = self.check_dropped(mark, expr);
-                if self.scope_holds_write_ownership(mark) {
+                if self.scope_holds_write_ownership(mark, handed_over) {
                     self.record_write_scope(expr);
                 }
                 self.truncate_locals(mark);
@@ -322,6 +323,8 @@ impl<'a> Checker<'a> {
                     self.record_boundary_barrier(expr, &Obligations::new());
                 } else if !matches!(typed.flow, Flow::Clean) {
                     self.record_guard(expr, Guard::NonNull);
+                } else {
+                    self.record_elision(expr, Guard::NonNull);
                 }
                 Typed::of(self.discharged_flow(&typed.flow), typed.tag)
             },
@@ -336,7 +339,7 @@ impl<'a> Checker<'a> {
             // The move records the sources feeding the value, so the slot reuses that walk for its
             // provenance and adds the closure captures a bare walk would miss.
             self.mark_settled(value, &owed);
-            let mut provenance = self.move_source(value);
+            let mut provenance = self.transfer_write_ownership(value)?;
             provenance.extend(self.captured_sources(value));
             (true, typed.tag, typed.mutability, provenance)
         } else {
@@ -347,6 +350,7 @@ impl<'a> Checker<'a> {
         local.site = *value;
         local.decl = Some(decl);
         local.alias.mutability = mutability;
+        local.alias.unproven_borrow = value.is_some_and(|v| self.holds_unproven_borrow(&v));
         local.alias.provenance = provenance;
         local.alias.extracted_from = value.and_then(|v| self.extraction_of(&v)).into_iter().collect();
         local.alias.shared_origin = value.is_some_and(|v| self.shared_origin(&v));
@@ -388,7 +392,9 @@ impl<'a> Checker<'a> {
             return Ok(Typed::unknown());
         }
 
-        self.check_moved(i, expr)?;
+        // A read needs no write-ownership, so giving a value away leaves the name readable. Only an
+        // opaque give is settled here, since its runtime proof rides the read.
+        self.settle_unknown_transfer(i, expr);
 
         if !self.locals[i].assigned && !self.locals[i].owed.contains(&self.sigs.opt) {
             let text = self.binding_text(name);
@@ -403,7 +409,9 @@ impl<'a> Checker<'a> {
             Flow::Bad { obligations: owed, definite: false, container: self.locals[i].container }
         };
 
-        Ok(Typed::of(flow, self.locals[i].tag.clone()).with_mutability(self.effective_mutability(i)))
+        Ok(Typed::of(flow, self.locals[i].tag.clone())
+            .with_mutability(self.locals[i].alias.mutability)
+            .with_writable(self.write_permission(i)))
     }
 
     /// Member or data access `target.member` / `target[member]`. Resolves a field on a known-type
@@ -763,7 +771,7 @@ impl<'a> Checker<'a> {
         // A native-type method resolves by name when no user method matches the receiver.
         if let Some(sig) = native::native_method(name) {
             if sig.effect.mutates_receiver {
-                if receiver_typed.mutability == Mutability::Immutable {
+                if receiver_typed.writable == Mutability::Immutable {
                     return Err(self.immutable_receiver_error(callee, receiver, "mutates its receiver"));
                 }
                 self.claim_receiver_write(receiver)?;
@@ -784,11 +792,18 @@ impl<'a> Checker<'a> {
     /// argument is matched against its parameter marker. A `mut` receiver is borrowed for the call;
     /// a `*mut` one is consumed by it.
     pub(super) fn check_receiver(&mut self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>, callee_fn: HirId<HirStmt>, receiver_typed: &Typed) -> Result<(), anyhow::Error> {
-        let Some(marker) = self.sigs.fns.get(&callee_fn).and_then(|s| s.receiver_marker) else { return Ok(()) };
+        let Some(sig) = self.sigs.fns.get(&callee_fn) else { return Ok(()) };
+        let (marker, params) = (sig.receiver_marker, sig.param_markers.len());
+        if !marker.is_some_and(|m| m.is_move())
+            && receiver_typed.mutability == Mutability::Mutable
+            && self.sigs.param_stored_at(&callee_fn, params) {
+            return Err(self.keeps_receiver_error(callee, receiver));
+        }
+        let Some(marker) = marker else { return Ok(()) };
         if !marker.is_mut() {
             return Ok(());
         }
-        if receiver_typed.mutability == Mutability::Immutable {
+        if receiver_typed.writable == Mutability::Immutable {
             return Err(self.immutable_receiver_error(callee, receiver, "declares `this: mut`"));
         }
         self.claim_receiver_write(receiver)?;
@@ -797,7 +812,7 @@ impl<'a> Checker<'a> {
             if self.arg_is_borrowed(receiver) {
                 return Err(self.consumes_borrow_error(callee, receiver));
             }
-            self.move_source(receiver);
+            self.transfer_write_ownership(receiver)?;
         }
         Ok(())
     }
@@ -809,10 +824,11 @@ impl<'a> Checker<'a> {
         let sigs = self.sigs;
         let Some(sig) = sigs.fns.get(&callee_fn) else { return Ok(()) };
         let nullable: Vec<bool> = sig.param_clauses.iter().map(|p| p.contains(&sigs.opt)).collect();
-        self.check_arg_mutability(callee, callee_fn, &sig.param_markers, arg_types, args)?;
+        self.check_arg_mutability(callee, &sig.param_markers, arg_types, args)?;
         self.check_arg_obligations(callee, &sig.param_clauses, arg_types, args)?;
         self.check_args(callee, &nullable, arg_types, args)?;
-        self.consume_move_args(&sig.param_markers, args);
+        self.consume_move_args(&sig.param_markers, args)?;
+
         // A mutable argument lent to a non-consuming parameter is borrowed for the call, so mark it.
         let marks: Vec<u8> = sig.param_markers.iter().enumerate()
             .filter(|(i, m)| !m.is_move() && arg_types.get(*i).is_some_and(|t| t.mutability == Mutability::Mutable))
@@ -888,8 +904,9 @@ impl<'a> Checker<'a> {
                     self.locals[i].tag = typed.tag.clone();
                     // The mutability follows the value, so a rebind takes the new value's.
                     self.locals[i].alias.mutability = typed.mutability;
+                    self.locals[i].alias.unproven_borrow = self.holds_unproven_borrow(rhs);
                     // A rebind installs a fresh value, so any earlier move of the slot is undone.
-                    self.locals[i].alias.move_site = None;
+                    self.locals[i].alias.transfer_site = None;
                     // The slot takes on whatever sources the new value reaches, and names whatever
                     // element the new value came out of. Any writer slot the old value held is let go.
                     self.locals[i].alias.provenance = self.provenance_of(rhs);
@@ -918,7 +935,7 @@ impl<'a> Checker<'a> {
             _ => {},
         }
         // A store hands the value to a new holder, so a mutable right side moves.
-        self.move_source(rhs);
+        self.transfer_write_ownership(rhs)?;
         Ok(typed)
     }
 
@@ -962,8 +979,8 @@ impl<'a> Checker<'a> {
         let slot = self.local_of(target);
 
         // An immutable value rejects mutation at compile time. A binding that gave its writing to
-        // a closure is immutable for writing too, which `effective_mutability` folds in.
-        if let Some(i) = slot.filter(|&i| self.effective_mutability(i) == Mutability::Immutable) {
+        // a closure may not be written through this name either, which `write_permission` folds in.
+        if let Some(i) = slot.filter(|&i| self.write_permission(i) == Mutability::Immutable) {
             return Err(self.immutable_mutation_error(target, i));
         }
 
@@ -975,7 +992,7 @@ impl<'a> Checker<'a> {
         // Writing through an index is a use of the target, so a moved binding is a use after move.
         match slot {
             Some(i) => {
-                self.check_moved(i, target)?;
+                self.settle_unknown_transfer(i, target);
                 self.claim_element_write(i, target)?;
             },
             None => self.check_path_write(target)?,
@@ -984,6 +1001,11 @@ impl<'a> Checker<'a> {
         // A bracket index `obj[expr] = ...` is the dynamic data path. It bypasses the field rules,
         // but writing through the base still captures it, so an enclosing binding it names may move.
         if !is_dot {
+            // A target that names no binding is an expression in its own right, so its own checks
+            // run only if it is walked. The dot path below reaches it through the receiver.
+            if slot.is_none() {
+                self.receiver(target)?;
+            }
             if let (None, HirExpr::Identifier(name)) = (slot, self.hir.get(target)) {
                 self.capture_enclosing(*name, target);
             }

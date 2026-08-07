@@ -13,22 +13,23 @@ use crate::middle::hir::{Capability, HirExpr, HirId, HirLiteral, HirStmt, Symbol
 
 use super::{Checker, Flow, Guard, Mutability, Site, Typed};
 
-/// Why a mutable binding was moved.
+/// Whether a binding's write-ownership is known to have gone, or only might have.
 #[derive(Clone, Copy, PartialEq)]
-pub enum MoveCause {
-    /// Bound, stored, returned, or passed to a consuming parameter.
-    Value,
-    /// Passed to a callee this pass cannot resolve, which may or may not have consumed it. Reading
-    /// the binding again settles it, by making the call prove the callee only borrowed. Carries the
-    /// callee node and argument position that proof needs.
-    Opaque(HirId<HirExpr>, u8),
+pub enum WriteOwnershipTransfer {
+    /// Write-ownership was transferred. The value was bound, stored, returned, or passed
+    /// to a `*mut` parameter, so the binding no longer has write-ownership over it.
+    Transferred,
+    /// Write-ownership may have been transferred. The value went to a callee this pass cannot
+    /// resolve, so only the callee that actually arrives settles it. Using the binding again
+    /// demands that proof at runtime. Carries the callee node and argument position the proof needs.
+    Unknown(HirId<HirExpr>, u8),
 }
 
-/// Where and why a mutable binding was moved out.
+/// Where a binding's write-ownership went, or may have gone.
 #[derive(Clone, Copy, PartialEq)]
-pub struct MovedAt {
+pub struct TransferSite {
     pub node: HirId<HirExpr>,
-    pub cause: MoveCause,
+    pub transfer: WriteOwnershipTransfer,
 }
 
 /// Which element within an aggregate a name holds. A dict keys on any value, so a key is any
@@ -51,12 +52,12 @@ pub(super) struct AliasLocal {
     /// The capability of the value in the slot.
     pub(super) mutability: Mutability,
     pub(super) borrowed: bool,
-    /// Where the value was moved out, or `None` while the binding is live.
-    pub(super) move_site: Option<MovedAt>,
+    /// Where the binding gave its write-ownership away, or `None` while it still writes.
+    pub(super) transfer_site: Option<TransferSite>,
     /// The prior slots this binding took its mutable value from.
     pub(super) provenance: Vec<usize>,
     /// The closure that took over writing this binding's value, and where it writes it.
-    pub(super) write_owner: Option<(Symbol, HirId<HirExpr>)>,
+    pub(super) writing_captor: Option<(Symbol, HirId<HirExpr>)>,
     /// Every aggregate slot and key this binding may have read its value out of. A join keeps both
     /// sides, because either branch could have run and an origin is a restriction.
     pub(super) extracted_from: Vec<(usize, Option<ElementKey>)>,
@@ -66,6 +67,8 @@ pub(super) struct AliasLocal {
     pub(super) shared_origin: bool,
     /// Where this binding first wrote the element it names.
     pub(super) wrote_at: Option<HirId<HirExpr>>,
+    /// Whether the value may be a mutable the caller lent, which no signature records.
+    pub(super) unproven_borrow: bool,
 }
 
 /// Where a value lives: the thing a path starts from, and each element read out of it. Two places
@@ -165,7 +168,7 @@ impl<'a> Checker<'a> {
         match (place.base, place.steps.len()) {
             // A value made here is nobody else's.
             (Base::Fresh, _) => true,
-            // A name is move-tracked, so a second one for its value is caught there.
+            // A name's write-ownership is tracked, so a second name for its value is caught there.
             (Base::Local(_), 0) => true,
             // One element of a mutable container this pass can name is tracked as an extraction.
             (Base::Local(i), 1) => self.holds_mutable(i),
@@ -192,45 +195,64 @@ impl<'a> Checker<'a> {
     }
 
     /// Whether local `i` holds a mutable value: it owns or borrows one directly, or took one from
-    /// other sources. These are the slots move tracking follows.
+    /// other sources. These are the slots write-ownership tracking follows.
     pub(super) fn holds_mutable(&self, i: usize) -> bool {
         self.locals[i].alias.mutability == Mutability::Mutable || !self.locals[i].alias.provenance.is_empty()
     }
 
-    /// The mutability a binding hands on. A closure that took over the writing leaves it a reader,
-    /// so it yields the value read-only however it was declared.
-    pub(super) fn effective_mutability(&self, i: usize) -> Mutability {
-        match self.locals[i].alias.write_owner {
-            Some(_) => Mutability::Immutable,
-            None => self.locals[i].alias.mutability,
+    /// Whether the name at slot `i` may write its value. This is about the name, not the value: a
+    /// closure that took over the writing leaves the name a reader while the value stays mutable.
+    pub(super) fn write_permission(&self, i: usize) -> Mutability {
+        if self.capture_writer(i).is_some() || self.transferred_write_ownership(i) {
+            return Mutability::Immutable;
         }
+        self.locals[i].alias.mutability
     }
 
-    /// Marks every mutable-value holder a moved value reaches as moved out, for the given reason.
-    pub(super) fn move_source_because(&mut self, node: &HirId<HirExpr>, cause: MoveCause) -> Vec<usize> {
+    /// Where this binding handed its write-ownership on, if it is known to have. Giving a value
+    /// away takes the right to write it and nothing else, so the name stays readable.
+    pub(super) fn transferred_at(&self, i: usize) -> Option<TransferSite> {
+        self.locals[i].alias.transfer_site.filter(|s| s.transfer == WriteOwnershipTransfer::Transferred)
+    }
+
+    pub(super) fn transferred_write_ownership(&self, i: usize) -> bool {
+        self.transferred_at(i).is_some()
+    }
+
+    /// Takes the write-ownership from every mutable-value holder the given value reaches.
+    pub(super) fn transfer_write_ownership_as(&mut self, node: &HirId<HirExpr>, transfer: WriteOwnershipTransfer) -> Vec<usize> {
         let mut sources = Vec::new();
         self.reachable_sources(node, &mut sources);
         let moved: Vec<usize> = sources.iter().map(|(i, _)| *i).collect();
         for (i, blame) in sources {
             // A binding that gave up its writing is a reader of the value.
-            if self.locals[i].alias.write_owner.is_some() {
+            if self.locals[i].alias.writing_captor.is_some() {
                 continue;
             }
-            self.locals[i].alias.move_site = Some(MovedAt { node: blame, cause });
+            self.locals[i].alias.transfer_site = Some(TransferSite { node: blame, transfer });
         }
         moved
     }
 
-    /// Settles a moved binding at a use. An opaque callee may not have consumed it. The use demands
-    /// the runtime proof of that, which makes the binding live again.
-    pub(super) fn check_moved(&mut self, i: usize, use_node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let Some(site) = self.locals[i].alias.move_site else { return Ok(()) };
-        let MoveCause::Opaque(callee, position) = site.cause else {
-            return Err(self.use_after_move_error(self.locals[i].name, use_node, site));
-        };
+    /// A binding can only give away write-ownership it still holds, so giving twice is refused.
+    pub(super) fn check_can_transfer(&mut self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Some(i) = self.local_of(node) else { return Ok(()) };
+        let Some(site) = self.transferred_at(i) else { return Ok(()) };
+        let name = self.hir.text(self.locals[i].name);
+        Err(anyhow!("{}", Diagnostic::new(
+            format!("cannot give away `{name}`, which no longer writes its value"),
+            self.hir.pos(node).clone())
+            .with_label(format!("`{name}` is given away here"))
+            .with_span(self.hir.pos(&site.node).clone(), format!("`{name}` gave its write-ownership here"))))
+    }
+
+    /// Settles an opaque give at a use. The callee may or may not have taken the write-ownership,
+    /// so the use demands the runtime proof, which makes the binding a writer again.
+    pub(super) fn settle_unknown_transfer(&mut self, i: usize, use_node: &HirId<HirExpr>) {
+        let Some(site) = self.locals[i].alias.transfer_site else { return };
+        let WriteOwnershipTransfer::Unknown(callee, position) = site.transfer else { return };
         self.record_reread_barrier(&callee, position, *use_node);
-        self.locals[i].alias.move_site = None;
-        Ok(())
+        self.locals[i].alias.transfer_site = None;
     }
 
     /// Moves an enclosing-frame mutable binding when a nested function writes it. A read-only
@@ -247,14 +269,14 @@ impl<'a> Checker<'a> {
         }
         match captor {
             // A named body takes over the writing. The value stays where it is.
-            Some(captor) if local.alias.write_owner.is_none() => local.alias.write_owner = Some((captor, *node)),
-            None if local.alias.move_site.is_none() => local.alias.move_site = Some(MovedAt { node: *node, cause: MoveCause::Value }),
+            Some(captor) if local.alias.writing_captor.is_none() => local.alias.writing_captor = Some((captor, *node)),
+            None if local.alias.transfer_site.is_none() => local.alias.transfer_site = Some(TransferSite { node: *node, transfer: WriteOwnershipTransfer::Transferred }),
             _ => {},
         }
     }
 
-    /// The write-capture that left a binding only able to read, if one did. The value can come from
-    /// another slot, so the capture may be anywhere in the provenance.
+    /// The write-capture that left a binding only able to read, if one did. Answers with the slot
+    /// that lost the writing, the closure that took it, and where it writes.
     pub(super) fn capture_writer(&self, i: usize) -> Option<(usize, Symbol, HirId<HirExpr>)> {
         let mut stack = vec![i];
         let mut seen: HashSet<usize> = HashSet::new();
@@ -262,7 +284,7 @@ impl<'a> Checker<'a> {
             if !seen.insert(j) {
                 continue;
             }
-            if let Some((captor, wrote_at)) = self.locals[j].alias.write_owner {
+            if let Some((captor, wrote_at)) = self.locals[j].alias.writing_captor {
                 return Some((j, captor, wrote_at));
             }
             stack.extend(self.locals[j].alias.provenance.iter().copied());
@@ -270,12 +292,12 @@ impl<'a> Checker<'a> {
         None
     }
 
-    /// When a block-local dies still holding its moved value, hands the value back to a surviving
-    /// source. A local moved out on some path holds nothing, so it hands back nothing. The nearest
-    /// source that outlives the block becomes the live holder again, along every path, past cycles.
-    pub(super) fn revive_scoped_sources(&mut self, mark: usize) {
+    /// When a block-local dies still holding write-ownership, hands it back to a surviving source.
+    /// A local that gave it away on some path holds nothing, so it hands back nothing. The nearest
+    /// source that outlives the block becomes the writer again, along every path, past cycles.
+    pub(super) fn reclaim_scoped_write_ownership(&mut self, mark: usize) {
         for i in (mark..self.locals.len()).rev() {
-            if self.locals[i].alias.move_site.is_some() {
+            if self.locals[i].alias.transfer_site.is_some() {
                 continue;
             }
             let mut stack = self.locals[i].alias.provenance.clone();
@@ -285,7 +307,7 @@ impl<'a> Checker<'a> {
                     continue;
                 }
                 if s < mark {
-                    self.locals[s].alias.move_site = None;
+                    self.locals[s].alias.transfer_site = None;
                 } else {
                     stack.extend(self.locals[s].alias.provenance.iter().copied());
                 }
@@ -293,12 +315,53 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Rewrites away the provenance entries a truncation is about to invalidate. A source that dies
+    /// with the scope stands for whatever it came from, so the entry becomes those instead and the
+    /// chain still reaches a live holder. Left alone, the index would name whichever local the
+    /// stack puts there next.
+    pub(super) fn reroot_provenance(&mut self, mark: usize) {
+        for i in 0..mark.min(self.locals.len()) {
+            if self.locals[i].alias.provenance.iter().all(|&s| s < mark) {
+                continue;
+            }
+            let dying = std::mem::take(&mut self.locals[i].alias.provenance);
+            self.locals[i].alias.provenance = self.surviving_sources(dying, mark);
+        }
+    }
+
+    /// Drops the element origins a truncation invalidates. A binding that loses one is marked `shared_origin`,
+    /// because it may still hold an element another name holds.
+    pub(super) fn drop_dead_extractions(&mut self, mark: usize) {
+        for i in 0..mark.min(self.locals.len()) {
+            let alias = &mut self.locals[i].alias;
+            let kept = alias.extracted_from.len();
+            alias.extracted_from.retain(|(source, _)| *source < mark);
+            alias.shared_origin |= alias.extracted_from.len() != kept;
+        }
+    }
+
+    /// Follows each source about to die to the sources it came from, until every entry names a
+    /// local the truncation keeps.
+    fn surviving_sources(&self, roots: Vec<usize>, mark: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut stack = roots;
+        while let Some(s) = stack.pop() {
+            if !seen.insert(s) {
+                continue;
+            }
+            match s < mark {
+                true => out.push(s),
+                false => stack.extend(self.locals[s].alias.provenance.iter().copied()),
+            }
+        }
+        out
+    }
+
     /// Whether a value may turn out to be a borrow. Only a parameter can receive one, and a `mut`
     /// parameter is already tracked, so an unmarked one is the case left to the runtime.
     pub(super) fn holds_unproven_borrow(&self, expr: &HirId<HirExpr>) -> bool {
-        self.local_of(expr).is_some_and(|i| {
-            self.locals[i].param && self.locals[i].alias.mutability != Mutability::Mutable
-        })
+        self.local_of(expr).is_some_and(|i| self.locals[i].alias.unproven_borrow)
     }
 
     /// Takes the one writer slot for the element this binding reads, so a second writer for the
@@ -344,9 +407,11 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// How many of the locals a scope drops hold a runtime writer slot.
-    pub(super) fn scope_holds_write_ownership(&self, mark: usize) -> bool {
+    /// Whether a scope must give writer slots back on the way out. `handed_over` is the count when
+    /// it opened, so anything handed over since may have gone to one of its containers.
+    pub(super) fn scope_holds_write_ownership(&self, mark: usize, handed_over: usize) -> bool {
         self.locals[mark.min(self.locals.len())..].iter().any(|l| l.alias.slot_taken)
+            || self.elements_handed_over > handed_over
     }
 
     /// The error for a second name writing one element of an aggregate.
@@ -368,6 +433,10 @@ impl<'a> Checker<'a> {
         match elem.mutability {
             Mutability::Mutable => Err(self.mutable_in_immutable_error(elem_node)),
             Mutability::Unknown => { self.record_seal_check(container); Ok(()) },
+            Mutability::Immutable if self.holds_unproven_borrow(elem_node) => {
+                self.record_seal_check(container);
+                Ok(())
+            },
             Mutability::Immutable => Ok(()),
         }
     }
@@ -380,30 +449,15 @@ impl<'a> Checker<'a> {
         match value.mutability {
             Mutability::Mutable => Err(self.mutable_in_immutable_error(node)),
             Mutability::Unknown => { self.record_guard(node, Guard::Immutable); Ok(()) },
-            Mutability::Immutable => Ok(()),
-        }
-    }
-
-    pub(super) fn use_after_move_error(&self, name: Symbol, use_site: &HirId<HirExpr>, moved: MovedAt) -> anyhow::Error {
-        let text = self.hir.text(name);
-        match moved.cause {
-            MoveCause::Value => {
-                // A loop's re-check reads the value at the very node that moved it, so one caret is
-                // clearer than two on the same spot.
-                if *use_site == moved.node {
-                    return self.loop_move_error(name, moved);
-                }
-                // Caret both the use and the move so the reader sees where the value went.
-                anyhow!("{}", Diagnostic::new("value used after it was moved".to_string(), self.hir.pos(use_site).clone())
-                    .with_label(format!("`{text}` used here"))
-                    .with_span(self.hir.pos(&moved.node).clone(), format!("`{text}` moved here")))
+            Mutability::Immutable if self.holds_unproven_borrow(node) => {
+                self.record_guard(node, Guard::Immutable);
+                Ok(())
             },
-            // A pending opaque consume is settled at the read, so it never reaches here.
-            MoveCause::Opaque(..) => unreachable!("an opaque consume is resolved where it is read"),
+            Mutability::Immutable => { self.record_elision(node, Guard::Immutable); Ok(()) },
         }
     }
 
-    /// The error for writing a value that a capture now writes. Nothing moved but the write-
+    /// The error for writing a value that a capture now writes. Nothing left but the write-
     /// ownership, so the message says that rather than calling the value gone.
     pub(super) fn capture_write_error(&self, name: Symbol, use_site: &HirId<HirExpr>, owner: usize, captor: Symbol, wrote_at: &HirId<HirExpr>) -> anyhow::Error {
         let text = self.hir.text(name);
@@ -419,8 +473,23 @@ impl<'a> Checker<'a> {
 
     /// The write error for a binding that only reads a value a closure writes, if it is one.
     pub(super) fn reader_write_error(&self, i: usize, use_site: &HirId<HirExpr>) -> Option<anyhow::Error> {
-        let (owner, captor, wrote_at) = self.capture_writer(i)?;
-        Some(self.capture_write_error(self.locals[i].name, use_site, owner, captor, &wrote_at))
+        if let Some((owner, captor, wrote_at)) = self.capture_writer(i) {
+            return Some(self.capture_write_error(self.locals[i].name, use_site, owner, captor, &wrote_at));
+        }
+        self.transferred_write_error(i, use_site)
+    }
+
+    /// The write error for a binding that gave its write-ownership away. It still reads the value,
+    /// so the message says what it lost rather than calling the value immutable.
+    fn transferred_write_error(&self, i: usize, use_site: &HirId<HirExpr>) -> Option<anyhow::Error> {
+        let site = self.transferred_at(i)?;
+        let name = self.hir.text(self.locals[i].name);
+        Some(anyhow!("{}", Diagnostic::new(
+            format!("cannot write `{name}`, which gave its write-ownership away"),
+            self.hir.pos(use_site).clone())
+            .with_label(format!("`{name}` is written here"))
+            .with_span(self.hir.pos(&site.node).clone(), format!("`{name}` gave it away here"))
+            .with_help(format!("reading `{name}` is still fine; to write the value, go through whatever took it"))))
     }
 
     /// Whether a value expression names a read-only parameter. Such a receiver is fixed by marking
@@ -434,15 +503,8 @@ impl<'a> Checker<'a> {
         self.reader_write_error(self.local_of(value)?, value)
     }
 
-    /// Moving a value reads it, so a loop body that moves one reads a moved value on the next pass.
-    /// The read and the move are the same spot, so a single caret marks it.
-    pub(super) fn loop_move_error(&self, name: Symbol, moved: MovedAt) -> anyhow::Error {
-        let text = self.hir.text(name);
-        anyhow!("{}", Diagnostic::new("value used after it was moved".to_string(), self.hir.pos(&moved.node).clone())
-            .with_label(format!("`{text}` is moved here, then read again on the next loop iteration")))
-    }
 
-    /// The mutable-value holders a value expression reaches, each with the node to blame.
+    /// The mutable-value sources a value expression reaches, each with the node to blame.
     pub(super) fn reachable_sources(&self, node: &HirId<HirExpr>, out: &mut Vec<(usize, HirId<HirExpr>)>) {
         match self.hir.get(node) {
             HirExpr::Identifier(name) => {
@@ -492,10 +554,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Marks every mutable-value holder a moved value reaches as moved out, so a later read is
-    /// use-after-move. Returns those holders, so a caller that also records provenance reuses the walk.
-    pub(super) fn move_source(&mut self, node: &HirId<HirExpr>) -> Vec<usize> {
-        self.move_source_because(node, MoveCause::Value)
+    /// Takes the write-ownership from every mutable-value holder the given value reaches, so a
+    /// later write through one is refused. Returns those sources, so a caller recording provenance
+    /// reuses the walk.
+    pub(super) fn transfer_write_ownership(&mut self, node: &HirId<HirExpr>) -> Result<Vec<usize>, anyhow::Error> {
+        self.check_can_transfer(node)?;
+        Ok(self.transfer_write_ownership_as(node, WriteOwnershipTransfer::Transferred))
     }
 
     /// Takes the element writer slot for a receiver a mutating call writes.
@@ -511,22 +575,23 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// The mutable-value holders a value reaches.
+    /// The mutable-value sources a value reaches.
     pub(super) fn source_indices(&self, value: &HirId<HirExpr>) -> Vec<usize> {
         let mut sources = Vec::new();
         self.reachable_sources(value, &mut sources);
         sources.into_iter().map(|(i, _)| i).collect()
     }
 
-    /// The source slots feeding a binding's value: the mutable-value holders it reaches, plus the
-    /// enclosing sources a captured writing closure moves.
+    /// The source slots feeding a binding's value: the mutable-value sources it reaches, plus the
+    /// enclosing sources a captured writing closure takes the write-ownership of.
     pub(super) fn provenance_of(&self, value: &HirId<HirExpr>) -> Vec<usize> {
         let mut out = self.source_indices(value);
         out.extend(self.captured_sources(value));
         out
     }
 
-    /// The enclosing locals a closure moves by writing to them. Only mutable-value holders count.
+    /// The enclosing locals a closure takes the write-ownership of by writing them. Only a local
+    /// holding a mutable value counts.
     pub(super) fn captured_sources(&self, value: &HirId<HirExpr>) -> Vec<usize> {
         let HirExpr::Literal(HirLiteral::Lambda(_)) = self.hir.get(value) else { return Vec::new() };
         let Some(writes) = self.sigs.lambda_writes.get(value) else { return Vec::new() };
@@ -538,7 +603,7 @@ impl<'a> Checker<'a> {
 
     /// Stores a value into a container. The value persists there, so a `no persist` value
     /// is rejected, a borrowed value is rejected since it cannot outlive its lender, and a mutable
-    /// value moves in as the container becomes its owner.
+    /// value hands its write-ownership over as the container becomes its writer.
     pub(super) fn store_into_container(&mut self, flow: &Flow, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.reject_outliving(flow, Site::Container, expr)?;
         if self.arg_is_borrowed(expr) {
@@ -547,21 +612,28 @@ impl<'a> Checker<'a> {
         }
         // A parameter may hold a mutable borrowed from the caller, which no signature records. The
         // runtime settles it, and the check rides the value so the error carets the value.
-        if self.holds_unproven_borrow(expr) {
-            self.record_guard(expr, Guard::Unborrowed);
+        match self.holds_unproven_borrow(expr) {
+            true => self.record_guard(expr, Guard::Unborrowed),
+            false => self.record_elision(expr, Guard::Unborrowed),
         }
         self.check_stored_element(expr)?;
-        self.move_source(expr);
+        self.transfer_write_ownership(expr)?;
         Ok(())
     }
 
     /// Hands one aggregate's element to a second one. The element keeps its place in the first,
     /// which may still read it, and the receiver takes the writer slot so only it may write.
     pub(super) fn check_stored_element(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if self.extraction_of(expr).is_some() {
+        if self.extraction_of(expr).is_some() || self.may_be_an_element(expr) {
             self.record_guard(expr, Guard::StoreIntoContainer);
+            self.elements_handed_over += 1;
         }
         Ok(())
+    }
+
+    /// Whether a value may be an element of a container this pass cannot see.
+    fn may_be_an_element(&self, expr: &HirId<HirExpr>) -> bool {
+        self.local_of(expr).is_some_and(|i| self.locals[i].param)
     }
 
     /// The frame slot a node reads, when it reads one at all.
@@ -608,7 +680,7 @@ impl<'a> Checker<'a> {
             // An owned mutable may be consumed by the callee or merely borrowed, and this pass
             // cannot tell which. Treat the binding as dead for now. If it is never read again both
             // outcomes are fine, and if it is read the reader demands the runtime prove a borrow.
-            self.move_source_because(&args[i], MoveCause::Opaque(*callee, i as u8));
+            self.transfer_write_ownership_as(&args[i], WriteOwnershipTransfer::Unknown(*callee, i as u8));
         }
         if !survive.is_empty() {
             self.record_survive_barrier(callee, survive.clone());
@@ -619,7 +691,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Matches each argument's mutability against its parameter marker.
-    pub(super) fn check_arg_mutability(&self, callee: &HirId<HirExpr>, callee_fn: HirId<HirStmt>, markers: &[Capability], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+    pub(super) fn check_arg_mutability(&self, callee: &HirId<HirExpr>, markers: &[Capability], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         for (i, &marker) in markers.iter().enumerate() {
             let Some(typed) = arg_types.get(i) else { break };
             if marker.is_mut() {
@@ -629,13 +701,6 @@ impl<'a> Checker<'a> {
                 // A borrow cannot be given away, so it may not feed a consuming parameter.
                 if marker.is_move() && self.arg_is_borrowed(&args[i]) {
                     return Err(self.consumes_borrow_error(callee, &args[i]));
-                }
-            } else if typed.mutability == Mutability::Mutable {
-                // A read-only helper borrows the mutable, so it is admitted only where the callee
-                // does not persist it. A callee that mutates it is rejected in its own body, since
-                // an unmarked parameter is read-only.
-                if self.sigs.param_escapes_at(&callee_fn, i) {
-                    return Err(self.keeps_argument_error(callee, &args[i]));
                 }
             }
         }
@@ -662,12 +727,13 @@ impl<'a> Checker<'a> {
 
     /// Moves each argument passed to a `*mut` parameter. A plain `mut` parameter borrows, so
     /// it leaves the argument live.
-    pub(super) fn consume_move_args(&mut self, markers: &[Capability], args: &[HirId<HirExpr>]) {
+    pub(super) fn consume_move_args(&mut self, markers: &[Capability], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         for (i, &marker) in markers.iter().enumerate() {
             if matches!(marker, Capability::MoveMut) {
-                if let Some(arg) = args.get(i) { self.move_source(arg); }
+                if let Some(arg) = args.get(i) { self.transfer_write_ownership(arg)?; }
             }
         }
+        Ok(())
     }
 
     /// The declaration span of the current function's parameter named by `arg`.
@@ -714,14 +780,14 @@ impl<'a> Checker<'a> {
         anyhow!("{}", diag)
     }
 
-    /// The error for passing a mutable value to a parameter that persists it.
-    pub(super) fn keeps_argument_error(&self, callee: &HirId<HirExpr>, arg: &HirId<HirExpr>) -> anyhow::Error {
-        let subject = self.quoted_subject(arg);
+    /// The error for a method that stores its receiver, called on a borrowed mutable value.
+    pub(super) fn keeps_receiver_error(&self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>) -> anyhow::Error {
+        let subject = self.quoted_subject(receiver);
         let c = self.callee_name(callee);
         self.error_ctx(
-            format!("{subject} is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'"),
-            self.hir.pos(arg), format!("{subject} is mutable"),
-            self.hir.pos(callee), format!("{c} keeps its argument"))
+            format!("{subject} is mutable and this method stores its receiver; freeze or copy it, or take the receiver by '*mut'"),
+            self.hir.pos(receiver), format!("{subject} is mutable"),
+            self.hir.pos(callee), format!("{c} stores its receiver"))
     }
 
     /// A capability-mismatch error: the parameter wants a `want` argument but got a `got` one.
@@ -755,19 +821,27 @@ impl<'a> Checker<'a> {
 
     /// Whether a write target is reached through a value that cannot be mutated.
     pub(super) fn sealed_base(&self, target: &HirId<HirExpr>) -> bool {
-        match self.hir.get(target) {
-            // A factory's `this` is still being built, so its mutability is the constructor's to decide.
-            HirExpr::This => !self.checking_factory && self.this_typed().mutability == Mutability::Immutable,
-            HirExpr::Index(inner, _, _) | HirExpr::SafeAccess(inner, _, _) => self.sealed_base(inner),
-            HirExpr::Identifier(name) => self.frame_index_of(*name)
-                .is_some_and(|i| self.effective_mutability(i) == Mutability::Immutable),
-            _ => false,
+        // A factory's `this` is still being built, so its mutability is the constructor's to decide.
+        if self.base_is_this(target) {
+            return !self.checking_factory && self.this_typed().mutability == Mutability::Immutable;
+        }
+        self.root_local(target).is_some_and(|i| self.write_permission(i) == Mutability::Immutable)
+    }
+
+    /// The binding a write target is rooted in.
+    fn root_local(&self, target: &HirId<HirExpr>) -> Option<usize> {
+        match self.place_of(target)?.base {
+            Base::Local(i) => Some(i),
+            _ => None,
         }
     }
 
     /// The error for mutating a place under a sealed base.
     pub(super) fn sealed_write_error(&self, target: &HirId<HirExpr>) -> anyhow::Error {
         if !self.base_is_this(target) {
+            if let Some(err) = self.root_local(target).and_then(|i| self.reader_write_error(i, target)) {
+                return err;
+            }
             return self.error_labeled("cannot mutate an immutable value".to_string(), target,
                 "reached through an immutable value");
         }
@@ -780,7 +854,8 @@ impl<'a> Checker<'a> {
     fn base_is_this(&self, target: &HirId<HirExpr>) -> bool {
         match self.hir.get(target) {
             HirExpr::This => true,
-            HirExpr::Index(inner, _, _) | HirExpr::SafeAccess(inner, _, _) => self.base_is_this(inner),
+            HirExpr::Index(inner, _, _) | HirExpr::SafeAccess(inner, _, _)
+            | HirExpr::Assert(inner) | HirExpr::Propagate(inner) | HirExpr::Mut(inner) => self.base_is_this(inner),
             _ => false,
         }
     }

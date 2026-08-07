@@ -69,3 +69,11 @@ fn member_ids_are_capped_at_one_byte() {
     assert_inline(&format!("type Big {{ {} }} print(\"ok\");", fields(254)), Ok(["ok"]));
     assert_inline::<0>(&format!("type Big {{ {} }}", fields(255)), Err("Too many members in type 'Big'".to_string()));
 }
+
+/// Forcing puts the checks the pass elided back into the stream.
+#[test]
+fn forced_checks_leave_a_correct_program_alone() {
+    assert_eq!(common::run_forced("say n = 5; print(n!);"), Ok(vec!["5".to_string()]));
+    assert_eq!(common::run_forced("fn get(f)? { if (f) { return null; } return \"v\"; } say x? = get(false); if (x != null) { print(x!); }"),
+        Ok(vec!["v".to_string()]));
+}

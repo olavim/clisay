@@ -1,0 +1,29 @@
+// A thrown container leaves its scope by a path no store and no capture records.
+say a = mut [mut [0]];
+say mut kept? = null;
+try { say c = mut []; c.push(a[0]); throw c; } catch (e) { kept = e; }
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// Thrown from a callee, so it passes a frame teardown as well as a scope exit.
+fn boom(c: *mut) { throw c; }
+say a = mut [mut [0]];
+say mut kept? = null;
+try { say c = mut []; c.push(a[0]); boom(c); } catch (e) { kept = e; }
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// A `finally` runs on the way out and does not change who holds it.
+fn boom(c: *mut) { throw c; }
+say a = mut [mut [0]];
+say mut kept? = null;
+try { say c = mut []; c.push(a[0]); boom(c); } catch (e) { kept = e; } finally { print("out"); }
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+// expect: out
+
+// @split
+// A catch that discards it leaves nothing holding the element.
+say a = mut [mut [0]];
+try { say c = mut []; c.push(a[0]); throw c; } catch (e) { }
+a[0][0] = 1;
+print(a[0][0]); // expect: 1

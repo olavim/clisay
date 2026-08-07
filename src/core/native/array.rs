@@ -2,7 +2,7 @@ use anyhow::bail;
 
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
-use crate::core::objects::{NativeFn, ObjNativeFn, ObjString, IMMUTABLE_MUTATION, PERSISTED_BORROW};
+use crate::core::objects::{give_container_write_ownership, NativeFn, ObjNativeFn, ObjString, GAVE_TRANSFERRED_ELEMENT, IMMUTABLE_MUTATION, PERSISTED_BORROW};
 use crate::core::value::{Value, ValueKind};
 
 use super::NativeType;
@@ -61,6 +61,9 @@ impl NativeArray {
             bail!("{PERSISTED_BORROW}");
         }
         let array = unsafe { &mut *target.as_object().as_array_ptr() };
+        if !give_container_write_ownership(target, value) {
+            bail!("{GAVE_TRANSFERRED_ELEMENT}");
+        }
         array.values.push(value);
         host.push(Value::NULL);
         Ok(())
@@ -77,7 +80,7 @@ impl NativeType for NativeArray {
         let push = gc.intern("push");
         vec![
             (length, ObjNativeFn::new(length, 0, (|host, target, _args| Self::length(host, target)) as NativeFn)),
-            (push, ObjNativeFn::new(push, 1, (|host, target, args| Self::push(host, target, args[0])) as NativeFn)),
+            (push, ObjNativeFn::mutating(push, 1, (|host, target, args| Self::push(host, target, args[0])) as NativeFn)),
         ]
     }
 

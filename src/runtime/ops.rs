@@ -37,10 +37,11 @@ macro_rules! unary_op_methods {
 
 impl Vm {
     /// Lowers the stack out of a frame. Every exit goes through this, because one that lowers the
-    /// stack without closing upvalues first leaves a root pointing above the live top.
-    fn unwind_to(&mut self, stack_start: *mut Value, write_depth: usize) {
+    /// stack without closing upvalues first leaves a root pointing above the live top. `leaving` is
+    /// the value the exit carries out, which lands in the slot the frame started at.
+    fn unwind_to(&mut self, stack_start: *mut Value, write_depth: usize, leaving: Value) {
         self.close_upvalues(stack_start);
-        self.release_writes_above(write_depth);
+        self.release_write_ownership_above(write_depth, stack_start, leaving);
         self.stack.set_top(stack_start);
     }
 
@@ -53,7 +54,9 @@ impl Vm {
         self.ip = frame.return_ip;
 
         let value = self.stack.pop();
-        self.unwind_to(frame.stack_start, frame.write_depth);
+        // The value outlives this frame, so the scope releases below must not let go of it.
+        objects::record_escape(value);
+        self.unwind_to(frame.stack_start, frame.write_depth, value);
         self.stack.push(value);
         Ok(true)
     }
@@ -65,7 +68,8 @@ impl Vm {
         self.ip = frame.return_ip;
 
         let value = self.stack.pop();
-        self.unwind_to(frame.stack_start, frame.write_depth);
+        objects::record_escape(value);
+        self.unwind_to(frame.stack_start, frame.write_depth, value);
         if frame.seal {
             crate::core::objects::freeze_value(value, self.current_pos_index());
         }
@@ -78,6 +82,9 @@ impl Vm {
     }
 
     pub(super) fn throw_value(&mut self, value: Value) -> Result<(), anyhow::Error> {
+        // A thrown value passes every scope between here and the handler, so none of them may
+        // let go of it.
+        objects::record_escape(value);
         if self.try_frames.len() == 0 {
             return self.error(format!("Uncaught exception: {}", value.fmt()));
         }
@@ -89,7 +96,7 @@ impl Vm {
             if v.is_object() { v.as_object().set_borrowed(prev); }
         }
         self.frames.set_top(frame.origin);
-        self.unwind_to(frame.stack_start, frame.write_depth);
+        self.unwind_to(frame.stack_start, frame.write_depth, value);
         self.ip = frame.handler_ip;
         self.stack.push(value);
         Ok(())
@@ -102,7 +109,7 @@ impl Vm {
             handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
             stack_start: self.stack.top(),
             borrow_depth: self.borrows.len(),
-            write_depth: self.write_owners.len()
+            write_depth: self.write_ownerships.len()
         });
     }
 
@@ -223,14 +230,19 @@ impl Vm {
     }
 
     pub(super) fn op_assert_non_null(&mut self) -> Result<(), anyhow::Error> {
+        let forced = self.at_elided_site();
         if self.stack.peek(0).is_null() {
-            return self.error("unexpected null");
+            return match forced {
+                true => self.refuted_elision("a value proven non-null is null"),
+                false => self.error("unexpected null"),
+            };
         }
         Ok(())
     }
 
-    pub(super) fn op_array(&mut self) {
+    pub(super) fn op_array(&mut self) -> Result<(), anyhow::Error> {
         let len = self.read_next() as usize;
+        let seal = self.read_next() != 0;
         // Copy the elements without popping them first: they must stay on the stack
         // and remain GC roots because the allocation below can trigger a collection.
         let values = unsafe {
@@ -238,14 +250,36 @@ impl Vm {
             std::slice::from_raw_parts(start, len).to_vec()
         };
         let array = self.alloc(ObjArray::new(values));
+        let container = Value::from(array);
+        self.take_elements(container, len, 1, seal)?;
         self.stack.truncate(len);
-        self.push_immutable(Value::from(array));
+        self.push_built_container(container, seal);
+        Ok(())
+    }
+
+    /// Hands a container the write-ownership of the elements still on the stack, `step` apart.
+    fn take_elements(&mut self, container: Value, count: usize, step: usize, seal: bool) -> Result<(), anyhow::Error> {
+        if seal {
+            return Ok(());
+        }
+        for i in (0..count).step_by(step) {
+            self.give_write_ownership(container, self.stack.peek(i))?;
+        }
+        Ok(())
     }
 
     /// Pushes a freshly built container, sealed immutable by default.
     fn push_immutable(&mut self, value: Value) {
         value.as_object().set_immutable(self.current_pos_index());
         self.stack.push(value);
+    }
+
+    /// Pushes a literal's container, sealed only when the literal said so.
+    fn push_built_container(&mut self, value: Value, seal: bool) {
+        match seal {
+            true => self.push_immutable(value),
+            false => self.stack.push(value),
+        }
     }
 
     /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
@@ -263,8 +297,9 @@ impl Vm {
         self.push_immutable(Value::from(slice));
     }
 
-    pub(super) fn op_dict(&mut self) {
+    pub(super) fn op_dict(&mut self) -> Result<(), anyhow::Error> {
         let count = self.read_next() as usize;
+        let seal = self.read_next() != 0;
         let n = count * 2;
         // Build the entry map from the key/value pairs still on the stack; they
         // stay rooted there until after the allocation (which may collect).
@@ -277,8 +312,12 @@ impl Vm {
             }
         }
         let dict = self.alloc(ObjDict::new(entries));
+        let container = Value::from(dict);
+        // Every second slot is a value, counting from the top where the last pair's value sits.
+        self.take_elements(container, n, 2, seal)?;
         self.stack.truncate(n);
-        self.push_immutable(Value::from(dict));
+        self.push_built_container(container, seal);
+        Ok(())
     }
 
     /// Clears the immutable bit on the value on top of the stack.

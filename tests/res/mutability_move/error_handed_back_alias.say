@@ -4,4 +4,4 @@ type Box { pub mut v; init(this) { this.v = 0; } }
 fn f(x: mut)!: mut { return x; }
 say a = mut Box();
 say b = f(a);
-a.v = 1; // error: value used after it was moved
+a.v = 1; // error: cannot write `a`, which gave its write-ownership away

@@ -8,8 +8,8 @@ use crate::middle::obligations::Obligations;
 use crate::middle::signatures::{Mutability, TypeTag};
 
 use super::narrow::whole_value_binders;
-use super::alias::MoveCause;
-use super::{ElementKey, MovedAt};
+use super::alias::WriteOwnershipTransfer;
+use super::{ElementKey, TransferSite};
 use super::{Checker, Local};
 
 /// The binders a condition or match arm introduces, paired with the obligations each owes.
@@ -29,7 +29,7 @@ pub struct LocalFlow {
     pub assigned: bool,
     pub tag: TypeTag,
     pub mutability: Mutability,
-    pub move_site: Option<MovedAt>,
+    pub transfer_site: Option<TransferSite>,
     pub provenance: Vec<usize>,
     pub extracted_from: Vec<(usize, Option<ElementKey>)>,
     pub handled: Obligations,
@@ -74,7 +74,9 @@ impl<'a> Checker<'a> {
 
     /// Drops every local a scope introduced.
     pub(super) fn truncate_locals(&mut self, mark: usize) {
-        self.revive_scoped_sources(mark);
+        self.reclaim_scoped_write_ownership(mark);
+        self.reroot_provenance(mark);
+        self.drop_dead_extractions(mark);
         self.locals.truncate(mark);
     }
 
@@ -194,6 +196,8 @@ impl<'a> Checker<'a> {
             local.alias.mutability = Mutability::param(param.clause.capability);
             // A plain `mut` parameter borrows its argument; `*mut` owns it.
             local.alias.borrowed = param.clause.capability == Capability::Mut;
+            // Without `mut` the argument may still be a mutable the caller lent.
+            local.alias.unproven_borrow = !param.clause.capability.is_mut();
             local.site = Some(param.name);
 
             // A pattern tests the argument on entry, which is a discharge of the slot it names.
@@ -245,13 +249,13 @@ impl<'a> Checker<'a> {
     pub(super) fn restore_keeping_moves(&mut self, flow: &FlowSnapshot) {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             let LocalFlow {
-                assigned, tag, mutability, move_site, provenance: _kept,
+                assigned, tag, mutability, transfer_site, provenance: _kept,
                 extracted_from: _also_kept, handled, discharged, field_discharged,
             } = snap;
             local.assigned = *assigned;
             local.tag = tag.clone();
             local.alias.mutability = *mutability;
-            local.alias.move_site = local.alias.move_site.or(*move_site);
+            local.alias.transfer_site = local.alias.transfer_site.or(*transfer_site);
             local.handled = handled.clone();
             local.discharged = discharged.clone();
             local.field_discharged = field_discharged.clone();
@@ -263,7 +267,7 @@ impl<'a> Checker<'a> {
     pub(super) fn restore_narrowings(&mut self, flow: &FlowSnapshot) {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             let LocalFlow {
-                assigned: _, tag: _, mutability: _, move_site: _, provenance: _,
+                assigned: _, tag: _, mutability: _, transfer_site: _, provenance: _,
                 extracted_from: _, handled: _, discharged, field_discharged,
             } = snap;
             local.discharged.retain(|ob| discharged.contains(ob));
@@ -290,7 +294,7 @@ pub(super) fn flow_of(local: &Local) -> LocalFlow {
         assigned: local.assigned,
         tag: local.tag.clone(),
         mutability: local.alias.mutability,
-        move_site: local.alias.move_site,
+        transfer_site: local.alias.transfer_site,
         provenance: local.alias.provenance.clone(),
         extracted_from: local.alias.extracted_from.clone(),
         handled: local.handled.clone(),
@@ -302,13 +306,13 @@ pub(super) fn flow_of(local: &Local) -> LocalFlow {
 /// Puts flow facts onto a local. The inverse of `flow_of`, and the pair has to round-trip.
 pub(super) fn restore_flow(local: &mut Local, flow: &LocalFlow) {
     let LocalFlow {
-        assigned, tag, mutability, move_site, provenance,
+        assigned, tag, mutability, transfer_site, provenance,
         extracted_from, handled, discharged, field_discharged,
     } = flow;
     local.assigned = *assigned;
     local.tag = tag.clone();
     local.alias.mutability = *mutability;
-    local.alias.move_site = *move_site;
+    local.alias.transfer_site = *transfer_site;
     local.alias.provenance = provenance.clone();
     local.alias.extracted_from = extracted_from.clone();
     local.handled = handled.clone();
@@ -319,13 +323,13 @@ pub(super) fn restore_flow(local: &mut Local, flow: &LocalFlow) {
 /// Merges one outcome into another, for a single local.
 pub fn merge_flow(into: &mut LocalFlow, owed: &Obligations, other: &LocalFlow) {
     let LocalFlow {
-        assigned, tag, mutability, move_site, provenance,
+        assigned, tag, mutability, transfer_site, provenance,
         extracted_from, handled, discharged, field_discharged,
     } = other;
     into.assigned = into.assigned && *assigned;
     into.tag = if into.tag == *tag { into.tag.clone() } else { TypeTag::Unknown };
     into.mutability = if into.mutability == *mutability { into.mutability } else { Mutability::Unknown };
-    into.move_site = merge_moves(into.move_site, *move_site);
+    into.transfer_site = merge_transfer_sites(into.transfer_site, *transfer_site);
     // Either branch could have run, so the binding may have come out of any origin either of them
     // named. An origin is a restriction, so the join keeps them all.
     for origin in extracted_from {
@@ -346,7 +350,7 @@ pub fn merge_flow(into: &mut LocalFlow, owed: &Obligations, other: &LocalFlow) {
 }
 
 /// Merges the move sites of two outcomes.
-fn merge_moves(into: Option<MovedAt>, other: Option<MovedAt>) -> Option<MovedAt> {
+fn merge_transfer_sites(into: Option<TransferSite>, other: Option<TransferSite>) -> Option<TransferSite> {
     match (into, other) {
         (None, site) | (site, None) => site,
         (Some(a), Some(b)) if a == b => Some(a),
@@ -354,7 +358,7 @@ fn merge_moves(into: Option<MovedAt>, other: Option<MovedAt>) -> Option<MovedAt>
             // The lower node keeps the blame, so the answer does not depend on which outcome the
             // caller restored first.
             let blame = if a.node.index() <= b.node.index() { a.node } else { b.node };
-            Some(MovedAt { node: blame, cause: MoveCause::Value })
+            Some(TransferSite { node: blame, transfer: WriteOwnershipTransfer::Transferred })
         },
     }
 }
