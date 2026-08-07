@@ -1,0 +1,58 @@
+// Reassignability is a property of the binding, so which frame the assignment is written in cannot decide it.
+fn run() {
+    say b = 1;
+    say f = () => { b = 2; return 1; }; // error: Cannot reassign immutable binding `b`
+    f();
+    print(b);
+}
+run();
+
+// @split
+// The direct form, which was refused all along.
+fn run() { say b = 1; b = 2; print(b); } // error: Cannot reassign immutable binding `b`
+run();
+
+// @split
+// A parameter is never reassignable, from its own frame or a capture.
+fn run(p) { p = 2; print(p); } // error: Cannot reassign immutable binding `p`
+run(1);
+
+// @split
+fn run(p) {
+    say f = () => { p = 2; return 1; }; // error: Cannot reassign immutable binding `p`
+    f();
+}
+run(1);
+
+// @split
+// A matcher binder keeps its own refusal through a capture.
+fn run(k) {
+    match (k) {
+        v => { say f = () => { v = 2; return 1; }; f(); }, // error: Cannot reassign matcher binder `v`
+    }
+}
+run(1);
+
+// @split
+// `say mut` is what makes the capture legal, and it still works.
+fn run() {
+    say mut b = 1;
+    say f = () => { b = 2; return 1; };
+    f();
+    print(b); // expect: 2
+}
+run();
+
+// @split
+// A member of the enclosing type wins over a same-named outer binding, so writing it is a field
+// write and not a rebind of the capture.
+say field = 0;
+type T {
+    mut field = 1;
+    pub fn bump(this: mut) { field = field + 5; }
+    pub fn read(this)! { return field; }
+}
+say t = mut T();
+t.bump();
+print(t.read()); // expect: 6
+print(field); // expect: 0

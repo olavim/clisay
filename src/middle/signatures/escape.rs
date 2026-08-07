@@ -42,6 +42,9 @@ struct EscapeFacts {
     forwards: Vec<EscapeForward>,
     /// `(local, source)` from `say` and assignment.
     aliases: Vec<(Symbol, Symbol)>,
+    /// Names the body rebinds that belong to an enclosing scope. A rebind replaces what the name
+    /// denotes, which is not a write to the value and so is none of the sets above.
+    rebound: HashSet<Symbol>,
 }
 
 /// One forwarding edge: the argument named `arg` escapes if `callee` persists it at its
@@ -202,6 +205,7 @@ impl<'a> Collector<'a> {
             for analysis in &analyses {
                 let writes = self.body_writes(&analysis.facts);
                 self.sigs.writes.insert(analysis.func, writes);
+                self.sigs.any_rebind.extend(&analysis.facts.rebound);
             }
         }
     }
@@ -378,6 +382,7 @@ impl<'a> Collector<'a> {
             self.sigs.lambda_param_escapes.insert(id, row.iter().map(|f| f.escapes).collect());
             let writes = self.body_writes(&facts);
             self.sigs.lambda_writes.insert(id, writes);
+            self.sigs.any_rebind.extend(&facts.rebound);
         }
     }
 
@@ -546,6 +551,13 @@ impl<'a> Collector<'a> {
                 // Writing through an index mutates the base value in place.
                 if let HirExpr::Index(base, _, _) = self.hir.get(lhs) {
                     facts.mutates.extend(self.reachable_names(base));
+                }
+                // A rebind of the body's own local cannot reach a caller, and one of an upvalue or
+                // a global can. `bind` already decided which, so this asks rather than guesses.
+                if let HirExpr::Identifier(local) = self.hir.get(lhs) {
+                    if !matches!(self.bindings.place_of(lhs), Some(Place::Local(_))) {
+                        facts.rebound.insert(*local);
+                    }
                 }
                 if self.assign_persists(lhs) {
                     self.mark_persisted(rhs, facts);

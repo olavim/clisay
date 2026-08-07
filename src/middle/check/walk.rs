@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use crate::core::objects::TypeMember;
 use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{BinOp, Capability, HirExpr, HirFnDecl, HirId, HirLiteral, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::bind::Place;
 use crate::middle::native::{self, Container};
 use crate::middle::obligations::Obligations;
 use crate::middle::signatures::{Mutability, TypeTag};
@@ -24,7 +25,7 @@ impl<'a> Checker<'a> {
             },
             HirStmt::Type(decl) => self.type_decl(stmt, Some(*stmt), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
-            HirStmt::Say(field) => self.say(field.name, &field.clause, field.mutable, &field.value)?,
+            HirStmt::Say(field) => self.say(stmt.index(), field.name, &field.clause, field.mutable, &field.value)?,
             HirStmt::Expression(e) => {
                 let typed = self.expr(e)?;
                 self.check_dropped_result(&typed.flow, e)?;
@@ -47,8 +48,7 @@ impl<'a> Checker<'a> {
             },
             HirStmt::Throw(e) => { self.expr(e)?; },
             HirStmt::While(cond, body) => {
-                self.expr(cond)?;
-                let body_narrow = self.narrowings(cond, true);
+                let (body_narrow, _) = self.condition_narrowings(cond)?;
                 let scope = self.condition_scope(cond)?;
                 let pre = self.snapshot();
                 // Check the body twice. The second pass sees the first pass's moves, so a value the
@@ -65,9 +65,7 @@ impl<'a> Checker<'a> {
                 }
             },
             HirStmt::If(cond, then, otherwise) => {
-                self.expr(cond)?;
-                let then_narrow = self.narrowings(cond, true);
-                let else_narrow = self.narrowings(cond, false);
+                let (then_narrow, else_narrow) = self.condition_narrowings(cond)?;
                 let scope = self.condition_scope(cond)?;
                 let then_snap = self.narrow_branch(&then_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
                     c.with_binders(&scope, then, |c| c.expr(then))?;
@@ -102,7 +100,9 @@ impl<'a> Checker<'a> {
                     let mark = self.locals.len();
                     if let Some(param) = catch.param {
                         let name = self.hir.ident_sym(&param);
-                        self.locals.push(Local::catch(name, self.opt_set(true), catch.mutable));
+                        let mut local = Local::catch(name, self.opt_set(true), catch.mutable);
+                        local.decl = Some(param.index());
+                        self.locals.push(local);
                     }
                     self.expr(&catch.body)?;
                     self.close_scope(mark, &catch.body)?;
@@ -185,7 +185,11 @@ impl<'a> Checker<'a> {
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
             HirExpr::This => self.this_typed(),
             HirExpr::Assign(lhs, rhs) => self.assign(lhs, rhs)?,
-            HirExpr::Call(callee, args) => self.call(expr, callee, args)?,
+            HirExpr::Call(callee, args) => {
+                let typed = self.call(expr, callee, args)?;
+                self.invalidate_rebound_fields(callee);
+                typed
+            },
             HirExpr::Construct(callee, brace) => {
                 // A plain brace is immutable, so a mutable field value is refused here.
                 let immutable = !std::mem::take(&mut self.mut_construction);
@@ -273,6 +277,7 @@ impl<'a> Checker<'a> {
                 let callee = self.expr(callee_id)?;
                 self.require_witnessed_operand(&callee.flow, callee_id)?;
                 for a in args { self.expr(a)?; }
+                self.invalidate_rebound_fields(callee_id);
                 self.chain_result(&callee.flow, expr)
             },
             // `a?!` discharges the operand on its fall-through path. The enclosing function carries
@@ -293,6 +298,7 @@ impl<'a> Checker<'a> {
                 let caught = self.owed_of(&left.flow);
                 let tag = self.single_object_witness_tag(&caught);
                 let mut binder_local = Local::binder_owing(*binder, caught);
+                binder_local.decl = Some(expr.index());
                 binder_local.tag = tag;
                 binder_local.handled = binder_local.owed.clone();
                 let mark = self.locals.len();
@@ -322,7 +328,7 @@ impl<'a> Checker<'a> {
         })
     }
 
-    pub(super) fn say(&mut self, name: Symbol, clause: &HirSlotClause, mutable: bool, value: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
+    pub(super) fn say(&mut self, decl: usize, name: Symbol, clause: &HirSlotClause, mutable: bool, value: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
         let owed = clause.owed();
         let (assigned, tag, mutability, provenance) = if let Some(value) = value {
             let typed = self.expr(value)?;
@@ -339,6 +345,7 @@ impl<'a> Checker<'a> {
         let mut local = Local::value(name, owed, mutable, assigned, tag);
         local.container = clause.container;
         local.site = *value;
+        local.decl = Some(decl);
         local.alias.mutability = mutability;
         local.alias.provenance = provenance;
         local.alias.extracted_from = value.and_then(|v| self.extraction_of(&v)).into_iter().collect();
@@ -874,21 +881,8 @@ impl<'a> Checker<'a> {
             HirExpr::Identifier(name) => {
                 let name = *name;
                 if let Some(i) = self.frame_index_of(name) {
-                    // A function binding names a declaration, not a reassignable slot.
-                    if self.locals[i].func.is_some() {
-                        return Err(self.error(format!("Cannot reassign `{}`; it names a function", self.hir.text(name)), lhs));
-                    }
-                    let (mutable, assigned) = (self.locals[i].mutable, self.locals[i].assigned);
+                    self.check_reassignable(i, name, lhs)?;
                     let owed = self.locals[i].owed.clone();
-                    if !mutable && assigned {
-                        let text = self.hir.text(name);
-                        if self.locals[i].binder {
-                            return Err(self.error_help(format!("Cannot reassign matcher binder `{text}`"), lhs,
-                                format!("copy it into a `say mut {text}` first to change it")));
-                        }
-                        return Err(self.error_help(format!("Cannot reassign immutable binding `{text}`"), lhs,
-                            format!("you can make `{text}` mutable by declaring it as `say mut {text}`")));
-                    }
                     self.check_into_slot(&typed.flow, &owed, name, lhs)?;
                     self.locals[i].assigned = true;
                     self.locals[i].tag = typed.tag.clone();
@@ -911,6 +905,10 @@ impl<'a> Checker<'a> {
                 } else if self.sigs.is_type(name) {
                     // A type binding names a declaration, not a reassignable slot.
                     return Err(self.error(format!("Cannot reassign `{}`; it names a type", self.hir.text(name)), lhs));
+                } else if matches!(self.bindings.place_of(lhs), Some(Place::Upvalue(_))) {
+                    if let Some(i) = self.enclosing_index(name) {
+                        self.check_reassignable(i, name, lhs)?;
+                    }
                 } else {
                     // `field = ...` is implicitly `this.field = ...`
                     self.assign_field_this(name, &typed.flow, lhs, rhs)?;
@@ -922,6 +920,24 @@ impl<'a> Checker<'a> {
         // A store hands the value to a new holder, so a mutable right side moves.
         self.move_source(rhs);
         Ok(typed)
+    }
+
+    /// Refuses a rebind of a binding that was not declared reassignable. A slot with no value yet
+    /// is being initialized rather than reassigned, which every binding permits once.
+    fn check_reassignable(&self, i: usize, name: Symbol, lhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let text = self.hir.text(name);
+        if self.locals[i].func.is_some() {
+            return Err(self.error(format!("Cannot reassign `{text}`; it names a function"), lhs));
+        }
+        if self.locals[i].mutable || !self.locals[i].assigned {
+            return Ok(());
+        }
+        if self.locals[i].binder {
+            return Err(self.error_help(format!("Cannot reassign matcher binder `{text}`"), lhs,
+                format!("copy it into a `say mut {text}` first to change it")));
+        }
+        Err(self.error_help(format!("Cannot reassign immutable binding `{text}`"), lhs,
+            format!("you can make `{text}` mutable by declaring it as `say mut {text}`")))
     }
 
     /// Checks an assignment `target.member = value`.

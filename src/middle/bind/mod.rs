@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use anyhow::anyhow;
 
 use crate::frontend::lex::Diagnostic;
-use fnv::FnvHashMap;
+use fnv::{FnvHashMap, FnvHashSet};
 use nohash_hasher::IntSet;
 
 use crate::compiler_error;
@@ -151,6 +151,9 @@ pub struct Bindings {
     surfaces: FnvHashMap<HirId<HirStmt>, Vec<Symbol>>,
     /// Scope nodes (by HIR node index) => locals to clean up on exit.
     cleanups: FnvHashMap<usize, Vec<Cleanup>>,
+    /// Declaration nodes whose binding some nested body captures. A binding absent here is named by
+    /// nothing but its own frame.
+    captured: FnvHashSet<usize>,
     /// Each type test => the type or trait declaration its name resolves to.
     type_refs: FnvHashMap<HirId<HirMatcher>, HirId<HirStmt>>,
     /// Each identifier naming a type => that declaration, so a construction and the tag it
@@ -165,6 +168,9 @@ pub struct Bindings {
     match_info: FnvHashMap<HirId<HirStmt>, MatchInfo>,
     /// `e ?? p => h` handler nodes => the local slot binding the bad value.
     handle_binders: FnvHashMap<HirId<HirExpr>, u8>,
+    /// Every node this pass declared a binding from.
+    #[cfg(debug_assertions)]
+    declared: FnvHashSet<usize>,
 }
 
 /// The slot layout codegen needs for a `match` statement. The scrutinee lives in `scrut_slot`
@@ -178,6 +184,19 @@ pub struct MatchInfo {
 }
 
 impl Bindings {
+    /// Records a node this pass declared a binding from.
+    #[cfg(debug_assertions)]
+    fn note_declaration(&mut self, decl: usize) {
+        self.declared.insert(decl);
+    }
+
+    /// Whether some nested body names the binding this node declares.
+    pub fn is_captured(&self, decl: usize) -> bool {
+        #[cfg(debug_assertions)]
+        assert!(self.declared.contains(&decl), "asked about a node that declared no binding");
+        self.captured.contains(&decl)
+    }
+
     pub fn place(&self, id: &HirId<HirExpr>) -> Place {
         self.places[id]
     }
@@ -250,6 +269,9 @@ struct Local {
     name: Option<Symbol>,
     depth: u8,
     is_captured: bool,
+    /// The node that declared this binding. `None` where nothing outside
+    /// this pass names the binding.
+    decl: Option<usize>,
 }
 
 /// A type or trait name visible at some scope depth. This is the order
@@ -333,7 +355,7 @@ impl<'a> Resolver<'a> {
                     self.enter_scope();
                     if let Some(param) = &catch.param {
                         let HirExpr::Identifier(name) = self.hir.get(param) else { unreachable!() };
-                        self.declare_local(*name)?;
+                        self.declare_local(*name, param.index())?;
                     }
                     // catch body is a HirExpr::Block compiled inline (no extra scope).
                     let HirExpr::Block(stmts) = self.hir.get(&catch.body) else { unreachable!() };
@@ -359,7 +381,7 @@ impl<'a> Resolver<'a> {
                 if let Some(expr) = &field.value {
                     self.expression(expr)?;
                 }
-                let slot = self.declare_local(field.name)?;
+                let slot = self.declare_local(field.name, stmt_id.index())?;
                 self.bindings.slots.insert(*stmt_id, slot);
             },
             HirStmt::Expression(expr) => self.expression(expr)?,
@@ -395,13 +417,13 @@ impl<'a> Resolver<'a> {
                     let names = self.hir.get(&arm.matcher).binders(self.hir);
                     let mut slots = Vec::with_capacity(names.len());
                     for name in &names {
-                        slots.push((*name, self.declare_local(*name)?));
+                        slots.push((*name, self.declare_local(*name, arm.matcher.index())?));
                     }
 
                     // A binding guard publishes into the slots right after the matcher's, so its
                     // stores land inside the reserved block that codegen pushes.
                     if let Some(guard) = &arm.guard {
-                        self.resolve_condition(guard, true)?;
+                        self.resolve_condition(guard, true, guard.index())?;
                     }
 
                     self.expression(&arm.body)?;
@@ -429,7 +451,7 @@ impl<'a> Resolver<'a> {
     /// live in the body and dropped after.
     fn conditioned(&mut self, cond: &HirId<HirExpr>, body: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.enter_scope();
-        self.resolve_condition(cond, true)?;
+        self.resolve_condition(cond, true, cond.index())?;
         self.expression(body)?;
         self.exit_scope(cond);
         Ok(())
@@ -438,11 +460,11 @@ impl<'a> Resolver<'a> {
     /// Resolves a condition, declaring into the current scope the binders a true result makes
     /// live. An `&&` keeps both sides' binders. An `||` resolves each side but keeps only the
     /// names both sides bind, since either side may have matched.
-    fn resolve_condition(&mut self, cond: &HirId<HirExpr>, record: bool) -> Result<(), anyhow::Error> {
+    fn resolve_condition(&mut self, cond: &HirId<HirExpr>, record: bool, decl: usize) -> Result<(), anyhow::Error> {
         match self.hir.get(cond) {
             HirExpr::Binary(BinOp::And, left, right) => {
-                self.resolve_condition(left, record)?;
-                self.resolve_condition(right, record)?;
+                self.resolve_condition(left, record, decl)?;
+                self.resolve_condition(right, record, decl)?;
             },
             HirExpr::Binary(BinOp::Or, left, right) => {
                 // Both sides bind the identical set only when the union is non-empty. Then each
@@ -451,18 +473,18 @@ impl<'a> Resolver<'a> {
                 let union = self.hir.condition_binders(cond);
                 let record_sides = record && !union.is_empty();
                 let mark = self.locals.len();
-                self.resolve_condition(left, record_sides)?;
+                self.resolve_condition(left, record_sides, decl)?;
                 self.locals.truncate(mark);
-                self.resolve_condition(right, record_sides)?;
+                self.resolve_condition(right, record_sides, decl)?;
                 self.locals.truncate(mark);
                 for name in union {
-                    self.declare_local(name)?;
+                    self.declare_local(name, decl)?;
                 }
             },
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
                 self.resolve_matcher_types(matcher);
-                let binders = self.declare_binders(matcher)?;
+                let binders = self.declare_binders(matcher, decl)?;
                 if record && !binders.is_empty() {
                     self.bindings.match_binders.insert(*cond, binders);
                 }
@@ -502,7 +524,7 @@ impl<'a> Resolver<'a> {
                 self.type_index.insert(name, *stmt_id);
             }
             if takes_slot {
-                self.declare_local(name)?;
+                self.declare_local(name, stmt_id.index())?;
             }
         }
         Ok(())
@@ -588,7 +610,7 @@ impl<'a> Resolver<'a> {
                 // The binder is live only while resolving the handler. Its slot is where the bad
                 // value already sits, so it is dropped without a cleanup. Slot reused for the result.
                 let mark = self.locals.len();
-                let slot = self.declare_local(*binder)?;
+                let slot = self.declare_local(*binder, expr.index())?;
                 self.bindings.handle_binders.insert(*expr, slot);
                 self.expression(handler)?;
                 self.locals.truncate(mark);
