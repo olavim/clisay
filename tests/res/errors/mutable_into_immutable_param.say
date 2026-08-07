@@ -1,13 +1,14 @@
-type Sink { pub mut item; init(this) { this.item = 0; } fn keep(this: mut, x) { this.item = x; } }
+type Sink { pub mut item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.item = x; } }
 fn make(): mut { return mut {}; }
 say s = mut Sink();
 say m = make();
 s.keep(m);
 // error(full):
-// error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
-//  --> mutable_into_immutable_param.say:5:8
+// error: cannot persist a borrowed value
+//  --> mutable_into_immutable_param.say:1:85
 //   |
-// 5 | s.keep(m);
-//   | ------ ^ 'm' is mutable
-//   | |
-//   | `keep` keeps its argument
+// 1 | type Sink { pub mut item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.item = x; } }
+//   |                                                                                     ^^^^ `this` is borrowed here
+//   |
+// 	at Sink.keep (mutable_into_immutable_param.say:1)
+// 	at script (mutable_into_immutable_param.say:5)

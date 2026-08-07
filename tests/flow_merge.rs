@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use clisay::internals::{
-    intersect_narrowings, merge_flow, symbol, ElementKey, LocalFlow, MoveCause, MovedAt,
+    intersect_narrowings, merge_flow, symbol, ElementKey, LocalFlow, WriteOwnershipTransfer, TransferSite,
     Mutability, Obligations, Symbol, TypeTag, HirId,
 };
 
@@ -31,8 +31,8 @@ const SAMPLE: usize = 120;
 // themselves do not matter.
 const TYPE_A: usize = 0;
 const TYPE_B: usize = 1;
-const MOVE_SITE_A: usize = 0;
-const MOVE_SITE_B: usize = 1;
+const TRANSFER_SITE_A: usize = 0;
+const TRANSFER_SITE_B: usize = 1;
 const CONTAINER_A: usize = 0;
 const CONTAINER_B: usize = 1;
 const CALLEE: usize = 2;
@@ -67,12 +67,12 @@ fn mutabilities() -> Vec<Mutability> {
 
 /// Both causes, because they mean different things. `check_moved` refuses a read after a `Value`
 /// move but clears an `Opaque` one.
-fn moves() -> Vec<Option<MovedAt>> {
+fn moves() -> Vec<Option<TransferSite>> {
     vec![
         None,
-        Some(MovedAt { node: HirId::from_index(MOVE_SITE_A), cause: MoveCause::Value }),
-        Some(MovedAt { node: HirId::from_index(MOVE_SITE_B), cause: MoveCause::Value }),
-        Some(MovedAt { node: HirId::from_index(MOVE_SITE_A), cause: MoveCause::Opaque(HirId::from_index(CALLEE), 0) }),
+        Some(TransferSite { node: HirId::from_index(TRANSFER_SITE_A), transfer: WriteOwnershipTransfer::Transferred }),
+        Some(TransferSite { node: HirId::from_index(TRANSFER_SITE_B), transfer: WriteOwnershipTransfer::Transferred }),
+        Some(TransferSite { node: HirId::from_index(TRANSFER_SITE_A), transfer: WriteOwnershipTransfer::Unknown(HirId::from_index(CALLEE), 0) }),
     ]
 }
 
@@ -114,7 +114,7 @@ fn base() -> LocalFlow {
         assigned: true,
         tag: tags()[0].clone(),
         mutability: mutabilities()[0],
-        move_site: moves()[0],
+        transfer_site: moves()[0],
         provenance: vec![0],
         extracted_from: extractions()[0].clone(),
         handled: sets()[0].clone(),
@@ -131,7 +131,7 @@ fn domain() -> Vec<LocalFlow> {
     for assigned in [true, false] {
         for tag in &tags() {
             for mutability in &mutabilities() {
-                for move_site in &moves() {
+                for transfer_site in &moves() {
                     for extracted_from in &extractions() {
                         for handled in &sets() {
                             for discharged in &sets() {
@@ -140,7 +140,7 @@ fn domain() -> Vec<LocalFlow> {
                                         assigned,
                                         tag: tag.clone(),
                                         mutability: *mutability,
-                                        move_site: *move_site,
+                                        transfer_site: *transfer_site,
                                         provenance: vec![0],
                                         extracted_from: extracted_from.clone(),
                                         handled: handled.clone(),
@@ -178,7 +178,7 @@ fn one_field_apart() -> Vec<LocalFlow> {
     out.push(LocalFlow { assigned: false, ..base() });
     out.extend(tags().into_iter().map(|tag| LocalFlow { tag, ..base() }));
     out.extend(mutabilities().into_iter().map(|mutability| LocalFlow { mutability, ..base() }));
-    out.extend(moves().into_iter().map(|move_site| LocalFlow { move_site, ..base() }));
+    out.extend(moves().into_iter().map(|transfer_site| LocalFlow { transfer_site, ..base() }));
     out.extend(extractions().into_iter().map(|extracted_from| LocalFlow { extracted_from, ..base() }));
     out.extend(sets().into_iter().map(|handled| LocalFlow { handled, ..base() }));
     out.extend(sets().into_iter().map(|discharged| LocalFlow { discharged, ..base() }));
@@ -195,9 +195,9 @@ const FIELD_KEYS: [(&str, Key); 8] = [
     ("assigned", |f| format!("{}", f.assigned)),
     ("tag", |f| match &f.tag { TypeTag::Concrete(id) => format!("c{}", id.index()), _ => "other".into() }),
     ("mutability", |f| format!("{}{}", f.mutability == Mutability::Mutable, f.mutability == Mutability::Immutable)),
-    ("move_site", |f| f.move_site.map_or("none".into(), |m| match m.cause {
-        MoveCause::Value => format!("value@{}", m.node.index()),
-        MoveCause::Opaque(callee, pos) => format!("opaque@{}:{}:{}", m.node.index(), callee.index(), pos),
+    ("transfer_site", |f| f.transfer_site.map_or("none".into(), |m| match m.transfer {
+        WriteOwnershipTransfer::Transferred => format!("value@{}", m.node.index()),
+        WriteOwnershipTransfer::Unknown(callee, pos) => format!("opaque@{}:{}:{}", m.node.index(), callee.index(), pos),
     })),
     ("extracted_from", |f| {
         let mut origins: Vec<String> = f.extracted_from.iter().map(origin_key).collect();
@@ -338,12 +338,12 @@ fn folding_another_outcome_never_resolves_more() {
 
 #[test]
 fn a_restriction_survives_a_merge_from_either_side() {
-    // Reads `move_site` and `extracted_from`. Both are per-field rules, so one field apart is enough.
+    // Reads `transfer_site` and `extracted_from`. Both are per-field rules, so one field apart is enough.
     let domain = one_field_apart();
     for a in domain.iter() {
         for b in domain.iter() {
             let out = merged(a, b);
-            assert!(out.move_site.is_some() == (a.move_site.is_some() || b.move_site.is_some()),
+            assert!(out.transfer_site.is_some() == (a.transfer_site.is_some() || b.transfer_site.is_some()),
                 "a move was lost or invented by the join");
             for origin in a.extracted_from.iter().chain(&b.extracted_from) {
                 assert!(out.extracted_from.contains(origin), "an origin was lost by the join");
@@ -451,9 +451,9 @@ fn the_domain_carries_every_variant() {
     let full = domain();
     fn count<T>(seen: std::collections::HashSet<Discriminant<T>>) -> usize { seen.len() }
 
-    let causes = count(full.iter().filter_map(|f| f.move_site).map(|m| discriminant(&m.cause)).collect());
-    assert!(causes == variant_count::<MoveCause>(),
-        "the domain carries {causes} of {} `MoveCause` variants", variant_count::<MoveCause>());
+    let kinds = count(full.iter().filter_map(|f| f.transfer_site).map(|m| discriminant(&m.transfer)).collect());
+    assert!(kinds == variant_count::<WriteOwnershipTransfer>(),
+        "the domain carries {kinds} of {} `WriteOwnershipTransfer` variants", variant_count::<WriteOwnershipTransfer>());
 
     let keys = count(full.iter().flat_map(|f| &f.extracted_from).filter_map(|(_, k)| k.as_ref())
         .map(discriminant).collect());

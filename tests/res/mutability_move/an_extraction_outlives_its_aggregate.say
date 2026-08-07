@@ -1,0 +1,35 @@
+// A binding keeps its element after the aggregate's scope ends. The slot the aggregate held is
+// gone, so the one-writer question goes to the runtime rather than to a stale index, which used to
+// crash the pass or blame whichever local landed on that slot next.
+say mut x = mut [0];
+say mut z = mut [0];
+{ say inner = mut [mut [1]]; x = inner[0]; z = inner[0]; }
+x[0] = 5;
+z[0] = 6; // error: cannot write an element another name already writes
+
+// @split
+// The same conflict while the aggregate is live is still named at compile time, which is the more
+// useful message of the two.
+say inner = mut [mut [1]];
+say x = inner[0];
+say z = inner[0];
+x[0] = 5;
+z[0] = 6; // error: cannot write an element another name already writes
+
+// @split
+// Two names for different elements are no conflict once the aggregate is gone either.
+say mut x = mut [0];
+say mut z = mut [0];
+{ say inner = mut [mut [1], mut [2]]; x = inner[0]; z = inner[1]; }
+x[0] = 5;
+z[0] = 6;
+print(x[0]); // expect: 5
+print(z[0]); // expect: 6
+
+// @split
+// One name writing twice is one writer.
+say mut x = mut [0];
+{ say inner = mut [mut [1]]; x = inner[0]; }
+x[0] = 5;
+x[0] = 6;
+print(x[0]); // expect: 6

@@ -6,7 +6,7 @@ fn run(k, g) {
     say mut a = mut [1];
     say mut sink = mut [0];
     if (k == 1) { g(a); } else { sink = a; }
-    say c = a; // error: value used after it was moved
+    say c = a; // error: cannot give away `a`, which no longer writes its value
     c[0] = 99;
     print(sink[0]);
 }

@@ -118,7 +118,9 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::ASSERT_NON_NULL => vm.op_assert_non_null()?,
         opcode::ASSERT_NOT_BORROWED => vm.op_assert_not_borrowed()?,
         opcode::ASSERT_NO_OTHER_WRITER => vm.op_assert_no_other_writer()?,
+        opcode::ASSERT_NO_OTHER_WRITER_UP => vm.op_assert_no_other_writer_up()?,
         opcode::ASSERT_NO_WRITER => vm.op_assert_no_writer()?,
+        opcode::ASSERT_NO_OTHER_WRITER_ROOT => vm.op_assert_no_other_writer_root()?,
         opcode::ASSERT_IMMUTABLE => vm.op_assert_immutable()?,
         opcode::BARRIER_GUARD => vm.op_barrier_guard()?,
         opcode::ASSERT_BORROW => vm.op_assert_borrow()?,
@@ -127,11 +129,13 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::RELEASE_BORROW => vm.op_release_borrow(),
         opcode::TAKE_WRITE_OWNERSHIP => vm.op_take_write_ownership()?,
         opcode::TRANSFER_WRITE_OWNERSHIP => vm.op_transfer_write_ownership()?,
+        opcode::TRANSFER_WRITE_OWNERSHIP_UP => vm.op_transfer_write_ownership_up()?,
+        opcode::TRANSFER_WRITE_OWNERSHIP_AT => vm.op_transfer_write_ownership_at()?,
         opcode::RELEASE_WRITE_OWNERSHIP => vm.op_release_write_ownership(),
         opcode::RELEASE_WRITE_OWNERSHIP_AT => vm.op_release_write_ownership_at(),
         opcode::CLOSE_UPVALUE => vm.op_close_upvalue(),
-        opcode::ARRAY => vm.op_array(),
-        opcode::DICT => vm.op_dict(),
+        opcode::ARRAY => vm.op_array()?,
+        opcode::DICT => vm.op_dict()?,
         opcode::MUT => vm.op_mut(),
         opcode::SEAL_CHECK => vm.op_seal_check()?,
         opcode::PUSH_CLOSURE => vm.op_push_closure()?,
@@ -218,6 +222,8 @@ fn store_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Val
         vm.ensure_not_borrowed(value)?;
     }
     let upvalue = vm.get_upvalue(idx);
+    // The slot written belongs to an enclosing frame, so the value outlives this one.
+    crate::core::objects::record_escape(value);
     unsafe { *(*upvalue).location = value };
     become dispatch(vm, ip, top, base)
 }
@@ -233,6 +239,7 @@ fn store_upvalue_pop(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut
         vm.ensure_not_borrowed(value)?;
     }
     let upvalue = vm.get_upvalue(idx);
+    crate::core::objects::record_escape(value);
     unsafe { *(*upvalue).location = value };
     become dispatch(vm, ip, top, base)
 }
@@ -496,14 +503,14 @@ num_binop_fn!(multiply, *, op_multiply);
 num_binop_fn!(divide, /, op_divide);
 
 #[inline]
-fn closure_call(value: Value, arg_count: usize) -> Option<(*mut ObjClosure, usize)> {
+fn closure_call(value: Value, arg_count: usize) -> Option<(*mut ObjClosure, usize, u64)> {
     if value.is_callable() {
         let object = value.as_object();
         if object.tag() == objects::TAG_CLOSURE {
             let ptr = object.as_closure_ptr();
             let closure = unsafe { &*ptr };
             if arg_count == closure.arity as usize {
-                return Some((ptr, closure.ip_start));
+                return Some((ptr, closure.ip_start, closure.move_mask));
             }
         }
     }
@@ -520,11 +527,11 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
 
     // Resolve the callee: a cache hit skips the checks and closure deref.
     let cache = unsafe { *vm.call_cache.get_unchecked(slot) };
-    let (closure, ip_start) = if cache.site == site && cache.callee == value {
-        (cache.closure, cache.ip_start)
-    } else if let Some((closure, ip_start)) = closure_call(value, arg_count) {
-        unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start } };
-        (closure, ip_start)
+    let (closure, ip_start, move_mask) = if cache.site == site && cache.callee == value {
+        (cache.closure, cache.ip_start, cache.move_mask)
+    } else if let Some((closure, ip_start, move_mask)) = closure_call(value, arg_count) {
+        unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start, move_mask } };
+        (closure, ip_start, move_mask)
     } else {
         vm.stack.set_top(top);
         vm.ip = ip;
@@ -541,7 +548,13 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     }
 
     let stack_start = unsafe { top.sub(arg_count + 1) };
-    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true, write_depth: vm.write_owners.len() });
+    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true, write_depth: vm.write_ownerships.len() });
+    // The transfer records the site it happened at, so `ip` has to be current for the diagnostic.
+    if move_mask != 0 {
+        vm.stack.set_top(top);
+        vm.ip = ip;
+        vm.transfer_argument_write_ownership(move_mask, stack_start, arg_count);
+    }
     become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
 }
 
@@ -552,7 +565,7 @@ fn halt(vm: &mut Vm, _ip: *const OpCode, _top: *mut Value, _base: *mut Value) ->
 
 fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R {
     // The top-level ends in HALT, so every RETURN has a caller frame to pop.
-    if vm.open_upvalues.is_empty() && vm.write_owners.is_empty() {
+    if vm.open_upvalues.is_empty() && vm.write_ownerships.is_empty() {
         let frame = vm.frames.pop();
         let value = unsafe { *top.sub(1) };
         unsafe { *frame.stack_start = value };

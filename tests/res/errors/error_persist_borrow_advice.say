@@ -1,8 +1,8 @@
 fn keep(bin: mut, x: mut) { bin.push(x); }
 // error(full):
-// error: cannot persist a borrowed value
-//  --> error_persist_borrow_advice.say:1:38
+// error: a `mut` parameter borrows its argument and cannot let it escape
+//  --> error_persist_borrow_advice.say:1:19
 //   |
 // 1 | fn keep(bin: mut, x: mut) { bin.push(x); }
-//   |                                      ^
-//   = help: take it by `*mut` to own it, then it may be persisted
+//   |                   ^^^^^^
+//   = help: take it by `*mut` to own it, or freeze or copy it before persisting

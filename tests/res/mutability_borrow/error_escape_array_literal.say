@@ -1,5 +1,6 @@
-// A parameter wrapped in a container literal and persisted escapes with the container.
-type Box { pub mut item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.item = [x]; } }
+// A parameter wrapped in a container literal and persisted escapes with the container. The callee
+// is what breaks the rule, since it stores a value it only borrowed.
+type Box { pub mut item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.item = [x]; } } // error: cannot persist a borrowed value
 say b = mut Box();
 say m = mut [1, 2];
-b.keep(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+b.keep(m);

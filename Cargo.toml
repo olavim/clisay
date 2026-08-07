@@ -78,6 +78,10 @@ harness = false
 name = "arrays"
 harness = false
 
+[[bench]]
+name = "store_objects"
+harness = false
+
 # Deterministic instruction-count benchmarks (Linux/WSL only; see the bench file).
 [[bench]]
 name = "escape_order"

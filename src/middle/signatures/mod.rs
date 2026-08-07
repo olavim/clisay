@@ -29,6 +29,8 @@ pub(crate) struct ParamFact {
     /// The body's result may be the argument itself rather than something holding it. Binding the
     /// result then names that argument a second time.
     pub hands_back_itself: bool,
+    /// The body stores it where a second name can write it.
+    pub stored_away: bool,
 }
 
 /// A function's return: the obligations its result carries and whether any path returns a value.
@@ -214,6 +216,11 @@ impl Signatures {
     /// Whether `func` persists the argument to its parameter at position `param`.
     pub(crate) fn param_escapes_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
         self.param_fact(func, param).escapes
+    }
+
+    /// Whether the body stores a parameter where a second name can write it.
+    pub(crate) fn param_stored_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
+        self.param_fact(func, param).stored_away
     }
 
     /// Whether a parameter escapes somewhere its caller cannot follow, ignoring a plain return.

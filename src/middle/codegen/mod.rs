@@ -35,6 +35,25 @@ struct TryFrame {
     finally: Option<HirId<HirExpr>>
 }
 
+/// How a path write names the container it reaches through.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum PathRoot {
+    Local(u8),
+    Upvalue(u8),
+    /// No binding names it, so the barrier compares against the value itself.
+    Unnamed,
+}
+
+/// Where the container taking an element's write-ownership lives. This is the compile-time half of
+/// the runtime's `WriteOwnershipHolder`: a place to read the holder from, rather than the holder.
+#[derive(Clone, Copy)]
+pub(super) enum WriteOwnershipHolderPlace {
+    Local(u8),
+    Upvalue(u8),
+    /// On the stack, this far below the value being handed over. For a receiver no binding names.
+    Stack(u8),
+}
+
 /// Lowers a resolved HIR to IR.
 pub struct Compiler<'a> {
     ir: Ir,
@@ -51,7 +70,9 @@ pub struct Compiler<'a> {
     witness_ids: FnvHashMap<TypeId, u16>,
     /// The slot that will hold the container being built, while its parts are compiled. An element
     /// handed to it takes its writer slot in that slot's name.
-    receiving_slot: Option<u8>,
+    receiving_slot: Option<WriteOwnershipHolderPlace>,
+    /// The root node of a path whose write barrier compares against it.
+    dup_root: Option<HirId<HirExpr>>,
 }
 
 #[macro_export]
@@ -63,6 +84,7 @@ impl<'a> Compiler<'a> {
     pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
             receiving_slot: None,
+            dup_root: None,
             ir: Ir::new(),
             hir,
             gc,
@@ -137,10 +159,9 @@ impl<'a> Compiler<'a> {
     fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
         let cleanups = self.bindings.cleanup(node_id).to_vec();
         // Writer slots go back before the locals holding them are popped. The count is how many
-        // values to look at, not how many were taken, so a scope with two exits is safe either way.
+        // values to look at, not how many were taken.
         if self.barriers.releases_write_ownership(node_id) {
-            let held = cleanups.iter().filter(|c| matches!(c, Cleanup::Pop)).count();
-            self.emit(Inst::ReleaseWriteOwnership(held as u8), node_id);
+            self.emit(Inst::ReleaseWriteOwnership(cleanups.len() as u8), node_id);
         }
         for cleanup in cleanups {
             let inst = match cleanup {

@@ -36,14 +36,15 @@ pub enum Container {
     Preserves,
 }
 
-/// What a native call does to the values it touches, for the escape and capture analysis. A read-only
-/// call has neither flag set, so a borrowed value handed to it is not written.
+/// What a native call does to the values it touches, for the escape and capture analysis.
 #[derive(Clone, Copy, Default)]
 pub struct Effect {
     /// Mutates or extends the receiver in place.
     pub mutates_receiver: bool,
-    /// Persists or mutates an argument, so a value passed in is written.
+    /// Writes an argument, so a value passed in does not come back untouched.
     pub writes_args: bool,
+    /// Stores an argument where it outlives the call.
+    pub persists_args: bool,
 }
 
 /// A native's per-parameter accepted obligation set, its return, container preservation, and effect.
@@ -56,7 +57,12 @@ pub struct NativeSig {
 
 impl NativeSig {
     const fn new(params: &'static [ObSet], ret: RetSig) -> NativeSig {
-        NativeSig { params, ret, container: Container::None, effect: Effect { mutates_receiver: false, writes_args: false } }
+        NativeSig {
+            params,
+            ret,
+            container: Container::None,
+            effect: Effect { mutates_receiver: false, writes_args: false, persists_args: false }
+        }
     }
 }
 
@@ -70,7 +76,7 @@ pub fn builtin(name: &str) -> Option<NativeSig> {
         "gcCollect" => NativeSig::new(&[], RetSig::VOID),
         "gcStress" => NativeSig::new(&[ObSet::CLEAN], RetSig::VOID),
         // `freeze` downgrades its argument to immutable, which writes the value's capability.
-        "freeze" => NativeSig { effect: Effect { mutates_receiver: false, writes_args: true }, ..NativeSig::new(&[ObSet::ANY], RetSig::CLEAN) },
+        "freeze" => NativeSig { effect: Effect { mutates_receiver: false, writes_args: true, persists_args: false }, ..NativeSig::new(&[ObSet::ANY], RetSig::CLEAN) },
         _ => return None,
     };
     Some(sig)
@@ -84,9 +90,9 @@ pub fn native_method(name: &str) -> Option<NativeSig> {
         "length" => NativeSig::new(&[], RetSig::CLEAN),
         "size" => NativeSig::new(&[], RetSig::CLEAN),
         "has" => NativeSig::new(&[ObSet::ANY], RetSig::CLEAN),
-        "remove" => NativeSig { effect: Effect { mutates_receiver: true, writes_args: false }, ..NativeSig::new(&[ObSet::ANY], RetSig::OPT) },
+        "remove" => NativeSig { effect: Effect { mutates_receiver: true, writes_args: false, persists_args: false }, ..NativeSig::new(&[ObSet::ANY], RetSig::OPT) },
         // `push` stores its argument, so a pending element flows onto the array.
-        "push" => NativeSig { container: Container::Preserves, effect: Effect { mutates_receiver: true, writes_args: true }, ..NativeSig::new(&[ObSet::ANY], RetSig::VOID) },
+        "push" => NativeSig { container: Container::Preserves, effect: Effect { mutates_receiver: true, writes_args: true, persists_args: true }, ..NativeSig::new(&[ObSet::ANY], RetSig::VOID) },
         _ => return None,
     };
     Some(sig)

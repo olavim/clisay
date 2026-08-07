@@ -1,6 +1,7 @@
-// A `no persist` parameter's borrow forwarded to a persisting lambda traps at the store site.
+// A `no persist` parameter forwarded to a lambda that stores it is refused at the forwarding call,
+// since the lambda's summary says it keeps what it is given.
 obligation borrowed { no persist; no return; }
 say sink = mut [];
-fn each(xs: borrowed, cb) { cb(xs); }
+fn each(xs: borrowed, cb) { cb(xs); } // error: cannot pass a borrowed argument to a callee that lets it escape
 say m = mut [1, 2];
-each(m, v => sink.push(v)); // error: cannot persist a borrowed value
+each(m, v => sink.push(v));

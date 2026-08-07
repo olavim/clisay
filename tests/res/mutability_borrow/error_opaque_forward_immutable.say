@@ -1,6 +1,7 @@
-// A frozen `no persist` value forwarded to a persisting callback still traps at the store site.
+// Freezing the value does not make it persistable: `no persist` is about the slot's history, not
+// the value's capability, so the forwarding call is refused either way.
 obligation borrowed { no persist; no return; }
 say sink = mut [];
-fn keeper(v) { sink.push(v); } // error: cannot persist a borrowed value
-fn each(xs: borrowed, cb) { cb(xs); }
+fn keeper(v) { sink.push(v); }
+fn each(xs: borrowed, cb) { cb(xs); } // error: cannot pass a borrowed argument to a callee that lets it escape
 each(freeze([1, 2]), keeper);

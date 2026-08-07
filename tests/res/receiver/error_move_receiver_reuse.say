@@ -1,4 +1,5 @@
-// A `*mut` receiver consumes the instance, so the caller cannot use it afterwards.
+// A `*mut` receiver takes the instance's write-ownership. The caller reads it still, and the
+// method's own write shows through.
 type Box {
     pub mut item;
     init(this) { this.item = 0; }
@@ -8,4 +9,4 @@ type Box {
 
 say b = mut Box();
 b.consume();
-print(b.peek()); // error: value used after it was moved
+print(b.peek()); // expect: 1

@@ -1,0 +1,18 @@
+// `outer` aliases its argument and forwards the alias to `inner`, which returns it and nothing
+// binds the result. Nobody kept it, so the caller still writes it.
+fn inner(y)! { return y; }
+fn outer(x) {
+    say alias = x;
+    inner(alias);
+}
+say a = mut [1, 2];
+outer(a);
+a[0] = 5;
+print(a[0]); // expect: 5
+
+// @split
+// A callee that really keeps it is refused, in the body that does the storing.
+say sink = mut [];
+fn keeper(x) { sink.push(x); } // error: cannot persist a borrowed value
+say a = mut [1, 2];
+keeper(a);

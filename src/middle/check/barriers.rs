@@ -65,6 +65,8 @@ pub struct ArgMarks {
 pub struct Barriers {
     /// Every per-node runtime check, in the order codegen emits them.
     pub(super) guards: HashMap<HirId<HirExpr>, Vec<Guard>>,
+    /// Checks the pass proved unnecessary, recorded only under check-forcing.
+    pub(super) elided: HashMap<HirId<HirExpr>, Vec<Guard>>,
     /// An unknown value guarded against the witnesses its destination does not allow: a value
     /// entering a slot, or a `!` on an unknown operand.
     pub(super) boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
@@ -92,6 +94,12 @@ impl Barriers {
     /// Every runtime check this node carries, in emission order.
     pub fn guards(&self, node: &HirId<HirExpr>) -> &[Guard] {
         self.guards.get(node).map_or(&[], Vec::as_slice)
+    }
+
+    /// The runtime checks this node would carry if the pass hadn't proved them unnecessary.
+    /// Empty unless check-forcing is on.
+    pub fn elided(&self, node: &HirId<HirExpr>) -> &[Guard] {
+        self.elided.get(node).map_or(&[], Vec::as_slice)
     }
 
     /// The boundary guard for an unknown value at this node, if one is needed.
@@ -155,6 +163,18 @@ impl Barriers {
 }
 
 impl<'a> Checker<'a> {
+    /// Records a runtime check the pass proved unnecessary. A no-op unless check-forcing is on,
+    /// so neither the table nor the walk costs anything in an ordinary run.
+    pub(super) fn record_elision(&mut self, node: &HirId<HirExpr>, guard: Guard) {
+        if !self.force_checks {
+            return;
+        }
+        let elided = self.out.elided.entry(*node).or_default();
+        if let Err(at) = elided.binary_search(&guard) {
+            elided.insert(at, guard);
+        }
+    }
+
     /// Records a runtime check for a node. Guards are kept in emission order, and a node asks for
     /// each at most once however many times the pass reaches it.
     pub(super) fn record_guard(&mut self, node: &HirId<HirExpr>, guard: Guard) {

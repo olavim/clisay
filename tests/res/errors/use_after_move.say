@@ -1,12 +1,23 @@
+// Giving a value away takes its write-ownership and leaves the name reading it.
 say a = mut [1, 2];
 say b = a;
-print(a[0]);
+print(a[0]); // expect: 1
+b[0] = 9;
+print(a[0]); // expect: 9
+
+// @split
+// Writing through the name that gave it away is what the give refused.
+say a = mut [1, 2];
+say b = a;
+a[0] = 9;
 // error(full):
-// error: value used after it was moved
-//  --> use_after_move.say:3:7
+// error: cannot write `a`, which gave its write-ownership away
+//  --> use_after_move.say:4:1
 //   |
-// 1 | say a = mut [1, 2];
-// 2 | say b = a;
-//   |         ^ `a` moved here
-// 3 | print(a[0]);
-//   |       ^ `a` used here
+// 2 | say a = mut [1, 2];
+// 3 | say b = a;
+//   |         ^ `a` gave it away here
+// 4 | a[0] = 9;
+//   | ^ `a` is written here
+//   |
+//   = help: reading `a` is still fine; to write the value, go through whatever took it

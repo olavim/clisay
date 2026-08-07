@@ -1,0 +1,52 @@
+// A value whose write-ownership was given away has none left to give. A container that already
+// accepts writes refuses the store; one still being built has no hand-over to refuse yet, so the
+// write barrier catches it instead. The check pass cannot see these, since the value arrives
+// through a callee it could not resolve.
+fn drop(c: *mut) { }
+fn run(g, c: *mut) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say keep = mut [];
+say e = mut [0];
+run(drop, e);
+keep.push(f(e)); // error: cannot give away a value whose write-ownership was given away
+
+// @split
+// A mutable literal is a container that writes, so it refuses the store like any other.
+fn drop(c: *mut) { }
+fn run(g, c: *mut) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say e = mut [0];
+run(drop, e);
+say w = mut [f(e)]; // error: cannot give away a value whose write-ownership was given away
+
+// @split
+// An immutable container writes nothing, so the mutable element is what is wrong here.
+fn drop(c: *mut) { }
+fn run(g, c: *mut) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say e = mut [0];
+run(drop, e);
+say w = [f(e)]; // error: cannot store a mutable value in an immutable container
+
+// @split
+// Reading it is still fine, which is the whole difference between a give and a read.
+fn drop(c: *mut) { }
+fn run(g, c: *mut) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say e = mut [1];
+run(drop, e);
+print(f(e)[0]); // expect: 1
+
+// @split
+// A value nobody gave away is stored through the same call and written through the container.
+fn get(x)! { return x; }
+say f = get;
+say keep = mut [];
+say e = mut [0];
+keep.push(f(e));
+keep[0][0] = 7;
+print(keep[0][0]); // expect: 7

@@ -1,5 +1,6 @@
-// A `this.method` call forwards to the resolved method, so the persist is caught at the call site.
-type Sink { pub mut item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.stash(x); } fn stash(this: mut, x) { this.item = x; } }
+// A `this.method` call forwards to the resolved method, so the persist is caught in the body that
+// does the storing.
+type Sink { pub mut item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.stash(x); } fn stash(this: mut, x) { this.item = x; } } // error: cannot persist a borrowed value
 say s = mut Sink();
 say m = mut [1, 2];
-s.keep(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+s.keep(m);

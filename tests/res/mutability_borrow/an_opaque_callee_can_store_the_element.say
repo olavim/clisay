@@ -1,0 +1,26 @@
+// Nothing static says what `g` does with the container. The store inside it is the only record
+// that the container was kept.
+say mut kept = mut [];
+fn stash(c: *mut) { kept = c; }
+fn run(g, c: *mut) { g(c); }
+say a = mut [mut [0]];
+{ say c = mut []; c.push(a[0]); run(stash, c); }
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// An opaque callee can also hand the container straight back, which keeps it with no store at all.
+fn id(c: *mut)! { return c; }
+fn run(g, c: *mut)! { return g(c); }
+say a = mut [mut [0]];
+say mut kept? = null;
+{ say c = mut []; c.push(a[0]); kept = run(id, c); }
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// The same call site, through a callee that keeps nothing. Only which function arrived differs.
+fn ignore(c: *mut) { }
+fn run(g, c: *mut) { g(c); }
+say a = mut [mut [0]];
+{ say c = mut []; c.push(a[0]); run(ignore, c); }
+a[0][0] = 1;
+print(a[0][0]); // expect: 1

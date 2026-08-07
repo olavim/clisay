@@ -1,0 +1,26 @@
+// A `*mut` callee that hands the value straight back leaves the new name writing it. A transfer
+// recorded at the call must not outlive the call and collide with that write.
+fn id(c: *mut)! { return c; }
+say a = mut [];
+say b = id(a);
+b.push(1);
+print(b.length()); // expect: 1
+
+// @split
+// A scope exit returns the write-ownership it took, so the source writes again. A `*mut` hand-off
+// must not be given the same treatment, and neither must borrow this one.
+say a = mut [0];
+{ say b = a; b[0] = 1; }
+a[0] = 2;
+print(a[0]); // expect: 2
+
+// @split
+// The same through a nested scope, so the return passes more than one exit.
+say a = mut [0];
+{
+    say b = a;
+    { say c = b; c[0] = 1; }
+    b[0] = 2;
+}
+a[0] = 3;
+print(a[0]); // expect: 3

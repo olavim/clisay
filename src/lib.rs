@@ -43,7 +43,7 @@ pub mod internals {
     pub use crate::middle::bind::{Bindings, TypeLayout};
     pub use crate::middle::check::Barriers;
     pub use crate::middle::check::scope::{intersect_narrowings, merge_flow, LocalFlow};
-    pub use crate::middle::check::alias::{ElementKey, MoveCause, MovedAt};
+    pub use crate::middle::check::alias::{ElementKey, WriteOwnershipTransfer, TransferSite};
     pub use crate::middle::obligations::Obligations;
     pub use crate::middle::signatures::{Mutability, TypeTag};
 
@@ -97,7 +97,7 @@ pub mod internals {
     pub fn nullck(src: &str) -> Barriers {
         let (hir, bindings) = bind(src);
         let sigs = crate::middle::signatures::collect(&hir, &bindings);
-        crate::middle::check::check(&hir, &bindings, &sigs).expect("nullck error")
+        crate::middle::check::check(&hir, &bindings, &sigs, false).expect("nullck error")
     }
 }
 
@@ -119,11 +119,14 @@ use crate::middle::signatures::collect as collect_signatures;
 pub struct RunConfig {
     /// Whether the peephole pass runs.
     pub optimize: bool,
+    /// Whether codegen also emits the checks the check pass proved unnecessary, so a firing one
+    /// refutes the proof.
+    pub force_checks: bool,
 }
 
 impl Default for RunConfig {
     fn default() -> RunConfig {
-        RunConfig { optimize: true }
+        RunConfig { optimize: true, force_checks: false }
     }
 }
 
@@ -142,7 +145,7 @@ pub fn run_with(file_name: &str, src: &str, config: RunConfig) -> Result<Vec<Str
     let bindings = resolve_bindings(&hir)?;
     let sigs = collect_signatures(&hir, &bindings);
     check_shape(&hir, &bindings, &sigs)?;
-    let barriers = check(&hir, &bindings, &sigs)?;
+    let barriers = check(&hir, &bindings, &sigs, config.force_checks)?;
     let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs)?;
     let ir = if config.optimize { optimize(ir) } else { ir };
 

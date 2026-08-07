@@ -1,5 +1,4 @@
-// A value moved before a loop stays moved on the zero-run path. A rebind inside a loop that may run
-// zero times must not mask the earlier move, so the later read is still use-after-move.
+// A value given away before a loop is still readable, whether or not a rebind inside the loop runs.
 fn consume(x: *mut) {}
 say mut a = mut [1];
 consume(a);
@@ -7,4 +6,4 @@ say cond = false;
 while cond {
   a = mut [2];
 }
-print(a[0]); // error: value used after it was moved
+print(a[0]); // expect: 1

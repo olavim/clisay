@@ -1,0 +1,7 @@
+// A name reassigned from a parameter and forwarded keeps nothing while the result is dropped.
+fn inner(y)! { return y; }
+fn outer(x) { say mut a = mut []; a = x; inner(a); }
+say m = mut [1, 2];
+outer(m);
+m[0] = 5;
+print(m[0]); // expect: 5

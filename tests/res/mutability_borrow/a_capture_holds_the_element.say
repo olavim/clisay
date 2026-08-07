@@ -1,0 +1,32 @@
+// A closure that captured the container keeps it past the block and never stores it. A store is
+// not the only way out of a scope.
+fn wrap(c: *mut)! { return () => c.length(); }
+say a = mut [mut [0]];
+say mut f = 0;
+{ say c = mut []; c.push(a[0]); f = wrap(c); }
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// One more arrow does not change who holds it. The static escape collector stops at the first
+// lambda, so this one is answered by reachability alone.
+fn wrap(c: *mut)! { return () => () => c.length(); }
+say a = mut [mut [0]];
+say mut f = 0;
+{ say c = mut []; c.push(a[0]); f = wrap(c); }
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// A closure the callee stores rather than returns holds the container just the same.
+say sink = mut [];
+fn wrap(c: *mut) { sink.push(() => c.length()); }
+say a = mut [mut [0]];
+{ say c = mut []; c.push(a[0]); wrap(c); }
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// The same closure, dropped where it was made.
+fn wrap(c: *mut)! { return () => c.length(); }
+say a = mut [mut [0]];
+{ say c = mut []; c.push(a[0]); wrap(c); }
+a[0][0] = 1;
+print(a[0][0]); // expect: 1

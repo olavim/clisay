@@ -1,4 +1,4 @@
-// A method handing back its receiver is the same second name, so binding it moves too.
+// A method handing back its receiver gives the new name the write-ownership. The old one reads.
 type C {
     pub mut v;
     init(this) { this.v = 0; }
@@ -6,4 +6,4 @@ type C {
 }
 say a = mut C();
 say b = a.set(1);
-print(a.v); // error: value used after it was moved
+print(a.v); // expect: 1

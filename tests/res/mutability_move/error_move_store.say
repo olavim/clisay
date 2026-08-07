@@ -1,11 +1,12 @@
-// Storing a mutable value into a container or field moves it in.
+// Storing a mutable value into a container or field gives the container its write-ownership.
+// The source name reads it still.
 say a = mut [1];
 say holder = mut [a];
-print(a[0]); // error: value used after it was moved
+print(a[0]); // expect: 1
 
 // @split
 type Box { pub mut v; init(this) { this.v = 0; } }
 say a = mut [1];
 say b = mut Box();
 b.v = a;
-print(a[0]); // error: value used after it was moved
+print(a[0]); // expect: 1

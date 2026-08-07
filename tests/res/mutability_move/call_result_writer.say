@@ -81,7 +81,7 @@ say g = mut [0];
 fn one()! { return g; }
 say a = one();
 a[0] = 9;
-g[0] = 5; // error: value used after it was moved
+g[0] = 5; // error: cannot write `g`, which gave its write-ownership away
 
 // @split
 // A function returning a name it did not take from an outer scope moves nothing.

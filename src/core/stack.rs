@@ -38,8 +38,6 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
         self.top
     }
 
-    /// Only the debug root verifier needs the floor.
-    #[cfg(debug_assertions)]
     #[inline]
     pub fn bottom(&self) -> *mut T {
         self.bottom

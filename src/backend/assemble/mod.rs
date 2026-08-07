@@ -40,6 +40,7 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
 
     chunk.witness_allows = ir.witness_allows().to_vec();
     chunk.constants = ir.constants().to_vec();
+    chunk.elisions = ir.elisions().iter().map(|&idx| offsets[idx]).collect();
     for (i, inst) in ir.code().iter().enumerate() {
         encode(inst, &offsets, &ir, &mut chunk, &ir.positions()[i]);
     }
@@ -91,11 +92,12 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | AssertNonNull
         | AssertNotBorrowed
         | AssertNoWriter
+        | AssertNoOtherWriterRoot
         | AssertImmutable
         | Pop | Dup
         | PushNull | PushTrue | PushFalse
-        | GetIndex | SetIndex
-        | GetProperty | SetProperty
+        | GetIndex
+        | GetProperty
         | Add | Subtract | Multiply | Divide | Negate | Not
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
         | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
@@ -103,14 +105,13 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Mut | SealCheck => {}
 
         Call(b) | CallMut(b)
-        | Array(b) | Dict(b)
         | PushConstant(b) | PushClosure(b) | PushType(b) | BuildType(b)
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
         | CloseUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
-        | GetField(b) | SetField(b) | SetFieldPop(b)
+        | GetField(b)
         | TakeWriteOwnership(b)
-        | TransferWriteOwnership(b)
-        | AssertNoOtherWriter(b)
+        | TransferWriteOwnership(b) | TransferWriteOwnershipUp(b) | TransferWriteOwnershipAt(b)
+        | AssertNoOtherWriter(b) | AssertNoOtherWriterUp(b)
         | ReleaseWriteOwnership(b)
         | ReleaseWriteOwnershipAt(b)
         | ReleaseBorrow(b)
@@ -161,9 +162,11 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             }
         }
 
-        Invoke(name, arg_count) => {
+        Invoke(name, arg_count, kind, operand) => {
             chunk.write(name, pos);
             chunk.write(arg_count, pos);
+            chunk.write(kind, pos);
+            chunk.write(operand, pos);
         }
 
         Construct(fields_idx, seal) => {
@@ -184,6 +187,22 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(member, pos);
             chunk.write(null_allowed as u8, pos);
             write_u16(chunk, idx, pos);
+        }
+
+        Array(a, b) | Dict(a, b) => {
+            chunk.write(a, pos);
+            chunk.write(b, pos);
+        }
+
+        SetIndex(kind, operand) | SetProperty(kind, operand) => {
+            chunk.write(kind, pos);
+            chunk.write(operand, pos);
+        }
+
+        SetField(member, kind, operand) | SetFieldPop(member, kind, operand) => {
+            chunk.write(member, pos);
+            chunk.write(kind, pos);
+            chunk.write(operand, pos);
         }
 
         SubConstLocal(c, local) | AddConstLocal(c, local) => {

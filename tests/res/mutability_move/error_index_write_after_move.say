@@ -2,4 +2,4 @@
 fn eats(x: *mut) { }
 say a = mut [0];
 eats(a);
-a[0] = 1; // error: value used after it was moved
+a[0] = 1; // error: cannot write `a`, which gave its write-ownership away

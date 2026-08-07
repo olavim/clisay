@@ -1,0 +1,19 @@
+// `push` stores its argument into the receiver, so the argument is kept past the call.
+say sink = mut [];
+fn keeper(v) { sink.push(v); } // error: cannot persist a borrowed value
+say m = mut [1, 2];
+keeper(m);
+
+// @split
+// `freeze` writes its argument's capability without storing it, so it keeps nothing.
+fn chill(v) { freeze(v); print("cold"); } // expect: cold
+say m = mut [1, 2];
+chill(m);
+print(m[0]); // expect: 1
+
+// @split
+// A native that only mutates the receiver keeps no argument either.
+fn drop1(bin: mut) { bin.remove("a"); }
+say d = mut { a: 1, b: 2 };
+drop1(d);
+print(d.size()); // expect: 1
