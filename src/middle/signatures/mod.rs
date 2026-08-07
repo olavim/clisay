@@ -116,6 +116,8 @@ pub struct Signatures {
     pub(crate) writes: HashMap<HirId<HirStmt>, HashSet<Symbol>>,
     /// The same write set for each lambda, keyed by its expression id.
     pub(crate) lambda_writes: HashMap<HirId<HirExpr>, HashSet<Symbol>>,
+    /// Every name some body rebinds through a capture or a global.
+    pub(crate) any_rebind: HashSet<Symbol>,
 
     // Name-to-declaration lookups.
     /// Every declaration of each type name.
@@ -143,6 +145,7 @@ impl Signatures {
             lambda_param_escapes: HashMap::new(),
             writes: HashMap::new(),
             lambda_writes: HashMap::new(),
+            any_rebind: HashSet::new(),
             types_by_name: HashMap::new(),
             decls_by_id: HashMap::new(),
             fns_by_name: HashMap::new(),

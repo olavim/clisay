@@ -19,6 +19,8 @@ pub(super) struct BinderScope {
     pub(super) owed: HashMap<Symbol, Obligations>,
     /// The slot each binder was destructured out of.
     pub(super) sources: HashMap<Symbol, usize>,
+    /// The node `bind` declared each binder from.
+    pub(super) decls: HashMap<Symbol, usize>,
 }
 
 /// The flow state of one local.
@@ -80,6 +82,7 @@ impl<'a> Checker<'a> {
     pub(super) fn push_binders(&mut self, scope: &BinderScope) {
         for &name in &scope.names {
             let mut local = Local::binder_owing(name, scope.owed.get(&name).cloned().unwrap_or_default());
+            local.decl = scope.decls.get(&name).copied();
             // The matcher shape could name which element this is, but it does not have to: the
             // runtime slot tells one element from another by identity.
             local.alias.extracted_from = scope.sources.get(&name).map(|&source| (source, None)).into_iter().collect();
@@ -102,8 +105,10 @@ impl<'a> Checker<'a> {
     /// The binders a `~` condition introduces, each owing the witnesses of a bindingless alternative
     /// sharing its or-group.
     pub(super) fn condition_scope(&self, cond: &HirId<HirExpr>) -> Result<BinderScope, anyhow::Error> {
+        let names = self.hir.condition_binders(cond);
         Ok(BinderScope {
-            names: self.hir.condition_binders(cond),
+            decls: names.iter().map(|&name| (name, cond.index())).collect(),
+            names,
             owed: self.condition_witness_obligations(cond)?,
             sources: self.binder_sources(cond),
         })
@@ -124,8 +129,10 @@ impl<'a> Checker<'a> {
     /// whatever its field declares. A parameter with no pattern introduces none.
     pub(super) fn param_scope(&self, param: &HirParam) -> Result<BinderScope, anyhow::Error> {
         let Some(pattern) = &param.pattern else { return Ok(BinderScope::default()) };
+        let names = self.hir.get(pattern).binders(self.hir);
         Ok(BinderScope {
-            names: self.hir.get(pattern).binders(self.hir),
+            decls: names.iter().map(|&name| (name, pattern.index())).collect(),
+            names,
             owed: self.matcher_witness_obligations(pattern, &param.name)?,
             // A parameter is lent for the call, and a borrow hands out no writer slot.
             sources: HashMap::new(),
@@ -139,8 +146,11 @@ impl<'a> Checker<'a> {
         let whole = whole_value_binders(self.hir, &arm.matcher);
         let witness = self.matcher_witness_obligations(&arm.matcher, at)?;
         let mut names = self.hir.get(&arm.matcher).binders(self.hir);
+        let mut decls: HashMap<Symbol, usize> = names.iter().map(|&n| (n, arm.matcher.index())).collect();
         if let Some(guard) = &arm.guard {
-            names.extend(self.hir.condition_binders(guard));
+            let guard_names = self.hir.condition_binders(guard);
+            decls.extend(guard_names.iter().map(|&n| (n, guard.index())));
+            names.extend(guard_names);
         }
         let owed = names.iter().map(|&name| {
             let mut set = if whole.contains(&name) { remaining.clone() } else { Obligations::new() };
@@ -156,7 +166,7 @@ impl<'a> Checker<'a> {
         if let Some(guard) = &arm.guard {
             sources.extend(self.binder_sources(guard));
         }
-        Ok(BinderScope { names, owed, sources })
+        Ok(BinderScope { names, owed, sources, decls })
     }
 
     /// Runs `body` in a fresh function frame whose locals are the given params. `frame_start` is
@@ -178,6 +188,7 @@ impl<'a> Checker<'a> {
             }
 
             let mut local = Local::param(name, owed, param.mutable);
+            local.decl = Some(param.name.index());
             local.container = param.clause.container;
             local.param = true;
             local.alias.mutability = Mutability::param(param.clause.capability);

@@ -95,6 +95,8 @@ struct Local {
     field_discharged: HashMap<Symbol, Obligations>,
     /// Where the binding was introduced.
     site: Option<HirId<HirExpr>>,
+    /// The node that declared the binding.
+    decl: Option<usize>,
     /// Everything the one-writer rule tracks about this binding, which `alias` owns.
     alias: AliasLocal,
 }
@@ -103,7 +105,7 @@ impl Local {
     /// A binding with every fact at its neutral default. Each named constructor overrides only the
     /// fields that distinguish it, so a new field is added here once.
     fn base(name: Symbol) -> Local {
-        Local { name, owed: Obligations::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, alias: AliasLocal::default() }
+        Local { name, owed: Obligations::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal::default() }
     }
 
     fn param(name: Symbol, owed: Obligations, mutable: bool) -> Local {
@@ -204,6 +206,9 @@ struct Checker<'a> {
     fn_ctx: FnContext<'a>,
     /// Set while descending into a `mut` construction.
     pub(super) mut_construction: bool,
+    /// Locals a call in the expression being walked may have rebound. Read once, where a condition
+    /// turns into the facts it proves.
+    rebound_in_expr: HashSet<usize>,
 }
 
 impl<'a> Diagnose for Checker<'a> {
@@ -221,6 +226,7 @@ impl<'a> Checker<'a> {
             bindings,
             sigs,
             resolved_callees: HashMap::new(),
+            rebound_in_expr: HashSet::new(),
             locals: Vec::new(),
             frame_start: 0,
             current_type: None,

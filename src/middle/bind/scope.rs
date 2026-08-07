@@ -34,33 +34,49 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    pub(super) fn declare_local(&mut self, name: Symbol) -> Result<u8, anyhow::Error> {
+    /// Records that a nested body names this local, so it outlives its own frame's control.
+    fn mark_captured(&mut self, index: usize) {
+        self.locals[index].is_captured = true;
+        if let Some(decl) = self.locals[index].decl {
+            self.bindings.captured.insert(decl);
+        }
+    }
+
+    /// Pushes a local and answers its absolute index. Every local is introduced through here.
+    fn push_local(&mut self, name: Option<Symbol>, decl: Option<usize>) -> Result<u8, anyhow::Error> {
         if self.locals.len() >= u8::MAX as usize {
             bail!("Too many variables in scope");
         }
+        self.locals.push(Local { name, depth: self.scope_depth, is_captured: false, decl });
+        Ok((self.locals.len() - 1) as u8)
+    }
+
+    /// The index the current frame's slots are counted from.
+    fn local_offset(&self) -> u8 {
+        self.fn_frames.last().map_or(0, |frame| frame.local_offset)
+    }
+
+    /// Declares a binding. `decl` is the node it comes from.
+    pub(super) fn declare_local(&mut self, name: Symbol, decl: usize) -> Result<u8, anyhow::Error> {
+        #[cfg(debug_assertions)]
+        self.bindings.note_declaration(decl);
 
         // Duplicate-name collisions across the whole namespace are caught earlier, in `middle::names`.
-        self.locals.push(Local { name: Some(name), depth: self.scope_depth, is_captured: false });
-
-        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
-        Ok((self.locals.len() - 1) as u8 - local_offset)
+        let index = self.push_local(Some(name), Some(decl))?;
+        Ok(index - self.local_offset())
     }
 
     /// Reserves an unnamed stack slot, returning its frame-relative index.
     pub(super) fn declare_temp(&mut self) -> Result<u8, anyhow::Error> {
-        if self.locals.len() >= u8::MAX as usize {
-            bail!("Too many variables in scope");
-        }
-        self.locals.push(Local { name: None, depth: self.scope_depth, is_captured: false });
-        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
-        Ok((self.locals.len() - 1) as u8 - local_offset)
+        let index = self.push_local(None, None)?;
+        Ok(index - self.local_offset())
     }
 
     /// Declares a matcher's binders as locals, pairing each with the slot it stores into.
-    pub(super) fn declare_binders(&mut self, matcher: &HirId<HirMatcher>) -> Result<Vec<(Symbol, u8)>, anyhow::Error> {
+    pub(super) fn declare_binders(&mut self, matcher: &HirId<HirMatcher>, decl: usize) -> Result<Vec<(Symbol, u8)>, anyhow::Error> {
         let mut binders = Vec::new();
         for name in self.hir.get(matcher).binders(self.hir) {
-            binders.push((name, self.declare_local(name)?));
+            binders.push((name, self.declare_local(name, decl)?));
         }
         Ok(binders)
     }
@@ -102,7 +118,7 @@ impl<'a> Resolver<'a> {
         let range_end = self.fn_frames[frame_idx].local_offset;
 
         if let Some(idx) = self.resolve_local_in_range(name, range_start, range_end) {
-            self.locals[(range_start + idx) as usize].is_captured = true;
+            self.mark_captured((range_start + idx) as usize);
             return Ok(Some(self.add_upvalue(idx, true, frame_idx)?));
         }
 
@@ -186,7 +202,7 @@ impl<'a> Resolver<'a> {
 
     /// Chains one upvalue per frame between the receiver's owner and the body naming it.
     fn capture_this(&mut self, owner: usize) -> Result<u8, anyhow::Error> {
-        self.locals[self.fn_frames[owner].local_offset as usize].is_captured = true;
+        self.mark_captured(self.fn_frames[owner].local_offset as usize);
         let mut idx = self.add_upvalue(0, true, owner + 1)?;
         for frame in (owner + 2)..self.fn_frames.len() {
             idx = self.add_upvalue(idx, false, frame)?;
@@ -203,8 +219,7 @@ impl<'a> Resolver<'a> {
         };
 
         self.scope_depth += 1;
-        let local_offset = self.locals.len() as u8;
-        self.locals.push(Local { name: self_name, depth: self.scope_depth, is_captured: false });
+        let local_offset = self.push_local(self_name, None)?;
         self.fn_frames.push(FnFrame {
             upvalues: Vec::new(),
             local_offset,
@@ -220,7 +235,7 @@ impl<'a> Resolver<'a> {
             let HirExpr::Identifier(param_name) = self.hir.get(&param.name) else {
                 unreachable!("parser guarantees parameters are identifiers");
             };
-            let slot = self.declare_local(*param_name)?;
+            let slot = self.declare_local(*param_name, param.name.index())?;
             if param.pattern.is_some() {
                 // The entry step loads the parameter by name, like any other identifier.
                 self.bindings.places.insert(param.name, Place::Local(slot));
@@ -232,7 +247,7 @@ impl<'a> Resolver<'a> {
         for param in patterned {
             let pattern = param.pattern.as_ref().expect("only patterned parameters were collected");
             self.resolve_matcher_types(pattern);
-            let binders = self.declare_binders(pattern)?;
+            let binders = self.declare_binders(pattern, pattern.index())?;
             self.bindings.match_binders.insert(param.name, binders);
         }
 

@@ -4,11 +4,12 @@ use std::collections::HashMap;
 
 use crate::core::objects::TypeMember;
 use crate::middle::hir::{BinOp, Hir, HirExpr, HirId, HirLiteral, HirMatchArm, HirMatcher, HirStmt, HirTypeDecl, Symbol, UnOp};
+use crate::middle::native;
 use crate::middle::obligations::Obligations;
 use crate::middle::signatures::Witness;
 
 use super::scope::FlowSnapshot;
-use super::{Checker, NarrowFact, NarrowTarget, TypeTag};
+use super::{Checker, Local, NarrowFact, NarrowTarget, TypeTag};
 
 /// What the compiler can tell about a condition's truth without running it.
 #[derive(Clone, Copy, PartialEq)]
@@ -66,9 +67,11 @@ impl<'a> Checker<'a> {
                 let decl = self.current_type?;
                 (!self.field_is_mutable(&decl, field)).then_some(NarrowTarget::ThisField(field))
             },
+            // A rebindable binding narrows too. What a rebind can reach is invalidated where the
+            // rebind happens, rather than refused here.
             HirExpr::Identifier(name) => {
                 let i = self.frame_index_of(*name)?;
-                if self.locals[i].func.is_some() || self.locals[i].mutable {
+                if self.locals[i].func.is_some() {
                     return None;
                 }
                 let TypeTag::Concrete(decl) = &self.locals[i].tag else { return None };
@@ -197,6 +200,56 @@ impl<'a> Checker<'a> {
             }),
             _ => false,
         }
+    }
+
+    /// Drops the narrowings of every binding a call may rebind.
+    pub(super) fn invalidate_rebound_fields(&mut self, callee: &HirId<HirExpr>) {
+        if self.sigs.any_rebind.is_empty() || self.callee_is_builtin(callee) {
+            return;
+        }
+        let hit: Vec<usize> = self.locals.iter().enumerate()
+            .filter(|(_, l)| l.func.is_none() && self.reachable_by_a_rebind(l))
+            .map(|(i, _)| i)
+            .collect();
+        for i in hit {
+            // A rebind replaces the whole value, so what was proven of the slot goes with it. This
+            // is the same reset a direct rebind performs.
+            self.reset_narrowing(i, false);
+            self.rebound_in_expr.insert(i);
+        }
+    }
+
+    /// Whether a call could rebind this binding. Only a body that captured it can, so a binding no
+    /// nested body names is out of reach however many others share its name.
+    fn reachable_by_a_rebind(&self, local: &Local) -> bool {
+        self.sigs.any_rebind.contains(&local.name)
+            && local.decl.is_none_or(|decl| self.bindings.is_captured(decl))
+    }
+
+    /// Whether a callee is a built-in. A built-in runs no user body, so it rebinds nothing.
+    fn callee_is_builtin(&self, callee: &HirId<HirExpr>) -> bool {
+        let HirExpr::Identifier(name) = self.hir.get(callee) else { return false };
+        self.frame_index_of(*name).is_none() && native::builtin(self.hir.text(*name)).is_some()
+    }
+
+    /// Walks a condition, then answers what it proves on each outcome. Evaluating the condition
+    /// runs any call inside it, so a narrowing on a binding one of those may rebind is no longer
+    /// true by the time the branch runs.
+    pub(super) fn condition_narrowings(&mut self, cond: &HirId<HirExpr>) -> Result<(Vec<NarrowFact>, Vec<NarrowFact>), anyhow::Error> {
+        // A condition can hold a lambda whose body has a condition of its own, so the outer walk's
+        // set is put back rather than dropped.
+        let outer = std::mem::take(&mut self.rebound_in_expr);
+        self.expr(cond)?;
+        let rebound = std::mem::replace(&mut self.rebound_in_expr, outer);
+        self.rebound_in_expr.extend(&rebound);
+        let keep = |facts: Vec<NarrowFact>| -> Vec<NarrowFact> {
+            facts.into_iter()
+                .filter(|f| !matches!(f,
+                    NarrowFact::Discharge(NarrowTarget::LocalField(i, _) | NarrowTarget::Local(i), _)
+                        if rebound.contains(i)))
+                .collect()
+        };
+        Ok((keep(self.narrowings(cond, true)), keep(self.narrowings(cond, false))))
     }
 
     /// The place an expression names, when a narrowing can land on one.
