@@ -5,10 +5,12 @@ type Box {
     fn stash(this: mut, x: borrowed) { this.item = x; }
 }
 // error(full):
-// error: cannot store value owing 'borrowed' in a field
+// error: cannot retain a borrowed argument
 //  --> error_escape_store.say:5:52
 //   |
-// 4 |     init(this) { this.item = 0; }
 // 5 |     fn stash(this: mut, x: borrowed) { this.item = x; }
-//   |                                                    ^
-//   = help: `borrowed` declares `no persist`, which prevents storing it in a field
+//   |                         -----------                ^ `x` is retained here
+//   |                         |
+//   |                         `x` is borrowed here
+//   |
+//   = help: `borrowed` declares `no persist`, so `*x` cannot help; freeze or copy it before persisting

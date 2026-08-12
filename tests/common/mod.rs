@@ -38,13 +38,33 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
     // A pinned disassembly describes the shipped pipeline. Forcing adds the checks the pass
     // elided, so the stream it produces is a different one by design.
     let force_checks = std::env::var_os("CLISAY_FORCE_CHECKS").is_some();
+    if std::env::var_os("CLISAY_FLOOR_ONLY").is_some() {
+        for section in sections {
+            check_floor(name, section)?;
+        }
+        return Ok(());
+    }
     for section in sections {
         check_section(name, section, RunConfig { force_checks, ..RunConfig::default() }, !force_checks)?;
-        check_section(name, section, RunConfig { optimize: false, force_checks }, false)
+        check_section(name, section, RunConfig { optimize: false, force_checks, floor_only: false }, false)
             .map_err(|failure| Failed::from(format!("with the optimizer off: {failure:?}")))?;
     }
 
     Ok(())
+}
+
+/// Runs a section with every placed guard dropped.
+fn check_floor(name: &str, section: &str) -> Result<(), Failed> {
+    let expected = parse_expected_error_full(section).or_else(|| parse_expected_error(section));
+    let Some(expected) = expected else { return Ok(()) };
+    let config = RunConfig { floor_only: true, ..RunConfig::default() };
+    let result = run_with(name, section, config);
+    Output::clear();
+    match result {
+        Err(_) => Ok(()),
+        Ok(_) => Err(format!(
+            "the runtime floor accepted a program the compiler refuses; only a placed guard catches it\n  refused as: {expected}").into()),
+    }
 }
 
 fn check_section(name: &str, section: &str, config: RunConfig, check_asm: bool) -> Result<(), Failed> {

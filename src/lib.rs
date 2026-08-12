@@ -122,11 +122,13 @@ pub struct RunConfig {
     /// Whether codegen also emits the checks the check pass proved unnecessary, so a firing one
     /// refutes the proof.
     pub force_checks: bool,
+    /// Whether codegen drops every guard it places.
+    pub floor_only: bool,
 }
 
 impl Default for RunConfig {
     fn default() -> RunConfig {
-        RunConfig { optimize: true, force_checks: false }
+        RunConfig { optimize: true, force_checks: false, floor_only: false }
     }
 }
 
@@ -146,7 +148,7 @@ pub fn run_with(file_name: &str, src: &str, config: RunConfig) -> Result<Vec<Str
     let sigs = collect_signatures(&hir, &bindings);
     check_shape(&hir, &bindings, &sigs)?;
     let barriers = check(&hir, &bindings, &sigs, config.force_checks)?;
-    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs)?;
+    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs, config.floor_only)?;
     let ir = if config.optimize { optimize(ir) } else { ir };
 
     let chunk = assemble(ir)?;

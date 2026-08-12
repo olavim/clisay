@@ -1,14 +1,14 @@
 // A binding a closure writes is sealed for that reason, not by being frozen, so a write through a
 // path says what a write to the binding itself says.
 say sink = mut [];
-fn add(v) { sink.push(v); }
+fn add(*v) { sink.push(v); }
 add(5);
 sink[0] = 1; // error: cannot mutate a value whose write-ownership moved to function `add`
 
 // @split
 // The deeper path used to report a bare immutable value, which reads as if something froze it.
 say sink = mut [mut [0]];
-fn add(v) { sink.push(v); }
+fn add(*v) { sink.push(v); }
 add(5);
 sink[0][0] = 1; // error: cannot mutate a value whose write-ownership moved to function `add`
 
@@ -21,7 +21,7 @@ a[0][0] = 1; // error: cannot mutate an immutable value
 // A wrapper between the write and its root does not hide the root, so `!` answers as the bare name
 // does. It used to fall through and let the write happen.
 say sink = mut [mut [0]];
-fn add(v) { sink.push(v); }
+fn add(*v) { sink.push(v); }
 add(5);
 sink![0][0] = 1; // error: cannot mutate a value whose write-ownership moved to function `add`
 

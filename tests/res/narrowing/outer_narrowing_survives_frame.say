@@ -2,7 +2,7 @@
 // after the nested type closes.
 type T {
     pub x: opt;
-    init(this, a: opt) { this.x = a; }
+    init(this, *a: opt) { this.x = a; }
     pub fn run(this) {
         say t = this;
         if (t.x == null) { return; }

@@ -2,7 +2,7 @@
 type UserBuilder {
   pub var name;
   init(this) { this.name = ""; }
-  pub fn setName(this: mut, n)! { this.name = n; return this; }
+  pub fn setName(this: mut, *n)! { this.name = n; return this; }
   pub fn build(this)! { return this.name; }
 }
 fn getBuilder(): mut {

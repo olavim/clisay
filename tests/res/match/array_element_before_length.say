@@ -1,0 +1,64 @@
+fn t(x) {
+    match x {
+        [0, ..r] => print("A"),
+        [0, 1] => print("B"),
+        [2, ..s] => print("C"),
+        _ => print("D"),
+    }
+}
+t(5);        // expect: D
+t("ab");     // expect: D
+t({ a: 0 }); // expect: D
+t([0, 9]);   // expect: A
+t([2, 3]);   // expect: C
+t([9]);      // expect: D
+
+// @split
+// The same where the deciding element is read from the back.
+fn u(x) {
+    match x {
+        [..a, 1] => print("A"),
+        [0, 1] => print("B"),
+        [..b, 2] => print("C"),
+        _ => print("D"),
+    }
+}
+u(5);      // expect: D
+u([9, 1]); // expect: A
+u([9, 2]); // expect: C
+u([9, 3]); // expect: D
+
+// @split
+// A nested array element is loaded through the outer one, so both levels have to answer.
+fn v(x) {
+    match x {
+        [[0], 1] => print("A"),
+        [[0], 2] => print("B"),
+        _ => print("C"),
+    }
+}
+v(5);           // expect: C
+v([5, 1]);      // expect: C
+v([[9], 1]);    // expect: C
+v([[0], 2]);    // expect: B
+v([[0], 1]);    // expect: A
+
+// @split
+// A rest binder still slices the array it was proven to have.
+fn w(x) {
+    match x {
+        [0, ..r] => print(r),
+        _ => print("none"),
+    }
+}
+w([0, 1, 2]); // expect: <array 2>
+w([0]);       // expect: <array 0>
+w(7);         // expect: none
+
+fn first(x) {
+    match x {
+        [0, ..r] => print(r[0]),
+        _ => print("none"),
+    }
+}
+first([0, 4, 5]); // expect: 4

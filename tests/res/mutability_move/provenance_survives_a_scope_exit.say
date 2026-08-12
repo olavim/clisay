@@ -27,6 +27,41 @@ k[0] = 5;
 print(k[0]); // expect: 5
 
 // @split
+// Either branch could have run, so a join names both sources.
+fn run(k) {
+    say a = mut [1];
+    say b = mut [2];
+    { say var h = mut []; if (k == 1) { h = a; } else { h = b; } }
+    a[0] = 5;
+    b[0] = 6;
+    print(a[0]); // expect: 5
+    print(b[0]); // expect: 6
+}
+run(1);
+
+// @split
+// A block that hands the value out keeps the move, whichever branch supplied it.
+fn run(k) {
+    say a = mut [1];
+    say b = mut [2];
+    say var kept = mut [];
+    { say var h = mut []; if (k == 1) { h = a; } else { h = b; } kept = h; }
+    a[0] = 5; // error: cannot write `a`, which gave its write-ownership away
+}
+run(1);
+
+// @split
+// And the source the other branch named is held just the same.
+fn run(k) {
+    say a = mut [1];
+    say b = mut [2];
+    say var kept = mut [];
+    { say var h = mut []; if (k == 1) { h = a; } else { h = b; } kept = h; }
+    b[0] = 5; // error: cannot write `b`, which gave its write-ownership away
+}
+run(1);
+
+// @split
 // The chain can be longer than one link, and every dying step splices out the same way.
 say a = mut [1];
 say var k = mut [];

@@ -5,7 +5,7 @@ type Point {
     pub y;
     secret = 99; // private by default
     pub fn sum(this)! { return this.x + this.y + this.secret; } // reads private via this
-    init(this, x, y) { this.x = x; this.y = y; }
+    init(this, *x, *y) { this.x = x; this.y = y; }
 }
 
 say p = mut Point(3, 4);

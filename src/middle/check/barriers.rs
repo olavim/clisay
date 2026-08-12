@@ -42,8 +42,6 @@ pub enum Guard {
     WriteThroughPath,
     /// A value entering an immutable construction.
     Immutable,
-    /// A value about to be persisted, which a borrow may not be.
-    Unborrowed,
     /// A write through a name, which takes the element's write-ownership.
     WriteThroughName,
 }
@@ -51,12 +49,9 @@ pub enum Guard {
 /// What a call does to its arguments.
 #[derive(Default)]
 pub struct ArgMarks {
-    /// Positions the call lends, to mark as borrowed for its duration.
-    borrowed: Vec<u8>,
-    /// Positions an opaque call must assert its callee borrows rather than keeps.
-    survive: Vec<u8>,
-    /// Positions the caller reads again after the call, with the read that does it.
-    reread: Vec<(u8, HirId<HirExpr>)>,
+    /// Positions an opaque call must assert its callee borrows rather than keeps, each with the
+    /// obligation that demands it. A borrowed argument has none: the borrow is the reason itself.
+    survive: Vec<(u8, Option<Symbol>)>,
 }
 
 /// The runtime checks codegen emits. A barrier tests an unknown value against the witnesses its
@@ -117,18 +112,8 @@ impl Barriers {
         self.witness_tests.get(node)
     }
 
-    /// The argument positions an opaque call at this callee must assert the callee borrows.
-    pub fn rereads(&self, callee: &HirId<HirExpr>) -> Option<&[(u8, HirId<HirExpr>)]> {
-        self.arg_marks.get(callee).map(|m| m.reread.as_slice()).filter(|p| !p.is_empty())
-    }
-
-    pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[u8]> {
+    pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[(u8, Option<Symbol>)]> {
         self.arg_marks.get(callee).map(|m| m.survive.as_slice()).filter(|p| !p.is_empty())
-    }
-
-    /// The argument positions a call at this callee lends, to mark as borrowed for the call.
-    pub fn borrow_marks(&self, callee: &HirId<HirExpr>) -> Option<&[u8]> {
-        self.arg_marks.get(callee).map(|m| m.borrowed.as_slice()).filter(|p| !p.is_empty())
     }
 
     /// Whether this container literal needs a runtime check that no element is mutable.
@@ -185,29 +170,8 @@ impl<'a> Checker<'a> {
     }
 
     /// Records that an opaque call must assert its callee borrows the given argument positions.
-    pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<u8>) {
+    pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<(u8, Option<Symbol>)>) {
         self.out.arg_marks.entry(*callee).or_default().survive = positions;
-    }
-
-    /// Records that `read` reads an opaque call's argument again, so the callee must have borrowed
-    /// it. A position is recorded once, no matter how many times the binding is read afterwards.
-    pub(super) fn record_reread_barrier(&mut self, callee: &HirId<HirExpr>, position: u8, read: HirId<HirExpr>) {
-        let marks = self.out.arg_marks.entry(*callee).or_default();
-        if !marks.reread.iter().any(|(p, _)| *p == position) {
-            marks.reread.push((position, read));
-            marks.reread.sort_unstable_by_key(|(p, _)| *p);
-        }
-        if !marks.borrowed.contains(&position) {
-            marks.borrowed.push(position);
-            marks.borrowed.sort_unstable();
-        }
-    }
-
-    /// Records the argument positions a call lends, to mark as borrowed for its duration.
-    pub(super) fn record_borrow_marks(&mut self, callee: &HirId<HirExpr>, positions: Vec<u8>) {
-        if !positions.is_empty() {
-            self.out.arg_marks.entry(*callee).or_default().borrowed = positions;
-        }
     }
 
     /// Marks an immutable container literal whose elements must be checked for mutability at runtime.

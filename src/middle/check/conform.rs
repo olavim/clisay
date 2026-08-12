@@ -129,11 +129,6 @@ impl<'a> Checker<'a> {
             format!("{owed} {have} no witness, so there is no bad state to rule out")))
     }
 
-    /// Whether any of these obligations is `no persist`.
-    pub(super) fn owes_no_persist(&self, obligations: impl IntoIterator<Item = Symbol>) -> bool {
-        obligations.into_iter().any(|o| self.sigs.rules_of(o).no_persist)
-    }
-
     /// The help behind a rule-based prohibition. A user obligation has a declaration to cite. A
     /// built-in has none, so it gets the guidance that applies to its values instead. Only built-ins
     /// are left when there is nothing to cite, so the first name identifies which witness to speak of.
@@ -357,9 +352,14 @@ impl<'a> Checker<'a> {
         self.check_args(callee, &nullable, arg_types, args)
     }
 
-    /// Whether a value owes a `no persist` obligation, so an opaque call must not persist it.
-    pub(super) fn arg_owes_no_persist(&self, flow: &Flow) -> bool {
-        matches!(flow, Flow::Bad { obligations, .. } if self.owes_no_persist(obligations.iter().copied()))
+    /// The obligation that makes an argument have to come back from a call this pass cannot read.
+    /// `None` when nothing the value owes requires it.
+    pub(super) fn arg_must_survive_call(&self, flow: &Flow) -> Option<Symbol> {
+        let Flow::Bad { obligations, .. } = flow else { return None };
+        obligations.iter().copied().find(|&o| {
+            let rules = self.sigs.rules_of(o);
+            rules.no_persist || rules.before_drop
+        })
     }
 
     pub(super) fn ret_flow(&self, ret: &RetSig) -> Flow {

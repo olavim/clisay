@@ -1,6 +1,6 @@
 // `push` stores its argument into the receiver, so the argument is kept past the call.
 say sink = mut [];
-fn keeper(v) { sink.push(v); } // error: cannot persist a borrowed value
+fn keeper(v) { sink.push(v); } // error: cannot retain a borrowed argument
 say m = mut [1, 2];
 keeper(m);
 

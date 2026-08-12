@@ -2,7 +2,7 @@
 // Nothing is enforced yet, so it runs to completion.
 type Box {
     pub var value;
-    init(this, v) {
+    init(this, *v) {
         value = v;
     }
     pub fn get(this)! {
@@ -10,7 +10,7 @@ type Box {
     }
 }
 
-fn makeBox(v)! {
+fn makeBox(*v)! {
     return Box(v);
 }
 

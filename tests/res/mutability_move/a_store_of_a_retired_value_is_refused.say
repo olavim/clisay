@@ -1,7 +1,4 @@
-// A value whose write-ownership was given away has none left to give. A container that already
-// accepts writes refuses the store; one still being built has no hand-over to refuse yet, so the
-// write barrier catches it instead. The check pass cannot see these, since the value arrives
-// through a callee it could not resolve.
+// A value whose write-ownership was given away has none left to give.
 fn drop(c: *mut) { }
 fn run(g, c: *mut) { g(c); }
 fn get(x)! { return x; }
@@ -30,6 +27,39 @@ say f = get;
 say e = mut [0];
 run(drop, e);
 say w = [f(e)]; // error: cannot store a mutable value in an immutable container
+
+// @split
+// An index store into a container that writes refuses it the same way a push does.
+fn drop(c: *mut) { }
+fn run(g, c: *mut) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say keep = mut [0];
+say e = mut [0];
+run(drop, e);
+keep[0] = f(e); // error: cannot give away a value whose write-ownership was given away
+
+// @split
+// A field store asks the same question.
+type Box { pub var item; init(this) { this.item = 0; } }
+fn drop(c: *mut) { }
+fn run(g, c: *mut) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say b = mut Box();
+say e = mut [0];
+run(drop, e);
+b.item = f(e); // error: cannot give away a value whose write-ownership was given away
+
+// @split
+// A dict literal takes its values like an array literal does.
+fn drop(c: *mut) { }
+fn run(g, c: *mut) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say e = mut [0];
+run(drop, e);
+say w = mut { "k": f(e) }; // error: cannot give away a value whose write-ownership was given away
 
 // @split
 // Reading it is still fine, which is the whole difference between a give and a read.

@@ -12,7 +12,7 @@ print({ x: 1, y: null } has Point); // expect: false
 
 // @split
 // A real T satisfies T's declarations by construction, so `x is T` still implies `x has T`.
-type Point { pub x; pub y; init(this, a, b) { this.x = a; this.y = b; } }
+type Point { pub x; pub y; init(this, *a, *b) { this.x = a; this.y = b; } }
 say p = Point(1, 2);
 print(p is Point); // expect: true
 print(p has Point); // expect: true

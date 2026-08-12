@@ -5,7 +5,7 @@ fn getClosure()! {
         fn get()! {
             return x;
         }
-        fn set(val) {
+        fn set(*val) {
             x = val;
         }
 

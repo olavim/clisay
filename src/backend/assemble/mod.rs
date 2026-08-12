@@ -39,14 +39,30 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     }
 
     chunk.witness_allows = ir.witness_allows().to_vec();
+    chunk.owed_names = ir.owed_names().to_vec();
     chunk.constants = ir.constants().to_vec();
     chunk.elisions = ir.elisions().iter().map(|&idx| offsets[idx]).collect();
+    for (&(idx, role), pos) in ir.source_map() {
+        let end = offsets.get(idx + 1).copied().unwrap_or(size);
+        for offset in offsets[idx]..end {
+            chunk.source_map.insert((offset, role), pos.clone());
+        }
+    }
     for (i, inst) in ir.code().iter().enumerate() {
         encode(inst, &offsets, &ir, &mut chunk, &ir.positions()[i]);
     }
     chunk.builtin_layouts = ir.into_builtin_layouts();
 
     Ok(chunk)
+}
+
+/// Writes a barrier's guarded positions as a count byte followed by one byte each.
+fn write_positions(ir: &Ir, chunk: &mut BytecodeChunk, idx: u16, pos: &SourcePosition) {
+    let positions = ir.survive_positions(idx);
+    chunk.write(positions.len() as u8, pos);
+    for (p, arg_pos) in positions {
+        chunk.write(*p, arg_pos);
+    }
 }
 
 /// Writes a declaration id as two little-endian bytes.
@@ -66,10 +82,8 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
             Some(sz) => len += sz,
             None => match *inst {
                 Inst::Construct(fields_idx, _) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
-                Inst::AssertBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
-                Inst::AssertNotConsumed(_, idx) => len += 1 + ir.survive_positions(idx).len(),
-                Inst::MarkBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
-                _ => unreachable!("only Construct, AssertBorrow, AssertNotConsumed, and MarkBorrow have a List operand"),
+                Inst::AssertNoRetain(_, _, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
+                _ => unreachable!("only Construct and AssertNoRetain have a List operand"),
             },
         }
     }
@@ -90,7 +104,6 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Throw
         | PopTry
         | AssertNonNull
-        | AssertNotBorrowed
         | AssertNoWriter
         | AssertNoOtherWriterRoot
         | AssertImmutable
@@ -114,7 +127,6 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | AssertNoOtherWriter(b) | AssertNoOtherWriterUp(b)
         | ReleaseWriteOwnership(b)
         | ReleaseWriteOwnershipAt(b)
-        | ReleaseBorrow(b)
         | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
 
         Is(id) => write_u16(chunk, id, pos),
@@ -148,18 +160,15 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(c, pos);
         }
 
-        ArrayMiddle(prefix, suffix) => {
-            chunk.write(prefix, pos);
-            chunk.write(suffix, pos);
+        ArrayMiddle(a, b) | ArrayElem(a, b) => {
+            chunk.write(a, pos);
+            chunk.write(b, pos);
         }
 
-        AssertBorrow(arg_count, idx) | AssertNotConsumed(arg_count, idx) | MarkBorrow(arg_count, idx) => {
-            let positions = ir.survive_positions(idx);
+        AssertNoRetain(arg_count, owed_idx, idx) => {
             chunk.write(arg_count, pos);
-            chunk.write(positions.len() as u8, pos);
-            for (p, arg_pos) in positions {
-                chunk.write(*p, arg_pos);
-            }
+            write_u16(chunk, owed_idx, pos);
+            write_positions(ir, chunk, idx, pos);
         }
 
         Invoke(name, arg_count, kind, operand) => {

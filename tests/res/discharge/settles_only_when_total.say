@@ -1,6 +1,6 @@
 // Naming a witness settles it only if the test must run. A shape that can fail on a real witness
 // may never match, so it asks nothing.
-type Wt { pub a; pub b; init(this, x) { this.a = x; this.b = x; } }
+type Wt { pub a; pub b; init(this, *x) { this.a = x; this.b = x; } }
 obligation warned { witness Wt; discharge before drop; }
 fn f() {
     say b: warned = Wt(1); // error: 'b' owes 'warned' and is never discharged
@@ -9,7 +9,7 @@ fn f() {
 
 // @split
 // An irrefutable destructure does have to run, so it settles.
-type Wt { pub a; pub b; init(this, x) { this.a = x; this.b = x; } }
+type Wt { pub a; pub b; init(this, *x) { this.a = x; this.b = x; } }
 obligation warned { witness Wt; discharge before drop; }
 fn f() {
     say b: warned = Wt(1);

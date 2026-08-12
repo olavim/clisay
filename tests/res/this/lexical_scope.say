@@ -3,7 +3,7 @@
 type A {
     pub x;
 
-    init(this, v) {
+    init(this, *v) {
         this.x = v;
     }
 

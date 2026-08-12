@@ -240,7 +240,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.node_stmt(Stmt::Type(type_decl), pos))
     }
 
-    /// Declares the built-in `Err` type: `type Err { pub value; init(this, value) { this.value = value; } }`.
+    /// Declares the built-in `Err` type: `type Err { pub value; init(this, *value) { this.value = value; } }`.
     pub(super) fn declare_err(&mut self, pos: &SourcePosition) -> AstId<Stmt> {
         let name = self.ast.intern("Err");
         let value = self.ast.intern("value");
@@ -274,7 +274,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// implementation, and this is what the passes that read a factory's signature read.
     fn declare_err_init(&mut self, init_name: Symbol, value: Symbol, pos: &SourcePosition) -> AstId<Stmt> {
         let pattern = self.ast.add_matcher(Matcher::Binder(value), pos.clone());
-        let param = Param { pattern, pos: pos.clone(), nullable: false, reassignable: false, clause: SlotClause::default() };
+        let clause = SlotClause { capability: Capability::Move, ..SlotClause::default() };
+        let param = Param { pattern, pos: pos.clone(), nullable: false, reassignable: false, clause };
 
         let this = self.ast.add_expr(Expr::This, pos.clone());
         let key = self.ast.add_expr(Expr::Literal(Literal::String("value".to_string())), pos.clone());

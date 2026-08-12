@@ -1,5 +1,5 @@
 // match dispatches across arms: nominal, structural, shorthand, and a catch-all.
-type Point { pub x; pub y; init(this, a, b) { this.x = a; this.y = b; } }
+type Point { pub x; pub y; init(this, *a, *b) { this.x = a; this.y = b; } }
 
 fn render(node) {
     match node {

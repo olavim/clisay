@@ -19,7 +19,7 @@ type T { pub inner; init(this) { this.inner = mut I(); } pub fn f(this) { this.i
 // @split
 // Naming a member is not calling it. `t.set` is a dispatch site that resolves when it runs, so
 // taking it is allowed whatever the receiver is; only the call asks for a mutable receiver.
-type T { pub var x?; pub fn set(this: mut, v) { this.x = v; } }
+type T { pub var x?; pub fn set(this: mut, *v) { this.x = v; } }
 say t = T {};
 say f = t.set;
 print("named"); // expect: named

@@ -23,6 +23,11 @@ pub trait Diagnose {
         anyhow!("{}", Diagnostic::new(msg, self.hir().pos(node).clone()).with_label(label))
     }
 
+    /// An error whose caret carries a label, plus a `help:` note on how to fix it.
+    fn error_labeled_help<T>(&self, msg: String, node: &HirId<T>, label: impl Into<String>, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, self.hir().pos(node).clone()).with_label(label).with_help(help))
+    }
+
     /// An error with a primary caret at `primary` and a context caret at `site`.
     fn error_ctx(&self, msg: impl Into<String>, primary: &SourcePosition, label: impl Into<String>, site: &SourcePosition, site_label: impl Into<String>) -> anyhow::Error {
         anyhow!("{}", Diagnostic::new(msg, primary.clone())

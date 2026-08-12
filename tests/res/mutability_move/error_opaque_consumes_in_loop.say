@@ -1,11 +1,10 @@
-// A loop's next turn reads the binding again, and that read is the argument itself, so the caret
-// lands on the call rather than on anything after the loop.
+// A loop's next turn hands the same binding over again, and the second retain is what fails.
 type Box { pub var v; init(this) { this.v = 0; } }
 fn eats(x: *mut) { }
 say consume = eats;
 say a = mut Box();
 say var i = 0;
 while (i < 2) {
-    consume(a); // error: value used after a call consumed it
+    consume(a); // error: cannot retain a value whose write-ownership was already taken
     i = i + 1;
 }

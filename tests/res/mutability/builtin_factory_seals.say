@@ -5,6 +5,6 @@ say e = Err(m); // error: cannot store a mutable value in an immutable container
 
 // @split
 // The same shape over a user type, which is the behaviour it is matched against.
-type Box { pub v; init(this, v) { this.v = v; } }
+type Box { pub v; init(this, *v) { this.v = v; } }
 say var m = mut [1, 2];
 say b = Box(m); // error: cannot store a mutable value in an immutable container

@@ -1,5 +1,5 @@
 // Each parameter pattern publishes its binders into the body.
-type Node { pub next; init(this, n) { this.next = n; } }
+type Node { pub next; init(this, *n) { this.next = n; } }
 
 fn destructure(x @ Node { next }) {
     print(x.next); // expect: 7

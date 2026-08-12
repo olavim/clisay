@@ -1,6 +1,6 @@
 // The boundary barrier recognizes a witness by declaration, so a value that is not the witness
 // crosses freely while the witness itself is caught.
-type Wt { pub v; init(this, x) { this.v = x; } }
+type Wt { pub v; init(this, *x) { this.v = x; } }
 obligation warned { witness Wt; discharge to use; }
 say bag = [Wt(1)];
 try { say y = bag[0]; print("unreachable"); }
@@ -9,16 +9,16 @@ catch (e) { print("thrown"); } // expect: thrown
 // @split
 trait Wt { }
 obligation warned { witness Wt; discharge to use; }
-type W with Wt { pub v; init(this, x) { this.v = x; } }
+type W with Wt { pub v; init(this, *x) { this.v = x; } }
 say bag = [W(1)];
 try { say y = bag[0]; print("unreachable"); }
 catch (e) { print("trait thrown"); } // expect: trait thrown
 
 // @split
 // A type declared elsewhere that never mixes the witness is not it, so it crosses.
-type Wt { pub v; init(this, x) { this.v = x; } }
+type Wt { pub v; init(this, *x) { this.v = x; } }
 obligation warned { witness Wt; discharge to use; }
-fn mk()! { type Other { pub v; init(this, x) { this.v = x; } } return Other(2); }
+fn mk()! { type Other { pub v; init(this, *x) { this.v = x; } } return Other(2); }
 say bag = [mk()];
 try { say y = bag[0]; print("passed"); } // expect: passed
 catch (e) { print("unreachable"); }
@@ -26,7 +26,7 @@ catch (e) { print("unreachable"); }
 // @split
 trait Wt { }
 obligation warned { witness Wt; discharge to use; }
-fn mk()! { trait Other { } type W2 with Other { pub v; init(this, x) { this.v = x; } } return W2(2); }
+fn mk()! { trait Other { } type W2 with Other { pub v; init(this, *x) { this.v = x; } } return W2(2); }
 say bag = [mk()];
 try { say y = bag[0]; print("trait passed"); } // expect: trait passed
 catch (e) { print("unreachable"); }

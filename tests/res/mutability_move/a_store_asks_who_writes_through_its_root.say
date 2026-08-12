@@ -17,7 +17,7 @@ print(b[0]); // expect: 1
 
 // @split
 // A field store asks the same question of the same root.
-type T { pub var x; init(this, v) { this.x = v; } }
+type T { pub var x; init(this, *v) { this.x = v; } }
 fn id(c: *mut)! { return c; }
 say fns = mut [id];
 say a = mut T(0);
@@ -26,7 +26,7 @@ a.x = 1; // error: cannot write an element another name already writes
 
 // @split
 // And lets the taker through.
-type T { pub var x; init(this, v) { this.x = v; } }
+type T { pub var x; init(this, *v) { this.x = v; } }
 fn id(c: *mut)! { return c; }
 say fns = mut [id];
 say a = mut T(0);

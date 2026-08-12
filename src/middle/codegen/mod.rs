@@ -5,7 +5,7 @@ use crate::frontend::lex::Diagnostic;
 
 use crate::core::gc::Gc;
 use crate::middle::hir::TypeId;
-use crate::middle::ir::{Inst, Ir, Label};
+use crate::middle::ir::{Inst, Ir, Label, SourceRole};
 use crate::middle::bind::{Bindings, Cleanup, FnKind};
 use crate::middle::check::Barriers;
 use crate::middle::signatures::Signatures;
@@ -73,6 +73,8 @@ pub struct Compiler<'a> {
     receiving_slot: Option<WriteOwnershipHolderPlace>,
     /// The root node of a path whose write barrier compares against it.
     dup_root: Option<HirId<HirExpr>>,
+    /// Whether to drop every placed guard.
+    floor_only: bool,
 }
 
 #[macro_export]
@@ -81,10 +83,11 @@ macro_rules! compiler_error {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures) -> Result<Ir, anyhow::Error> {
+    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures, floor_only: bool) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
             receiving_slot: None,
             dup_root: None,
+            floor_only,
             ir: Ir::new(),
             hir,
             gc,
@@ -145,6 +148,17 @@ impl<'a> Compiler<'a> {
     fn emit<T: 'static>(&mut self, inst: Inst, node_id: &HirId<T>) {
         let pos = self.hir.pos(node_id);
         self.ir.emit(inst, pos);
+    }
+
+    fn emit_store_inst(&mut self, inst: Inst, node: &HirId<HirExpr>, value: &HirId<HirExpr>) {
+        let at = self.ir.next_index();
+        self.emit(inst, node);
+        let role = match self.hir.get(value) {
+            HirExpr::Identifier(_) => SourceRole::StoredName,
+            _ => SourceRole::StoredValue,
+        };
+        let pos = self.hir.pos(value).clone();
+        self.ir.map_source(at, role, pos);
     }
 
     /// Emits a conditional branch to a fresh (unbound) label and returns it.
