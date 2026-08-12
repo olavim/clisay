@@ -1,0 +1,24 @@
+// The check pass admits each of these: the container dies with the call, so nothing escapes. What
+// refuses them is the in-primitive borrow check, which sees the store and not where it stores. A
+// container literal takes no store instruction, which is the only reason the first group runs.
+fn f(x: mut) { say a = mut []; a.push(x); } // error: cannot persist a borrowed value
+say m = mut [1];
+f(m);
+
+// @split
+fn f(x: mut) { say a = mut [0]; a[0] = x; } // error: cannot persist a borrowed value
+say m = mut [1];
+f(m);
+
+// @split
+type Sink { pub mut item; init(this) { this.item = 0; } }
+fn f(x: mut) { say s = mut Sink(); s.item = x; } // error: cannot persist a borrowed value
+say m = mut [1];
+f(m);
+
+// @split
+// The literal form of the same store, admitted all the way through.
+fn f(x: mut) { say a = mut [x]; }
+say m = mut [1];
+f(m);
+print(m[0]); // expect: 1

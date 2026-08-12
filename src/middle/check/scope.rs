@@ -179,7 +179,7 @@ impl<'a> Checker<'a> {
         self.frame_start = mark;
         let saved_this_narrowed = std::mem::take(&mut self.this_narrowed);
 
-        for param in params {
+        for (position, param) in params.iter().enumerate() {
             let name = self.hir.ident_sym(&param.name);
             let mut owed = param.clause.owed();
 
@@ -198,6 +198,7 @@ impl<'a> Checker<'a> {
             local.alias.borrowed = param.clause.capability == Capability::Mut;
             // Without `mut` the argument may still be a mutable the caller lent.
             local.alias.unproven_borrow = !param.clause.capability.is_mut();
+            local.alias.confined = self.fn_ctx.param_confined.get(position).copied().unwrap_or(false);
             local.site = Some(param.name);
 
             // A pattern tests the argument on entry, which is a discharge of the slot it names.

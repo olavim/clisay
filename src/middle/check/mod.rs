@@ -185,6 +185,8 @@ struct FnContext<'a> {
     return_clause: Option<SourcePosition>,
     /// The parameters as `(name, span)`.
     params: Vec<(Symbol, SourcePosition)>,
+    /// Per parameter, whether the escape summary clears it of ever leaving the call.
+    param_confined: Vec<bool>,
     /// The names this body writes, so a read-only capture is told from a writing one.
     writes: Option<&'a HashSet<Symbol>>,
 }

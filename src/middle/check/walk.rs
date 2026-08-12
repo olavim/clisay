@@ -351,6 +351,7 @@ impl<'a> Checker<'a> {
         local.decl = Some(decl);
         local.alias.mutability = mutability;
         local.alias.unproven_borrow = value.is_some_and(|v| self.holds_unproven_borrow(&v));
+        local.alias.confined = value.is_some_and(|v| self.value_is_confined(&v));
         local.alias.provenance = provenance;
         local.alias.extracted_from = value.and_then(|v| self.extraction_of(&v)).into_iter().collect();
         local.alias.shared_origin = value.is_some_and(|v| self.shared_origin(&v));
@@ -617,13 +618,12 @@ impl<'a> Checker<'a> {
             }
         }
 
-        // A `mut` parameter borrows its argument, so it may not persist it. `*mut` owns the
-        // argument and may persist it. A `no persist` parameter is left to `reject_escape`.
+        // A `mut` parameter borrows its argument, so it may not persist it. `*mut` takes the
+        // argument's write-ownership and may persist it.
         if let Some(stmt) = stmt {
             for (i, param) in decl.params.iter().enumerate() {
                 let cap = param.clause.capability;
-                let owes_no_persist = self.owes_no_persist(param.clause.names.iter().copied());
-                if cap.is_mut() && !cap.is_move() && !owes_no_persist && self.sigs.escapes_beyond_return_at(&stmt, i) {
+                if cap.is_mut() && !cap.is_move() && self.sigs.escapes_beyond_return_at(&stmt, i) {
                     return Err(self.error_help(
                         "a `mut` parameter borrows its argument and cannot let it escape".to_string(),
                         &param.name,
@@ -653,6 +653,10 @@ impl<'a> Checker<'a> {
             name: Some(decl.name),
             return_clause: decl.clause.pos.clone(),
             params: decl.params.iter().map(|p| (self.hir.ident_sym(&p.name), p.pos.clone())).collect(),
+            param_confined: match stmt {
+                Some(s) => (0..decl.params.len()).map(|i| !self.sigs.escapes_beyond_return_at(&s, i)).collect(),
+                None => Vec::new(),
+            },
             writes,
         };
         let saved = std::mem::replace(&mut self.fn_ctx, ctx);
@@ -905,6 +909,7 @@ impl<'a> Checker<'a> {
                     // The mutability follows the value, so a rebind takes the new value's.
                     self.locals[i].alias.mutability = typed.mutability;
                     self.locals[i].alias.unproven_borrow = self.holds_unproven_borrow(rhs);
+                    self.locals[i].alias.confined = self.value_is_confined(rhs);
                     // A rebind installs a fresh value, so any earlier move of the slot is undone.
                     self.locals[i].alias.transfer_site = None;
                     // The slot takes on whatever sources the new value reaches, and names whatever
