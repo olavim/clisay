@@ -3,7 +3,7 @@
 type Widget {
     inner state;
     pub fn read(this)! { return this.state; } // internal: ok
-    init(this, s) { this.state = s; }
+    init(this, *s) { this.state = s; }
 }
 say w = Widget("ready");
 print(w.read()); // expect: ready

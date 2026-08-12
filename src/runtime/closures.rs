@@ -49,7 +49,7 @@ impl Vm {
 
             // The closure can outlive the frame the capture came from, so a scope exit there must
             // not release what the captured value holds.
-            crate::core::objects::record_escape(unsafe { *(*upvalue).location });
+            objects::record_escape(unsafe { *(*upvalue).location });
             upvalues.push(upvalue);
         }
 
@@ -59,7 +59,13 @@ impl Vm {
         if self.gc.should_collect() {
             self.start_gc();
         }
-        self.gc.alloc_closure(name, arity, ip_start, &upvalues, escape_mask, move_mask, mut_receiver).into()
+        let closure: Object = self.gc.alloc_closure(name, arity, ip_start, &upvalues, escape_mask, move_mask, mut_receiver).into();
+        // A capture is a store into the closure, so the closure takes what an array would: the
+        // write-ownership of each captured value, and the answer for any borrow among them.
+        for &upvalue in upvalues.iter() {
+            objects::closure_captured(Value::from(closure), unsafe { *(*upvalue).location });
+        }
+        closure
     }
 
     pub(super) fn op_close_upvalue(&mut self) {

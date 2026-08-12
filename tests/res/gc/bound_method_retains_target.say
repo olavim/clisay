@@ -8,7 +8,7 @@
 
 type Foo {
     pub val;
-    init(this, v) {
+    init(this, *v) {
         this.val = v;
     }
     pub fn bar(this) {

@@ -35,6 +35,8 @@ const TRANSFER_SITE_A: usize = 0;
 const TRANSFER_SITE_B: usize = 1;
 const CONTAINER_A: usize = 0;
 const CONTAINER_B: usize = 1;
+const SOURCE_A: usize = 0;
+const SOURCE_B: usize = 1;
 const CALLEE: usize = 2;
 
 fn obligations(ids: &[u32]) -> Obligations {
@@ -91,6 +93,17 @@ fn extractions() -> Vec<Vec<(usize, Option<ElementKey>)>> {
     ]
 }
 
+/// The slots a branch may name as where the value came from. The last entry names two, which is
+/// what a join produces when the branches took the value out of different slots.
+fn provenances() -> Vec<Vec<usize>> {
+    vec![
+        vec![],
+        vec![SOURCE_A],
+        vec![SOURCE_B],
+        vec![SOURCE_A, SOURCE_B],
+    ]
+}
+
 fn sets() -> Vec<Obligations> {
     vec![
         obligations(&[]),
@@ -115,7 +128,7 @@ fn base() -> LocalFlow {
         tag: tags()[0].clone(),
         mutability: mutabilities()[0],
         transfer_site: moves()[0],
-        provenance: vec![0],
+        provenance: provenances()[0].clone(),
         extracted_from: extractions()[0].clone(),
         handled: sets()[0].clone(),
         discharged: sets()[0].clone(),
@@ -141,7 +154,7 @@ fn domain() -> Vec<LocalFlow> {
                                         tag: tag.clone(),
                                         mutability: *mutability,
                                         transfer_site: *transfer_site,
-                                        provenance: vec![0],
+                                        provenance: provenances()[0].clone(),
                                         extracted_from: extracted_from.clone(),
                                         handled: handled.clone(),
                                         discharged: discharged.clone(),
@@ -180,6 +193,7 @@ fn one_field_apart() -> Vec<LocalFlow> {
     out.extend(mutabilities().into_iter().map(|mutability| LocalFlow { mutability, ..base() }));
     out.extend(moves().into_iter().map(|transfer_site| LocalFlow { transfer_site, ..base() }));
     out.extend(extractions().into_iter().map(|extracted_from| LocalFlow { extracted_from, ..base() }));
+    out.extend(provenances().into_iter().map(|provenance| LocalFlow { provenance, ..base() }));
     out.extend(sets().into_iter().map(|handled| LocalFlow { handled, ..base() }));
     out.extend(sets().into_iter().map(|discharged| LocalFlow { discharged, ..base() }));
     out.extend(field_sets().into_iter().map(|field_discharged| LocalFlow { field_discharged, ..base() }));
@@ -292,10 +306,12 @@ fn merging_is_commutative() {
     for a in domain.iter() {
         for b in domain.iter() {
             let (mut ab, mut ba) = (merged(a, b), merged(b, a));
-            // The union is built by pushing, so the two orders hold the same origins in a different
-            // order. The set is what the rule means, so compare it as one.
+            // Each union is built by pushing, so the two orders hold the same entries in a
+            // different order. The set is what the rule means, so compare it as one.
             ab.extracted_from.sort_by_key(origin_key);
             ba.extracted_from.sort_by_key(origin_key);
+            ab.provenance.sort();
+            ba.provenance.sort();
             assert!(ab == ba, "the join depends on the order of its outcomes");
         }
     }
@@ -328,7 +344,6 @@ fn folding_another_outcome_never_resolves_more() {
                     assert!(resolved(&two).contains(&ob),
                         "a third outcome resolved an obligation two had not");
                 }
-                assert!(three.provenance.len() <= two.provenance.len(), "a fold grew provenance");
                 assert!(three.field_discharged.len() <= two.field_discharged.len(),
                     "a fold grew the field narrowings");
             }
@@ -338,7 +353,6 @@ fn folding_another_outcome_never_resolves_more() {
 
 #[test]
 fn a_restriction_survives_a_merge_from_either_side() {
-    // Reads `transfer_site` and `extracted_from`. Both are per-field rules, so one field apart is enough.
     let domain = one_field_apart();
     for a in domain.iter() {
         for b in domain.iter() {
@@ -351,6 +365,13 @@ fn a_restriction_survives_a_merge_from_either_side() {
             for origin in &out.extracted_from {
                 assert!(a.extracted_from.contains(origin) || b.extracted_from.contains(origin),
                     "an origin was invented by the join");
+            }
+            for source in a.provenance.iter().chain(&b.provenance) {
+                assert!(out.provenance.contains(source), "a source was lost by the join");
+            }
+            for source in &out.provenance {
+                assert!(a.provenance.contains(source) || b.provenance.contains(source),
+                    "a source was invented by the join");
             }
         }
     }

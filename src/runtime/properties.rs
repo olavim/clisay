@@ -7,6 +7,9 @@ enum MemberValue {
     Absent,
 }
 
+/// The advice for a persisted borrow where no name can be quoted back.
+const PERSIST_HELP: &str = "a borrowed value cannot be stored in a destination that outlives the call; take the parameter by `*mut` to own it, or `copy` it before storing";
+
 impl Vm {
     #[inline]
     fn resolve_cached_type_property(&mut self, type_ptr: *mut ObjType, prop: *mut ObjString) -> Option<TypeMember> {
@@ -89,7 +92,7 @@ impl Vm {
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, ip_start, true)?;
         let move_mask = unsafe { (*closure_ptr).move_mask };
-        self.transfer_argument_write_ownership(move_mask, stack_start, arg_count);
+        self.transfer_argument_write_ownership(move_mask, stack_start, arg_count)?;
         Ok(())
     }
 
@@ -109,7 +112,10 @@ impl Vm {
             self.ensure_writer_is_root(receiver, root_kind, root_operand)?;
         }
         self.stack.set(arg_count, callable);
-        self.call(arg_count, callable, true)
+        self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
+        let called = self.call(arg_count, callable, true);
+        self.native_receiver_is_frame_local = false;
+        called
     }
 
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
@@ -239,8 +245,8 @@ impl Vm {
         self.ensure_writer_is_root(target, root_kind, root_operand)?;
 
         let value = self.stack.pop();
-        self.ensure_not_borrowed(value)?;
-        self.give_write_ownership(target, value)?;
+        self.ensure_borrowed_does_not_persist(value, root_kind, root_operand)?;
+        self.container_took(target, value)?;
         let instance = unsafe { &mut *target.as_object().as_instance_ptr() };
 
         #[cfg(debug_assertions)]
@@ -294,22 +300,63 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn give_write_ownership(&self, container: Value, value: Value) -> Result<(), anyhow::Error> {
-        if objects::give_container_write_ownership(container, value) {
-            return Ok(());
-        }
+    pub(super) fn container_took(&self, container: Value, value: Value) -> Result<(), anyhow::Error> {
+        objects::container_took(container, value).map_err(|_| self.gave_transferred_element_error())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn gave_transferred_element_error(&self) -> anyhow::Error {
         self.raise(Diagnostic::new(objects::GAVE_TRANSFERRED_ELEMENT, self.get_source_position().clone())
             .with_label("this store would hand the container a writer")
             .with_help("write-ownership was given away and nothing handed it back; reading the value is still fine"))
+            .unwrap_err()
     }
 
-    /// Traps a store of a borrowed value: it may not be persisted while it is borrowed.
-    pub(super) fn ensure_not_borrowed(&self, value: Value) -> Result<(), anyhow::Error> {
-        if value.is_borrowed() {
-            let label = format!("`{}` is borrowed here", self.get_source_position().snippet());
-            return self.error_labeled(objects::PERSISTED_BORROW, label);
+    pub(super) fn ensure_borrowed_does_not_persist(&self, value: Value, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
+        if objects::carries_borrow(value) && !self.root_is_frame_local(root_kind, root_operand) {
+            return Err(self.persisted_borrow_error());
         }
         Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub(super) fn persisted_borrow_error(&self) -> anyhow::Error {
+        let destination = self.get_source_position().clone();
+        let site = self.code_index_at(self.ip);
+        let named = self.chunk.source_at(site, ir::SourceRole::StoredName);
+        let stored = named.or_else(|| self.chunk.source_at(site, ir::SourceRole::StoredValue));
+        let Some(pos) = stored else {
+            return self.raise(Diagnostic::new(objects::PERSISTED_BORROW, destination)
+                .with_label("this store outlives the borrow")
+                .with_help(PERSIST_HELP)).unwrap_err();
+        };
+        let help = match named {
+            Some(pos) => format!("you can retain `{0}` by declaring the parameter `*{0}`", pos.snippet()),
+            None => PERSIST_HELP.to_string(),
+        };
+        self.raise(Diagnostic::new(objects::PERSISTED_BORROW, pos.clone())
+            .with_label(format!("`{}` is borrowed", pos.snippet()))
+            .with_context_span(destination, "this destination outlives the borrow")
+            .with_help(help))
+            .unwrap_err()
+    }
+
+    pub(super) fn root_is_frame_local(&self, kind: u8, operand: u8) -> bool {
+        kind == ir::WRITE_ROOT_LOCAL && self.frame_arity().is_some_and(|arity| operand as usize > arity)
+    }
+
+    fn frame_arity(&self) -> Option<usize> {
+        let frame = self.frames.top();
+        if frame.is_null() {
+            return None;
+        }
+        let closure = unsafe { (*frame).closure };
+        match closure.is_null() {
+            true => None,
+            false => Some(unsafe { (*closure).arity } as usize),
+        }
     }
 
     pub(super) fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
@@ -323,18 +370,16 @@ impl Vm {
         self.ensure_mutable(target)?;
         self.ensure_writer_is_root(target, root_kind, root_operand)?;
         let stored = self.stack.peek(0);
-        self.ensure_not_borrowed(stored)?;
+        self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
 
-        let outcome = match object_kind {
-            ObjectKind::Instance => self.set_instance_index(prop, target),
-            ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop),
-            ObjectKind::Dict => self.set_dict_index(target, prop),
-            _ => self.error(format!("Invalid property access: {}", target.fmt()))
-        };
-        if outcome.is_ok() {
-            self.give_write_ownership(target, stored)?;
+        match object_kind {
+            ObjectKind::Instance => self.set_instance_index(prop, target)?,
+            ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop)?,
+            ObjectKind::Dict => self.set_dict_index(target, prop)?,
+            _ => self.error(format!("Invalid property access: {}", target.fmt()))?,
         }
-        outcome
+        self.container_took(target, stored)?;
+        Ok(())
     }
 
     pub(super) fn op_get_index_or_null(&mut self) {
@@ -398,21 +443,19 @@ impl Vm {
         self.ensure_mutable(target)?;
         self.ensure_writer_is_root(target, root_kind, root_operand)?;
         let stored = self.stack.peek(0);
-        self.ensure_not_borrowed(stored)?;
+        self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
 
-        let outcome = match object_kind {
-            ObjectKind::Instance => self.set_instance_index(prop, target),
-            ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop),
+        match object_kind {
+            ObjectKind::Instance => self.set_instance_index(prop, target)?,
+            ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop)?,
             ObjectKind::Dict => self.error(format!(
                 "Cannot assign to dict method '{}'; dict data is assigned with []",
                 prop.as_object().as_string()
-            )),
-            _ => self.error(format!("Invalid property access: {}", target.fmt()))
-        };
-        if outcome.is_ok() {
-            self.give_write_ownership(target, stored)?;
+            ))?,
+            _ => self.error(format!("Invalid property access: {}", target.fmt()))?,
         }
-        outcome
+        self.container_took(target, stored)?;
+        Ok(())
     }
 
     /// Whether a member satisfies what its declaration admits.
@@ -478,6 +521,25 @@ impl Vm {
         let shaped = matches!(receiver.kind(),
             ValueKind::Object(ObjectKind::Dict) | ValueKind::Object(ObjectKind::Instance));
         self.stack.push(Value::from(shaped));
+    }
+
+    /// Reads one element of a value being matched, by an offset from the front or from the back.
+    pub(super) fn op_array_elem(&mut self) {
+        let offset = self.read_next() as usize;
+        let from_back = self.read_next() != 0;
+        let receiver = self.stack.peek(0);
+        let value = match receiver.kind() {
+            ValueKind::Object(ObjectKind::Array) => {
+                let values = &unsafe { &*receiver.as_object().as_array_ptr() }.values;
+                let index = match from_back {
+                    true => values.len().checked_sub(offset),
+                    false => Some(offset),
+                };
+                index.and_then(|i| values.get(i)).copied().unwrap_or(Value::NULL)
+            },
+            _ => Value::NULL,
+        };
+        self.stack.set(0, value);
     }
 
     pub(super) fn op_array_len(&mut self) {
@@ -547,8 +609,8 @@ impl Vm {
 
         let instance_ref = value.as_object().as_instance_ptr();
         let stored = self.stack.peek(0);
-        self.ensure_not_borrowed(stored)?;
-        self.give_write_ownership(value, stored)?;
+        self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
+        self.container_took(value, stored)?;
         let instance = unsafe { &mut *instance_ref };
 
         #[cfg(debug_assertions)]

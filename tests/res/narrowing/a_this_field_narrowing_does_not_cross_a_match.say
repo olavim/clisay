@@ -2,7 +2,7 @@
 // beside it, which run instead of it rather than after it.
 type W {
     pub value?;
-    init(this, v?) { this.value = v; }
+    init(this, *v?) { this.value = v; }
     pub fn go(this, k)! {
         match (k) {
             1 => { if (this.value != null) { return "has"; } return "none"; },

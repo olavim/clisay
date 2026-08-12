@@ -2,4 +2,4 @@
 // rather than left to the runtime.
 type Box { pub var v; init(this) { this.v = 0; } }
 fn hand(z: mut)!: mut { return z; }
-fn outer(w: mut, sink: mut) { sink.v = hand(w); } // error: a `mut` parameter borrows its argument and cannot let it escape
+fn outer(w: mut, sink: mut) { sink.v = hand(w); } // error: cannot retain a borrowed argument

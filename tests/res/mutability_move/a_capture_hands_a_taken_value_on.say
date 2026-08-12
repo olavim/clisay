@@ -1,0 +1,76 @@
+// A `*mut` parameter that hands its value to a closure has passed it on, so the frame teardown has
+// nothing left to retire. Without that the closure's write is refused after the call returns.
+say var kept? = null;
+fn f(*mut x) { say cb = () => { x[0] = 5; return x[0]; }; kept = cb; }
+say m = mut [1];
+f(m);
+print(kept!()); // expect: 5
+
+// @split
+// A `*` take reaches the same place, since retention and not mutability is what strands it.
+say var kept? = null;
+fn f(*x) { say cb = () => { return x[0]; }; kept = cb; }
+say m = mut [1];
+f(m);
+print(kept!()); // expect: 1
+
+// @split
+// The closure that dies with the call never needed the hand-off, and still runs.
+fn f(*mut x) { say cb = () => { x[0] = 5; return x[0]; }; print(cb()); } // expect: 5
+say m = mut [1];
+f(m);
+
+// @split
+// A taken value the callee passes to nothing is still nobody's, so a later write is refused.
+fn drop(c: *mut) { }
+fn get(x)! { return x; }
+say f = get;
+say keep = mut [];
+say e = mut [0];
+drop(e);
+keep.push(f(e)); // error: cannot give away a value whose write-ownership was given away
+
+// @split
+// The closure owns what it captured, so the name that gave the value up cannot write it either.
+say var kept? = null;
+fn f(*mut x) { say cb = () => { return x[0]; }; kept = cb; }
+say m = mut [1];
+f(m);
+m[0] = 9; // error: cannot write `m`, which gave its write-ownership away
+
+// @split
+// A store through an upvalue is the one hand-off no container records, so the escape mark still
+// answers for it.
+fn wrap()! {
+    say var held = mut [0];
+    fn inner(*mut y) { held = y; }
+    inner(mut [1]);
+    return held;
+}
+say r = wrap();
+r[0] = 9;
+print(r[0]); // expect: 9
+
+// @split
+// A store through an upvalue moves the write-ownership to the slot it lands in.
+fn wrap()! {
+    say var held = mut [0];
+    fn inner(*mut y) { held = y; }
+    inner(mut [1]);
+    return held;
+}
+say r = wrap();
+r[0] = 9;
+print(r[0]); // expect: 9
+
+// @split
+// A value this frame never took is an ordinary alias.
+fn wrap()! {
+    say var held = mut [0];
+    fn inner() { held = mut [7]; }
+    inner();
+    return held;
+}
+say r = wrap();
+r[0] = 9;
+print(r[0]); // expect: 9

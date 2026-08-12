@@ -15,6 +15,8 @@ use crate::frontend::lex::SourcePosition;
 pub const WRITE_ROOT_NONE: u8 = 0;
 pub const WRITE_ROOT_LOCAL: u8 = 1;
 pub const WRITE_ROOT_UPVALUE: u8 = 2;
+pub const WRITE_ROOT_RECEIVER: u8 = 3;
+pub const WRITE_ROOT_RECEIVER_UP: u8 = 4;
 
 /// A symbolic jump target, resolved to a byte offset at assembly time.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,7 +62,6 @@ pub enum Inst {
     PopTry,
     /// Aborts if the top of the stack is null, else leaves it.
     AssertNonNull,
-    AssertNotBorrowed,
     AssertNoOtherWriter(u8),
     AssertNoOtherWriterUp(u8),
     /// The same barrier for a path whose root no binding names, compared against the stashed root.
@@ -71,15 +72,9 @@ pub enum Inst {
     /// does not allow.
     BarrierGuard(bool, u16),
     /// Asserts an opaque callee borrows the guarded argument positions. Operands are the argument
-    /// count (the callee's stack depth) and an index into the barrier's position list.
-    AssertBorrow(u8, u16),
-    /// An opaque call whose argument is read again afterwards, so the callee must have borrowed it.
-    AssertNotConsumed(u8, u16),
-    /// Marks the listed argument positions borrowed for the call that follows. Operands are the
-    /// argument count and an index into the position list.
-    MarkBorrow(u8, u16),
-    /// Releases the last `count` marked borrows.
-    ReleaseBorrow(u8),
+    /// count, an index into the barrier's owed-obligation names, and an index into the barrier's
+    /// position list.
+    AssertNoRetain(u8, u16, u16),
     TakeWriteOwnership(u8),
     TransferWriteOwnership(u8),
     TransferWriteOwnershipUp(u8),
@@ -166,6 +161,8 @@ pub enum Inst {
     ArrayLen,
     /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
     ArrayMiddle(u8, u8),
+    /// Replaces the array on top with one element, by an offset from the front or from the back.
+    ArrayElem(u8, u8),
 }
 
 pub struct Ir {
@@ -184,9 +181,23 @@ pub struct Ir {
     /// Brace-construction field-id lists.
     construct_fields: Vec<Vec<u8>>,
     survive_positions: Vec<Vec<(u8, SourcePosition)>>,
+    /// The obligation a survive barrier's guarded position owes.
+    owed_names: Vec<Box<[(u8, Box<str>)]>>,
     /// Instruction indices of the checks that check-forcing put back.
     /// Empty unless check-forcing is on.
     elisions: Vec<usize>,
+    /// Extra source positions an instruction needs, keyed by instruction index and role.
+    source_map: FnvHashMap<(usize, SourceRole), SourcePosition>,
+}
+
+/// Which part of an instruction an extra source position belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceRole {
+    /// The expression whose value a store writes.
+    StoredValue,
+    /// The same, where that expression is a bare name. Only then can a diagnostic quote it back as
+    /// a declaration to change.
+    StoredName,
 }
 
 impl Ir {
@@ -203,7 +214,9 @@ impl Ir {
             fn_entries: Vec::new(),
             construct_fields: Vec::new(),
             survive_positions: Vec::new(),
+            owed_names: Vec::new(),
             elisions: Vec::new(),
+            source_map: FnvHashMap::default(),
         }
     }
 
@@ -232,6 +245,22 @@ impl Ir {
         &self.survive_positions[idx as usize]
     }
 
+    /// Records the obligations a survive barrier's guarded positions owe.
+    pub fn add_owed_names(&mut self, owed: Box<[(u8, Box<str>)]>) -> Result<u16, anyhow::Error> {
+        if let Some(i) = self.owed_names.iter().position(|o| **o == *owed) {
+            return Ok(i as u16);
+        }
+        if self.owed_names.len() >= u16::MAX as usize {
+            bail!("Too many opaque-call barriers");
+        }
+        self.owed_names.push(owed);
+        Ok((self.owed_names.len() - 1) as u16)
+    }
+
+    pub fn owed_names(&self) -> &[Box<[(u8, Box<str>)]>] {
+        &self.owed_names
+    }
+
     /// The index the next emitted instruction will take.
     pub fn next_index(&self) -> usize {
         self.code.len()
@@ -244,6 +273,14 @@ impl Ir {
 
     pub fn elisions(&self) -> &[usize] {
         &self.elisions
+    }
+
+    pub fn map_source(&mut self, index: usize, role: SourceRole, pos: SourcePosition) {
+        self.source_map.insert((index, role), pos);
+    }
+
+    pub fn source_map(&self) -> &FnvHashMap<(usize, SourceRole), SourcePosition> {
+        &self.source_map
     }
 
     /// Records the program's object witness names for the VM's boundary-barrier registry.
@@ -382,8 +419,10 @@ impl Ir {
             fn_entries: self.fn_entries,
             construct_fields: self.construct_fields,
             survive_positions: self.survive_positions,
+            owed_names: self.owed_names,
             // A rewrite moves instructions, so each marked check follows its own index.
             elisions: self.elisions.iter().map(|&idx| old_to_new[idx]).collect(),
+            source_map: self.source_map.iter().map(|(&(idx, role), pos)| ((old_to_new[idx], role), pos.clone())).collect(),
             witness_ids: self.witness_ids,
             builtin_layouts: self.builtin_layouts,
             witness_allows: self.witness_allows,

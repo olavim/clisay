@@ -24,7 +24,7 @@ fn makeInc()! {
 
 type Holder {
     pub fn_field;
-    init(this, f) {
+    init(this, *f) {
         this.fn_field = f;
     }
 }

@@ -1,8 +1,9 @@
 use std::mem;
 
-use fnv::FnvHashSet;
+use fnv::{FnvHashMap, FnvHashSet};
 
 use crate::frontend::lex::SourcePosition;
+use crate::middle::ir::SourceRole;
 use crate::core::gc::{Gc, GcTraceable};
 use crate::ast::BuiltinType;
 use crate::core::objects::TypeId;
@@ -21,12 +22,20 @@ pub struct BytecodeChunk {
     pub builtin_layouts: [Option<BuiltinLayout>; BuiltinType::COUNT],
     /// The witness ids each barrier allows, by pool index.
     pub witness_allows: Vec<Box<[u16]>>,
+    /// The obligation each survive barrier's guarded positions owe, by pool index. A position
+    /// guarded because it is borrowed has no entry.
+    pub owed_names: Vec<Box<[(u8, Box<str>)]>>,
     pub code: Vec<OpCode>,
     pub constants: Vec<Value>,
+    /// One source position per code byte, not per instruction. Every byte of an instruction usually
+    /// carries the same span, but an operand byte may carry a narrower one, which is how a read
+    /// part-way through an instruction resolves to the operand it just consumed.
     pub code_pos: Vec<SourcePosition>,
     /// Byte offsets of the checks forcing put back. Empty unless forcing is on, which is what keeps
     /// an ordinary run from paying for the lookup.
     pub elisions: FnvHashSet<usize>,
+    /// Extra source positions, keyed by byte offset and role.
+    pub source_map: FnvHashMap<(usize, SourceRole), SourcePosition>,
 }
 
 impl BytecodeChunk {
@@ -36,10 +45,17 @@ impl BytecodeChunk {
             witness_ids: Vec::new(),
             builtin_layouts: std::array::from_fn(|_| None),
             witness_allows: Vec::new(),
+            owed_names: Vec::new(),
             code: Vec::new(),
             constants: Vec::new(),
-            code_pos: Vec::new()
+            code_pos: Vec::new(),
+            source_map: FnvHashMap::default(),
         }
+    }
+
+    /// An extra position recorded for the instruction `offset` falls inside.
+    pub fn source_at(&self, offset: usize, role: SourceRole) -> Option<&SourcePosition> {
+        self.source_map.get(&(offset, role))
     }
 
     pub fn write(&mut self, op: OpCode, pos: &SourcePosition) {

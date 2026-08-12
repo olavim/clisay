@@ -2,7 +2,7 @@
 type T {
     secret;
     pub open;
-    init(this, a, b) { this.secret = a; this.open = b; }
+    init(this, *a, *b) { this.secret = a; this.open = b; }
     pub fn peek(this) {
         if this ~ { secret } { print("sees-secret"); } else { print("no-secret"); }
         if this ~ { open } { print("sees-open"); } else { print("no-open"); }

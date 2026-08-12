@@ -1,5 +1,5 @@
 // A user obligation's witness is tested at runtime: a `??` discharges a value that is the witness.
-type Token { pub v; init(this, x) { this.v = x; } }
+type Token { pub v; init(this, *x) { this.v = x; } }
 obligation parsed { witness Token; discharge to use; }
 fn tryUse(v: parsed) {
     print(v ?? 99);

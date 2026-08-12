@@ -38,7 +38,7 @@ print(t.x[0]); // expect: 0
 
 // @split
 // A factory seals the same way, so an argument it keeps answers the same.
-type T { pub x; init(this, x) { this.x = x; } }
+type T { pub x; init(this, *x) { this.x = x; } }
 say a = mut [mut [0]];
 say t = T(a[0]); // error: cannot store a mutable value in an immutable container
 

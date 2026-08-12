@@ -12,7 +12,7 @@ f(); // expect: handled
 
 // @split
 // A failed conjunction rules out a witness that every part covers.
-type Wt { pub a; pub b; init(this, x) { this.a = x; this.b = x; } }
+type Wt { pub a; pub b; init(this, *x) { this.a = x; this.b = x; } }
 obligation warned { witness Wt; discharge before drop; }
 fn f() {
     say v: warned = Wt(1);

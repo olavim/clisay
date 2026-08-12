@@ -1,6 +1,6 @@
 // A match narrows the scrutinee non-null: a shape or type match, an or-matcher when every branch
 // narrows, and an and-matcher when either side does. The narrowed value flows into a non-null slot.
-type P { pub n; init(this, a) { this.n = a; } }
+type P { pub n; init(this, *a) { this.n = a; } }
 
 fn viaShape(v?) {
     if v ~ { k } {

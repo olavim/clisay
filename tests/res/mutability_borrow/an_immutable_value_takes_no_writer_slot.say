@@ -3,8 +3,8 @@
 // conflict.
 say sink = mut [];
 say other = mut [];
-fn keep(v) { sink.push(v); }
-fn keep2(v) { other.push(v); }
+fn keep(*v) { sink.push(v); }
+fn keep2(*v) { other.push(v); }
 keep("hi");
 keep2("hi");
 print(sink[0]); // expect: hi
@@ -16,8 +16,8 @@ type T { pub v; }
 say t = T { v: 1 };
 say sink = mut [];
 say other = mut [];
-fn keep(v) { sink.push(v); }
-fn keep2(v) { other.push(v); }
+fn keep(*v) { sink.push(v); }
+fn keep2(*v) { other.push(v); }
 keep(t);
 keep2(t);
 print(sink[0].v); // expect: 1
@@ -26,7 +26,7 @@ print(other[0].v); // expect: 1
 // @split
 // A mutable one still takes the slot, which is what the gate must not let through.
 say sink = mut [];
-fn keep(v) { sink.push(v); }
+fn keep(*v) { sink.push(v); }
 say a = mut [mut [0]];
 keep(a[0]);
 a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container

@@ -30,7 +30,7 @@ print(r()); // expect: 1
 
 // @split
 // Nor is handing it back, which is what a builder does.
-type B { pub var n; init(this) { this.n = 0; } pub fn set(this: mut, x)! { this.n = x; return this; } }
+type B { pub var n; init(this) { this.n = 0; } pub fn set(this: mut, *x)! { this.n = x; return this; } }
 say b = mut B();
 b.set(1).set(2);
 print(b.n); // expect: 2

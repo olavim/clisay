@@ -248,12 +248,10 @@ impl<'a> Checker<'a> {
             .with_span(self.hir.pos(&site.node).clone(), format!("`{name}` gave its write-ownership here"))))
     }
 
-    /// Settles an opaque give at a use. The callee may or may not have taken the write-ownership,
-    /// so the use demands the runtime proof, which makes the binding a writer again.
-    pub(super) fn settle_unknown_transfer(&mut self, i: usize, use_node: &HirId<HirExpr>) {
+    /// Settles an opaque give at a use, making the binding a writer again.
+    pub(super) fn settle_unknown_transfer(&mut self, i: usize, _use_node: &HirId<HirExpr>) {
         let Some(site) = self.locals[i].alias.transfer_site else { return };
-        let WriteOwnershipTransfer::Unknown(callee, position) = site.transfer else { return };
-        self.record_reread_barrier(&callee, position, *use_node);
+        let WriteOwnershipTransfer::Unknown(..) = site.transfer else { return };
         self.locals[i].alias.transfer_site = None;
     }
 
@@ -292,6 +290,23 @@ impl<'a> Checker<'a> {
             stack.extend(self.locals[j].alias.provenance.iter().copied());
         }
         None
+    }
+
+    /// Gives back the write-ownership a slot's old value held, because a rebind drops that value.
+    pub(super) fn reclaim_on_rebind(&mut self, i: usize) {
+        // A slot that already gave its write-ownership away has none to hand back.
+        if self.locals[i].alias.transfer_site.is_some() {
+            return;
+        }
+        let mut stack = self.locals[i].alias.provenance.clone();
+        let mut seen: HashSet<usize> = HashSet::new();
+        while let Some(s) = stack.pop() {
+            if !seen.insert(s) {
+                continue;
+            }
+            self.locals[s].alias.transfer_site = None;
+            stack.extend(self.locals[s].alias.provenance.iter().copied());
+        }
     }
 
     /// When a block-local dies still holding write-ownership, hands it back to a surviving source.
@@ -612,12 +627,6 @@ impl<'a> Checker<'a> {
     /// its write-ownership over as the container becomes its writer.
     pub(super) fn store_into_container(&mut self, flow: &Flow, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.reject_outliving(flow, Site::Container, expr)?;
-        if !self.value_is_confined(expr) {
-            match self.holds_unproven_borrow(expr) {
-                true => self.record_guard(expr, Guard::Unborrowed),
-                false => self.record_elision(expr, Guard::Unborrowed),
-            }
-        }
         self.check_stored_element(expr)?;
         self.transfer_write_ownership(expr)?;
         Ok(())
@@ -636,6 +645,16 @@ impl<'a> Checker<'a> {
     /// Whether a value may be an element of a container this pass cannot see.
     fn may_be_an_element(&self, expr: &HirId<HirExpr>) -> bool {
         self.local_of(expr).is_some_and(|i| self.locals[i].param)
+    }
+
+    /// The enclosing binding an identifier names, for a write this frame reaches as an upvalue.
+    pub(super) fn enclosing_of(&self, node: &HirId<HirExpr>) -> Option<usize> {
+        let HirExpr::Identifier(name) = self.hir.get(node) else { return None };
+        // A bare field name is an identifier too, so ask where the name actually binds.
+        if !matches!(self.bindings.place_of(node), Some(crate::middle::bind::Place::Upvalue(_))) {
+            return None;
+        }
+        self.enclosing_index(*name)
     }
 
     /// The frame slot a node reads, when it reads one at all.
@@ -658,6 +677,12 @@ impl<'a> Checker<'a> {
     /// persists it exactly like a field or container would.
     pub(super) fn reject_capture_escape(&self, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let Some(i) = self.enclosing_index(name) else { return Ok(()) };
+        if self.locals[i].alias.borrowed && !self.locals[i].alias.confined {
+            let text = self.hir.text(name);
+            return Err(self.error_help(
+                "a borrowed value cannot be retained, and this closure outlives the call".to_string(), node,
+                format!("declare the parameter `*{text}` to retain it, or `*mut {text}` if the closure writes it")));
+        }
         let owed = self.locals[i].owed.clone();
         self.reject_outliving(&Flow::Bad { obligations: owed, definite: false, container: false }, Site::Capture, node)
     }
@@ -667,27 +692,23 @@ impl<'a> Checker<'a> {
     pub(super) fn check_opaque_call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[Typed]) -> Result<Typed, anyhow::Error> {
         let mut survive = Vec::new();
         for (i, typed) in arg_types.iter().enumerate() {
-            // A `no persist` value must survive: the opaque callee may not persist it.
-            if self.arg_owes_no_persist(&typed.flow) {
-                survive.push(i as u8);
+            if let Some(owed) = self.arg_must_survive_call(&typed.flow) {
+                survive.push((i as u8, Some(owed)));
                 continue;
             }
             if typed.mutability != Mutability::Mutable {
                 continue;
             }
             if self.arg_is_borrowed(&args[i]) {
-                survive.push(i as u8);
+                survive.push((i as u8, None));
                 continue;
             }
-            // An owned mutable may be consumed by the callee or merely borrowed, and this pass
-            // cannot tell which. Treat the binding as dead for now. If it is never read again both
-            // outcomes are fine, and if it is read the reader demands the runtime prove a borrow.
+            // An owned mutable may be retained by the callee or merely borrowed, and this pass
+            // cannot tell which.
             self.transfer_write_ownership_as(&args[i], WriteOwnershipTransfer::Unknown(*callee, i as u8));
         }
         if !survive.is_empty() {
-            self.record_survive_barrier(callee, survive.clone());
-            // Mark the borrowed args so the runtime panics if an opaque callee tries to persist them.
-            self.record_borrow_marks(callee, survive);
+            self.record_survive_barrier(callee, survive);
         }
         self.indirect_call(callee)
     }

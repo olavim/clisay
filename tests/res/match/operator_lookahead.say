@@ -1,4 +1,4 @@
-type P { pub x; init(this, a) { this.x = a; } }
+type P { pub x; init(this, *a) { this.x = a; } }
 say p = P(5);
 
 if p is P { print("is-body"); } // expect: is-body

@@ -1,4 +1,4 @@
-//! The walk: `stmt` and `expr` dispatch over the HIR, and each site gathers the
+﻿//! The walk: `stmt` and `expr` dispatch over the HIR, and each site gathers the
 //! context its rules need and calls them in a fixed order.
 
 use std::collections::HashSet;
@@ -352,6 +352,7 @@ impl<'a> Checker<'a> {
         local.alias.mutability = mutability;
         local.alias.unproven_borrow = value.is_some_and(|v| self.holds_unproven_borrow(&v));
         local.alias.confined = value.is_some_and(|v| self.value_is_confined(&v));
+        local.alias.borrowed = value.is_some_and(|v| self.arg_is_borrowed(&v));
         local.alias.provenance = provenance;
         local.alias.extracted_from = value.and_then(|v| self.extraction_of(&v)).into_iter().collect();
         local.alias.shared_origin = value.is_some_and(|v| self.shared_origin(&v));
@@ -623,11 +624,27 @@ impl<'a> Checker<'a> {
         if let Some(stmt) = stmt {
             for (i, param) in decl.params.iter().enumerate() {
                 let cap = param.clause.capability;
-                if cap.is_mut() && !cap.is_move() && self.sigs.escapes_beyond_return_at(&stmt, i) {
-                    return Err(self.error_help(
-                        "a `mut` parameter borrows its argument and cannot let it escape".to_string(),
-                        &param.name,
-                        "take it by `*mut` to own it, or freeze or copy it before persisting"));
+                if !cap.is_move() && self.sigs.escapes_beyond_return_at(&stmt, i) {
+                    let text = self.hir.text(self.hir.ident_sym(&param.name));
+                    let barred = param.clause.names.iter().copied().find(|&o| self.sigs.rules_of(o).no_persist);
+                    let help = match barred {
+                        Some(owed) => format!("`{}` declares `no persist`, so `*{text}` cannot help; freeze or copy it before persisting", self.hir.text(owed)),
+                        None => format!("declare it `*{text}` to retain it, or freeze or copy it before persisting"),
+                    };
+                    let Some(site) = self.sigs.escape_site_at(&stmt, i) else {
+                        return Err(self.error_labeled_help(
+                            "cannot retain a borrowed argument".to_string(),
+                            &param.name,
+                            format!("`{text}` is borrowed"),
+                            help));
+                    };
+                    return Err(self.error_ctx_help(
+                        "cannot retain a borrowed argument",
+                        self.hir.pos(&site),
+                        format!("`{text}` is retained here"),
+                        self.hir.pos(&param.name),
+                        format!("`{text}` is borrowed here"),
+                        help));
                 }
             }
 
@@ -701,6 +718,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<Typed, anyhow::Error> {
+        let immutable = !std::mem::take(&mut self.mut_construction);
         let arg_types: Vec<Typed> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
         match self.hir.get(callee) {
             HirExpr::Identifier(name) => {
@@ -715,7 +733,6 @@ impl<'a> Checker<'a> {
                             format!("build it with a brace like '{t}{{ .. }}', or give every field a default or add an 'init'")));
                     }
 
-                    let immutable = !std::mem::take(&mut self.mut_construction);
                     if let Some(init) = self.constructor_init(callee) {
                         self.check_call_args(callee, init, &arg_types, args)?;
                         for (i, (typed, arg)) in arg_types.iter().zip(args).enumerate() {
@@ -832,13 +849,6 @@ impl<'a> Checker<'a> {
         self.check_arg_obligations(callee, &sig.param_clauses, arg_types, args)?;
         self.check_args(callee, &nullable, arg_types, args)?;
         self.consume_move_args(&sig.param_markers, args)?;
-
-        // A mutable argument lent to a non-consuming parameter is borrowed for the call, so mark it.
-        let marks: Vec<u8> = sig.param_markers.iter().enumerate()
-            .filter(|(i, m)| !m.is_move() && arg_types.get(*i).is_some_and(|t| t.mutability == Mutability::Mutable))
-            .map(|(i, _)| i as u8)
-            .collect();
-        self.record_borrow_marks(callee, marks);
         Ok(())
     }
 
@@ -910,6 +920,9 @@ impl<'a> Checker<'a> {
                     self.locals[i].alias.mutability = typed.mutability;
                     self.locals[i].alias.unproven_borrow = self.holds_unproven_borrow(rhs);
                     self.locals[i].alias.confined = self.value_is_confined(rhs);
+                    self.locals[i].alias.borrowed = self.arg_is_borrowed(rhs);
+                    // The old value is dropped here, so whatever lent it gets its write-ownership back.
+                    self.reclaim_on_rebind(i);
                     // A rebind installs a fresh value, so any earlier move of the slot is undone.
                     self.locals[i].alias.transfer_site = None;
                     // The slot takes on whatever sources the new value reaches, and names whatever
@@ -987,6 +1000,15 @@ impl<'a> Checker<'a> {
         // a closure may not be written through this name either, which `write_permission` folds in.
         if let Some(i) = slot.filter(|&i| self.write_permission(i) == Mutability::Immutable) {
             return Err(self.immutable_mutation_error(target, i));
+        }
+
+        // A captured name is written through an upvalue.
+        if slot.is_none() {
+            let captured = self.enclosing_of(target)
+                .filter(|&i| self.locals[i].alias.mutability == Mutability::Immutable);
+            if let Some(i) = captured {
+                return Err(self.immutable_mutation_error(target, i));
+            }
         }
 
         // An immutable base seals every place under it, so `this.arr[0] = 1` in a read-only method is refused.

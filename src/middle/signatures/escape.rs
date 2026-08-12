@@ -1,4 +1,4 @@
-//! Escape analysis: per parameter, whether a function persists its argument. A persist is a store, a
+﻿//! Escape analysis: per parameter, whether a function persists its argument. A persist is a store, a
 //! construct, or a forward to a callee that itself persists. A return hands the value back to the
 //! caller, and a capture persists only when the closure holding it does.
 //!
@@ -31,11 +31,51 @@ enum AliasKind {
     Containment,
 }
 
+/// One name a value keeps reachable: the name, how the value relates to it, and the node it was read at.
+type Reached = (Symbol, AliasKind, HirId<HirExpr>);
+
 /// One name tied to another by a `say` or an assignment.
 struct Alias {
     local: Symbol,
     source: Symbol,
     kind: AliasKind,
+}
+
+/// Names recorded with the node that put them there.
+#[derive(Default)]
+struct Sites(HashMap<Symbol, HirId<HirExpr>>);
+
+impl Sites {
+    fn note(&mut self, name: Symbol, at: HirId<HirExpr>) {
+        match self.0.get(&name) {
+            Some(prev) if prev.index() <= at.index() => {},
+            _ => { self.0.insert(name, at); },
+        }
+    }
+
+    fn note_all(&mut self, names: impl IntoIterator<Item = Symbol>, at: HirId<HirExpr>) {
+        for name in names { self.note(name, at); }
+    }
+
+    fn names(&self) -> impl Iterator<Item = &Symbol> {
+        self.0.keys()
+    }
+
+    fn into_names(self) -> impl Iterator<Item = Symbol> {
+        self.0.into_keys()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Symbol, &HirId<HirExpr>)> {
+        self.0.iter()
+    }
+}
+
+/// Keeps the earliest of two escape sites, for the same reason `Sites` does.
+fn note_site(slot: &mut Option<HirId<HirExpr>>, at: HirId<HirExpr>) {
+    match slot {
+        Some(prev) if prev.index() <= at.index() => {},
+        _ => *slot = Some(at),
+    }
 }
 
 /// The escape structure of one analyzed function, collected by name. A name here is any identifier
@@ -44,9 +84,9 @@ struct Alias {
 #[derive(Default)]
 struct EscapeFacts {
     /// Names persisted where the caller cannot see them again: stored, or held by a persisted closure.
-    direct: HashSet<Symbol>,
+    direct: Sites,
     /// Names the function returns. The caller gets these back, so they never leave its reach.
-    returned: HashSet<Symbol>,
+    returned: Sites,
     /// Names mutated in place through an index or field write.
     mutates: HashSet<Symbol>,
     /// Names stored somewhere where a second name can write them.
@@ -58,8 +98,8 @@ struct EscapeFacts {
     forwards: Vec<EscapeForward>,
     /// What each local is tied to, from `say` and assignment.
     aliases: Vec<Alias>,
-    /// `(container, value)` from a store into a name the body may own.
-    stores: Vec<(Symbol, Symbol)>,
+    /// `(container, value, site)` from a store into a name the body may own.
+    stores: Vec<(Symbol, Symbol, HirId<HirExpr>)>,
     /// Names the body rebinds that belong to an enclosing scope. A rebind replaces what the name
     /// denotes, which is not a write to the value and so is none of the sets above.
     rebound: HashSet<Symbol>,
@@ -71,6 +111,8 @@ struct EscapeForward {
     callee: HirId<HirStmt>,
     callee_param: usize,
     arg: Symbol,
+    /// The argument node, so a refusal can point at what the call retains.
+    at: HirId<HirExpr>,
 }
 
 /// One function's body, resolved into what its summaries are computed from.
@@ -202,9 +244,9 @@ impl Components {
 /// containers the caller owns, so a store into one leaves the call. The receiver is named apart from
 /// the row, since a lambda in a method reaches `this` without taking it as a parameter.
 fn resolve_stores(params: &[Symbol], this: Symbol, facts: &mut EscapeFacts) {
-    for (container, source) in std::mem::take(&mut facts.stores) {
+    for (container, source, at) in std::mem::take(&mut facts.stores) {
         match container == this || params.contains(&container) {
-            true => { facts.direct.insert(source); },
+            true => facts.direct.note(source, at),
             false => facts.aliases.push(Alias { local: container, source, kind: AliasKind::Containment }),
         }
     }
@@ -233,7 +275,7 @@ impl<'a> Collector<'a> {
             let HirExpr::Literal(HirLiteral::Lambda(decl)) = self.hir.get(&id) else { continue };
             let mut facts = EscapeFacts::default();
             self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Capture, None);
-            self.lambda_captures.insert(id, facts.direct.into_iter().collect());
+            self.lambda_captures.insert(id, facts.direct.into_names().collect());
         }
     }
 
@@ -289,11 +331,12 @@ impl<'a> Collector<'a> {
     fn fold_facts(&self, params: &[Symbol], carriers: &Carriers, facts: &EscapeFacts) -> Vec<ParamFact> {
         let mut row = vec![ParamFact::default(); params.len()];
         // A directly persisted or mutated argument is kept whatever any callee does.
-        for name in &facts.direct {
+        for (name, at) in facts.direct.iter() {
             for p in carriers.held(name) {
                 let fact = &mut row[param_position(params, *p)];
                 fact.escapes = true;
                 fact.beyond_return = true;
+                note_site(&mut fact.escape_site, *at);
             }
         }
         for name in &facts.mutates {
@@ -307,7 +350,10 @@ impl<'a> Collector<'a> {
             for p in carriers.held(&forward.arg) {
                 let fact = &mut row[param_position(params, *p)];
                 fact.escapes |= callee_fact.escapes;
-                fact.beyond_return |= callee_fact.beyond_return;
+                if callee_fact.beyond_return {
+                    fact.beyond_return = true;
+                    note_site(&mut fact.escape_site, forward.at);
+                }
                 fact.mutates |= callee_fact.mutates;
                 fact.stored_away |= callee_fact.stored_away;
             }
@@ -322,13 +368,16 @@ impl<'a> Collector<'a> {
         let mut free: Vec<Symbol> = Vec::new();
         // Handing an argument back still counts as keeping it, which is what bars passing a mutable
         // value to a function that returns it.
-        for name in &a.facts.returned {
+        for (name, at) in a.facts.returned.iter() {
             for p in a.carriers.held(name) {
                 let fact = &mut row[param_position(&a.params, *p)];
                 fact.escapes = true;
                 // A name that reaches the argument through a container hands back the container,
                 // not the argument. The caller gets no way back to what it lent.
-                fact.beyond_return |= a.carriers.contains(name, p);
+                if a.carriers.contains(name, p) {
+                    fact.beyond_return = true;
+                    note_site(&mut fact.escape_site, *at);
+                }
             }
         }
 
@@ -336,7 +385,7 @@ impl<'a> Collector<'a> {
             // A function hands back an argument when its result keeps that argument reachable.
             // `return x`, `return [x]` and `return () => x.n` all count, as does returning a call
             // that itself hands the argument back.
-            for (name, kind) in self.reachable_kinds(ret) {
+            for (name, kind, at) in self.reachable_kinds(ret) {
                 let carried: Vec<Symbol> = a.carriers.held(&name).copied().collect();
                 for p in &carried {
                     let fact = &mut row[param_position(&a.params, *p)];
@@ -345,9 +394,9 @@ impl<'a> Collector<'a> {
                     // something holding it. `return x` counts and `return [x]` does not.
                     fact.hands_back_itself |= kind == AliasKind::Identity && !a.carriers.contains(&name, p);
                 }
-                // A name no parameter carries comes from an outer scope, so the result is a
-                // second name for a binding the caller may hold too.
-                if carried.is_empty() && kind == AliasKind::Identity {
+                // A name no parameter carries is worth reporting only if the caller can hold it too.
+                let free_here = matches!(self.bindings.place_of(&at), Some(Place::Upvalue(_)));
+                if carried.is_empty() && kind == AliasKind::Identity && free_here {
                     free.push(name);
                 }
             }
@@ -417,7 +466,7 @@ impl<'a> Collector<'a> {
             seeds.insert(f.arg);
         }
 
-        seeds.extend(&facts.direct);
+        seeds.extend(facts.direct.names().copied());
         seeds.extend(&facts.mutates);
         seeds.extend(&facts.call_writes);
 
@@ -425,7 +474,7 @@ impl<'a> Collector<'a> {
         let carriers = Carriers::of(&seeds, &facts.aliases);
 
         let mut writes = HashSet::new();
-        for n in facts.direct.iter().chain(&facts.mutates).chain(&facts.call_writes) {
+        for n in facts.direct.names().chain(&facts.mutates).chain(&facts.call_writes) {
             writes.extend(carriers.held(n).copied());
         }
         for f in &facts.forwards {
@@ -465,22 +514,22 @@ impl<'a> Collector<'a> {
 
     /// The names a value keeps reachable, without saying how.
     fn reachable_names(&self, value: &HirId<HirExpr>) -> Vec<Symbol> {
-        self.reachable_kinds(value).into_iter().map(|(name, _)| name).collect()
+        self.reachable_kinds(value).into_iter().map(|(name, _, _)| name).collect()
     }
 
     /// The names a value keeps reachable, each said to be the value or held by it.
-    fn reachable_kinds(&self, value: &HirId<HirExpr>) -> Vec<(Symbol, AliasKind)> {
+    fn reachable_kinds(&self, value: &HirId<HirExpr>) -> Vec<Reached> {
         if let Some(kinds) = self.denoted_kinds(value) {
             return kinds;
         }
         // A closure holds the names its body reads, so persisting it persists them.
         if let Some(captured) = self.lambda_captures.get(value) {
-            return captured.iter().map(|name| (*name, AliasKind::Containment)).collect();
+            return captured.iter().map(|name| (*name, AliasKind::Containment, *value)).collect();
         }
         let (children, holds) = self.held_children(value);
         children.iter()
             .flat_map(|c| self.reachable_kinds(c))
-            .map(|(name, kind)| (name, if holds { AliasKind::Containment } else { kind }))
+            .map(|(name, kind, at)| (name, if holds { AliasKind::Containment } else { kind }, at))
             .collect()
     }
 
@@ -496,10 +545,10 @@ impl<'a> Collector<'a> {
 
     /// The names a value denotes rather than holds, when it denotes any. A call answers through its
     /// own summary, since its result is whatever it handed back.
-    fn denoted_kinds(&self, value: &HirId<HirExpr>) -> Option<Vec<(Symbol, AliasKind)>> {
+    fn denoted_kinds(&self, value: &HirId<HirExpr>) -> Option<Vec<Reached>> {
         match self.hir.get(value) {
-            HirExpr::Identifier(s) => Some(vec![(*s, AliasKind::Identity)]),
-            HirExpr::This => Some(vec![(self.this, AliasKind::Identity)]),
+            HirExpr::Identifier(s) => Some(vec![(*s, AliasKind::Identity, *value)]),
+            HirExpr::This => Some(vec![(self.this, AliasKind::Identity, *value)]),
             HirExpr::Call(callee, args) => Some(self.call_result_kinds(callee, args)),
             _ => None,
         }
@@ -507,7 +556,7 @@ impl<'a> Collector<'a> {
 
     /// The names a call's result keeps reachable, for a callee the pass can resolve. An opaque
     /// callee answers nothing, leaving its result to the runtime borrow check.
-    fn call_result_kinds(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Vec<(Symbol, AliasKind)> {
+    fn call_result_kinds(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Vec<Reached> {
         let Some(func) = self.resolved_callee(callee, None) else { return Vec::new() };
         let mut out = Vec::new();
         for (i, arg) in args.iter().enumerate() {
@@ -516,9 +565,9 @@ impl<'a> Collector<'a> {
             // The result is the argument itself only where the callee hands that argument back
             // rather than a container it built around it.
             out.extend(self.reachable_kinds(arg).into_iter()
-                .map(|(name, kind)| match fact.hands_back_itself {
-                    true => (name, kind),
-                    false => (name, AliasKind::Containment),
+                .map(|(name, kind, at)| match fact.hands_back_itself {
+                    true => (name, kind, at),
+                    false => (name, AliasKind::Containment, at),
                 }));
         }
         out
@@ -526,7 +575,7 @@ impl<'a> Collector<'a> {
 
     /// Records every name a persisted value keeps reachable as a direct escape.
     fn mark_persisted(&self, value: &HirId<HirExpr>, facts: &mut EscapeFacts) {
-        facts.direct.extend(self.reachable_names(value));
+        facts.direct.note_all(self.reachable_names(value), *value);
         facts.stored_away.extend(self.reachable_names(value));
     }
 
@@ -534,7 +583,7 @@ impl<'a> Collector<'a> {
     fn mark_stored(&self, target: &HirId<HirExpr>, value: &HirId<HirExpr>, facts: &mut EscapeFacts) {
         let Some(container) = self.store_root(target) else { return self.mark_persisted(value, facts) };
         for source in self.reachable_names(value) {
-            facts.stores.push((container, source));
+            facts.stores.push((container, source, *value));
         }
         self.mark_held(value, facts);
     }
@@ -565,7 +614,7 @@ impl<'a> Collector<'a> {
         let Some(target) = self.call_target(callee, owner) else { return };
         for (callee_param, arg) in args.iter().enumerate() {
             for arg_name in self.reachable_names(arg) {
-                facts.forwards.push(EscapeForward { callee: target, callee_param, arg: arg_name });
+                facts.forwards.push(EscapeForward { callee: target, callee_param, arg: arg_name, at: *arg });
             }
         }
     }
@@ -647,8 +696,8 @@ impl<'a> Collector<'a> {
     fn walk_escapes(&self, expr: &HirId<HirExpr>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<HirId<HirStmt>>) {
         // Record what this node contributes, then recurse through the shared child structure.
         match self.hir.get(expr) {
-            HirExpr::Identifier(s) => if mode == EscapeCollectMode::Capture { facts.direct.insert(*s); },
-            HirExpr::This => if mode == EscapeCollectMode::Capture { facts.direct.insert(self.this); },
+            HirExpr::Identifier(s) => if mode == EscapeCollectMode::Capture { facts.direct.note(*s, *expr); },
+            HirExpr::This => if mode == EscapeCollectMode::Capture { facts.direct.note(self.this, *expr); },
             HirExpr::Assign(lhs, rhs) => if mode == EscapeCollectMode::Escape {
                 // Writing through an index mutates the base value in place.
                 if let HirExpr::Index(base, _, _) = self.hir.get(lhs) {
@@ -666,7 +715,7 @@ impl<'a> Collector<'a> {
                 } else if let HirExpr::Identifier(local) = self.hir.get(lhs) {
                     // Rebinding a local aliases it to the value.
                     let local = *local;
-                    for (source, kind) in self.reachable_kinds(rhs) { facts.aliases.push(Alias { local, source, kind }); }
+                    for (source, kind, _) in self.reachable_kinds(rhs) { facts.aliases.push(Alias { local, source, kind }); }
                 }
             },
             HirExpr::Call(callee, args) => if mode == EscapeCollectMode::Escape {
@@ -675,6 +724,10 @@ impl<'a> Collector<'a> {
             },
             HirExpr::Construct(_, brace) => if mode == EscapeCollectMode::Escape {
                 for (_, value) in brace { self.mark_held(value, facts); }
+            },
+            // A closure holds what a nested one captures, since it holds the nested one.
+            HirExpr::Literal(HirLiteral::Lambda(decl)) if mode == EscapeCollectMode::Capture => {
+                self.walk_escapes(&decl.body, facts, mode, None);
             },
             _ => {},
         }
@@ -700,20 +753,27 @@ impl<'a> Collector<'a> {
     fn walk_escapes_stmt(&self, stmt: &HirId<HirStmt>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<HirId<HirStmt>>) {
         match self.hir.get(stmt) {
             HirStmt::Return(Some(e)) => if mode == EscapeCollectMode::Escape {
-                for (name, kind) in self.reachable_kinds(e) {
+                for (name, kind, _) in self.reachable_kinds(e) {
                     match kind {
-                        AliasKind::Identity => facts.returned.insert(name),
-                        AliasKind::Containment => facts.direct.insert(name),
+                        AliasKind::Identity => facts.returned.note(name, *e),
+                        AliasKind::Containment => facts.direct.note(name, *e),
                     };
                 }
             },
             HirStmt::Say(field) => if let Some(value) = field.value {
                 // Binding a local to a value aliases it, so a parameter is tracked through the local.
                 let local = field.name;
-                for (source, kind) in self.reachable_kinds(&value) { facts.aliases.push(Alias { local, source, kind }); }
+                for (source, kind, _) in self.reachable_kinds(&value) { facts.aliases.push(Alias { local, source, kind }); }
             },
-            // A nested function captures the names it references, so walk it in Capture mode. The
-            // shared child walk treats it as a leaf.
+            // A nested function is a closure bound to a name. What it captures leaves only as far
+            // as that name does, which is how a lambda's captures are already read.
+            HirStmt::Fn(decl) if mode == EscapeCollectMode::Escape => {
+                let mut inner = EscapeFacts::default();
+                self.walk_escapes(&decl.body, &mut inner, EscapeCollectMode::Capture, None);
+                for source in inner.direct.into_names() {
+                    facts.aliases.push(Alias { local: decl.name, source, kind: AliasKind::Containment });
+                }
+            },
             HirStmt::Fn(decl) => self.walk_escapes(&decl.body, facts, EscapeCollectMode::Capture, None),
             _ => {},
         }

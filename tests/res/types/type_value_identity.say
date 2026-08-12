@@ -1,13 +1,13 @@
 // Two type values built from one declaration are the same type, whether or not a method captures.
-fn plain()! { type T { pub x; init(this, a) { this.x = a; } } return T; }
-fn capturing(c)! { type T { pub x; pub t; init(this, a) { this.x = a; this.t = c; } } return T; }
+fn plain()! { type T { pub x; init(this, *a) { this.x = a; } } return T; }
+fn capturing(c)! { type T { pub x; pub t; init(this, *a) { this.x = a; this.t = c; } } return T; }
 print(plain() == plain()); // expect: true
 print(capturing(1) == capturing(2)); // expect: true
 
 // @split
 // Two declarations sharing a name are still two types.
-fn mk()! { type T { pub x; init(this, a) { this.x = a; } } return T; }
-fn other()! { type T { pub y; init(this, a) { this.y = a; } } return T; }
+fn mk()! { type T { pub x; init(this, *a) { this.x = a; } } return T; }
+fn other()! { type T { pub y; init(this, *a) { this.y = a; } } return T; }
 print(mk() == other()); // expect: false
 print(mk() == mk()); // expect: true
 

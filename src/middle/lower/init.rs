@@ -32,12 +32,17 @@ impl<'a> Lowerer<'a> {
 
         // A factory body and its field defaults name `this` only as `this.<field>`, and each field
         // access desugars to the field's local. A param shadows a same-named field's bare access.
-        let params_set: IndexSet<Symbol> = match &decl.init {
-            Some(init_id) => self.ast_fn(init_id).params.iter()
-                .filter_map(|p| p.binder(self.ast))
-                .collect(),
-            None => IndexSet::new(),
-        };
+        // A destructuring param shadows under every name its pattern binds.
+        let mut params_set: IndexSet<Symbol> = IndexSet::new();
+        for param in &params {
+            let HirExpr::Identifier(slot) = self.hir.get(&param.name) else {
+                unreachable!("a parameter's slot is named by an identifier")
+            };
+            params_set.insert(*slot);
+            if let Some(pattern) = &param.pattern {
+                params_set.extend(self.hir.get(pattern).binders(&self.hir));
+            }
+        }
         let saved_in_factory = self.in_factory.replace((decl.fields.clone(), params_set));
 
         // A stable field order keeps the synthesized locals deterministic.

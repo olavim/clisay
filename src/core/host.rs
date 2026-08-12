@@ -13,4 +13,7 @@ pub trait Host {
     fn print(&mut self, text: String);
     /// The code index of the call site.
     fn code_index(&self) -> u32;
+    /// Whether the running native's receiver is a slot the calling frame declared, so a value stored
+    /// into it is reachable only through that frame. Answers false where nothing established it.
+    fn receiver_is_frame_local(&self) -> bool;
 }

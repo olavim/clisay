@@ -249,19 +249,8 @@ impl<'a> Compiler<'a> {
                     let idx = self.scalar_constant(key)?;
                     self.emit(Inst::GetIndexOrNull(idx), node);
                 },
-                Access::ArrayFront(i) => {
-                    let idx = self.ir.add_constant(Value::from(*i as f64))?;
-                    self.emit(Inst::PushConstant(idx), node);
-                    self.emit(Inst::GetIndex, node);
-                },
-                Access::ArrayBack(j) => {
-                    self.emit(Inst::Dup, node);
-                    self.emit(Inst::ArrayLen, node);
-                    let idx = self.ir.add_constant(Value::from(*j as f64))?;
-                    self.emit(Inst::PushConstant(idx), node);
-                    self.emit(Inst::Subtract, node);
-                    self.emit(Inst::GetIndex, node);
-                },
+                Access::ArrayFront(i) => self.emit(Inst::ArrayElem(*i as u8, 0), node),
+                Access::ArrayBack(j) => self.emit(Inst::ArrayElem(*j as u8, 1), node),
                 Access::ArrayMiddle(prefix, suffix) => {
                     self.emit(Inst::ArrayMiddle(*prefix as u8, *suffix as u8), node);
                 },
@@ -399,7 +388,7 @@ impl<'a> Compiler<'a> {
     fn lower_array(&self, elements: &'a [HirMatchElem], path: &[Access], binders: &[(Symbol, u8)], node: &HirId<HirStmt>) -> Result<Alternatives, anyhow::Error> {
         let (prefix, rest, suffix) = split_at_rest(elements);
 
-        // The length is the first test, so an array test always precedes any element load.
+        // The length is one test among the clause's, and the tree decides when it runs.
         let mut groups = vec![vec![vec![MatchStep::Test(path.to_vec(), ValueTest::ArrayLen { min: prefix.len() + suffix.len(), exact: rest.is_none() })]]];
         for (i, elem) in prefix.iter().enumerate() {
             if let HirMatchElem::Elem(matcher) = elem {

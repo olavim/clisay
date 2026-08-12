@@ -2,7 +2,7 @@
 // on every allocation would only repeat a settled assertion at a hundred times the cost.
 gcStress(false);
 
-fn makeAdder(a, b, c, d, e)! {
+fn makeAdder(*a, *b, *c, *d, *e)! {
     say var sum = 0;
     fn addA()! {
         sum = sum + a;

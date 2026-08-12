@@ -15,8 +15,8 @@ fn main() {
     let color = std::io::stderr().is_terminal();
     let config = RunConfig {
         optimize: env::var_os("CLISAY_NO_OPTIMIZE").is_none(),
-        // Forcing is a debug facility, like the GC verifier, so a release binary ignores the switch.
         force_checks: cfg!(debug_assertions) && env::var_os("CLISAY_FORCE_CHECKS").is_some(),
+        floor_only: cfg!(debug_assertions) && env::var_os("CLISAY_FLOOR_ONLY").is_some(),
     };
 
     let file = args[1].as_str();

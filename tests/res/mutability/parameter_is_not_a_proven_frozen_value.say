@@ -49,7 +49,7 @@ touch(a[0]);
 // An immutable value really reaching the parameter is fine, which is the case the check must let
 // through rather than refusing every parameter.
 type T { pub x; }
-fn touch(v)! { return T { x: v }; }
+fn touch(*v)! { return T { x: v }; }
 say a = [[0]];
 print(touch(a[0]).x[0]); // expect: 0
 

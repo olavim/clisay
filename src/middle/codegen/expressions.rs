@@ -1,7 +1,7 @@
 use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, TypeId, UnOp};
-use crate::middle::ir::{Inst, Label, WRITE_ROOT_LOCAL, WRITE_ROOT_NONE, WRITE_ROOT_UPVALUE};
+use crate::middle::ir::{Inst, Label, WRITE_ROOT_LOCAL, WRITE_ROOT_NONE, WRITE_ROOT_RECEIVER, WRITE_ROOT_RECEIVER_UP, WRITE_ROOT_UPVALUE};
 use crate::middle::bind::{FnKind, Place, Receiver};
 use crate::middle::check::{Barrier, Guard, WitnessSet};
 
@@ -114,15 +114,20 @@ impl<'a> Compiler<'a> {
     /// The root a field store on `this` names. The receiver is the root, and its place says where.
     fn receiver_root_operands(receiver: Receiver) -> (u8, u8) {
         match receiver {
-            Receiver::Slot => (WRITE_ROOT_LOCAL, 0),
-            Receiver::Upvalue(idx) => (WRITE_ROOT_UPVALUE, idx),
+            Receiver::Slot => (WRITE_ROOT_RECEIVER, 0),
+            Receiver::Upvalue(idx) => (WRITE_ROOT_RECEIVER_UP, idx),
         }
     }
 
     /// The root a store names, encoded for the store's own operands. A root no binding names is
     /// left to the path barrier, which codegen already emits for every one of those writes.
     fn write_root_operands(&self, node: &HirId<HirExpr>) -> (u8, u8) {
-        match self.path_root(node).1 {
+        let (root, place) = self.path_root(node);
+        // A path rooted in `this` reaches through the receiver.
+        let receiver = matches!(self.hir.get(&root), HirExpr::This);
+        match place {
+            PathRoot::Local(slot) if receiver => (WRITE_ROOT_RECEIVER, slot),
+            PathRoot::Upvalue(idx) if receiver => (WRITE_ROOT_RECEIVER_UP, idx),
             PathRoot::Local(slot) => (WRITE_ROOT_LOCAL, slot),
             PathRoot::Upvalue(idx) => (WRITE_ROOT_UPVALUE, idx),
             PathRoot::Unnamed => (WRITE_ROOT_NONE, 0),
@@ -132,6 +137,10 @@ impl<'a> Compiler<'a> {
     /// Emits one runtime check, once the node's value is on the stack. The operand each needs is
     /// derived here rather than carried, since only codegen knows a binding's slot.
     fn emit_guard(&mut self, node: &HirId<HirExpr>, guard: Guard) -> Result<(), anyhow::Error> {
+        // `!` asks for its check in the source, so it's the operation rather than a safety guard.
+        if self.floor_only && guard != Guard::NonNull {
+            return Ok(());
+        }
         match guard {
             Guard::Boundary => if let Some(barrier) = self.barriers.boundary(node) {
                 self.emit_boundary_barrier(node, barrier)?;
@@ -154,8 +163,9 @@ impl<'a> Compiler<'a> {
                 (_, PathRoot::Unnamed) => self.emit(Inst::AssertNoWriter, node),
             },
             Guard::Immutable => self.emit(Inst::AssertImmutable, node),
-            Guard::Unborrowed => self.emit(Inst::AssertNotBorrowed, node),
-            // The slot rides the name, so the same name writing again is not a second writer.
+            // The slot rides the name, so the same name writing again is not a second writer. The
+            // store makes the same claim from its own root operand, so this is the faster spelling
+            // of a claim the runtime would make anyway.
             Guard::WriteThroughName => if let Place::Local(slot) = self.bindings.place(node) {
                 self.emit(Inst::TakeWriteOwnership(slot), node);
             },
@@ -381,21 +391,22 @@ impl<'a> Compiler<'a> {
 
     /// Emits a store into `place`. The value to store is already on top of the
     /// stack. When `discarded` (statement position) the store also pops the value.
-    fn emit_store(&mut self, place: Place, discarded: bool, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    fn emit_store(&mut self, place: Place, discarded: bool, node: &HirId<HirExpr>, value: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match place {
             Place::Local(slot) => {
                 self.emit(if discarded { Inst::StoreLocalPop(slot) } else { Inst::StoreLocal(slot) }, node);
             },
             Place::Upvalue(idx) => {
-                self.emit(if discarded { Inst::StoreUpvaluePop(idx) } else { Inst::StoreUpvalue(idx) }, node);
+                let store = if discarded { Inst::StoreUpvaluePop(idx) } else { Inst::StoreUpvalue(idx) };
+                self.emit_store_inst(store, node, value);
             },
             Place::Field(id, receiver) => {
                 self.emit_receiver(receiver, node);
                 let (kind, operand) = Self::receiver_root_operands(receiver);
-                self.emit(match discarded {
+                self.emit_store_inst(match discarded {
                     true => Inst::SetFieldPop(id, kind, operand),
                     false => Inst::SetField(id, kind, operand),
-                }, node);
+                }, node, value);
             },
             Place::Global(_) => unreachable!("assignment to a global is rejected during resolution"),
         }
@@ -413,7 +424,7 @@ impl<'a> Compiler<'a> {
                     self.emit(Inst::ReleaseWriteOwnershipAt(slot), lhs);
                 }
                 self.expression(rhs)?;
-                self.emit_store(place, discarded, lhs)?;
+                self.emit_store(place, discarded, lhs, rhs)?;
                 Ok(())
             },
             HirExpr::Index(obj, member, is_dot) => {
@@ -477,7 +488,7 @@ impl<'a> Compiler<'a> {
                     // The store asks the write-ownership question itself.
                     false => Inst::SetIndex(root_kind, root_operand),
                 };
-                self.emit(store, target);
+                self.emit_store_inst(store, target, &rhs);
                 if discarded {
                     self.emit(Inst::Pop, target);
                 }
@@ -496,10 +507,10 @@ impl<'a> Compiler<'a> {
                 self.expression(&rhs)?;
                 self.expression(target_expr)?;
                 let (kind, operand) = self.write_root_operands(target_expr);
-                self.emit(match discarded {
+                self.emit_store_inst(match discarded {
                     true => Inst::SetFieldPop(member_id, kind, operand),
                     false => Inst::SetField(member_id, kind, operand),
-                }, target_expr);
+                }, target_expr, &rhs);
             }
         }
         Ok(())
@@ -526,11 +537,9 @@ impl<'a> Compiler<'a> {
             compiled?;
             let name_ref = self.gc.intern(name);
             let idx = self.ir.add_constant(Value::from(name_ref))?;
-            let marked = self.emit_mark_borrow(callee, args)?;
             // A method that writes its receiver asks the write-ownership question.
             let (kind, operand) = self.write_root_operands(&target);
             self.emit(Inst::Invoke(idx, args.len() as u8, kind, operand), callee);
-            self.emit_release_borrow(marked, callee);
             return Ok(());
         }
 
@@ -540,48 +549,24 @@ impl<'a> Compiler<'a> {
             self.expression(arg)?;
         }
 
-        // An argument read again after the call needs the callee to have borrowed it. The entry is
-        // mapped to the read, so the caret lands on the use that made the callee's choice matter.
-        if let Some(rereads) = self.barriers.rereads(callee) {
-            let entries = rereads.iter()
-                .map(|&(p, read)| (p, self.hir.pos(&read).clone()))
-                .collect();
-            let idx = self.ir.add_survive_positions(entries)?;
-            self.emit(Inst::AssertNotConsumed(args.len() as u8, idx), callee);
-        }
-
         // An opaque call that must keep an argument asserts the callee borrows it, not consumes it.
-        if let Some(positions) = self.barriers.survive(callee) {
+        if let Some(positions) = self.barriers.survive(callee).filter(|_| !self.floor_only) {
             let entries = positions.iter()
-                .map(|&p| (p, self.hir.pos(&args[p as usize]).clone()))
+                .map(|&(p, _)| (p, self.hir.pos(&args[p as usize]).clone()))
                 .collect();
+            // The obligation rides along so the failure can name what the caller still has to do.
+            let owed: Box<[_]> = positions.iter()
+                .filter_map(|&(p, owed)| owed.map(|o| (p, self.hir.text(o).into())))
+                .collect();
+            let owed_idx = self.ir.add_owed_names(owed)?;
             let idx = self.ir.add_survive_positions(entries)?;
-            self.emit(Inst::AssertBorrow(args.len() as u8, idx), callee);
+            self.emit(Inst::AssertNoRetain(args.len() as u8, owed_idx, idx), callee);
         }
 
-        let marked = self.emit_mark_borrow(callee, args)?;
         let n = args.len() as u8;
         self.emit(if mutable { Inst::CallMut(n) } else { Inst::Call(n) }, callee);
-        self.emit_release_borrow(marked, callee);
 
         Ok(())
-    }
-
-    /// Emits a `MARK_BORROW` before a call when it lends a mutable argument. Returns the count to
-    /// release after the call.
-    fn emit_mark_borrow(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<u8, anyhow::Error> {
-        let Some(positions) = self.barriers.borrow_marks(callee) else { return Ok(0) };
-        let entries: Vec<_> = positions.iter().map(|&p| (p, self.hir.pos(&args[p as usize]).clone())).collect();
-        let count = entries.len() as u8;
-        let idx = self.ir.add_survive_positions(entries)?;
-        self.emit(Inst::MarkBorrow(args.len() as u8, idx), callee);
-        Ok(count)
-    }
-
-    fn emit_release_borrow(&mut self, count: u8, callee: &HirId<HirExpr>) {
-        if count > 0 {
-            self.emit(Inst::ReleaseBorrow(count), callee);
-        }
     }
 
     /// If `callee` is `recv.name` where `recv` is not `this` and `name` is
@@ -609,7 +594,7 @@ impl<'a> Compiler<'a> {
     /// Emits a runtime check that an immutable container holds no mutable element, when the checker
     /// flagged the literal for it.
     fn seal_check(&mut self, expr: &HirId<HirExpr>) {
-        if self.barriers.needs_seal_check(expr) {
+        if self.barriers.needs_seal_check(expr) && !self.floor_only {
             self.emit(Inst::SealCheck, expr);
         }
     }

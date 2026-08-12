@@ -88,14 +88,14 @@ a[0][0] = 1; // error: cannot write an element whose write-ownership moved to an
 
 // @split
 // And one the caller keeps after it is returned.
-fn wrap(v)! { say c = mut []; c.push(v); return c; }
+fn wrap(*v)! { say c = mut []; c.push(v); return c; }
 say a = mut [mut [0]];
 say kept = wrap(a[0]);
 a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
 
 // @split
 // A container returned and then dropped is reachable from nothing, so the element is free again.
-fn wrap(v)! { say c = mut []; c.push(v); return c; }
+fn wrap(*v)! { say c = mut []; c.push(v); return c; }
 say a = mut [mut [0]];
 wrap(a[0]);
 a[0][0] = 1;

@@ -1,5 +1,6 @@
 use std::{fmt, mem};
 
+use anyhow::bail;
 use fnv::FnvHashMap;
 use nohash_hasher::{IntMap, IntSet};
 
@@ -17,9 +18,14 @@ pub const MUTABLE_IN_IMMUTABLE: &str = "cannot store a mutable value in an immut
 /// Sentinel for `ObjectHeader::immutable_origin`: the value is mutable, or no site was recorded.
 pub const NO_ORIGIN: u32 = u32::MAX;
 
-/// The runtime diagnostic raised when an opaque call must keep its argument but the callee would
-/// consume it.
-pub const ESCAPED_BORROW: &str = "cannot pass a borrowed argument to a callee that lets it escape";
+/// The runtime diagnostic raised when an opaque call would let a borrowed argument escape.
+pub const RETAINED_BORROW: &str = "cannot pass a borrowed argument to a callee that retains it";
+
+/// The runtime diagnostic raised when an opaque call would retain a value the caller still owes an
+/// obligation on. Named after the obligation, so it reads like the refusal a resolved call gets.
+pub fn retained_owed_value(owed: &str) -> String {
+    format!("cannot pass a value owing '{owed}' to a callee that retains it")
+}
 
 /// The runtime diagnostic raised when a borrowed value is persisted at a store site.
 pub const PERSISTED_BORROW: &str = "cannot persist a borrowed value";
@@ -27,8 +33,8 @@ pub const SECOND_ELEMENT_WRITER: &str = "cannot write an element another name al
 pub const WROTE_GIVEN_ELEMENT: &str = "cannot write an element whose write-ownership moved to another container";
 pub const WROTE_TRANSFERRED_ELEMENT: &str = "cannot write a value whose write-ownership was given away";
 pub const GAVE_TRANSFERRED_ELEMENT: &str = "cannot give away a value whose write-ownership was given away";
-/// A value read again after a call the compiler could not resolve turned out to consume it.
-pub const CONSUMED_ARGUMENT: &str = "value used after a call consumed it";
+/// A call that would retain a value an earlier retain already took the write-ownership of.
+pub const RETAINED_TWICE: &str = "cannot retain a value whose write-ownership was already taken";
 
 /// Whether a value is a mutable container. Only Array, Dict, and Instance carry the immutable bit;
 /// every other object kind and every primitive is always an immutable value.
@@ -37,28 +43,86 @@ pub fn is_mutable_container(value: Value) -> bool {
         && !value.as_object().is_immutable()
 }
 
-/// Marks a value that left its frame without being stored in a container. A store already moves
-/// the write-ownership to that container, so this covers the other ways out. Nothing reads the bit on
-/// an immutable value, since the question it answers is whether to release a writer slot and only
-/// a mutable container holds one.
+/// Whether a value's kind can hold write-ownership over another value, and so needs the marks a
+/// scope exit reads. A mutable container owns what is stored into it, and a closure owns what it
+/// captured. Nothing else can be asked who may write a value it holds.
+pub fn can_own_writes(value: Value) -> bool {
+    is_mutable_container(value)
+        || matches!(value.kind(), ValueKind::Object(ObjectKind::Closure))
+}
+
+/// Marks a value that left the frame that built it. A scope exit must not release what such a
+/// value holds, since something outside still reaches it. Only a holder needs the bit, since the
+/// question it answers is whether to release the writer slot it holds.
 pub fn record_escape(value: Value) {
-    if is_mutable_container(value) {
+    if can_own_writes(value) {
         unsafe { (*value.as_object().as_header_ptr()).set(FLAG_ESCAPED, true); }
     }
 }
 
-/// Moves `value`'s write-ownership to `container`. Returns true if the give succeeded, false if not.
-#[must_use]
-pub fn give_container_write_ownership(container: Value, value: Value) -> bool {
+/// Whether a value keeps a lend alive, by being borrowed itself or by holding one.
+pub fn carries_borrow(value: Value) -> bool {
+    value.is_object() && unsafe { (*value.as_object().as_header_ptr()).has(FLAG_BORROWED | FLAG_HOLDS_BORROW) }
+}
+
+pub fn mark_holds_borrow(container: Value) {
+    if container.is_object() {
+        unsafe { (*container.as_object().as_header_ptr()).set(FLAG_HOLDS_BORROW, true); }
+    }
+}
+
+/// Records that a borrow reached `container` if `value` carries a borrow.
+pub fn record_held_borrow(container: Value, value: Value) {
+    if carries_borrow(value) {
+        mark_holds_borrow(container);
+    }
+}
+
+/// Both records a container makes when a value enters it: what it now holds, and who may write it.
+pub fn container_took(container: Value, value: Value) -> Result<(), anyhow::Error> {
+    record_held_borrow(container, value);
+    give_container_write_ownership(container, value)
+}
+
+/// A closure taking write-ownership of what it captured. A capture cannot be refused the way a
+/// store can: the closure already exists by the time this is asked, and a retired value keeps its
+/// retirement, which traps at its next write anyway.
+pub fn closure_captured(closure: Value, value: Value) {
+    let _ = container_took(closure, value);
+}
+
+/// What a value records about who holds its write-ownership once the name holding the value is gone.
+pub enum RecordedHolder {
+    Container,
+    Nobody,
+}
+
+pub fn held_by_aggregate(value: Value) -> bool {
+    let owner = value.as_object().container_write_owner();
+    owner.is_object()
+        && matches!(owner.kind(), ValueKind::Object(ObjectKind::Array | ObjectKind::Dict | ObjectKind::Instance))
+}
+
+/// Who the value says writes it, if anyone.
+pub fn recorded_holder(value: Value) -> RecordedHolder {
+    match value.as_object().container_write_owner() {
+        owner if owner.is_object() => RecordedHolder::Container,
+        _ => RecordedHolder::Nobody,
+    }
+}
+
+/// Moves `value`'s write-ownership to `container`. Refuses the store where there is no
+/// write-ownership left to move.
+fn give_container_write_ownership(container: Value, value: Value) -> Result<(), anyhow::Error> {
     if !is_mutable_container(value) || value == container {
-        return true;
+        return Ok(());
     }
     // A retired value has no write-ownership to give.
     if value.as_object().is_write_retired() {
-        return false;
+        bail!("{GAVE_TRANSFERRED_ELEMENT}");
     }
     value.as_object().set_container_write_owner(container);
-    true
+    Ok(())
 }
 
 /// Whether `root` write-owns `value`, directly or through the containers between them. A false
@@ -124,13 +188,15 @@ pub const FLAG_IMMUTABLE: u8 = 1 << 1;
 pub const FLAG_BORROWED: u8 = 1 << 2;
 /// Set while one name holds the writer slot for this value, so a second writer traps.
 pub const FLAG_WRITE_OWNED: u8 = 1 << 3;
-/// Set where a value left the frame that built it without being stored in a container. A return, a
-/// throw, a store through an upvalue, and a capture all do that. Never cleared, so the bit only
-/// ever holds back a release a scope exit would have made.
+/// Set where a value left the frame that built it. A return, a throw, a store through an upvalue,
+/// and a capture all do that. Never cleared, so the bit only ever holds back a release a scope exit
+/// would have made.
 pub const FLAG_ESCAPED: u8 = 1 << 4;
 /// Set where the value's write-ownership went to a `*mut` parameter that never handed it on, so
 /// every write to it traps.
 pub const FLAG_WRITE_RETIRED: u8 = 1 << 5;
+/// Set where a borrowed value went into this aggregate.
+pub const FLAG_HOLDS_BORROW: u8 = 1 << 6;
 
 #[repr(C)]
 pub struct ObjectHeader {
@@ -369,6 +435,12 @@ impl Object {
         unsafe { (*self.as_header_ptr()).set(FLAG_WRITE_RETIRED, value); }
     }
 
+    /// Whether a borrow was put into this aggregate at some point in its life.
+    #[inline]
+    pub fn holds_borrow(&self) -> bool {
+        unsafe { (*self.as_header_ptr()).has(FLAG_HOLDS_BORROW) }
+    }
+
     /// The container this value was last stored into, or null.
     #[inline]
     pub fn container_write_owner(&self) -> Value {
@@ -380,14 +452,6 @@ impl Object {
                 _ => Value::NULL,
             }
         }
-    }
-
-    /// Every caller reaches this behind a check that the value is one of the three kinds, so a
-    /// fourth arriving means one of those checks let go of the kind it was guarding.
-    /// Whether some container write-owns this value. A kind that takes no writer slot answers no.
-    #[inline]
-    pub fn has_container_write_owner(&self) -> bool {
-        self.container_write_owner().is_object()
     }
 
     #[inline]
@@ -888,6 +952,10 @@ pub struct ObjUpvalue {
 }
 
 impl ObjUpvalue {
+    pub fn is_closed(&self) -> bool {
+        std::ptr::eq(self.location as *const Value, &raw const self.closed)
+    }
+
     pub fn new(location: *mut Value) -> ObjUpvalue {
         ObjUpvalue {
             header: ObjectHeader::new(ObjectKind::Upvalue),

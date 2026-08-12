@@ -1,0 +1,30 @@
+// A store primitive refuses a borrow only where the destination outlives the lend. A container the
+// running frame owns dies with the call, so a borrow may be put in one whatever the spelling.
+fn f(x: mut) { say a = mut []; a.push(x); print(a[0][0]); }
+say m = mut [1];
+f(m); // expect: 1
+
+// @split
+fn f(x: mut) { say a = mut [0]; a[0] = x; print(a[0][0]); }
+say m = mut [1];
+f(m); // expect: 1
+
+// @split
+type Sink { pub var item; init(this) { this.item = 0; } }
+fn f(x: mut) { say s = mut Sink(); s.item = x; print(s.item[0]); }
+say m = mut [1];
+f(m); // expect: 1
+
+// @split
+// A parameter's slot is the caller's container, not one this frame owns.
+fn stash(bin: mut, item) { bin.push(item); } // error: cannot retain a borrowed argument
+say sink = mut [];
+say m = mut [1];
+stash(sink, m);
+
+// @split
+// A field of the receiver outlives the call the same way.
+type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.item = x; } } // error: cannot retain a borrowed argument
+say s = mut Sink();
+say m = mut [1];
+s.keep(m);

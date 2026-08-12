@@ -1,20 +1,20 @@
 // A container built in a return has no binding for codegen to key a transfer to, so nothing was
 // ever emitted here. The store itself records what holds the element.
-fn wrap(x)! { return mut [x]; }
+fn wrap(*x)! { return mut [x]; }
 say a = mut [mut [0]];
 say w = wrap(a[0]);
 a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
 
 // @split
 // The spelling that gives codegen a name answers the same, as it did before.
-fn wrap(x)! { say c = mut [x]; return c; }
+fn wrap(*x)! { say c = mut [x]; return c; }
 say a = mut [mut [0]];
 say w = wrap(a[0]);
 a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
 
 // @split
 // The container that took the element still writes it.
-fn wrap(x)! { return mut [x]; }
+fn wrap(*x)! { return mut [x]; }
 say a = mut [mut [0]];
 say w = wrap(a[0]);
 w[0][0] = 7;

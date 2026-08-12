@@ -1,3 +1,40 @@
 // Under a mutable outer, a plain inner literal is still immutable: `mut` is not transitive.
 say a = mut [[0]];
 a[0][0] = 1; // error: cannot mutate an immutable value
+
+// @split
+// A factory call reads the same. The inner construction is plain, so it cannot take the mutable
+// value, whatever the outer one is marked.
+type Box { pub v; init(this, v: *mut) { this.v = v; } }
+type Outer { pub b; init(this, *b) { this.b = b; } }
+say o = mut Outer(Box(mut [0])); // error: cannot store a mutable value in an immutable container
+
+// @split
+// The plain outer spelling is refused for the same reason, which is what the two have to agree on.
+type Box { pub v; init(this, v: *mut) { this.v = v; } }
+type Outer { pub b; init(this, *b) { this.b = b; } }
+say o = Outer(Box(mut [0])); // error: cannot store a mutable value in an immutable container
+
+// @split
+// A plain inner factory call under a mutable outer stays immutable.
+type Box { pub var v; init(this, *v) { this.v = v; } }
+type Outer { pub b; init(this, *b) { this.b = b; } }
+say o = mut Outer(Box(1));
+o.b.v = 3; // error: cannot mutate an immutable value
+
+// @split
+// A brace as the argument is the same question, since it takes the marker in its own arm.
+type Box { pub var v; }
+type Outer { pub b; init(this, *b) { this.b = b; } }
+say o = mut Outer(Box { v: 1 });
+o.b.v = 3; // error: cannot mutate an immutable value
+
+// @split
+// Marking the inner one too is what makes it mutable.
+type Box { pub var v; init(this, *v) { this.v = v; } }
+type Outer { pub var b; init(this, *b) { this.b = b; } }
+say o = mut Outer(mut Box(1));
+o.b.v = 3;
+print(o.b.v); // expect: 3
+o.b = Box(2);
+print(o.b.v); // expect: 2

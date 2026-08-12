@@ -1,5 +1,5 @@
 // A binderless `~` is a plain boolean usable anywhere.
-type P { pub x; init(this, a) { this.x = a; } }
+type P { pub x; init(this, *a) { this.x = a; } }
 say p = P(5);
 
 say a = p ~ P;

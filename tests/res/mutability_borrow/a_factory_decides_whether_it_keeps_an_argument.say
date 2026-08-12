@@ -14,15 +14,15 @@ print(f(m)); // expect: 2
 
 // @split
 // A factory that stores the argument keeps it, so the borrow may not be handed over.
-type Sink { pub var item; init(this, v) { this.item = v; } }
-fn f(x: mut)! { say s = mut Sink(x); return s; } // error: a `mut` parameter borrows its argument and cannot let it escape
+type Sink { pub var item; init(this, v) { this.item = v; } } // error: cannot retain a borrowed argument
+fn f(x: mut)! { say s = mut Sink(x); return s; }
 say m = mut [1];
 say r = f(m);
 
 // @split
 // A factory that leaks the argument past the call keeps it too, wherever it put it.
 say var g = mut [0];
-type Sink { pub var item; init(this, v) { g = v; this.item = 0; } }
-fn f(x: mut) { say s = mut Sink(x); } // error: a `mut` parameter borrows its argument and cannot let it escape
+type Sink { pub var item; init(this, v) { g = v; this.item = 0; } } // error: cannot retain a borrowed argument
+fn f(x: mut) { say s = mut Sink(x); }
 say m = mut [1];
 f(m);

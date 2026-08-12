@@ -102,6 +102,8 @@ pub struct CallFrame {
     /// How much write-ownership was held when this frame began, so a return gives back what the
     /// body still holds.
     write_depth: usize,
+    /// How many borrow marks were saved when this frame began.
+    borrow_depth: usize,
 }
 
 /// Who holds an element's writer slot. A name lives in a frame slot, so its claim dies with the
@@ -180,7 +182,11 @@ pub struct Vm {
     native_types: NativeTypes,
     index_cache: Box<[IndexCache]>,
     call_cache: Box<[CallCache]>,
-    out: Vec<String>
+    out: Vec<String>,
+    /// Whether the receiver of the native about to run is a slot the calling frame declared. Set
+    /// at an invoke that named a root, and cleared once the native has read it. Last in the struct
+    /// so the dispatch loop's fields keep their offsets.
+    native_receiver_is_frame_local: bool
 }
 
 macro_rules! as_short {
@@ -266,6 +272,10 @@ impl Host for Vm {
     fn code_index(&self) -> u32 {
         self.current_pos_index()
     }
+
+    fn receiver_is_frame_local(&self) -> bool {
+        self.native_receiver_is_frame_local
+    }
 }
 
 impl Vm {
@@ -308,7 +318,8 @@ impl Vm {
             predicted_write_ownership_release_sites: FnvHashSet::default(),
             refuted_write_ownership_release_sites: FnvHashSet::default(),
             refuted_write_ownership_releases: 0,
-            out: Vec::new()
+            out: Vec::new(),
+            native_receiver_is_frame_local: false
         };
 
         vm.stack.init();
@@ -321,6 +332,7 @@ impl Vm {
             stack_start: vm.stack.top(),
             seal: false,
             write_depth: 0,
+            borrow_depth: 0,
         });
 
         vm.define_native("print", 1, |vm, _target, args| {
@@ -467,7 +479,8 @@ impl Vm {
         unsafe { ip.offset_from(self.chunk.code.as_ptr()) as usize - 1 }
     }
 
-    /// The source position of the instruction whose opcode sits just before `ip`.
+    /// The source position of the code byte just before `ip`. That is the instruction's own span
+    /// for all but the operand bytes that carry a narrower one of their own.
     fn pos_at(&self, ip: *const OpCode) -> &SourcePosition {
         &self.chunk.code_pos[self.code_index_at(ip)]
     }

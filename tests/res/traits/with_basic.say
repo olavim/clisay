@@ -8,7 +8,7 @@ trait Greeter {
 type Player with Clock, Greeter {
     pub greeting = "hi"; // the type holds the state Greeter requires
     pub name;
-    init(this, name) { this.name = name; }
+    init(this, *name) { this.name = name; }
 }
 
 say p = Player("hero");

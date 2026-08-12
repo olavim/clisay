@@ -1,9 +1,9 @@
-//! Where a binding lives and how long it lasts: the locals stack, function frames, the binders a
+﻿//! Where a binding lives and how long it lasts: the locals stack, function frames, the binders a
 //! condition or arm introduces, and what a branch saves and merges back.
 
 use std::collections::HashMap;
 
-use crate::middle::hir::{Capability, HirExpr, HirId, HirMatchArm, HirParam, HirStmt, Symbol};
+use crate::middle::hir::{HirExpr, HirId, HirMatchArm, HirParam, HirStmt, Symbol};
 use crate::middle::obligations::Obligations;
 use crate::middle::signatures::{Mutability, TypeTag};
 
@@ -337,7 +337,13 @@ pub fn merge_flow(into: &mut LocalFlow, owed: &Obligations, other: &LocalFlow) {
             into.extracted_from.push(*origin);
         }
     }
-    into.provenance.retain(|s| provenance.contains(s));
+    // A source is where the write-ownership goes back when the binding dies, and the join above
+    // keeps a move either branch made.
+    for source in provenance {
+        if !into.provenance.contains(source) {
+            into.provenance.push(*source);
+        }
+    }
     // An outcome resolves an obligation either by handling it or by proving the value is not in its
     // bad state. Only what every outcome resolved survives the join.
     let both: Obligations = owed.iter().copied()

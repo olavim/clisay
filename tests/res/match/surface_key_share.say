@@ -1,6 +1,6 @@
 // A shape key tests presence, while a surface member of a declared type tests what the declaration
 // admits. They are different tests on the same name, so the `{ x }` arm does not share with `has T`.
-type T { pub x; init(this, a) { this.x = a; } }
+type T { pub x; init(this, *a) { this.x = a; } }
 say t = T(1);
 match t {
     { x } => 0,
@@ -14,7 +14,7 @@ match t {
 // 8: STORE_LOCAL_POP L2
 // 10: LOAD_LOCAL L2
 // 12: LOAD_LOCAL L0
-// 14: SET_FIELD_POP <0> <1> <0>
+// 14: SET_FIELD_POP <0> <3> <0>
 // 18: POP
 // 19: LOAD_LOCAL L0
 // 21: RETURN_FAC

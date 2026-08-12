@@ -7,7 +7,7 @@ a[0] = 2; // error: cannot write `a`, which gave its write-ownership away
 
 // @split
 // The same shape over a user type, which is the behaviour it is matched against.
-type Box { pub v; init(this, v) { this.v = v; } }
+type Box { pub v; init(this, *v) { this.v = v; } }
 say a = mut [1];
 say b = mut Box(a);
 a[0] = 2; // error: cannot write `a`, which gave its write-ownership away

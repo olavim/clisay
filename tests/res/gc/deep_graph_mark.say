@@ -8,7 +8,7 @@ gcStress(false);
 
 type Node {
     pub next?;
-    init(this, n?) {
+    init(this, *n?) {
         this.next = n;
     }
 }

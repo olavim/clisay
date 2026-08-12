@@ -31,6 +31,7 @@ pub(crate) struct ParamFact {
     pub hands_back_itself: bool,
     /// The body stores it where a second name can write it.
     pub stored_away: bool,
+    pub escape_site: Option<HirId<HirExpr>>,
 }
 
 /// A function's return: the obligations its result carries and whether any path returns a value.
@@ -226,6 +227,11 @@ impl Signatures {
     /// Whether a parameter escapes somewhere its caller cannot follow, ignoring a plain return.
     pub(crate) fn escapes_beyond_return_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
         self.param_fact(func, param).beyond_return
+    }
+
+    /// Where a parameter's argument leaves the body.
+    pub(crate) fn escape_site_at(&self, func: &HirId<HirStmt>, param: usize) -> Option<HirId<HirExpr>> {
+        self.param_fact(func, param).escape_site
     }
 
     /// Whether `func`'s result may be the argument at `param` itself, so binding the result names

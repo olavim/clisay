@@ -1,6 +1,6 @@
 // A match arm head binds a lone lowercase name and tests an uppercase name, fieldless or shaped.
 type Empty { init(this) { } }
-type Point { pub x; init(this, a) { this.x = a; } }
+type Point { pub x; init(this, *a) { this.x = a; } }
 
 fn classify(v) {
     match v {

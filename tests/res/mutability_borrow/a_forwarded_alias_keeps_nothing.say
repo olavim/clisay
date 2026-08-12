@@ -13,6 +13,6 @@ print(a[0]); // expect: 5
 // @split
 // A callee that really keeps it is refused, in the body that does the storing.
 say sink = mut [];
-fn keeper(x) { sink.push(x); } // error: cannot persist a borrowed value
+fn keeper(x) { sink.push(x); } // error: cannot retain a borrowed argument
 say a = mut [1, 2];
 keeper(a);

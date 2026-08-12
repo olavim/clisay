@@ -7,21 +7,21 @@ say t = T { x: sink }; // error: cannot store a mutable value in an immutable co
 // Capturing it first used to launder it past that check.
 type T { pub x; }
 say sink = mut [];
-fn add(v) { sink.push(v); }
+fn add(*v) { sink.push(v); }
 add(1);
 say t = T { x: sink }; // error: cannot store a mutable value in an immutable container
 
 // @split
 // An immutable container literal is the same question.
 say sink = mut [];
-fn add(v) { sink.push(v); }
+fn add(*v) { sink.push(v); }
 add(1);
 say frozen = [sink]; // error: cannot store a mutable value in an immutable container
 
 // @split
 // The name still loses its writing, which is the half that must not be lost.
 say sink = mut [];
-fn add(v) { sink.push(v); }
+fn add(*v) { sink.push(v); }
 add(1);
 sink.push(2); // error: cannot mutate a value whose write-ownership moved to function `add`
 

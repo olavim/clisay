@@ -1,5 +1,5 @@
 // A bare-name assignment may be a field store, so it persists conservatively.
-type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { item = x; } } // error: cannot persist a borrowed value
+type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { item = x; } } // error: cannot retain a borrowed argument
 say s = mut Sink();
 say m = mut [1, 2];
 s.keep(m);

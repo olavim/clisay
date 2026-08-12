@@ -1,0 +1,65 @@
+// A throw and a return both carry a value out of the frame, so an aggregate holding a borrow may
+// take neither route. Neither shape here is refused by a compile rule, so the floor answers.
+fn f(x: mut) { throw mut [x]; } // error: cannot persist a borrowed value
+say m = mut [1];
+try { f(m); } catch (e) { print("caught"); }
+
+// @split
+// A catch in the same frame keeps the throw inside it, so the route out is the return below. The
+// wrapper is refused for what it holds rather than for what it is.
+fn f(x: mut)! { try { throw mut [x]; } catch (e) { return mut [e]; } } // error: cannot persist a borrowed value
+say m = mut [1];
+f(m);
+
+// @split
+// A throw the same frame catches never leaves it, so the container is still the frame's own.
+fn f(x: mut) { try { throw mut [x]; } catch (e) { if (e != null) { print(e[0][0]); } } } // expect: 1
+say m = mut [1];
+f(m);
+
+// @split
+// Handing the borrow back as itself is what a lend is for, so only an aggregate holding one is
+// refused.
+fn hand(z: mut)!: mut { return z; }
+say m = mut [1];
+print(hand(m)[0]); // expect: 1
+
+// @split
+// An aggregate that dies with the call may hold the borrow for as long as it lives.
+fn dies(y: mut) { say a = mut [y]; a[0][0] = 7; print(a[0][0]); } // expect: 7
+say m = mut [1];
+dies(m);
+
+// @split
+// A literal, a construction, and a store build the same frame-local aggregate, so all three keep
+// the borrow. A construction is the freshest of them and may not be the strictest.
+type Wrap { pub var w; init(this) { this.w = 0; } }
+fn viaLiteral(x: mut) { say a = mut [x]; print(a[0][0]); } // expect: 1
+fn viaConstruct(x: mut) { say c = mut Wrap { w: x }; print(c.w[0]); } // expect: 1
+fn viaStore(x: mut) { say s = mut Wrap(); s.w = x; print(s.w[0]); } // expect: 1
+say m = mut [1];
+viaLiteral(m);
+viaConstruct(m);
+viaStore(m);
+
+// @split
+// A store through an upvalue reaches a frame this one does not own, so the aggregate answers there
+// as it would at a return.
+fn outer(x: mut) { say a = mut [x]; say var slot = 0; say inner = () => { slot = a; }; inner(); } // error: cannot persist a borrowed value
+say m = mut [1];
+outer(m);
+
+// @split
+// A construction records what it was built around, so the store that takes it out answers.
+type Wrap { pub var w; init(this) { this.w = 0; } }
+say sink = mut [0];
+fn keep(x) { sink[0] = mut Wrap { w: x }; } // error: cannot retain a borrowed argument
+say m = mut [1];
+keep(m);
+
+// @split
+// A container built inside a lambda dies with the lambda's frame, borrow and all. The store barrier
+// once refused this on the value alone, without asking where the store landed.
+fn outer(x: mut) { say inner = () => { say a = mut [x]; print(a[0][0]); }; inner(); } // expect: 1
+say m = mut [1];
+outer(m);
