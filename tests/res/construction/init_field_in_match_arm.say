@@ -1,6 +1,6 @@
 // A field assigned inside an init match arm is recognized, so construction does not demand it again.
 type Box {
-    pub mut x;
+    pub var x;
     init(this, n) {
         match n {
             0 => { this.x = 10; },

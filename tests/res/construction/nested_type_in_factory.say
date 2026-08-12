@@ -19,7 +19,7 @@ type Outer {
         type Inner { pub p; init(this, q) { this.p = q; } }
         this.a = x;
     }
-    pub fn bad(this) { this.a = 2; } // error: Cannot assign immutable field `Outer.a`
+    pub fn bad(this) { this.a = 2; } // error: Cannot reassign field `Outer.a`
 }
 
 // @split

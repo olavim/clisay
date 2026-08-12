@@ -6,7 +6,7 @@
 //    touching the member never clobbers the outer variable.
 say field = 0;
 type T {
-    mut field = 1;
+    var field = 1;
     pub fn read(this)! { return field; }
     pub fn bump(this: mut) { field = field + 5; }
 }

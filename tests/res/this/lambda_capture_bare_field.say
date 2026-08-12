@@ -1,7 +1,7 @@
 // A bare field name is `this.<field>`, so it reaches the enclosing receiver from a nested body the
 // same way a written `this` does, for reads and writes alike.
 type Counter {
-    pub mut n;
+    pub var n;
     init(this) { this.n = 7; }
 
     pub fn read(this)! { say f = () => n; return f(); }

@@ -1,6 +1,6 @@
 // An unknown value into a non-null field throws when it is null at runtime.
 type T {
-    pub mut value;
+    pub var value;
     init(this) { this.value = 1; }
 }
 say t = mut T();

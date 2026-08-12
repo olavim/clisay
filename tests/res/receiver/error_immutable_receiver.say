@@ -1,5 +1,5 @@
 type Counter {
-    mut n;
+    var n;
     init(this) { this.n = 0; }
     pub fn bump(this: mut) { this.n = this.n + 1; }
 }

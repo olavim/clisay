@@ -1,5 +1,5 @@
 // The proof is demanded per argument, so reading one afterwards says nothing about the others.
-type Box { pub mut v; init(this) { this.v = 0; } }
+type Box { pub var v; init(this) { this.v = 0; } }
 fn eats(x: *mut) { }
 say pair = (x, y) => 0;
 say consume = eats;

@@ -1,7 +1,7 @@
 // A `no persist` parameter may forward its borrow to an opaque callback.
 obligation borrowed { no persist; no return; }
 type Box {
-    pub mut item;
+    pub var item;
     init(this) { this.item = 0; }
     fn run(this, x: borrowed, cb) { cb(x); }
 }

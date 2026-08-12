@@ -4,6 +4,6 @@ if 0 { print("then-zero"); } else { print("else-zero"); }       // expect: then-
 if "" { print("then-empty"); } else { print("else-empty"); }    // expect: then-empty
 if true { print("then-true"); } else { print("else-true"); }    // expect: then-true
 
-say mut ran = false;
+say var ran = false;
 while null { ran = true; }
 print(ran);                                                     // expect: false

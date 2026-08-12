@@ -1,5 +1,5 @@
 // The demand survives a branch join: consumed on one path and read after, so the read still fails.
-type Box { pub mut v; init(this) { this.v = 0; } }
+type Box { pub var v; init(this) { this.v = 0; } }
 fn eats(x: *mut) { }
 say consume = eats;
 say a = mut Box();

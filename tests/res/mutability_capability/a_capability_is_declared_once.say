@@ -1,0 +1,40 @@
+// The clause spelling still works and means the same thing as the prefix.
+fn old(x: *mut) { x[0] = 1; }
+fn new(*mut x) { x[0] = 1; }
+say a = mut [0];
+old(a);
+say b = mut [0];
+new(b);
+print("ran"); // expect: ran
+
+// @split
+// Saying it in both places is refused, since a slot carries one capability.
+fn both(*x: mut) { print(x[0]); } // error: Repeated mutability capability
+
+// @split
+// A combinator has no one name for the marker to sit on, so it has to be grouped.
+type Node { pub next?; init(this) { this.next = null; } }
+fn f(*p @ Node | null) { } // error: A capability ahead of a combinator needs the pattern grouped
+
+// @split
+// Grouped, the marker covers the whole pattern and the binder still binds.
+type Node { pub var n; init(this) { this.n = 1; } }
+fn write(mut (p @ Node)) { p.n = 5; }
+fn take(*(p @ Node))! { return p.n; }
+say a = mut Node();
+write(a);
+print(take(a)); // expect: 5
+
+// @split
+// A grouped take is still a take.
+type Node { pub var n; init(this) { this.n = 1; } }
+fn take(*(p @ Node))! { return p.n; }
+say a = mut Node();
+print(take(a));
+a.n = 2; // error: cannot write `a`, which gave its write-ownership away
+
+// @split
+// The clause spelling stays available for the same pattern.
+type Node { pub next?; init(this) { this.next = null; } }
+fn f(p @ Node | null : *mut) { }
+print("ran"); // expect: ran

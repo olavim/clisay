@@ -2,7 +2,7 @@
 // not the only way out of a scope.
 fn wrap(c: *mut)! { return () => c.length(); }
 say a = mut [mut [0]];
-say mut f = 0;
+say var f = 0;
 { say c = mut []; c.push(a[0]); f = wrap(c); }
 a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
 
@@ -11,7 +11,7 @@ a[0][0] = 1; // error: cannot write an element whose write-ownership moved to an
 // lambda, so this one is answered by reachability alone.
 fn wrap(c: *mut)! { return () => () => c.length(); }
 say a = mut [mut [0]];
-say mut f = 0;
+say var f = 0;
 { say c = mut []; c.push(a[0]); f = wrap(c); }
 a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
 

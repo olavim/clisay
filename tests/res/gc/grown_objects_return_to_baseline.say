@@ -9,7 +9,7 @@ print(gcHeapSize() - bytesStart); // expect: 0
 // @split
 // The drift accumulated across cycles, so many of them must still come back to nothing.
 fn churn(n) {
-    say mut i = 0;
+    say var i = 0;
     while (i < n) {
         say d = mut { };
         d["a"] = i;
@@ -29,8 +29,8 @@ gcStress(true);
 type A { pub alpha; pub beta; init(this) { this.alpha = 1; this.beta = 2; } }
 type B { pub gamma; init(this) { this.gamma = 3; } }
 fn spin(n)! {
-    say mut total = 0;
-    say mut i = 0;
+    say var total = 0;
+    say var i = 0;
     while (i < n) {
         say a = A();
         say b = B();

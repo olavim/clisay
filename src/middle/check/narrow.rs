@@ -65,7 +65,7 @@ impl<'a> Checker<'a> {
         match self.hir.get(target) {
             HirExpr::This => {
                 let decl = self.current_type?;
-                (!self.field_is_mutable(&decl, field)).then_some(NarrowTarget::ThisField(field))
+                (!self.field_is_reassignable(&decl, field)).then_some(NarrowTarget::ThisField(field))
             },
             // A rebindable binding narrows too. What a rebind can reach is invalidated where the
             // rebind happens, rather than refused here.
@@ -75,7 +75,7 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let TypeTag::Concrete(decl) = &self.locals[i].tag else { return None };
-                (!self.field_is_mutable(decl, field)).then_some(NarrowTarget::LocalField(i, field))
+                (!self.field_is_reassignable(decl, field)).then_some(NarrowTarget::LocalField(i, field))
             },
             _ => None,
         }
@@ -271,8 +271,8 @@ impl<'a> Checker<'a> {
             .unwrap_or_default()
     }
 
-    pub(super) fn field_is_mutable(&self, decl: &HirId<HirStmt>, field: Symbol) -> bool {
-        self.layout_of(decl).is_some_and(|layout| layout.is_mutable(field))
+    pub(super) fn field_is_reassignable(&self, decl: &HirId<HirStmt>, field: Symbol) -> bool {
+        self.layout_of(decl).is_some_and(|layout| layout.is_reassignable(field))
     }
 
     /// The true branch of `x ~ M`.

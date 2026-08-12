@@ -101,7 +101,7 @@ d[0] = 1; // error: cannot write an element another name already writes
 
 // @split
 // A field is an element too.
-type H { pub mut item; init(this) { this.item = mut [0]; } }
+type H { pub var item; init(this) { this.item = mut [0]; } }
 say h = mut H();
 say c = h.item;
 say d = h.item;
@@ -112,7 +112,7 @@ d[0] = 1; // error: cannot write an element another name already writes
 // A rebind names whatever element the new value came out of.
 say arr = mut [mut [0], mut [0]];
 say c = arr[0];
-say mut d = arr[1];
+say var d = arr[1];
 d = arr[0];
 c[0] = 7;
 d[0] = 1; // error: cannot write an element another name already writes
@@ -120,7 +120,7 @@ d[0] = 1; // error: cannot write an element another name already writes
 // @split
 // Rebinding away lets go of the writer slot the old value held.
 say arr = mut [mut [0], mut [0]];
-say mut d = arr[0];
+say var d = arr[0];
 d[0] = 1;
 d = arr[1];
 say c = arr[0];
@@ -130,7 +130,7 @@ print(arr[0][0]); // expect: 9
 // @split
 // One name per iteration is one writer at a time, so a loop over a container works.
 say arr = mut [mut [0], mut [0]];
-say mut i = 0;
+say var i = 0;
 while (i < 2) {
     say e = arr[i];
     e[0] = 1;

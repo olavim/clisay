@@ -83,7 +83,7 @@ say b: fails = src();
 if (!((b is Err) && (mut [1]))) { say x = b; }
 say d: fails = src();
 if (!((d is Err) && T())) { say v = d; }
-say mut flag = false;
+say var flag = false;
 say c: fails = src();
 if (!((c is Err) && (flag = true))) { say y = c; }
 print("ok"); // expect: ok
@@ -93,7 +93,7 @@ print("ok"); // expect: ok
 fn other()! { return true; }
 fn src(): fails { return Err("e"); }
 
-say mut flag = false;
+say var flag = false;
 say v: fails = src();
 if (!((v is Err) && (flag = other()))) {
     say y = v; // error: cannot assign a value owing 'fails' to 'y'

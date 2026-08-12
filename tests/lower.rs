@@ -22,11 +22,11 @@ fn nth_fn<'a>(hir: &'a Hir, stmts: &[HirId<HirStmt>], i: usize) -> &'a HirFnDecl
 
 #[test]
 fn say_flags_survive_lowering() {
-    let hir = lower("say mut x? = 1;");
+    let hir = lower("say var x? = 1;");
     let stmts = top_stmts(&hir);
     let HirStmt::Say(field) = hir.get(&stmts[0]) else { panic!("not a say") };
     assert!(field.nullable);
-    assert!(field.mutable);
+    assert!(field.reassignable);
 }
 
 #[test]
@@ -70,13 +70,13 @@ fn assert_lowers_to_dedicated_node() {
 
 #[test]
 fn type_field_flags_survive_lowering() {
-    let hir = lower("type T { next?; mut count; }");
+    let hir = lower("type T { next?; var count; }");
     let stmts = top_stmts(&hir);
     let HirStmt::Type(decl) = hir.get(&stmts[0]) else { panic!("not a type") };
     let next = hir.symbol_of("next").expect("next not interned");
     let count = hir.symbol_of("count").expect("count not interned");
     assert!(decl.nullable_fields.contains(&next));
-    assert!(decl.mut_fields.contains(&count));
+    assert!(decl.var_fields.contains(&count));
 }
 
 #[test]

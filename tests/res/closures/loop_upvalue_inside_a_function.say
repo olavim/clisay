@@ -2,7 +2,7 @@
 // the frame's base, so an absolute one closes nothing and every lambda shares the last value.
 say box = mut [];
 fn go()! {
-    say mut i = 0;
+    say var i = 0;
     while (i < 2) {
         say a = i * 100;
         box.push(() => a);

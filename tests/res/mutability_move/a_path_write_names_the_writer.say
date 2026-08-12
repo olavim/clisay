@@ -33,7 +33,7 @@ a![0][0] = 1; // error: cannot mutate an immutable value
 // @split
 // A read-only receiver keeps its own message, which names the fix.
 type T {
-    pub mut arr;
+    pub var arr;
     init(this) { this.arr = mut [0]; }
     pub fn poke(this) { this.arr[0] = 1; } // error: cannot mutate through a read-only receiver
 }
@@ -43,7 +43,7 @@ t.poke();
 // @split
 // And keeps it when the receiver is reached through a wrapper.
 type T {
-    pub mut arr;
+    pub var arr;
     init(this) { this.arr = mut [0]; }
     pub fn poke(this) { this!.arr[0] = 1; } // error: cannot mutate through a read-only receiver
 }

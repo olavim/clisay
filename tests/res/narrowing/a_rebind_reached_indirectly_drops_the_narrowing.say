@@ -2,7 +2,7 @@
 // needs the call-graph fixpoint, so the answer comes from the set of names any body rebinds.
 type Box { pub value: opt; }
 fn run() {
-    say mut b = Box { value: "v" };
+    say var b = Box { value: "v" };
     fn wipe() { b = Box { value: null }; }
     fn go() { wipe(); }
     if (b.value == null) { return; }
@@ -17,7 +17,7 @@ run();
 // mentions the name its lambda rebinds.
 type Box { pub value: opt; }
 fn run() {
-    say mut b = Box { value: "v" };
+    say var b = Box { value: "v" };
     fn go() { say f = () => { b = Box { value: null }; return 1; }; f(); }
     if (b.value == null) { return; }
     go();
@@ -31,7 +31,7 @@ run();
 // enclosing summary either.
 type Box { pub value: opt; }
 fn run() {
-    say mut b = Box { value: "v" };
+    say var b = Box { value: "v" };
     fn go() { fn wipe() { b = Box { value: null }; } wipe(); }
     if (b.value == null) { return; }
     go();
@@ -45,7 +45,7 @@ run();
 // assignment names is decided by where it resolves, not by whether the name appears in a `say`.
 type Box { pub value: opt; }
 fn run() {
-    say mut b = Box { value: "v" };
+    say var b = Box { value: "v" };
     fn go() { fn helper() { say b = 1; print(b); } b = Box { value: null }; }
     if (b.value == null) { return; }
     go();
@@ -58,7 +58,7 @@ run();
 // A shadowing declaration inside the rebinding body itself does not cancel it either.
 type Box { pub value: opt; }
 fn run() {
-    say mut b = Box { value: "v" };
+    say var b = Box { value: "v" };
     say f = () => { if (1 == 2) { say b = 1; print(b); } b = Box { value: null }; return 1; };
     if (b.value == null) { return; }
     f();
@@ -70,9 +70,9 @@ run();
 // @split
 // A body rebinding its own local reaches no caller, so the name stays narrowable.
 type Box { pub value: opt; }
-fn count()! { say mut n = 0; n = n + 1; return n; }
+fn count()! { say var n = 0; n = n + 1; return n; }
 fn run() {
-    say mut b = Box { value: "v" };
+    say var b = Box { value: "v" };
     if (b.value == null) { return; }
     count();
     say y = b.value;
@@ -85,9 +85,9 @@ run();
 // assignment names is what decides this, and the name it is spelled with says nothing.
 type T { pub value: opt; }
 fn run() {
-    say mut x = T { value: "v" };
+    say var x = T { value: "v" };
     if (x.value == null) { return; }
-    say trippy = () => { say mut x = 0; x = 1; return x; };
+    say trippy = () => { say var x = 0; x = 1; return x; };
     trippy();
     say y = x.value;
     print(y); // expect: v

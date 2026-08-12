@@ -1,6 +1,6 @@
 // A caller that never reads the argument again does not care what the callee did with it, so both
 // a borrowing and a consuming callee are accepted.
-type Box { pub mut v; init(this) { this.v = 0; } }
+type Box { pub var v; init(this) { this.v = 0; } }
 fn eats(x: *mut) { }
 fn borrows(x: mut) { x.v = 1; }
 
@@ -18,7 +18,7 @@ say c = mut Box();
 if (1 > 0) { consume(c); }
 
 say d = mut Box();
-say mut i = 0;
+say var i = 0;
 while (i < 2) { i = i + 1; }
 consume(d);
 

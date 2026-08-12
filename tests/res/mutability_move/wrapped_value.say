@@ -77,7 +77,7 @@ print(a[1][0]); // expect: 2
 
 // @split
 // A construction behind `mut` is still a fresh value.
-type C { pub mut v; init(this) { this.v = 0; } }
+type C { pub var v; init(this) { this.v = 0; } }
 say a = mut C();
 say b = mut C();
 a.v = 1;

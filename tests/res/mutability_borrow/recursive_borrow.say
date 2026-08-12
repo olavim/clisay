@@ -1,5 +1,5 @@
 // A recursive call is analyzed as a group, so a borrow that never leaves the group stays a borrow.
-type Box { pub mut v; init(this) { this.v = 1; } }
+type Box { pub var v; init(this) { this.v = 1; } }
 
 fn countDown(x: mut, n)! { if (n > 0) { return countDown(x, n - 1); } return x.v; }
 

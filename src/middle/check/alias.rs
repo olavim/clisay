@@ -696,14 +696,13 @@ impl<'a> Checker<'a> {
     pub(super) fn check_arg_mutability(&self, callee: &HirId<HirExpr>, markers: &[Capability], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         for (i, &marker) in markers.iter().enumerate() {
             let Some(typed) = arg_types.get(i) else { break };
-            if marker.is_mut() {
-                if typed.mutability == Mutability::Immutable {
-                    return Err(self.needs_mut_error(callee, &args[i]));
-                }
-                // A borrow cannot be given away, so it may not feed a consuming parameter.
-                if marker.is_move() && self.arg_is_borrowed(&args[i]) {
-                    return Err(self.consumes_borrow_error(callee, &args[i]));
-                }
+
+            if marker.is_mut() && typed.mutability == Mutability::Immutable {
+                return Err(self.needs_mut_error(callee, &args[i]));
+            }
+
+            if marker.is_move() && self.arg_is_borrowed(&args[i]) {
+                return Err(self.consumes_borrow_error(callee, &args[i]));
             }
         }
         Ok(())
@@ -727,11 +726,9 @@ impl<'a> Checker<'a> {
         self.locals[i].container = true;
     }
 
-    /// Moves each argument passed to a `*mut` parameter. A plain `mut` parameter borrows, so
-    /// it leaves the argument live.
     pub(super) fn consume_move_args(&mut self, markers: &[Capability], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         for (i, &marker) in markers.iter().enumerate() {
-            if matches!(marker, Capability::MoveMut) {
+            if marker.is_move() {
                 if let Some(arg) = args.get(i) { self.transfer_write_ownership(arg)?; }
             }
         }
@@ -870,13 +867,12 @@ impl<'a> Checker<'a> {
             format!("declare {method}'s receiver `this: mut` to let it mutate the instance"))
     }
 
-    /// The declaration a field needs to become mutable, e.g. `pub mut value` or `mut value`,
-    /// keeping the field's current visibility.
-    pub(super) fn mut_decl_hint(&self, decl: &HirId<HirStmt>, field: Symbol) -> String {
+    /// The declaration a field needs to become reassignable, such as `pub var value`.
+    pub(super) fn var_decl_hint(&self, decl: &HirId<HirStmt>, field: Symbol) -> String {
         let visibility = self.layout_of(decl).map_or("", |layout| {
             if layout.is_public(field) { "pub " } else if layout.is_inner(field) { "inner " } else { "" }
         });
-        format!("{visibility}mut {}", self.hir.text(field))
+        format!("{visibility}var {}", self.hir.text(field))
     }
 
     /// Records that a local receiving a stored value takes on that value's sources, so the value
@@ -894,9 +890,10 @@ impl<'a> Checker<'a> {
         self.error(format!("Cannot assign to method '{}'", self.hir.text(field)), lhs)
     }
 
-    pub(super) fn immutable_field_error(&self, decl: &HirId<HirStmt>, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
+    /// The error for assigning a non-var field.
+    pub(super) fn fixed_field_error(&self, decl: &HirId<HirStmt>, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
         let name = self.qualified_field(decl, field);
-        self.error_help(format!("Cannot assign immutable field `{name}`"), lhs,
-            format!("you can make `{name}` mutable by declaring it as `{};`", self.mut_decl_hint(decl, field)))
+        self.error_help(format!("Cannot reassign field `{name}`"), lhs,
+            format!("you can make `{name}` reassignable by declaring it as `{};`", self.var_decl_hint(decl, field)))
     }
 }

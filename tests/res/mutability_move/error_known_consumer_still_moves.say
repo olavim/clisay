@@ -1,5 +1,5 @@
 // A callee the pass can resolve still decides at compile time, with no runtime proof involved.
-type Box { pub mut v; init(this) { this.v = 0; } }
+type Box { pub var v; init(this) { this.v = 0; } }
 fn eats(x: *mut) { }
 say a = mut Box();
 eats(a);

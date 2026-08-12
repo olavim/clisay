@@ -1,16 +1,16 @@
 // A value's declared facts come from the declaration it was built from, not from another one
 // sharing the name. Mutability, nullability, and what a construction owes all read that declaration.
-fn other() { type T { pub mut x; init(this) { this.x = 1; } } say u = mut T(); u.x = 5; }
+fn other() { type T { pub var x; init(this) { this.x = 1; } } say u = mut T(); u.x = 5; }
 fn mk() {
     type T { pub x; init(this) { this.x = 1; } }
     say v = mut T();
-    v.x = 99; // error: Cannot assign immutable field `T.x`
+    v.x = 99; // error: Cannot reassign field `T.x`
 }
 
 // @split
-fn other() { type T { pub mut x?; init(this) { this.x = null; } } }
+fn other() { type T { pub var x?; init(this) { this.x = null; } } }
 fn mk() {
-    type T { pub mut x; init(this) { this.x = 1; } }
+    type T { pub var x; init(this) { this.x = 1; } }
     say v = mut T();
     v.x = null; // error: Cannot assign null to non-null field 'x'
 }
@@ -19,7 +19,7 @@ fn mk() {
 // The same disagreement the other way round: the value's own declaration allows the write.
 fn other() { type T { pub x; init(this) { this.x = 1; } } }
 fn mk() {
-    type T { pub mut x; init(this) { this.x = 1; } }
+    type T { pub var x; init(this) { this.x = 1; } }
     say v = mut T();
     v.x = 2;
     print(v.x); // expect: 2

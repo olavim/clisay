@@ -1,6 +1,6 @@
 // A mutable and nullable field is assigned directly in init.
 type T {
-    mut value?;
+    var value?;
     init(this) {
         this.value = 1;
     }

@@ -10,7 +10,7 @@ if (ok && 1 == 1) { print("both"); } // expect: both
 print("done"); // expect: done
 
 // @split
-say mut n = 0;
+say var n = 0;
 say ok = false;
 while (ok && n == 0) { n = n + 1; }
 print(n); // expect: 0

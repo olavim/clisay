@@ -11,7 +11,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             let pos = self.ast.pos(&param).clone();
             let Expr::Identifier(sym) = self.ast.get(&param) else { unreachable!("a lambda parameter is an identifier") };
             let pattern = self.ast.add_matcher(Matcher::Binder(*sym), pos.clone());
-            lambda_params.push(Param { pattern, pos, nullable: false, mutable: false, clause: SlotClause::default() });
+            lambda_params.push(Param { pattern, pos, nullable: false, reassignable: false, clause: SlotClause::default() });
         }
         let params = lambda_params;
         Expr::Literal(Literal::Lambda(FnDecl {

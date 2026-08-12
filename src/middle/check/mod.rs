@@ -86,7 +86,7 @@ struct Local {
     name: Symbol,
     /// The obligations this binding owes. Reading it yields those obligations until it is narrowed.
     owed: Obligations,
-    mutable: bool,
+    reassignable: bool,
     /// Whether the binding is provably assigned on the current path.
     assigned: bool,
     tag: TypeTag,
@@ -114,15 +114,16 @@ impl Local {
     /// A binding with every fact at its neutral default. Each named constructor overrides only the
     /// fields that distinguish it, so a new field is added here once.
     fn base(name: Symbol) -> Local {
-        Local { name, owed: Obligations::new(), mutable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal::default() }
+        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal::default() }
     }
 
-    fn param(name: Symbol, owed: Obligations, mutable: bool) -> Local {
-        Local { owed, mutable, ..Local::base(name) }
+    fn param(name: Symbol, owed: Obligations, reassignable: bool) -> Local {
+        Local { owed, reassignable, ..Local::base(name) }
     }
 
-    fn catch(name: Symbol, owed: Obligations, mutable: bool) -> Local {
-        Local::param(name, owed, mutable)
+    /// A caught value, bound for the handler only. Nothing reassigns it.
+    fn catch(name: Symbol, owed: Obligations) -> Local {
+        Local::param(name, owed, false)
     }
 
     fn binder_owing(name: Symbol, owed: Obligations) -> Local {
@@ -133,8 +134,8 @@ impl Local {
         Local { func: Some(stmt), ..Local::base(name) }
     }
 
-    fn value(name: Symbol, owed: Obligations, mutable: bool, assigned: bool, tag: TypeTag) -> Local {
-        Local { owed, mutable, assigned, tag, ..Local::base(name) }
+    fn value(name: Symbol, owed: Obligations, reassignable: bool, assigned: bool, tag: TypeTag) -> Local {
+        Local { owed, reassignable, assigned, tag, ..Local::base(name) }
     }
 }
 
@@ -203,8 +204,8 @@ struct Checker<'a> {
     frame_start: usize,
     /// The enclosing type's name while checking its methods, for `this` typing and field layout.
     current_type: Option<HirId<HirStmt>>,
-    /// While checking a factory body, where writing an immutable field is its initialization, not
-    /// a mutation.
+    /// While checking a factory body, where writing a field the type did not declare `var` is its
+    /// initialization, not a reassignment.
     checking_factory: bool,
     /// Each resolved call site's callee, keyed by the callee node. A later walk of the same value
     /// reads it rather than resolving a receiver's type again.

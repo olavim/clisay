@@ -4,7 +4,7 @@
 fn run(k) {
     say a = mut [mut [1]];
     say b = mut [mut [2]];
-    say mut x = mut [0];
+    say var x = mut [0];
     if (k == 1) { x = a[0]; } else { x = b[0]; }
     say y = b[0];
     x[0] = 9;

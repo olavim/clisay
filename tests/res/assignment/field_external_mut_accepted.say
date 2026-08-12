@@ -1,6 +1,6 @@
 // A `mut` field accepts an external write.
 type T {
-    pub mut value;
+    pub var value;
     init(this) { this.value = 1; }
 }
 say t = mut T();

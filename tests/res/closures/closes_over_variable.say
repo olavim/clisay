@@ -1,5 +1,5 @@
 fn getClosure()! {
-    say mut x = "foo";
+    say var x = "foo";
 
     fn closure(arg)? {
         fn get()! {

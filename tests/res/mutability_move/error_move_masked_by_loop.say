@@ -1,6 +1,6 @@
 // A value given away before a loop is still readable, whether or not a rebind inside the loop runs.
 fn consume(x: *mut) {}
-say mut a = mut [1];
+say var a = mut [1];
 consume(a);
 say cond = false;
 while cond {

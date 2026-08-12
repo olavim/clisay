@@ -1,28 +1,28 @@
 // `T(x)` is a call to the factory, so what the new object holds is whatever the factory does with
 // the argument. A factory that ignores it keeps nothing, however far the object travels.
-type Sink { pub mut item; init(this, v) { this.item = 0; } }
+type Sink { pub var item; init(this, v) { this.item = 0; } }
 fn f(x: mut)! { say s = mut Sink(x); return s.item; }
 say m = mut [1];
 print(f(m)); // expect: 0
 
 // @split
 // A value derived from the argument is not the argument.
-type Sink { pub mut item; init(this, v) { this.item = v[0] + 1; } }
+type Sink { pub var item; init(this, v) { this.item = v[0] + 1; } }
 fn f(x: mut)! { say s = mut Sink(x); return s.item; }
 say m = mut [1];
 print(f(m)); // expect: 2
 
 // @split
 // A factory that stores the argument keeps it, so the borrow may not be handed over.
-type Sink { pub mut item; init(this, v) { this.item = v; } }
+type Sink { pub var item; init(this, v) { this.item = v; } }
 fn f(x: mut)! { say s = mut Sink(x); return s; } // error: a `mut` parameter borrows its argument and cannot let it escape
 say m = mut [1];
 say r = f(m);
 
 // @split
 // A factory that leaks the argument past the call keeps it too, wherever it put it.
-say mut g = mut [0];
-type Sink { pub mut item; init(this, v) { g = v; this.item = 0; } }
+say var g = mut [0];
+type Sink { pub var item; init(this, v) { g = v; this.item = 0; } }
 fn f(x: mut) { say s = mut Sink(x); } // error: a `mut` parameter borrows its argument and cannot let it escape
 say m = mut [1];
 f(m);

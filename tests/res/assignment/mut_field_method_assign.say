@@ -1,6 +1,6 @@
 // A `mut` field may be reassigned from a method.
 type T {
-    pub mut value;
+    pub var value;
     init(this) {
         this.value = 1;
     }

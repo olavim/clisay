@@ -82,6 +82,7 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// Declares a factory's field-local: `say var $<field> [= value]`.
     fn field_local_decl(&mut self, field: Symbol, value: Option<HirId<HirExpr>>, nullable: bool, declared: Option<&SlotClause>, pos: &SourcePosition) -> HirId<HirStmt> {
         let name = self.field_local_sym(field);
         // The local stands for the field, so it accepts exactly what the field declares.
@@ -90,7 +91,7 @@ impl<'a> Lowerer<'a> {
             None if nullable => HirSlotClause { names: vec![self.opt], ..Default::default() },
             None => HirSlotClause::default(),
         };
-        let field_init = HirFieldInit { name, value, nullable, mutable: true, clause };
+        let field_init = HirFieldInit { name, value, nullable, reassignable: true, clause };
         self.hir.add(HirStmt::Say(field_init), pos.clone())
     }
 

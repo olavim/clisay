@@ -1,7 +1,7 @@
 // Storing `this` leaves the caller's name and whatever it was stored in both able to write one
 // instance, so a mutable receiver is refused at the call rather than at the second write.
 say sink = mut [];
-type Box { pub mut inner; pub fn hide(this) { sink.push(this); } }
+type Box { pub var inner; pub fn hide(this) { sink.push(this); } }
 say c = mut Box { inner: 5 };
 c.hide(); // error: 'c' is mutable and this method stores its receiver; freeze or copy it, or take the receiver by '*mut'
 
@@ -16,21 +16,21 @@ print(sink[0].inner); // expect: 5
 // @split
 // A `*mut` receiver is given away, so storing it is the point and the caller loses the name.
 say sink = mut [];
-type Box { pub mut inner; pub fn hide(this: *mut) { sink.push(this); } }
+type Box { pub var inner; pub fn hide(this: *mut) { sink.push(this); } }
 say c = mut Box { inner: 5 };
 c.hide();
 print(sink[0].inner); // expect: 5
 
 // @split
 // Handing `this` to a closure that only reads it is not storing it, so the receiver stays usable.
-type C { pub mut v; init(this) { this.v = 1; } pub fn reader(this)! { return () => this.v; } }
+type C { pub var v; init(this) { this.v = 1; } pub fn reader(this)! { return () => this.v; } }
 say a = mut C();
 say r = a.reader();
 print(r()); // expect: 1
 
 // @split
 // Nor is handing it back, which is what a builder does.
-type B { pub mut n; init(this) { this.n = 0; } pub fn set(this: mut, x)! { this.n = x; return this; } }
+type B { pub var n; init(this) { this.n = 0; } pub fn set(this: mut, x)! { this.n = x; return this; } }
 say b = mut B();
 b.set(1).set(2);
 print(b.n); // expect: 2

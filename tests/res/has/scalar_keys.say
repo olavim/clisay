@@ -12,7 +12,7 @@ print(n has { 1: 99 });     // expect: false
 print(n has { 1: _, 2: _ });// expect: true
 
 // an instance has only string-named members, so a non-string key is always absent
-type T { pub mut x?; }
+type T { pub var x?; }
 say t = T();
 print(t has { 1: _ });      // expect: false
 print(t has { 1: 2 });      // expect: false

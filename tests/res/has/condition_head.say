@@ -7,7 +7,7 @@ if x has T { print("if"); } // expect: if
 if x has T && x is K { print("and"); } // expect: and
 if x is K && x has T { print("and"); } // expect: and
 
-say mut n = 0;
+say var n = 0;
 while n < 2 && x has K { print("while"); n = n + 1; }
 // expect: while
 // expect: while

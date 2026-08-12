@@ -104,7 +104,7 @@ impl<'a> Lowerer<'a> {
             init,
             fields: composed.fields,
             nullable_fields: decl.nullable_fields.clone(),
-            mut_fields: decl.mut_fields.clone(),
+            var_fields: decl.var_fields.clone(),
             field_clauses: self.field_clauses(decl),
             methods: composed.methods,
             req_fns,
@@ -141,7 +141,7 @@ impl<'a> Lowerer<'a> {
             init,
             fields: composed.fields,
             nullable_fields: decl.nullable_fields.clone(),
-            mut_fields: decl.mut_fields.clone(),
+            var_fields: decl.var_fields.clone(),
             field_clauses: self.field_clauses(decl),
             methods: composed.methods,
             req_fns: Vec::new(), // satisfaction is checked at composing types, not the trait itself
@@ -306,7 +306,7 @@ impl<'a> Lowerer<'a> {
                 pattern: None,
                 pos: pos.clone(),
                 nullable: slot.names.contains(&self.opt),
-                mutable: param.mutable,
+                reassignable: param.reassignable,
                 clause: slot,
             });
             args.push(self.hir.add(HirExpr::Identifier(psym), pos.clone()));

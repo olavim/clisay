@@ -24,7 +24,7 @@ print(arr[0]); // expect: 7
 
 // @split
 // A taker that stores the value leaves the container writing it, so nothing is retired.
-type T { pub mut x; init(this, v: *mut) { this.x = v; } }
+type T { pub var x; init(this, v: *mut) { this.x = v; } }
 say t = mut T(mut [0]);
 t.x[0] = 5;
 print(t.x[0]); // expect: 5
