@@ -15,6 +15,6 @@ print(a[0]); // expect: 1
 
 // @split
 // Rebinding the source before the block ends keeps the new value; the return is suppressed.
-say mut a = mut [1];
+say var a = mut [1];
 { say b = a; a = mut [2]; }
 print(a[0]); // expect: 2

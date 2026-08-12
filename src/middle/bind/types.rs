@@ -158,8 +158,8 @@ impl<'a> Resolver<'a> {
             if decl.nullable_fields.contains(field) {
                 layout.nullable.insert(next_member_id);
             }
-            if decl.mut_fields.contains(field) {
-                layout.mutable.insert(next_member_id);
+            if decl.var_fields.contains(field) {
+                layout.reassignable.insert(next_member_id);
             }
             if let Some(clause) = decl.field_clauses.get(field) {
                 let owed = clause.owed();

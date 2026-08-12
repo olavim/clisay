@@ -14,7 +14,7 @@ g(); // error: `T.f` declares `this: mut`, but its receiver is immutable
 
 // @split
 // A body that writes is refused at the same place, not inside itself.
-type T { pub mut n; init(this) { this.n = 0; } pub fn f(this: mut) { this.n = 9; } }
+type T { pub var n; init(this) { this.n = 0; } pub fn f(this: mut) { this.n = 9; } }
 say t = mut T();
 say g = t.f;
 freeze(t);
@@ -22,7 +22,7 @@ g(); // error: `T.f` declares `this: mut`, but its receiver is immutable
 
 // @split
 // A live mutable receiver still calls through a reference.
-type T { pub mut n; init(this) { this.n = 0; } pub fn f(this: mut) { this.n = 9; } }
+type T { pub var n; init(this) { this.n = 0; } pub fn f(this: mut) { this.n = 9; } }
 say t = mut T();
 say g = t.f;
 g();
@@ -30,7 +30,7 @@ print(t.n); // expect: 9
 
 // @split
 // A read-only method has nothing to satisfy, so freezing its receiver changes nothing.
-type T { pub mut n; init(this) { this.n = 7; } pub fn get(this)! { return this.n; } }
+type T { pub var n; init(this) { this.n = 7; } pub fn get(this)! { return this.n; } }
 say t = mut T();
 say g = t.get;
 freeze(t);
@@ -46,7 +46,7 @@ a.push(2); // error: expected mutable receiver
 // @split
 // A factory's `this` belongs to whoever constructs the value, so building one is not a call on an
 // immutable receiver.
-type T { pub mut n; init(this) { this.n = 1; } pub fn f(this: mut) { this.n = 2; } }
+type T { pub var n; init(this) { this.n = 1; } pub fn f(this: mut) { this.n = 2; } }
 say t = mut T();
 t.f();
 print(t.n); // expect: 2

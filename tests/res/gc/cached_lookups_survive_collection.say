@@ -4,8 +4,8 @@ gcStress(true);
 type A { pub alpha; pub beta; init(this) { this.alpha = 1; this.beta = 2; } }
 type B { pub alpha; pub gamma; init(this) { this.alpha = 10; this.gamma = 20; } }
 fn spin(n)! {
-    say mut total = 0;
-    say mut i = 0;
+    say var total = 0;
+    say var i = 0;
     while (i < n) {
         say a = A();
         say b = B();

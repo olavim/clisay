@@ -1,8 +1,8 @@
 // A binding keeps its element after the aggregate's scope ends. The slot the aggregate held is
 // gone, so the one-writer question goes to the runtime rather than to a stale index, which used to
 // crash the pass or blame whichever local landed on that slot next.
-say mut x = mut [0];
-say mut z = mut [0];
+say var x = mut [0];
+say var z = mut [0];
 { say inner = mut [mut [1]]; x = inner[0]; z = inner[0]; }
 x[0] = 5;
 z[0] = 6; // error: cannot write an element another name already writes
@@ -18,8 +18,8 @@ z[0] = 6; // error: cannot write an element another name already writes
 
 // @split
 // Two names for different elements are no conflict once the aggregate is gone either.
-say mut x = mut [0];
-say mut z = mut [0];
+say var x = mut [0];
+say var z = mut [0];
 { say inner = mut [mut [1], mut [2]]; x = inner[0]; z = inner[1]; }
 x[0] = 5;
 z[0] = 6;
@@ -28,7 +28,7 @@ print(z[0]); // expect: 6
 
 // @split
 // One name writing twice is one writer.
-say mut x = mut [0];
+say var x = mut [0];
 { say inner = mut [mut [1]]; x = inner[0]; }
 x[0] = 5;
 x[0] = 6;

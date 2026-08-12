@@ -1,0 +1,18 @@
+// A receiver has no pattern to mark, so its capability sits ahead of `this` in the same four cells.
+type T {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn read(this) { print(this.n); }
+    pub fn write(mut this) { this.n = 1; }
+    pub fn takeRead(*this) { print(this.n); }
+    pub fn takeWrite(*mut this) { this.n = 2; print(this.n); }
+}
+say t = mut T();
+t.read(); // expect: 0
+t.write();
+t.read(); // expect: 1
+t.takeWrite(); // expect: 2
+
+// @split
+// A `this` past the first position is still the receiver, marker or not.
+type T { pub fn f(x, mut this) { } } // error: 'this' must be the first parameter

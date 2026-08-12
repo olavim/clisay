@@ -18,7 +18,7 @@ print(b[0]); // expect: 9
 
 // @split
 // A construction is a fresh value, so it is proven exclusive and takes no slot.
-type C { pub mut v; init(this) { this.v = 0; } }
+type C { pub var v; init(this) { this.v = 0; } }
 say a = mut C();
 say b = mut C();
 a.v = 1;
@@ -67,7 +67,7 @@ b[0] = 2; // error: cannot write an element another name already writes
 
 // @split
 // A method handing back a field is one more way to name it twice.
-type H { pub mut item; init(this) { this.item = mut [0]; } pub fn get(this)! { return this.item; } }
+type H { pub var item; init(this) { this.item = mut [0]; } pub fn get(this)! { return this.item; } }
 say h = mut H();
 say a = h.get();
 say b = h.get();

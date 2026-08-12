@@ -1,6 +1,6 @@
 // The rule bans a field on its own terms: a field has no drop point to discharge at.
 type Held { } obligation held { witness Held; discharge before drop; }
-type Box { pub mut item; init(this) { this.item = 0; } }
+type Box { pub var item; init(this) { this.item = 0; } }
 fn stash(x: held) {
     say b = mut Box();
     b.item = x;

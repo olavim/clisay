@@ -1,6 +1,6 @@
 // A source that dies with its scope stands for whatever it came from, so a binding outliving the
 // block keeps a chain to a live holder. The index it left behind used to crash the check pass.
-say mut k = mut [];
+say var k = mut [];
 { say c = mut [1]; k = c; }
 print(k[0]); // expect: 1
 
@@ -14,14 +14,14 @@ print(a[0]); // expect: 5
 // @split
 // One that was moved on is not, since the value went past the block.
 say a = mut [1];
-say mut k = mut [];
+say var k = mut [];
 { say c = a; k = c; }
 a[0] = 5; // error: cannot write `a`, which gave its write-ownership away
 
 // @split
 // And the binding it went to holds it.
 say a = mut [1];
-say mut k = mut [];
+say var k = mut [];
 { say c = a; k = c; }
 k[0] = 5;
 print(k[0]); // expect: 5
@@ -29,7 +29,7 @@ print(k[0]); // expect: 5
 // @split
 // The chain can be longer than one link, and every dying step splices out the same way.
 say a = mut [1];
-say mut k = mut [];
+say var k = mut [];
 {
     say b = a;
     { say c = b; k = c; }

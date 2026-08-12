@@ -1,6 +1,6 @@
 // Binding is what makes the second name, so a discarded or chained result moves nothing.
 type C {
-    pub mut v;
+    pub var v;
     init(this) { this.v = 0; }
     pub fn set(this: mut, n)! { this.v = n; return this; }
     pub fn reader(this)! { return () => this.v; }

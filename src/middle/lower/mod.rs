@@ -485,7 +485,7 @@ impl<'a> Lowerer<'a> {
                 pattern,
                 pos: p.pos.clone(),
                 nullable: clause.names.contains(&self.opt),
-                mutable: p.mutable,
+                reassignable: p.reassignable,
                 clause,
             })
         }).collect()
@@ -533,7 +533,7 @@ impl<'a> Lowerer<'a> {
             name: field.name,
             value: self.opt_expr(&field.value)?,
             nullable: clause.names.contains(&self.opt),
-            mutable: field.mutable,
+            reassignable: field.reassignable,
             clause,
         })
     }
@@ -543,7 +543,7 @@ impl<'a> Lowerer<'a> {
             Some(param) => Some(self.expr(param)?),
             None => None,
         };
-        Ok(HirCatchClause { param, mutable: catch.mutable, body: self.expr(&catch.body)? })
+        Ok(HirCatchClause { param, body: self.expr(&catch.body)? })
     }
 }
 

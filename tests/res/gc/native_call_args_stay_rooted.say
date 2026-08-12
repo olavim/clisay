@@ -3,7 +3,7 @@
 gcStress(true);
 type T { pub a; init(this, v) { this.a = v; } }
 say bag = mut [];
-say mut i = 0;
+say var i = 0;
 while (i < 30) { bag.push(T(i)); i = i + 1; }
 print(bag[7].a);  // expect: 7
 print(bag[29].a); // expect: 29

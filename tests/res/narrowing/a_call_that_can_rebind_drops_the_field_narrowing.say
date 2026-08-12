@@ -2,7 +2,7 @@
 // the call. Without this the binding reads `null` through a non-null name at run time.
 type Box { pub value: opt; }
 fn run() {
-    say mut b = Box { value: "v" };
+    say var b = Box { value: "v" };
     if (b.value == null) { return; }
     say f = () => { b = Box { value: null }; return 1; };
     f();
@@ -16,8 +16,8 @@ run();
 // per name, not a blanket one whenever anything rebinds.
 type Box { pub value: opt; }
 fn run() {
-    say mut b = Box { value: "v" };
-    say mut c = Box { value: "c" };
+    say var b = Box { value: "v" };
+    say var c = Box { value: "c" };
     say f = () => { c = Box { value: null }; return 1; };
     if (b.value == null) { return; }
     f();
@@ -31,7 +31,7 @@ run();
 type Box { pub value: opt; }
 fn other()! { return 1; }
 fn run() {
-    say mut b = Box { value: "v" };
+    say var b = Box { value: "v" };
     if (b.value == null) { return; }
     other();
     say y = b.value;
@@ -44,7 +44,7 @@ run();
 // proves is already stale where it would be used.
 type Box { pub value: opt; }
 fn run() {
-    say mut b = Box { value: "v" };
+    say var b = Box { value: "v" };
     say f = () => { b = Box { value: null }; return true; };
     if (b.value != null && f()) {
         say y = b.value; // error: Cannot assign a nullable value to non-null binding 'y'
@@ -57,9 +57,9 @@ run();
 // A loop body that rebinds drops it for the next iteration, which is the path a single pass misses.
 type Box { pub value: opt; }
 fn run() {
-    say mut b = Box { value: "v" };
+    say var b = Box { value: "v" };
     if (b.value == null) { return; }
-    say mut i = 0;
+    say var i = 0;
     while (i < 2) {
         say y = b.value; // error: Cannot assign a nullable value to non-null binding 'y'
         print(y);

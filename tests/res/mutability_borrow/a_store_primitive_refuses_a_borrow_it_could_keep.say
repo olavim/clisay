@@ -11,7 +11,7 @@ say m = mut [1];
 f(m);
 
 // @split
-type Sink { pub mut item; init(this) { this.item = 0; } }
+type Sink { pub var item; init(this) { this.item = 0; } }
 fn f(x: mut) { say s = mut Sink(); s.item = x; } // error: cannot persist a borrowed value
 say m = mut [1];
 f(m);

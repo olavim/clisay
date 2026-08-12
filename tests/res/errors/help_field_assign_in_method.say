@@ -5,10 +5,10 @@ type T {
 }
 T();
 // error(full):
-// error: Cannot assign immutable field `T.value`
+// error: Cannot reassign field `T.value`
 //  --> help_field_assign_in_method.say:4:27
 //   |
 // 3 |     init(this) { this.value = 1; }
 // 4 |     fn reset(this: mut) { this.value = 2; }
 //   |                           ^^^^^^^^^^
-//   = help: you can make `T.value` mutable by declaring it as `pub mut value;`
+//   = help: you can make `T.value` reassignable by declaring it as `pub var value;`

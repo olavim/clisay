@@ -28,7 +28,7 @@ a[0][0] = 1; // error: cannot write an element whose write-ownership moved to an
 // Nothing a record names is a root, so a batch of elements handed to containers that then die
 // leaves the heap where it started.
 fn stash(v) { say c = mut []; c.push(v); }
-say mut i = 0;
+say var i = 0;
 while (i < 200) { say b = mut [mut [0]]; stash(b[0]); i = i + 1; }
 gcCollect();
 say size = gcHeapSize();

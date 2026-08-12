@@ -1,6 +1,6 @@
 // A callee given the container by `*mut` can write it into an enclosing frame's slot. It then
 // outlives the block that built it, so the element it took is still spoken for.
-say mut kept = mut [];
+say var kept = mut [];
 fn stash(c: *mut) { kept = c; }
 say a = mut [mut [0]];
 { say c = mut []; c.push(a[0]); stash(c); }
@@ -9,7 +9,7 @@ a[0][0] = 1; // error: cannot write an element whose write-ownership moved to an
 // @split
 // The container it puts there can be any kind, and a dict records the element by a different
 // store than an array does.
-say mut kept? = null;
+say var kept? = null;
 fn stash(c: *mut) { kept = c; }
 say a = mut [mut [0]];
 { say c = mut {}; c["k"] = a[0]; stash(c); }
@@ -17,8 +17,8 @@ a[0][0] = 1; // error: cannot write an element whose write-ownership moved to an
 
 // @split
 // So can an instance, which takes its element at construction rather than at a store.
-type Box { pub mut inner; }
-say mut kept? = null;
+type Box { pub var inner; }
+say var kept? = null;
 fn stash(c: *mut) { kept = c; }
 say a = mut [mut [0]];
 { say c = mut Box { inner: a[0] }; stash(c); }
@@ -34,7 +34,7 @@ print(a[0][0]); // expect: 1
 
 // @split
 // Overwriting that slot drops the last thing holding the container, which frees the element.
-say mut kept? = null;
+say var kept? = null;
 fn stash(c: *mut) { kept = c; }
 say a = mut [mut [0]];
 { say c = mut []; c.push(a[0]); stash(c); }

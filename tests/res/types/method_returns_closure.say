@@ -1,6 +1,6 @@
 type A {
     pub fn getCounter(this)! {
-        say mut n = 0;
+        say var n = 0;
         fn inc()! {
             n += 1;
             return n;

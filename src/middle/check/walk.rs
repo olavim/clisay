@@ -25,7 +25,7 @@ impl<'a> Checker<'a> {
             },
             HirStmt::Type(decl) => self.type_decl(stmt, Some(*stmt), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
-            HirStmt::Say(field) => self.say(stmt.index(), field.name, &field.clause, field.mutable, &field.value)?,
+            HirStmt::Say(field) => self.say(stmt.index(), field.name, &field.clause, field.reassignable, &field.value)?,
             HirStmt::Expression(e) => {
                 let typed = self.expr(e)?;
                 self.check_dropped_result(&typed.flow, e)?;
@@ -100,7 +100,7 @@ impl<'a> Checker<'a> {
                     let mark = self.locals.len();
                     if let Some(param) = catch.param {
                         let name = self.hir.ident_sym(&param);
-                        let mut local = Local::catch(name, self.opt_set(true), catch.mutable);
+                        let mut local = Local::catch(name, self.opt_set(true));
                         local.decl = Some(param.index());
                         self.locals.push(local);
                     }
@@ -563,7 +563,7 @@ impl<'a> Checker<'a> {
 
         // A mutable binding may have been written since the narrowing, which the enclosing frame
         // cannot see, so only an immutable one keeps what was proved about it.
-        let owed: Obligations = match local.mutable {
+        let owed: Obligations = match local.reassignable {
             true => local.owed.clone(),
             false => local.owed.difference(&local.discharged).copied().collect(),
         };
@@ -576,7 +576,7 @@ impl<'a> Checker<'a> {
 
         // A rebindable slot may hold a different value by then, so only an immutable one carries its
         // type and mutability in.
-        match local.mutable {
+        match local.reassignable {
             true => Typed::of(flow, TypeTag::Unknown),
             false => Typed::of(flow, local.tag.clone()).with_mutability(local.alias.mutability),
         }
@@ -951,15 +951,15 @@ impl<'a> Checker<'a> {
         if self.locals[i].func.is_some() {
             return Err(self.error(format!("Cannot reassign `{text}`; it names a function"), lhs));
         }
-        if self.locals[i].mutable || !self.locals[i].assigned {
+        if self.locals[i].reassignable || !self.locals[i].assigned {
             return Ok(());
         }
         if self.locals[i].binder {
             return Err(self.error_help(format!("Cannot reassign matcher binder `{text}`"), lhs,
-                format!("copy it into a `say mut {text}` first to change it")));
+                format!("copy it into a `say var {text}` first to change it")));
         }
-        Err(self.error_help(format!("Cannot reassign immutable binding `{text}`"), lhs,
-            format!("you can make `{text}` mutable by declaring it as `say mut {text}`")))
+        Err(self.error_help(format!("Cannot reassign binding `{text}`"), lhs,
+            format!("you can make `{text}` reassignable by declaring it as `say var {text}`")))
     }
 
     /// Checks an assignment `target.member = value`.
@@ -1029,7 +1029,7 @@ impl<'a> Checker<'a> {
     pub(super) fn assign_field_this(&mut self, field: Symbol, flow: &Flow, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let Some(type_stmt) = self.current_type else { return Ok(()) };
         let (member, nullable, mutable) = match self.layout_of(&type_stmt) {
-            Some(layout) => (layout.members.get(&field).copied(), layout.is_nullable(field), layout.is_mutable(field)),
+            Some(layout) => (layout.members.get(&field).copied(), layout.is_nullable(field), layout.is_reassignable(field)),
             None => return Ok(()),
         };
 
@@ -1042,7 +1042,7 @@ impl<'a> Checker<'a> {
         // Writing an immutable field in a factory is its initialization. Elsewhere it is a method
         // mutating a finished value, which an immutable field rejects.
         if !mutable && !self.checking_factory {
-            return Err(self.immutable_field_error(&type_stmt, field, lhs));
+            return Err(self.fixed_field_error(&type_stmt, field, lhs));
         }
 
         // Writing a field is a use of the receiver, so an owing `this` has to be discharged first.
@@ -1061,7 +1061,7 @@ impl<'a> Checker<'a> {
     pub(super) fn assign_field_external(&mut self, type_stmt: &HirId<HirStmt>, field: Symbol, flow: &Flow, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let field_info = match self.layout_of(type_stmt) {
             Some(layout) => match layout.members.get(&field) {
-                Some(TypeMember::Field(_)) => Some((layout.is_public(field), layout.is_nullable(field), layout.is_mutable(field))),
+                Some(TypeMember::Field(_)) => Some((layout.is_public(field), layout.is_nullable(field), layout.is_reassignable(field))),
                 Some(TypeMember::Method(_)) => return Err(self.method_slot_error(field, lhs)),
                 None => None,
             },
@@ -1073,7 +1073,7 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         if !mutable {
-            return Err(self.immutable_field_error(&type_stmt, field, lhs));
+            return Err(self.fixed_field_error(&type_stmt, field, lhs));
         }
         self.check_into_field(flow, nullable, field, rhs)
     }

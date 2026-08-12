@@ -12,7 +12,7 @@ type Other {
     }
 }
 fn pick(flag?) {
-    say mut x = Cache();
+    say var x = Cache();
     if (flag != null) {
         x = Other();
     }

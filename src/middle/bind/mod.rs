@@ -73,7 +73,8 @@ pub struct TypeLayout {
     pub non_public: IntSet<u8>,
     /// Nullable fields and nullable-returning methods.
     pub nullable: IntSet<u8>,
-    pub mutable: IntSet<u8>,
+    /// Fields declared reassignable with `var`.
+    pub reassignable: IntSet<u8>,
     /// What each member's `:` clause declares, for the members that have one.
     pub clauses: FnvHashMap<u8, MemberClause>,
     pub inner: IntSet<u8>,
@@ -90,7 +91,7 @@ impl TypeLayout {
             fields: Vec::new(),
             non_public: IntSet::default(),
             nullable: IntSet::default(),
-            mutable: IntSet::default(),
+            reassignable: IntSet::default(),
             clauses: FnvHashMap::default(),
             inner: IntSet::default(),
             factory_id: 0,
@@ -110,8 +111,8 @@ impl TypeLayout {
         self.resolve_id(name).is_some_and(|id| self.nullable.contains(&id))
     }
 
-    pub fn is_mutable(&self, name: Symbol) -> bool {
-        self.resolve_id(name).is_some_and(|id| self.mutable.contains(&id))
+    pub fn is_reassignable(&self, name: Symbol) -> bool {
+        self.resolve_id(name).is_some_and(|id| self.reassignable.contains(&id))
     }
 
     /// What a member's clause declares, or nothing where it declares none.

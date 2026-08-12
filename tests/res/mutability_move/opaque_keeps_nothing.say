@@ -1,6 +1,6 @@
 // An unresolvable callee is only opaque to the compiler. A caller that reads its argument again
 // makes the runtime prove the callee borrowed it, so a callee that keeps nothing lets the read stand.
-type Box { pub mut v; init(this) { this.v = 0; } }
+type Box { pub var v; init(this) { this.v = 0; } }
 say noop = (x) => 0;
 
 say a = mut Box();

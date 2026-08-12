@@ -90,7 +90,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let mut fields: IndexSet<Symbol> = IndexSet::default();
         let mut nullable_fields: HashSet<Symbol> = HashSet::default();
-        let mut mut_fields: HashSet<Symbol> = HashSet::default();
+        let mut var_fields: HashSet<Symbol> = HashSet::default();
         let mut field_clauses: Vec<(Symbol, SlotClause)> = Vec::new();
         let mut field_inits: Vec<(Symbol, AstId<Expr>)> = Vec::new();
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
@@ -121,13 +121,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 continue;
             }
 
-            // `mut` is a field modifier. Methods and `init` reject it.
-            let mutable = self.parse_mut();
+            if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
+                let at = self.tokens.peek(0).pos.clone();
+                parse_error!(self, &at, "A reassignable field is declared with `var`, not `mut`");
+            }
+            let reassignable = self.take_modifier(ContextualKeyword::Var);
 
             let kind = self.tokens.peek(0).kind;
             match kind {
                 TokenType::Fn => {
-                    if mutable { parse_error!(self, &member_pos, "Only fields can be `mut`"); }
+                    if reassignable { parse_error!(self, &member_pos, "Only fields can be `var`"); }
                     let stmt = self.parse_fn(true)?;
                     if let Stmt::Fn(decl) = self.ast.get(&stmt) {
                         match visibility {
@@ -148,7 +151,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                         "init" => {
                             if is_trait { return Err(self.error_help("A trait cannot declare an `init`", &member_pos, "put initialization on the host type")); }
                             if visibility != Visibility::Private { parse_error!(self, &member_pos, "A factory cannot have a visibility modifier"); }
-                            if mutable { parse_error!(self, &member_pos, "Only fields can be `mut`"); }
+                            if reassignable { parse_error!(self, &member_pos, "Only fields can be `var`"); }
                             init = Some(self.parse_init()?);
                         },
                         _ => {
@@ -180,7 +183,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             // element nullable and not the field.
                             let clause_opt = !clause.container && clause.names.iter().any(|n| self.ast.text(*n) == "opt");
                             if nullable || clause_opt { nullable_fields.insert(field); }
-                            if mutable { mut_fields.insert(field); }
+                            if reassignable { var_fields.insert(field); }
 
                             if !clause.names.is_empty() || clause.void {
                                 field_clauses.push((field, clause));
@@ -225,7 +228,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             init,
             fields,
             nullable_fields,
-            mut_fields,
+            var_fields,
             field_clauses,
             field_inits,
             methods: method_stmts,
@@ -257,7 +260,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             init,
             fields: IndexSet::from([value]),
             nullable_fields: HashSet::new(),
-            mut_fields: HashSet::new(),
+            var_fields: HashSet::new(),
             field_clauses: Vec::new(),
             field_inits: Vec::new(),
             methods: Vec::new(),
@@ -271,7 +274,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// implementation, and this is what the passes that read a factory's signature read.
     fn declare_err_init(&mut self, init_name: Symbol, value: Symbol, pos: &SourcePosition) -> AstId<Stmt> {
         let pattern = self.ast.add_matcher(Matcher::Binder(value), pos.clone());
-        let param = Param { pattern, pos: pos.clone(), nullable: false, mutable: false, clause: SlotClause::default() };
+        let param = Param { pattern, pos: pos.clone(), nullable: false, reassignable: false, clause: SlotClause::default() };
 
         let this = self.ast.add_expr(Expr::This, pos.clone());
         let key = self.ast.add_expr(Expr::Literal(Literal::String("value".to_string())), pos.clone());

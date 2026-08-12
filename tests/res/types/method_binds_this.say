@@ -1,5 +1,5 @@
 type A {
-    pub mut a = "a";
+    pub var a = "a";
     pub fn get(this)! {
         return this.a;
     }

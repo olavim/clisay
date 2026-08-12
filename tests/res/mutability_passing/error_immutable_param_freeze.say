@@ -1,5 +1,5 @@
 // A mutable factory result handed to a parameter that persists it answers the same way.
-type Sink { pub mut item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.item = x; } } // error: cannot persist a borrowed value
+type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.item = x; } } // error: cannot persist a borrowed value
 fn make(): mut { return mut {}; }
 say s = mut Sink();
 say m = make();

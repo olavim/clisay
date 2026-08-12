@@ -1,6 +1,6 @@
 obligation borrowed { no persist; no return; }
 type Box {
-    pub mut item;
+    pub var item;
     init(this) { this.item = 0; }
     fn stash(this: mut, x: borrowed) { this.item = x; }
 }

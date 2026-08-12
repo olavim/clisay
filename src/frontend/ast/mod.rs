@@ -138,27 +138,30 @@ pub enum Matcher {
     And(Vec<AstId<Matcher>>),
 }
 
-/// The value-mutability capability leading a slot clause.
+/// What a slot asks of its value, over two independent axes. `mut` demands one that may be written.
+/// `*` takes write-ownership rather than borrowing it for the call.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Capability {
-    /// An immutable value.
+    /// Borrows, and asks nothing of the value.
     #[default]
     None,
-    /// `mut`: a borrowed mutable value.
+    /// `mut`: borrows a value that may be written.
     Mut,
-    /// `*mut`: a moved mutable value.
+    /// `*`: takes write-ownership, and asks nothing of the value.
+    Move,
+    /// `*mut`: takes write-ownership of a value that may be written.
     MoveMut,
 }
 
 impl Capability {
-    /// Whether the marker grants mutability.
+    /// Whether the marker demands a value it may write.
     pub fn is_mut(self) -> bool {
         matches!(self, Capability::Mut | Capability::MoveMut)
     }
 
-    /// Whether the marker consumes its argument, as opposed to borrowing it.
+    /// Whether the marker takes its argument, as opposed to borrowing it for the call.
     pub fn is_move(self) -> bool {
-        matches!(self, Capability::MoveMut)
+        matches!(self, Capability::Move | Capability::MoveMut)
     }
 }
 
@@ -178,8 +181,8 @@ pub struct FieldInit {
     pub value: Option<AstId<Expr>>,
     /// Declared nullable with a `?` marker (`say x?`).
     pub nullable: bool,
-    /// Declared reassignable with a `mut` modifier (`say mut x`).
-    pub mutable: bool,
+    /// Declared reassignable with a `var` modifier (`say var x`).
+    pub reassignable: bool,
     /// The `:` slot clause
     pub clause: SlotClause,
 }
@@ -192,7 +195,8 @@ pub struct Param {
     /// The `pattern[: clause]` span.
     pub pos: SourcePosition,
     pub nullable: bool,
-    pub mutable: bool,
+    /// Reserved for a reassignable parameter. Never parsed today.
+    pub reassignable: bool,
     pub clause: SlotClause,
 }
 
@@ -254,8 +258,6 @@ pub struct ReqFn {
 /// A `catch (param) { ... }` clause of a try statement.
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
-    /// Declared reassignable with a `mut` modifier (`catch (mut e)`).
-    pub mutable: bool,
     pub body: AstId<Expr>
 }
 
@@ -307,7 +309,7 @@ pub struct TypeDecl {
     pub init: Option<AstId<Stmt>>,
     pub fields: IndexSet<Symbol>,
     pub nullable_fields: HashSet<Symbol>,
-    pub mut_fields: HashSet<Symbol>,
+    pub var_fields: HashSet<Symbol>,
     pub field_clauses: Vec<(Symbol, SlotClause)>,
     /// Field defaults (`field = value`), applied by the factory during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,

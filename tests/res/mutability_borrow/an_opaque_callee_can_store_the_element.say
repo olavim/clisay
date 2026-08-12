@@ -1,6 +1,6 @@
 // Nothing static says what `g` does with the container. The store inside it is the only record
 // that the container was kept.
-say mut kept = mut [];
+say var kept = mut [];
 fn stash(c: *mut) { kept = c; }
 fn run(g, c: *mut) { g(c); }
 say a = mut [mut [0]];
@@ -12,7 +12,7 @@ a[0][0] = 1; // error: cannot write an element whose write-ownership moved to an
 fn id(c: *mut)! { return c; }
 fn run(g, c: *mut)! { return g(c); }
 say a = mut [mut [0]];
-say mut kept? = null;
+say var kept? = null;
 { say c = mut []; c.push(a[0]); kept = run(id, c); }
 a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
 

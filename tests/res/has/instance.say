@@ -1,4 +1,4 @@
-type T { pub mut x?; }
+type T { pub var x?; }
 type P { a; pub b; init(this) { this.a = 1; this.b = 2; } }
 
 // a nullable field defaults to null but still counts as defined

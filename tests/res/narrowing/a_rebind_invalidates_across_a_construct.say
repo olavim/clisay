@@ -2,7 +2,7 @@
 // invalidated one, and that invalidation has to survive the restore. Each section null-derefs at
 // runtime if it does not.
 fn get(f)? { if (f) { return null; } return "abc"; }
-say mut x? = get(false);
+say var x? = get(false);
 if (x != null) {
     match (1) { _ => { x = get(true); }, }
     say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
@@ -11,8 +11,8 @@ if (x != null) {
 
 // @split
 fn get(f)? { if (f) { return null; } return "abc"; }
-say mut x? = get(false);
-say mut i = 0;
+say var x? = get(false);
+say var i = 0;
 if (x != null) {
     while (i < 1) { x = get(true); i = i + 1; }
     say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
@@ -21,7 +21,7 @@ if (x != null) {
 
 // @split
 fn get(f)? { if (f) { return null; } return "abc"; }
-say mut x? = get(false);
+say var x? = get(false);
 if (x != null) {
     if (true) { x = get(true); } else { }
     say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
@@ -44,8 +44,8 @@ try {
 // @split
 // A construct that rebinds nothing still hands its narrowing on.
 fn get(f)? { if (f) { return null; } return "abc"; }
-say mut x? = get(false);
-say mut i = 0;
+say var x? = get(false);
+say var i = 0;
 if (x != null) {
     while (i < 1) { i = i + 1; }
     say y = x;

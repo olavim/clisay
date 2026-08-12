@@ -1,6 +1,6 @@
 // A method handing back its receiver gives the new name the write-ownership. The old one reads.
 type C {
-    pub mut v;
+    pub var v;
     init(this) { this.v = 0; }
     pub fn set(this: mut, n)! { this.v = n; return this; }
 }

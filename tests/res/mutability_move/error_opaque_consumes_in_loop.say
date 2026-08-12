@@ -1,10 +1,10 @@
 // A loop's next turn reads the binding again, and that read is the argument itself, so the caret
 // lands on the call rather than on anything after the loop.
-type Box { pub mut v; init(this) { this.v = 0; } }
+type Box { pub var v; init(this) { this.v = 0; } }
 fn eats(x: *mut) { }
 say consume = eats;
 say a = mut Box();
-say mut i = 0;
+say var i = 0;
 while (i < 2) {
     consume(a); // error: value used after a call consumed it
     i = i + 1;

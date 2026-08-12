@@ -18,7 +18,7 @@ print("bound"); // expect: bound
 type P { pub a; pub b; init(this) { this.a = 1; this.b = 2; } }
 say p = P();
 say keys = ["a", "b"];
-say mut i = 0;
+say var i = 0;
 while (i < 2) { print(p[keys[i]]); i = i + 1; }
 // expect: 1
 // expect: 2

@@ -80,7 +80,8 @@ impl<'a> Checker<'a> {
         self.locals.truncate(mark);
     }
 
-    /// Declares a scope's binders as immutable locals, each owing what the scope recorded for it.
+    /// Declares a scope's binders as locals that cannot be reassigned, each owing what the scope
+    /// recorded for it.
     pub(super) fn push_binders(&mut self, scope: &BinderScope) {
         for &name in &scope.names {
             let mut local = Local::binder_owing(name, scope.owed.get(&name).cloned().unwrap_or_default());
@@ -92,7 +93,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Declares a scope's binders as immutable locals for the duration of `f`, then drops them.
+    /// Declares a scope's binders for the duration of `f`, then drops them.
     pub(super) fn with_binders<T>(&mut self, scope: &BinderScope, at: &HirId<HirExpr>, f: impl FnOnce(&mut Self) -> Result<T, anyhow::Error>) -> Result<T, anyhow::Error> {
         let mark = self.locals.len();
         self.push_binders(scope);
@@ -189,15 +190,13 @@ impl<'a> Checker<'a> {
                 owed.extend(self.resolved().admitted_obligations(pattern));
             }
 
-            let mut local = Local::param(name, owed, param.mutable);
+            let mut local = Local::param(name, owed, param.reassignable);
             local.decl = Some(param.name.index());
             local.container = param.clause.container;
             local.param = true;
             local.alias.mutability = Mutability::param(param.clause.capability);
-            // A plain `mut` parameter borrows its argument; `*mut` owns it.
-            local.alias.borrowed = param.clause.capability == Capability::Mut;
-            // Without `mut` the argument may still be a mutable the caller lent.
-            local.alias.unproven_borrow = !param.clause.capability.is_mut();
+            local.alias.borrowed = !param.clause.capability.is_move();
+            local.alias.unproven_borrow = !param.clause.capability.is_mut() && !param.clause.capability.is_move();
             local.alias.confined = self.fn_ctx.param_confined.get(position).copied().unwrap_or(false);
             local.site = Some(param.name);
 

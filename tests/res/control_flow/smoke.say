@@ -21,7 +21,7 @@ print(isOneOrTwo(1)); // expect: true
 print(isOneOrTwo(2)); // expect: true
 print(isOneOrTwo(3)); // expect: false
 
-say mut i = 0;
+say var i = 0;
 while (i < 3) {
     // expect: 1
     // expect: 2

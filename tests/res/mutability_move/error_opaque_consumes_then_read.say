@@ -1,6 +1,6 @@
 // Reading the argument again is what makes the callee's choice matter, so the call alone is fine and
 // the read is what fails.
-type Box { pub mut v; init(this) { this.v = 0; } }
+type Box { pub var v; init(this) { this.v = 0; } }
 fn eats(x: *mut) { }
 say consume = eats;
 say a = mut Box();

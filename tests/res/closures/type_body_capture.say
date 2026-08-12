@@ -32,7 +32,7 @@ print(maker().n); // expect: 7
 
 // @split
 // A captured binding is shared, not copied, so a later write shows through.
-say mut count = 5;
+say var count = 5;
 type T { pub fn read(this)! { return count; } }
 say t = T { };
 print(t.read()); // expect: 5

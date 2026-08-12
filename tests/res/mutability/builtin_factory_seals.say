@@ -1,10 +1,10 @@
 // A built-in's factory seals what it builds, so a mutable value handed to it would sit inside an
 // immutable container.
-say mut m = mut [1, 2];
+say var m = mut [1, 2];
 say e = Err(m); // error: cannot store a mutable value in an immutable container
 
 // @split
 // The same shape over a user type, which is the behaviour it is matched against.
 type Box { pub v; init(this, v) { this.v = v; } }
-say mut m = mut [1, 2];
+say var m = mut [1, 2];
 say b = Box(m); // error: cannot store a mutable value in an immutable container

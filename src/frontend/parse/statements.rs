@@ -43,7 +43,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     pub(super) fn parse_say(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Say)?.pos.clone();
-        let mutable = self.parse_mut();
+        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
+            let at = self.tokens.peek(0).pos.clone();
+            parse_error!(self, &at, "A reassignable binding is declared with `var`, not `mut`");
+        }
+        let reassignable = self.take_modifier(ContextualKeyword::Var);
         let name_pos = self.tokens.peek(0).pos.clone();
         let name = self.parse_identifier()?;
         self.check_name_case(&name, NameKind::Variable, &name_pos)?;
@@ -58,7 +62,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         self.tokens.expect(TokenType::Semicolon)?;
-        let field_init = FieldInit { name, value: expr, nullable, mutable, clause };
+        let field_init = FieldInit { name, value: expr, nullable, reassignable, clause };
         Ok(self.node_stmt(Stmt::Say(field_init), pos))
     }
 
@@ -195,16 +199,21 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let try_body = self.parse_block_or_stmt()?;
 
         let catch = if self.tokens.next_if(TokenType::Catch).is_some() {
-            let (param, mutable) = match self.tokens.peek(0).kind {
+            let param = match self.tokens.peek(0).kind {
                 TokenType::Identifier => {
                     let (lex, at) = (self.tokens.peek(0).lexeme.clone(), self.tokens.peek(0).pos.clone());
                     let param = self.parse_identifier_expr()?;
                     self.check_name_case(&lex, NameKind::Parameter, &at)?;
-                    (Some(param), false)
+                    Some(param)
                 },
                 TokenType::LeftParen => {
                     let open = self.tokens.expect(TokenType::LeftParen)?.pos.clone();
-                    let mutable = self.parse_mut();
+                    // A caught value is bound for the handler and nothing reassigns it, so neither
+                    // `var` nor the `mut` capability has anything to say here.
+                    if let Some(word @ (ContextualKeyword::Var | ContextualKeyword::Mut)) = self.tokens.peek(0).contextual() {
+                        let at = self.tokens.peek(0).pos.clone();
+                        parse_error!(self, &at, "A catch parameter cannot be `{word}`");
+                    }
                     let (lex, at) = (self.tokens.peek(0).lexeme.clone(), self.tokens.peek(0).pos.clone());
                     let param = self.parse_identifier_expr()?;
                     self.check_name_case(&lex, NameKind::Parameter, &at)?;
@@ -213,12 +222,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     self.parse_nullable();
                     self.parse_slot_clause(SlotKind::Param)?;
                     self.tokens.expect_close(TokenType::RightParen, &open)?;
-                    (Some(param), mutable)
+                    Some(param)
                 },
-                _ => (None, false)
+                _ => None
             };
             let body = self.parse_block_or_stmt()?;
-            Some(CatchClause { param, mutable, body })
+            Some(CatchClause { param, body })
         } else {
             None
         };

@@ -1,7 +1,7 @@
 // A lambda in a method body captures the enclosing `this`, through any depth of nesting. A closure
 // over a `mut` receiver may be called in place; only one that outlives the call is refused.
 type Counter {
-    pub mut n;
+    pub var n;
     init(this) { this.n = 0; }
 
     pub fn show(this) { say f = () => print(this.n); f(); }

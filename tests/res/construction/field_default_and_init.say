@@ -1,6 +1,6 @@
 
 type T {
-    pub mut v = 1;
+    pub var v = 1;
     init(this) { this.v = 2; }
 }
 say t = T();

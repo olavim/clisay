@@ -41,7 +41,7 @@ touch(a[0]);
 
 // @split
 type T { pub x; }
-fn touch(v) { say mut w = 0; w = v; say t = T { x: w }; print("made"); } // error: cannot store a mutable value in an immutable container
+fn touch(v) { say var w = 0; w = v; say t = T { x: w }; print("made"); } // error: cannot store a mutable value in an immutable container
 say a = mut [mut [0]];
 touch(a[0]);
 

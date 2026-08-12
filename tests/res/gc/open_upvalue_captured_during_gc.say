@@ -3,7 +3,7 @@
 gcStress(false);
 
 fn makeAdder(a, b, c, d, e)! {
-    say mut sum = 0;
+    say var sum = 0;
     fn addA()! {
         sum = sum + a;
         fn addB()! {
@@ -27,8 +27,8 @@ fn makeAdder(a, b, c, d, e)! {
     return addA;
 }
 
-say mut ok = true;
-say mut i = 0;
+say var ok = true;
+say var i = 0;
 while i < 100000 {
     say total = makeAdder(1, 2, 3, 4, 5)()()()()();
     if (total != 15) {

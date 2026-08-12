@@ -13,8 +13,8 @@ type Node {
     }
 }
 
-say mut head? = null;
-say mut i = 0;
+say var head? = null;
+say var i = 0;
 while i < 50000 {
     head = Node(head);
     i = i + 1;
@@ -22,8 +22,8 @@ while i < 50000 {
 
 gcCollect();
 
-say mut count = 0;
-say mut cur? = head;
+say var count = 0;
+say var cur? = head;
 while cur != null {
     count = count + 1;
     cur = cur.next;

@@ -8,6 +8,6 @@ if p ~ P { x, y } { print(x); print(y); } // expect: 1
 
 if p ~ P { x: 1 } { print("shape-body"); } // expect: shape-body
 
-say mut n = 0;
+say var n = 0;
 while n < 1 && p ~ P { n = n + 1; }
 print(n); // expect: 1

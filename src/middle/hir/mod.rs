@@ -252,13 +252,13 @@ pub struct HirFieldInit {
     pub value: Option<HirId<HirExpr>>,
     /// Declared nullable with a `?` marker (`say x?`). Non-null otherwise.
     pub nullable: bool,
-    /// Declared reassignable with a `mut` modifier (`say mut x`). Immutable otherwise.
-    pub mutable: bool,
+    /// Declared reassignable with a `var` modifier (`say var x`). Fixed otherwise.
+    pub reassignable: bool,
     pub clause: HirSlotClause,
 }
 
-/// A function/method/lambda parameter: its bound identifier plus the declared
-/// nullability and mutability markers (`fn f(mut x?)`).
+/// A function/method/lambda parameter: its bound identifier plus the declared nullability marker
+/// and the reassignability slot reserves.
 pub struct HirParam {
     pub name: HirId<HirExpr>,
     /// The parameter's pattern, when it does more than name its slot.
@@ -266,7 +266,7 @@ pub struct HirParam {
     /// The `name[: clause]` span.
     pub pos: SourcePosition,
     pub nullable: bool,
-    pub mutable: bool,
+    pub reassignable: bool,
     pub clause: HirSlotClause,
 }
 
@@ -312,7 +312,6 @@ pub struct HirReqParam {
 /// A `catch (param) { … }` clause of a try statement.
 pub struct HirCatchClause {
     pub param: Option<HirId<HirExpr>>,
-    pub mutable: bool,
     pub body: HirId<HirExpr>,
 }
 
@@ -332,8 +331,8 @@ pub struct HirTypeDecl {
     pub fields: IndexSet<Symbol>,
     /// Fields declared nullable with a `?` marker (`next?;`).
     pub nullable_fields: HashSet<Symbol>,
-    /// Fields declared reassignable with a `mut` modifier (`mut count;`).
-    pub mut_fields: HashSet<Symbol>,
+    /// Fields declared reassignable with a `var` modifier (`var count;`).
+    pub var_fields: HashSet<Symbol>,
     /// Each field's declared `:` clause, for the fields that have one.
     pub field_clauses: HashMap<Symbol, HirSlotClause>,
     pub methods: Vec<HirId<HirStmt>>,

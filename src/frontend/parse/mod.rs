@@ -188,9 +188,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
     }
 
-    /// Consumes a leading `mut` modifier if present, reporting whether it was there.
-    fn parse_mut(&mut self) -> bool {
-        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
+    /// Consumes a leading modifier keyword if present, reporting whether it was there.
+    fn take_modifier(&mut self, word: ContextualKeyword) -> bool {
+        if self.tokens.peek(0).contextual() == Some(word) {
             self.tokens.next();
             return true;
         }

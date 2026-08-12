@@ -1,5 +1,5 @@
 obligation borrowed { no persist; no return; }
-type Sink { pub mut item; init(this) { this.item = 0; } }
+type Sink { pub var item; init(this) { this.item = 0; } }
 fn stash(x: borrowed) {
     say s = mut Sink();
     s.item = x;

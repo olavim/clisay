@@ -5,7 +5,7 @@ trait Counter {
     pub fn get(this)! { return this.count; }
 }
 type Widget with Counter {
-    pub mut count = 0;   // the host holds the state the trait requires
+    pub var count = 0;   // the host holds the state the trait requires
     init(this) {}
 }
 

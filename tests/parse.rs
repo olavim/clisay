@@ -25,10 +25,10 @@ fn say_value(ast: &Ast) -> AstId<Expr> {
 
 #[test]
 fn say_nullability_and_mutability() {
-    let ast = parse("say a = 1; say b? = 2; say mut c = 3; say mut d? = 4;");
+    let ast = parse("say a = 1; say b? = 2; say var c = 3; say var d? = 4;");
     // The root block also carries the built-in declarations, so only the `say`s are read.
     let flags: Vec<(bool, bool)> = top_stmts(&ast).iter().filter_map(|s| match ast.get(s) {
-        Stmt::Say(f) => Some((f.nullable, f.mutable)),
+        Stmt::Say(f) => Some((f.nullable, f.reassignable)),
         _ => None,
     }).collect();
     assert_eq!(flags, vec![(false, false), (true, false), (false, true), (true, true)]);
@@ -91,6 +91,31 @@ fn unnamed_param_still_carries_a_clause() {
     assert!(params[1].binder(&ast).is_none());
     assert_eq!(params[1].clause.capability, Capability::Mut);
     assert_eq!(ast.text(params[1].clause.names[0]), "opt");
+}
+
+/// The prefix and the clause fill the same field, so a reader downstream cannot tell them apart.
+#[test]
+fn capability_prefix_and_clause_agree() {
+    let ast = parse("fn f(a, mut b, *c, *mut d) {} fn g(a: mut, b: *mut) {} fn h(*mut e) {}");
+    let stmts = top_stmts(&ast);
+    let caps: Vec<Capability> = nth_fn(&ast, &stmts, 0).params.iter().map(|p| p.clause.capability).collect();
+    assert_eq!(caps, vec![Capability::None, Capability::Mut, Capability::Move, Capability::MoveMut]);
+
+    let clause: Vec<Capability> = nth_fn(&ast, &stmts, 1).params.iter().map(|p| p.clause.capability).collect();
+    assert_eq!(clause, vec![Capability::Mut, Capability::MoveMut]);
+    assert_eq!(nth_fn(&ast, &stmts, 2).params[0].clause.capability, Capability::MoveMut);
+}
+
+/// A receiver has no pattern, so the prefix is the only place its capability can sit.
+#[test]
+fn receiver_carries_a_capability_prefix() {
+    let ast = parse("type T { pub fn a(this) {} pub fn b(mut this) {} pub fn c(*this) {} pub fn d(*mut this) {} }");
+    let Stmt::Type(decl) = ast.get(&top_stmts(&ast)[0]) else { panic!("expected a type") };
+    let caps: Vec<Capability> = decl.methods.iter().map(|m| match ast.get(m) {
+        Stmt::Fn(f) => f.receiver.as_ref().expect("a receiver").clause.capability,
+        _ => panic!("expected a method"),
+    }).collect();
+    assert_eq!(caps, vec![Capability::None, Capability::Mut, Capability::Move, Capability::MoveMut]);
 }
 
 #[test]
@@ -190,14 +215,14 @@ fn lambda_return_is_inferred() {
 
 #[test]
 fn type_field_markers() {
-    let ast = parse("type T { a; b?; mut c; mut d?; init(this, a, c) { this.a = a; this.c = c; } }");
+    let ast = parse("type T { a; b?; var c; var d?; init(this, a, c) { this.a = a; this.c = c; } }");
     let stmts = top_stmts(&ast);
     let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a type") };
     let names = |set: &HashSet<Symbol>| -> HashSet<String> {
         set.iter().map(|s| ast.text(*s).to_string()).collect()
     };
     assert_eq!(names(&decl.nullable_fields), HashSet::from(["b".to_string(), "d".to_string()]));
-    assert_eq!(names(&decl.mut_fields), HashSet::from(["c".to_string(), "d".to_string()]));
+    assert_eq!(names(&decl.var_fields), HashSet::from(["c".to_string(), "d".to_string()]));
 }
 
 #[test]

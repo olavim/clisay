@@ -1,5 +1,5 @@
 fn consume(x: *mut) {}
-say mut n = 0;
+say var n = 0;
 say a = mut [1];
 while n < 3 {
   consume(a);
