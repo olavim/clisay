@@ -69,6 +69,8 @@ pub(super) struct AliasLocal {
     pub(super) wrote_at: Option<HirId<HirExpr>>,
     /// Whether the value may be a mutable the caller lent, which no signature records.
     pub(super) unproven_borrow: bool,
+    /// Whether the value cannot leave the call, so anything it's stored into can't leave either.
+    pub(super) confined: bool,
 }
 
 /// Where a value lives: the thing a path starts from, and each element read out of it. Two places
@@ -364,6 +366,11 @@ impl<'a> Checker<'a> {
         self.local_of(expr).is_some_and(|i| self.locals[i].alias.unproven_borrow)
     }
 
+    /// Whether a value cannot leave the call it arrived in.
+    pub(super) fn value_is_confined(&self, expr: &HirId<HirExpr>) -> bool {
+        self.local_of(expr).is_some_and(|i| self.locals[i].alias.confined)
+    }
+
     /// Takes the one writer slot for the element this binding reads, so a second writer for the
     /// same element is rejected. A binding that is not an extraction writes whatever it owns.
     pub(super) fn claim_element_write(&mut self, i: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
@@ -601,20 +608,15 @@ impl<'a> Checker<'a> {
         }).collect()
     }
 
-    /// Stores a value into a container. The value persists there, so a `no persist` value
-    /// is rejected, a borrowed value is rejected since it cannot outlive its lender, and a mutable
-    /// value hands its write-ownership over as the container becomes its writer.
+    /// Stores a value into a container. A `no persist` value is rejected, and a mutable value hands
+    /// its write-ownership over as the container becomes its writer.
     pub(super) fn store_into_container(&mut self, flow: &Flow, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.reject_outliving(flow, Site::Container, expr)?;
-        if self.arg_is_borrowed(expr) {
-            return Err(self.error_help("cannot persist a borrowed value".to_string(), expr,
-                "take it by `*mut` to own it, then it may be persisted"));
-        }
-        // A parameter may hold a mutable borrowed from the caller, which no signature records. The
-        // runtime settles it, and the check rides the value so the error carets the value.
-        match self.holds_unproven_borrow(expr) {
-            true => self.record_guard(expr, Guard::Unborrowed),
-            false => self.record_elision(expr, Guard::Unborrowed),
+        if !self.value_is_confined(expr) {
+            match self.holds_unproven_borrow(expr) {
+                true => self.record_guard(expr, Guard::Unborrowed),
+                false => self.record_elision(expr, Guard::Unborrowed),
+            }
         }
         self.check_stored_element(expr)?;
         self.transfer_write_ownership(expr)?;

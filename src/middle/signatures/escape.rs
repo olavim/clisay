@@ -24,8 +24,22 @@ enum EscapeCollectMode {
     Capture,
 }
 
+/// Whether a name may be the value it is tied to, or merely holds it.
+#[derive(Clone, Copy, PartialEq)]
+enum AliasKind {
+    Identity,
+    Containment,
+}
+
+/// One name tied to another by a `say` or an assignment.
+struct Alias {
+    local: Symbol,
+    source: Symbol,
+    kind: AliasKind,
+}
+
 /// The escape structure of one analyzed function, collected by name. A name here is any identifier
-/// the body mentions, not only a parameter. `param_carriers` maps each back to the parameters it may
+/// the body mentions, not only a parameter. `Carriers` maps each back to the parameters it may
 /// hold, and drops the ones that reach none.
 #[derive(Default)]
 struct EscapeFacts {
@@ -42,8 +56,10 @@ struct EscapeFacts {
     call_writes: HashSet<Symbol>,
     /// Forwarding edges to known callees, whose persist depends on the callee's own summary.
     forwards: Vec<EscapeForward>,
-    /// `(local, source)` from `say` and assignment.
-    aliases: Vec<(Symbol, Symbol)>,
+    /// What each local is tied to, from `say` and assignment.
+    aliases: Vec<Alias>,
+    /// `(container, value)` from a store into a name the body may own.
+    stores: Vec<(Symbol, Symbol)>,
     /// Names the body rebinds that belong to an enclosing scope. A rebind replaces what the name
     /// denotes, which is not a write to the value and so is none of the sets above.
     rebound: HashSet<Symbol>,
@@ -63,9 +79,59 @@ struct FnAnalysis {
     /// The names the rows are indexed by.
     params: Vec<Symbol>,
     /// Which parameters each name in the body may hold.
-    carriers: HashMap<Symbol, HashSet<Symbol>>,
+    carriers: Carriers,
     /// What the body does with each name it mentions.
     facts: EscapeFacts,
+}
+
+/// Which parameters each name in a body may hold.
+#[derive(Default)]
+struct Carriers {
+    /// The parameters a name may hold directly.
+    held: HashMap<Symbol, HashSet<Symbol>>,
+    /// The parameters a name may hold through a container.
+    contained: HashMap<Symbol, HashSet<Symbol>>,
+}
+
+impl Carriers {
+    /// Grows both maps until stable, so a chain of aliases carries a parameter all the way through.
+    /// Every parameter holds itself, and an alias makes its target hold whatever its source holds.
+    fn of(params: &[Symbol], aliases: &[Alias]) -> Carriers {
+        let mut held: HashMap<Symbol, HashSet<Symbol>> = params.iter().map(|p| (*p, HashSet::from([*p]))).collect();
+        let mut contained: HashMap<Symbol, HashSet<Symbol>> = HashMap::new();
+        loop {
+            let mut changed = false;
+            for alias in aliases {
+                let Some(source_held) = held.get(&alias.source).cloned() else { continue };
+                // A container puts everything its source reaches out of the caller's reach. A
+                // pass-through only carries on whatever was already inside a container.
+                let promoted = match alias.kind {
+                    AliasKind::Containment => source_held.clone(),
+                    AliasKind::Identity => contained.get(&alias.source).cloned().unwrap_or_default(),
+                };
+                let entry = held.entry(alias.local).or_default();
+                for p in source_held {
+                    changed |= entry.insert(p);
+                }
+                let entry = contained.entry(alias.local).or_default();
+                for p in promoted {
+                    changed |= entry.insert(p);
+                }
+            }
+            if !changed { break; }
+        }
+        Carriers { held, contained }
+    }
+
+    /// The parameters a name may hold.
+    fn held(&self, name: &Symbol) -> impl Iterator<Item = &Symbol> {
+        self.held.get(name).into_iter().flatten()
+    }
+
+    /// Whether a name reaches a parameter only from inside a container.
+    fn contains(&self, name: &Symbol, param: &Symbol) -> bool {
+        self.contained.get(name).is_some_and(|c| c.contains(param))
+    }
 }
 
 /// Tarjan's strongly connected components over the call graph. Components come out in reverse
@@ -132,29 +198,22 @@ impl Components {
     }
 }
 
+/// Turns each recorded store into either an escape or an alias. A parameter and the receiver are
+/// containers the caller owns, so a store into one leaves the call. The receiver is named apart from
+/// the row, since a lambda in a method reaches `this` without taking it as a parameter.
+fn resolve_stores(params: &[Symbol], this: Symbol, facts: &mut EscapeFacts) {
+    for (container, source) in std::mem::take(&mut facts.stores) {
+        match container == this || params.contains(&container) {
+            true => { facts.direct.insert(source); },
+            false => facts.aliases.push(Alias { local: container, source, kind: AliasKind::Containment }),
+        }
+    }
+}
+
 /// The position of `param` in the analyzed function's parameter list.
 fn param_position(params: &[Symbol], param: Symbol) -> usize {
     // Every resolved escape fact names a parameter of that function, so it's always present.
     params.iter().position(|p| *p == param).expect("escape fact names a parameter")
-}
-
-/// Maps each name to the parameters whose value it may hold. Every parameter holds itself, and a
-/// `say`/assignment alias makes its target hold whatever its source holds. Grown until stable so a
-/// chain of aliases carries the parameter all the way through.
-fn param_carriers(params: &[Symbol], aliases: &[(Symbol, Symbol)]) -> HashMap<Symbol, HashSet<Symbol>> {
-    let mut carriers: HashMap<Symbol, HashSet<Symbol>> = params.iter().map(|p| (*p, HashSet::from([*p]))).collect();
-    loop {
-        let mut changed = false;
-        for (local, source) in aliases {
-            let Some(source_params) = carriers.get(source).cloned() else { continue };
-            let held = carriers.entry(*local).or_default();
-            for p in source_params {
-                changed |= held.insert(p);
-            }
-        }
-        if !changed { break; }
-    }
-    carriers
 }
 
 impl<'a> Collector<'a> {
@@ -220,31 +279,32 @@ impl<'a> Collector<'a> {
         let owner = self.sigs.method_owner.get(&func).copied();
         let mut facts = EscapeFacts::default();
         self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Escape, owner);
-        let carriers = param_carriers(&params, &facts.aliases);
+        resolve_stores(&params, self.this, &mut facts);
+        let carriers = Carriers::of(&params, &facts.aliases);
         FnAnalysis { func, params, carriers, facts }
     }
 
     /// Folds one body's facts into a row of one entry per parameter. A forwarded argument undergoes
     /// whatever its callee does to it, which the visit order has already settled.
-    fn fold_facts(&self, params: &[Symbol], carriers: &HashMap<Symbol, HashSet<Symbol>>, facts: &EscapeFacts) -> Vec<ParamFact> {
+    fn fold_facts(&self, params: &[Symbol], carriers: &Carriers, facts: &EscapeFacts) -> Vec<ParamFact> {
         let mut row = vec![ParamFact::default(); params.len()];
         // A directly persisted or mutated argument is kept whatever any callee does.
         for name in &facts.direct {
-            for p in carriers.get(name).into_iter().flatten() {
+            for p in carriers.held(name) {
                 let fact = &mut row[param_position(params, *p)];
                 fact.escapes = true;
                 fact.beyond_return = true;
             }
         }
         for name in &facts.mutates {
-            for p in carriers.get(name).into_iter().flatten() { row[param_position(params, *p)].mutates = true; }
+            for p in carriers.held(name) { row[param_position(params, *p)].mutates = true; }
         }
         for name in &facts.stored_away {
-            for p in carriers.get(name).into_iter().flatten() { row[param_position(params, *p)].stored_away = true; }
+            for p in carriers.held(name) { row[param_position(params, *p)].stored_away = true; }
         }
         for forward in &facts.forwards {
             let callee_fact = self.sigs.param_fact(&forward.callee, forward.callee_param);
-            for p in carriers.get(&forward.arg).into_iter().flatten() {
+            for p in carriers.held(&forward.arg) {
                 let fact = &mut row[param_position(params, *p)];
                 fact.escapes |= callee_fact.escapes;
                 fact.beyond_return |= callee_fact.beyond_return;
@@ -263,8 +323,12 @@ impl<'a> Collector<'a> {
         // Handing an argument back still counts as keeping it, which is what bars passing a mutable
         // value to a function that returns it.
         for name in &a.facts.returned {
-            for p in a.carriers.get(name).into_iter().flatten() {
-                row[param_position(&a.params, *p)].escapes = true;
+            for p in a.carriers.held(name) {
+                let fact = &mut row[param_position(&a.params, *p)];
+                fact.escapes = true;
+                // A name that reaches the argument through a container hands back the container,
+                // not the argument. The caller gets no way back to what it lent.
+                fact.beyond_return |= a.carriers.contains(name, p);
             }
         }
 
@@ -272,22 +336,19 @@ impl<'a> Collector<'a> {
             // A function hands back an argument when its result keeps that argument reachable.
             // `return x`, `return [x]` and `return () => x.n` all count, as does returning a call
             // that itself hands the argument back.
-            for name in self.reachable_names(ret) {
-                for p in a.carriers.get(&name).into_iter().flatten() {
-                    row[param_position(&a.params, *p)].hands_back = true;
+            for (name, kind) in self.reachable_kinds(ret) {
+                let carried: Vec<Symbol> = a.carriers.held(&name).copied().collect();
+                for p in &carried {
+                    let fact = &mut row[param_position(&a.params, *p)];
+                    fact.hands_back = true;
+                    // The narrower fact: the result may be the argument itself, not merely
+                    // something holding it. `return x` counts and `return [x]` does not.
+                    fact.hands_back_itself |= kind == AliasKind::Identity && !a.carriers.contains(&name, p);
                 }
-            }
-
-            // The narrower fact: the result may be the argument itself, not merely something
-            // holding it. `return x` counts and `return [x]` does not.
-            for name in self.returned_identity(ret) {
-                match a.carriers.get(&name) {
-                    Some(carried) => for p in carried {
-                        row[param_position(&a.params, *p)].hands_back_itself = true;
-                    },
-                    // A name no parameter carries comes from an outer scope, so the result is a
-                    // second name for a binding the caller may hold too.
-                    None => free.push(name),
+                // A name no parameter carries comes from an outer scope, so the result is a
+                // second name for a binding the caller may hold too.
+                if carried.is_empty() && kind == AliasKind::Identity {
+                    free.push(name);
                 }
             }
         }
@@ -311,7 +372,9 @@ impl<'a> Collector<'a> {
         walk::visit_body(self.hir, &decl.body, &mut |node| {
             if let Child::Expr(e) = node {
                 if let HirExpr::Call(callee, _) = self.hir.get(&e) {
-                    if let Some(func) = self.resolved_callee(callee, owner) { out.push(func); }
+                    // A constructor is an edge to the factory, so the factory settles first and
+                    // the forwarded arguments read a finished summary.
+                    if let Some(target) = self.call_target(callee, owner) { out.push(target); }
                 }
             }
         });
@@ -345,9 +408,9 @@ impl<'a> Collector<'a> {
         // carries its source.
         let mut seeds: HashSet<Symbol> = HashSet::new();
 
-        for (l, s) in &facts.aliases {
-            seeds.insert(*l);
-            seeds.insert(*s);
+        for alias in &facts.aliases {
+            seeds.insert(alias.local);
+            seeds.insert(alias.source);
         }
 
         for f in &facts.forwards {
@@ -359,15 +422,15 @@ impl<'a> Collector<'a> {
         seeds.extend(&facts.call_writes);
 
         let seeds: Vec<Symbol> = seeds.into_iter().collect();
-        let carriers = param_carriers(&seeds, &facts.aliases);
+        let carriers = Carriers::of(&seeds, &facts.aliases);
 
         let mut writes = HashSet::new();
         for n in facts.direct.iter().chain(&facts.mutates).chain(&facts.call_writes) {
-            if let Some(ps) = carriers.get(n) { writes.extend(ps.iter().copied()); }
+            writes.extend(carriers.held(n).copied());
         }
         for f in &facts.forwards {
             if self.sigs.param_escapes_at(&f.callee, f.callee_param) || self.sigs.param_mutates_at(&f.callee, f.callee_param) {
-                if let Some(ps) = carriers.get(&f.arg) { writes.extend(ps.iter().copied()); }
+                writes.extend(carriers.held(&f.arg).copied());
             }
         }
         writes
@@ -380,8 +443,9 @@ impl<'a> Collector<'a> {
             let params: Vec<Symbol> = decl.params.iter().map(|p| self.param_sym(&p.name)).collect();
             let mut facts = EscapeFacts::default();
             self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Escape, None);
+            resolve_stores(&params, self.this, &mut facts);
 
-            let carriers = param_carriers(&params, &facts.aliases);
+            let carriers = Carriers::of(&params, &facts.aliases);
             // A lambda publishes only whether it keeps an argument. Returning one hands it back, and
             // a lambda is never resolved at a call site, so the return does not enter this row.
             let row = self.fold_facts(&params, &carriers, &facts);
@@ -399,61 +463,65 @@ impl<'a> Collector<'a> {
         }
     }
 
-    /// The names a value keeps reachable. An identifier names itself; every other form follows the
-    /// shared ownership children, so a call or read reaches nothing while `[x]` reaches `x`.
+    /// The names a value keeps reachable, without saying how.
     fn reachable_names(&self, value: &HirId<HirExpr>) -> Vec<Symbol> {
-        if let Some(names) = self.denoted_names(value) {
-            return names;
+        self.reachable_kinds(value).into_iter().map(|(name, _)| name).collect()
+    }
+
+    /// The names a value keeps reachable, each said to be the value or held by it.
+    fn reachable_kinds(&self, value: &HirId<HirExpr>) -> Vec<(Symbol, AliasKind)> {
+        if let Some(kinds) = self.denoted_kinds(value) {
+            return kinds;
         }
         // A closure holds the names its body reads, so persisting it persists them.
         if let Some(captured) = self.lambda_captures.get(value) {
-            return captured.clone();
+            return captured.iter().map(|name| (*name, AliasKind::Containment)).collect();
         }
-        self.hir.ownership_children(value).iter().flat_map(|c| self.reachable_names(c)).collect()
+        let (children, holds) = self.held_children(value);
+        children.iter()
+            .flat_map(|c| self.reachable_kinds(c))
+            .map(|(name, kind)| (name, if holds { AliasKind::Containment } else { kind }))
+            .collect()
+    }
+
+    /// The child expressions a value's ownership flows through, and whether it holds them rather
+    /// than being one of them.
+    fn held_children(&self, value: &HirId<HirExpr>) -> (Vec<HirId<HirExpr>>, bool) {
+        match self.hir.get(value) {
+            HirExpr::Construct(_, brace) => (brace.iter().map(|(_, v)| *v).collect(), true),
+            HirExpr::Literal(HirLiteral::Array(_) | HirLiteral::Dict(_)) => (self.hir.ownership_children(value), true),
+            _ => (self.hir.ownership_children(value), false),
+        }
     }
 
     /// The names a value denotes rather than holds, when it denotes any. A call answers through its
     /// own summary, since its result is whatever it handed back.
-    fn denoted_names(&self, value: &HirId<HirExpr>) -> Option<Vec<Symbol>> {
+    fn denoted_kinds(&self, value: &HirId<HirExpr>) -> Option<Vec<(Symbol, AliasKind)>> {
         match self.hir.get(value) {
-            HirExpr::Identifier(s) => Some(vec![*s]),
-            HirExpr::This => Some(vec![self.this]),
-            HirExpr::Call(callee, args) => Some(self.call_result_names(callee, args)),
+            HirExpr::Identifier(s) => Some(vec![(*s, AliasKind::Identity)]),
+            HirExpr::This => Some(vec![(self.this, AliasKind::Identity)]),
+            HirExpr::Call(callee, args) => Some(self.call_result_kinds(callee, args)),
             _ => None,
         }
     }
 
-    /// The names a returned value may itself be, as opposed to hold. Handing one of these back gives
-    /// the caller the value it supplied. Anything else wraps the value in a new one that outlives the
-    /// lend, so a closure or a container holding a borrow is a persist.
-    fn returned_identity(&self, value: &HirId<HirExpr>) -> Vec<Symbol> {
-        if let Some(names) = self.denoted_names(value) {
-            return names;
-        }
-        match self.hir.get(value) {
-            // Either side of a fallback is a candidate for the one value handed back.
-            HirExpr::Coalesce(left, right) | HirExpr::Handle(left, _, right) => {
-                let mut names = self.returned_identity(left);
-                names.extend(self.returned_identity(right));
-                names
-            },
-            _ => Vec::new(),
-        }
-    }
-
-    /// Whether a function's result keeps the argument at `param` reachable.
-    fn returns_arg(&self, func: &HirId<HirStmt>, param: usize) -> bool {
-        self.sigs.param_fact(func, param).hands_back
-    }
-
     /// The names a call's result keeps reachable, for a callee the pass can resolve. An opaque
     /// callee answers nothing, leaving its result to the runtime borrow check.
-    fn call_result_names(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Vec<Symbol> {
+    fn call_result_kinds(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Vec<(Symbol, AliasKind)> {
         let Some(func) = self.resolved_callee(callee, None) else { return Vec::new() };
-        args.iter().enumerate()
-            .filter(|(i, _)| self.returns_arg(&func, *i))
-            .flat_map(|(_, arg)| self.reachable_names(arg))
-            .collect()
+        let mut out = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let fact = self.sigs.param_fact(&func, i);
+            if !fact.hands_back { continue; }
+            // The result is the argument itself only where the callee hands that argument back
+            // rather than a container it built around it.
+            out.extend(self.reachable_kinds(arg).into_iter()
+                .map(|(name, kind)| match fact.hands_back_itself {
+                    true => (name, kind),
+                    false => (name, AliasKind::Containment),
+                }));
+        }
+        out
     }
 
     /// Records every name a persisted value keeps reachable as a direct escape.
@@ -462,27 +530,51 @@ impl<'a> Collector<'a> {
         facts.stored_away.extend(self.reachable_names(value));
     }
 
-    /// Records how a call reaches its arguments. A known free function forwards each argument to its
-    /// matching parameter, a constructor stores its arguments, and a `this.method` call forwards to
-    /// the resolved method's parameters.
-    fn escapes_at_call(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], facts: &mut EscapeFacts, owner: Option<HirId<HirStmt>>) {
-        // A constructor stores its arguments into the new object, so they persist.
-        if self.resolved().type_named(callee).is_some() {
-            for arg in args { self.mark_persisted(arg, facts); }
-            return;
+    /// Records a store of `value` into `target`.
+    fn mark_stored(&self, target: &HirId<HirExpr>, value: &HirId<HirExpr>, facts: &mut EscapeFacts) {
+        let Some(container) = self.store_root(target) else { return self.mark_persisted(value, facts) };
+        for source in self.reachable_names(value) {
+            facts.stores.push((container, source));
         }
-        if let Some(callee_fn) = self.resolved_callee(callee, owner) {
-            self.forward_args(callee_fn, args, facts);
+        self.mark_held(value, facts);
+    }
+
+    /// Records that a container took the value.
+    fn mark_held(&self, value: &HirId<HirExpr>, facts: &mut EscapeFacts) {
+        // A container is a second name for what it holds, whoever ends up reaching it.
+        facts.stored_away.extend(self.reachable_names(value));
+    }
+
+    /// The name a store's destination is rooted at.
+    fn store_root(&self, target: &HirId<HirExpr>) -> Option<Symbol> {
+        match self.hir.get(target) {
+            HirExpr::This => Some(self.this),
+            // A bare field name is a field of `this`, so it roots where an explicit access would.
+            HirExpr::Identifier(name) => match self.bindings.place_of(target) {
+                Some(Place::Local(_)) => Some(*name),
+                Some(Place::Field(..)) => Some(self.this),
+                _ => None,
+            },
+            HirExpr::Index(base, _, _) => self.store_root(base),
+            _ => None,
         }
     }
 
-    /// Records a forwarding edge from each argument to the matching parameter of `callee`.
-    fn forward_args(&self, callee: HirId<HirStmt>, args: &[HirId<HirExpr>], facts: &mut EscapeFacts) {
+    /// Records an edge from each argument to the matching parameter of the callee's declaration.
+    fn forward_call_args(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], facts: &mut EscapeFacts, owner: Option<HirId<HirStmt>>) {
+        let Some(target) = self.call_target(callee, owner) else { return };
         for (callee_param, arg) in args.iter().enumerate() {
             for arg_name in self.reachable_names(arg) {
-                facts.forwards.push(EscapeForward { callee, callee_param, arg: arg_name });
+                facts.forwards.push(EscapeForward { callee: target, callee_param, arg: arg_name });
             }
         }
+    }
+
+    /// The declaration a call runs.
+    fn call_target(&self, callee: &HirId<HirExpr>, owner: Option<HirId<HirStmt>>) -> Option<HirId<HirStmt>> {
+        let Some(ty) = self.resolved().type_named(callee) else { return self.resolved_callee(callee, owner) };
+        let HirStmt::Type(decl) = self.hir.get(&ty) else { return None };
+        Some(decl.init).filter(|init| self.sigs.fns.contains_key(init))
     }
 
     /// The interned symbol of a member name node inside an index.
@@ -524,7 +616,7 @@ impl<'a> Collector<'a> {
                         for arg in args { self.reachable_into(arg, &mut facts.call_writes); }
                     }
                     if sig.effect.persists_args {
-                        for arg in args { self.mark_persisted(arg, facts); }
+                        for arg in args { self.mark_stored(recv, arg, facts); }
                     }
                     return;
                 }
@@ -570,19 +662,19 @@ impl<'a> Collector<'a> {
                     }
                 }
                 if self.assign_persists(lhs) {
-                    self.mark_persisted(rhs, facts);
+                    self.mark_stored(lhs, rhs, facts);
                 } else if let HirExpr::Identifier(local) = self.hir.get(lhs) {
                     // Rebinding a local aliases it to the value.
                     let local = *local;
-                    for source in self.reachable_names(rhs) { facts.aliases.push((local, source)); }
+                    for (source, kind) in self.reachable_kinds(rhs) { facts.aliases.push(Alias { local, source, kind }); }
                 }
             },
             HirExpr::Call(callee, args) => if mode == EscapeCollectMode::Escape {
-                self.escapes_at_call(callee, args, facts, owner);
+                self.forward_call_args(callee, args, facts, owner);
                 self.mark_call_writes(callee, args, owner, facts);
             },
             HirExpr::Construct(_, brace) => if mode == EscapeCollectMode::Escape {
-                for (_, value) in brace { self.mark_persisted(value, facts); }
+                for (_, value) in brace { self.mark_held(value, facts); }
             },
             _ => {},
         }
@@ -608,17 +700,17 @@ impl<'a> Collector<'a> {
     fn walk_escapes_stmt(&self, stmt: &HirId<HirStmt>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<HirId<HirStmt>>) {
         match self.hir.get(stmt) {
             HirStmt::Return(Some(e)) => if mode == EscapeCollectMode::Escape {
-                let handed: HashSet<Symbol> = self.returned_identity(e).into_iter().collect();
-                for name in self.reachable_names(e) {
-                    match handed.contains(&name) {
-                        true => facts.returned.insert(name),
-                        false => facts.direct.insert(name),
+                for (name, kind) in self.reachable_kinds(e) {
+                    match kind {
+                        AliasKind::Identity => facts.returned.insert(name),
+                        AliasKind::Containment => facts.direct.insert(name),
                     };
                 }
             },
             HirStmt::Say(field) => if let Some(value) = field.value {
                 // Binding a local to a value aliases it, so a parameter is tracked through the local.
-                for source in self.reachable_names(&value) { facts.aliases.push((field.name, source)); }
+                let local = field.name;
+                for (source, kind) in self.reachable_kinds(&value) { facts.aliases.push(Alias { local, source, kind }); }
             },
             // A nested function captures the names it references, so walk it in Capture mode. The
             // shared child walk treats it as a leaf.

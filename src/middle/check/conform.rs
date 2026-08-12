@@ -567,9 +567,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Refuses a value that would outlive its binding here. Two rules forbid it for different
-    /// reasons: a field and a container outlive the binding, which is `no persist`; neither can
-    /// discharge, which is `discharge before drop`. Checking both here keeps callers from pairing them.
+    /// Refuses a value that would outlive its binding.
     pub(super) fn reject_outliving(&self, flow: &Flow, site: Site, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.reject_at(flow, Rule::BeforeDrop, site, node)?;
         self.reject_at(flow, Rule::NoPersist, site, node)
