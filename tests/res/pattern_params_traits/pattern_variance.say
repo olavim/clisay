@@ -1,0 +1,59 @@
+type P { pub v; init(this, *v) { this.v = v; } }
+type Q { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P); }
+type Narrow with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ Q) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+type Q { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P); }
+type Wide with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P | Q)! { return "took"; }
+}
+print(Wide().onMove(P(1))); // expect: took
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P); }
+type Any with Mover {
+    init(this) { }
+    pub fn onMove(this, x)! { return "took"; }
+}
+print(Any().onMove(P(1))); // expect: took
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x); }
+type Narrow with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P)!; }
+type Same with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P)! { return x.v; }
+}
+print(Same().onMove(P(3))); // expect: 3
+
+// @split
+obligation stale { witness Old; discharge to use; }
+type Old { }
+
+trait Source { req fn get(this)!: stale; }
+type Clean with Source {
+    init(this) { }
+    pub fn get(this)! { return 1; }
+}
+print(Clean().get()); // expect: 1

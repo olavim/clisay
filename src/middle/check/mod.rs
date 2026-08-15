@@ -91,7 +91,8 @@ struct Local {
     assigned: bool,
     tag: TypeTag,
     func: Option<HirId<HirStmt>>,
-    binder: bool,
+    /// The form this binding was bound by, or `None` for an ordinary binding.
+    binder: Option<BinderSource>,
     /// Whether the binding holds a container whose elements owe `owed`.
     container: bool,
     /// Whether the binding is a function parameter.
@@ -110,11 +111,20 @@ struct Local {
     alias: AliasLocal,
 }
 
+#[derive(Clone, Copy, PartialEq, Default)]
+pub(super) enum BinderSource {
+    #[default]
+    Param,
+    Arm,
+    Condition,
+    Handler,
+}
+
 impl Local {
     /// A binding with every fact at its neutral default. Each named constructor overrides only the
     /// fields that distinguish it, so a new field is added here once.
     fn base(name: Symbol) -> Local {
-        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: false, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal::default() }
+        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal::default() }
     }
 
     fn param(name: Symbol, owed: Obligations, reassignable: bool) -> Local {
@@ -126,8 +136,8 @@ impl Local {
         Local::param(name, owed, false)
     }
 
-    fn binder_owing(name: Symbol, owed: Obligations) -> Local {
-        Local { owed, binder: true, ..Local::base(name) }
+    fn binder_owing(name: Symbol, owed: Obligations, source: BinderSource) -> Local {
+        Local { owed, binder: Some(source), ..Local::base(name) }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {

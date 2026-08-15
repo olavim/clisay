@@ -305,10 +305,14 @@ pub struct HirReqFn {
     pub ret: HirSlotClause,
 }
 
+/// What lowering names a parameter whose pattern binds no name for the whole value.
+pub const SYNTHETIC_PARAM: &str = "$p";
+
 /// A `req fn` parameter hole.
 pub struct HirReqParam {
     pub pos: SourcePosition,
     pub clause: HirSlotClause,
+    pub pattern: Option<HirId<HirMatcher>>,
 }
 
 /// A `catch (param) { … }` clause of a try statement.

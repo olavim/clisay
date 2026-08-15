@@ -495,16 +495,18 @@ impl<'a> Lowerer<'a> {
     fn param_slot(&mut self, param: &Param, index: usize) -> Result<(Symbol, Option<HirId<HirMatcher>>), anyhow::Error> {
         let name = match param.binder(self.ast) {
             Some(name) => name,
-            None => self.hir.intern(&format!("$p{index}")),
+            None => self.hir.intern(&format!("{}{index}", crate::middle::hir::SYNTHETIC_PARAM)),
         };
-        let pattern = match self.ast.get(&param.pattern) {
-            // A lone binder and `_` are fully served by the slot itself.
-            Matcher::Binder(_) | Matcher::Wildcard => None,
-            // `x @ p` named the slot above, so only `p` is left to match.
-            Matcher::As(_, inner) => Some(self.lower_matcher(&(*inner))?),
-            _ => Some(self.lower_matcher(&param.pattern)?),
-        };
-        Ok((name, pattern))
+        Ok((name, self.entry_pattern(&param.pattern)?))
+    }
+
+    /// The part of a parameter's pattern an entry step still has to match.
+    pub(super) fn entry_pattern(&mut self, pattern: &AstId<Matcher>) -> Result<Option<HirId<HirMatcher>>, anyhow::Error> {
+        match self.ast.get(pattern) {
+            Matcher::Binder(_) | Matcher::Wildcard => Ok(None),
+            Matcher::As(_, inner) => Ok(Some(self.lower_matcher(&(*inner))?)),
+            _ => Ok(Some(self.lower_matcher(pattern)?)),
+        }
     }
 
     fn fn_decl(&mut self, decl: &FnDecl) -> Result<HirFnDecl, anyhow::Error> {

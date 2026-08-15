@@ -150,10 +150,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(())
     }
 
-    /// Whether a prefix marker reads unambiguously on an ungrouped pattern. A bare binder or a
-    /// bracketed destructure has one obvious thing to mark, and a combinator does not.
     fn pattern_takes_prefix(&self, pattern: &AstId<Matcher>) -> bool {
-        matches!(self.ast.get(pattern), Matcher::Binder(_) | Matcher::Wildcard | Matcher::Shape(_) | Matcher::Array(_))
+        !matches!(self.ast.get(pattern), Matcher::As(..) | Matcher::Or(_) | Matcher::And(_))
     }
 
     /// param := pattern (":" clause)?

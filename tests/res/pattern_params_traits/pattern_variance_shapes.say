@@ -1,0 +1,120 @@
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P)!; }
+type Binds with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P { v })! { return v; }
+}
+print(Binds().onMove(P(5))); // expect: 5
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P); }
+type Tests with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P { v: 1 }) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P { v })!; }
+type Drops with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P)! { return x.v; }
+}
+print(Drops().onMove(P(6))); // expect: 6
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P { v: 1 })!; }
+type Same with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P { v: 1 })! { return "one"; }
+}
+print(Same().onMove(P(1))); // expect: one
+
+// @split
+type Inner { pub n; init(this, *n) { this.n = n; } }
+type Outer { pub inner; init(this, *i) { this.inner = i; } }
+
+trait Mover { req fn onMove(this, x @ Outer); }
+type Deep with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ Outer { inner: Inner { n } }) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type Inner { pub n; init(this, *n) { this.n = n; } }
+type Outer { pub inner; init(this, *i) { this.inner = i; } }
+
+trait Mover { req fn onMove(this, x @ Outer)!; }
+type Shallow with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ Outer { inner })! { return inner.n; }
+}
+print(Shallow().onMove(Outer(Inner(7)))); // expect: 7
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P); }
+type BareTests with Mover {
+    init(this) { }
+    pub fn onMove(this, P { v: 1 }) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P)!; }
+type BareBinds with Mover {
+    init(this) { }
+    pub fn onMove(this, P { v })! { return v; }
+}
+print(BareBinds().onMove(P(4))); // expect: 4
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, P)!; }
+type Named with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P)! { return x.v; }
+}
+print(Named().onMove(P(8))); // expect: 8
+
+// @split
+type Inner { pub n; init(this, *n) { this.n = n; } }
+type Outer { pub inner; init(this, *i) { this.inner = i; } }
+
+trait Mover { req fn onMove(this, x @ Outer { inner: Inner { n } })!; }
+type Deep with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ Outer { inner: Inner { n } })! { return n; }
+}
+print(Deep().onMove(Outer(Inner(9)))); // expect: 9
+
+// @split
+type Inner { pub n; init(this, *n) { this.n = n; } }
+type Outer { pub inner; init(this, *i) { this.inner = i; } }
+
+trait Mover { req fn onMove(this, x @ Outer { inner: Inner { n } })!; }
+type Shallower with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ Outer)! { return x.inner.n; }
+}
+print(Shallower().onMove(Outer(Inner(2)))); // expect: 2
+
+// @split
+type Inner { pub n; init(this, *n) { this.n = n; } }
+type Outer { pub inner; init(this, *i) { this.inner = i; } }
+
+trait Mover { req fn onMove(this, x @ Outer { inner: Inner { n } })!; }
+type Anything with Mover {
+    init(this) { }
+    pub fn onMove(this, x)! { return x.inner.n; }
+}
+print(Anything().onMove(Outer(Inner(3)))); // expect: 3

@@ -461,6 +461,9 @@ impl<'a> Resolver<'a> {
         self.out.type_traits.insert(*stmt, ResolvedTraits { with, req, gives });
 
         for (_, clause) in &decl.field_clauses { self.check_clause_placement(clause, ClauseSite::Field, stmt)?; }
+        for req_fn in &decl.req_fns {
+            for param in &req_fn.params { self.collect_matcher_binders(&param.pattern)?; }
+        }
         for method in &decl.methods { self.visit_stmt(method)?; }
         if let Some(init) = &decl.init { self.visit_stmt(init)?; }
         for (_, value) in &decl.field_inits { self.visit_expr(value)?; }

@@ -11,7 +11,7 @@ use anyhow::anyhow;
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::middle::hir::{Capability, HirExpr, HirId, HirLiteral, HirStmt, Symbol};
 
-use super::{Checker, Flow, Guard, Mutability, Site, Typed};
+use super::{BinderSource, Checker, Flow, Guard, Mutability, Site, Typed};
 
 /// Whether a binding's write-ownership is known to have gone, or only might have.
 #[derive(Clone, Copy, PartialEq)]
@@ -514,10 +514,21 @@ impl<'a> Checker<'a> {
             .with_help(format!("reading `{name}` is still fine; to write the value, go through whatever took it"))))
     }
 
-    /// Whether a value expression names a read-only parameter. Such a receiver is fixed by marking
-    /// the parameter, not by constructing the value differently.
-    pub(super) fn names_readonly_param(&self, value: &HirId<HirExpr>) -> bool {
-        self.local_of(value).is_some_and(|i| self.locals[i].param)
+    /// Whether a value expression names a parameter its own clause left immutable. That is the one
+    /// case where declaring the parameter `mut` is the fix.
+    fn names_immutable_param(&self, value: &HirId<HirExpr>) -> bool {
+        self.local_of(value).is_some_and(|i| {
+            self.locals[i].param && self.locals[i].alias.mutability == Mutability::Immutable
+        })
+    }
+
+    /// The same question for a pattern binder. A binder carries no marker of its own, so the fix
+    /// is on the parameter it came out of.
+    fn names_immutable_param_binder(&self, value: &HirId<HirExpr>) -> bool {
+        self.local_of(value).is_some_and(|i| {
+            self.locals[i].binder == Some(BinderSource::Param)
+                && self.locals[i].alias.mutability == Mutability::Immutable
+        })
     }
 
     /// The write error for a value expression naming a binding whose value a closure writes.
@@ -775,9 +786,14 @@ impl<'a> Checker<'a> {
         }
         let subject = self.receiver_subject(receiver);
         let method = self.callee_name(callee);
-        let help = match self.names_readonly_param(receiver) {
-            true => format!("{method} {reason}; declare the parameter `mut` to let {subject} be mutated"),
-            false => format!("{method} {reason}; construct the value with `mut` to call it"),
+        // A capture is answered above and a transfer raises its own error before this, so a slot
+        // reaching here is one its own clause left immutable. Each branch names what would change it.
+        let help = if self.names_immutable_param_binder(receiver) {
+            format!("{method} {reason}; mark the parameter `mut (..)` to destructure a mutable value, or work through the value it came out of")
+        } else if self.names_immutable_param(receiver) {
+            format!("{method} {reason}; declare the parameter `mut` to let {subject} be mutated")
+        } else {
+            format!("{method} {reason}; construct the value with `mut` to call it")
         };
         // The callee span contains the receiver span, so a second caret would sit inside the first.
         anyhow!("{}", Diagnostic::new("expected mutable receiver".to_string(), self.hir.pos(receiver).clone())
