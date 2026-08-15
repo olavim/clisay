@@ -330,7 +330,8 @@ impl<'a> Lowerer<'a> {
             .map(|p| HirReqParam { pos: p.pos.clone(), clause: self.slot_clause(p.nullable, &p.clause) })
             .collect();
         let ret = self.slot_clause(rf.ret == ReturnShape::Nullable, &rf.clause);
-        HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), params, ret }
+        let receiver = rf.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause));
+        HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), receiver, params, ret }
     }
 
     fn check_requirements(&self, decl: &TypeDecl, traits: &[(Symbol, &'a TypeDecl)], gives: &[Symbol], pos: &SourcePosition) -> Result<(), anyhow::Error> {
