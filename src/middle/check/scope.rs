@@ -195,8 +195,8 @@ impl<'a> Checker<'a> {
             local.container = param.clause.container;
             local.param = true;
             local.alias.mutability = Mutability::param(param.clause.capability);
-            local.alias.borrowed = !param.clause.capability.is_move();
-            local.alias.unproven_borrow = !param.clause.capability.is_mut() && !param.clause.capability.is_move();
+            local.alias.borrowed = !param.clause.capability.is_retain();
+            local.alias.unproven_borrow = !param.clause.capability.is_mut() && !param.clause.capability.is_retain();
             local.alias.confined = self.fn_ctx.param_confined.get(position).copied().unwrap_or(false);
             local.site = Some(param.name);
 

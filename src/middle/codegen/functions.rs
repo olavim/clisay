@@ -13,20 +13,33 @@ fn param_bits(flags: impl IntoIterator<Item = bool>) -> u64 {
         .fold(0u64, |mask, (i, _)| mask | (1u64 << i))
 }
 
+/// The parameters a declaration takes by `*`. Parameters past 63 are read as borrowing.
+fn declared_retains(decl: &HirFnDecl) -> u64 {
+    param_bits(decl.params.iter().map(|p| p.clause.capability.is_retain()))
+}
+
+/// What a callable does with each of its arguments.
+#[derive(Clone, Copy)]
+pub(super) struct ParamMasks {
+    /// The arguments the call hands write-ownership of, rather than lending for its duration.
+    pub retains: u64,
+    /// The arguments the body lets out of the caller's reach.
+    pub escapes: u64,
+}
+
 impl<'a> Compiler<'a> {
-    /// The persist mask of a named function or method, read from the escape summary. The summary
-    /// carries a method's receiver after its declared parameters, and the mask covers only the
-    /// arguments a call passes.
-    pub(super) fn persist_mask(&self, stmt: &HirId<HirStmt>, arity: usize) -> u64 {
-        param_bits((0..arity).map(|i| self.sigs.param_escapes_at(stmt, i)))
+    /// What a callable does with each argument.
+    pub(super) fn declared_masks(&self, stmt: &HirId<HirStmt>, decl: &HirFnDecl) -> ParamMasks {
+        let escapes = param_bits((0..decl.params.len()).map(|i| self.sigs.param_escapes_at(stmt, i)));
+        ParamMasks { retains: declared_retains(decl), escapes }
     }
 
-    /// The persist mask of a lambda, read from its per-lambda escape summary. An unanalyzed lambda
-    /// conservatively marks every parameter as escaping so the barrier rejects a borrow into it.
-    pub(super) fn lambda_persist_mask(&self, expr: &HirId<HirExpr>, arity: usize) -> u64 {
-        self.sigs.lambda_param_escapes.get(expr)
+    pub(super) fn lambda_masks(&self, expr: &HirId<HirExpr>, decl: &HirFnDecl) -> ParamMasks {
+        let arity = decl.params.len();
+        let escapes = self.sigs.lambda_param_escapes.get(expr)
             .map(|e| param_bits(e.iter().copied()))
-            .unwrap_or_else(|| if arity >= 64 { u64::MAX } else { (1u64 << arity) - 1 })
+            .unwrap_or_else(|| if arity >= 64 { u64::MAX } else { (1u64 << arity) - 1 });
+        ParamMasks { retains: declared_retains(decl) | escapes, escapes }
     }
 
     /// Matches each pattern parameter against its slot on entry, publishing the pattern's binders
@@ -43,7 +56,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, decl: &HirFnDecl, kind: FnKind, persist_mask: u64) -> Result<u8, anyhow::Error> {
+    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, decl: &HirFnDecl, kind: FnKind, masks: ParamMasks) -> Result<u8, anyhow::Error> {
         self.fn_kinds.push(kind);
 
         // Add a jump over the function's body after declaration.
@@ -65,15 +78,12 @@ impl<'a> Compiler<'a> {
         let arity = decl.params.len() as u8;
         let upvalues = self.bindings.upvalues(&decl.body).to_vec();
 
-        // A parameter lets its argument escape if it takes it by `*mut` or persists it.
-        // Parameters past 63 are read as borrowing.
-        let move_mask = param_bits(decl.params.iter().map(|p| p.clause.capability.is_move()));
-        let escape_mask = move_mask | persist_mask;
+        let escape_mask = masks.retains | masks.escapes;
 
         // A method declaring `this: mut` needs the call to prove its receiver is mutable.
         let mut_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_mut());
 
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, move_mask, mut_receiver));
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, mut_receiver));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))

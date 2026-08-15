@@ -1,8 +1,5 @@
-// A borrow forwarded to an opaque callback that persists it into a brace construction traps at
-// runtime. The construction refuses it first: the value is a mutable one the caller lent, and the
-// container is immutable. The borrow rule would refuse it too, one guard later.
 type Wrap { pub w?; init(this) { } }
 say var kept? = null;
-fn relay(x, cb) { cb(x); }
+fn relay(x, cb) { cb(x); } // error: cannot pass a borrowed argument to a callee that retains it
 say m = mut [1, 2];
-relay(m, v => kept = Wrap { w: v }); // error: cannot store a mutable value in an immutable container
+relay(m, v => kept = Wrap { w: v });

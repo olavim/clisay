@@ -83,6 +83,10 @@ macro_rules! compiler_error {
 }
 
 impl<'a> Compiler<'a> {
+    pub(super) fn operand_count<T: 'static>(&self, count: usize, subject: &str, unit: &str, at: &HirId<T>) -> Result<u8, anyhow::Error> {
+        u8::try_from(count).map_err(|_| self.error(format!("{subject} may have at most {} {unit}", u8::MAX), at))
+    }
+
     pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures, floor_only: bool) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
             receiving_slot: None,

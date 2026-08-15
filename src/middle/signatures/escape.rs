@@ -68,6 +68,14 @@ impl Sites {
     fn iter(&self) -> impl Iterator<Item = (&Symbol, &HirId<HirExpr>)> {
         self.0.iter()
     }
+
+    fn drop_names(&mut self, names: &HashSet<Symbol>) {
+        self.0.retain(|name, _| !names.contains(name));
+    }
+
+    fn merge(&mut self, other: Sites) {
+        for (name, at) in other.0 { self.note(name, at); }
+    }
 }
 
 /// Keeps the earliest of two escape sites, for the same reason `Sites` does.
@@ -103,6 +111,8 @@ struct EscapeFacts {
     /// Names the body rebinds that belong to an enclosing scope. A rebind replaces what the name
     /// denotes, which is not a write to the value and so is none of the sets above.
     rebound: HashSet<Symbol>,
+    /// Names this body declares.
+    bound: HashSet<Symbol>,
 }
 
 /// One forwarding edge: the argument named `arg` escapes if `callee` persists it at its
@@ -269,13 +279,27 @@ impl<'a> Collector<'a> {
         params
     }
 
+    /// The enclosing names a closure body reads.
+    fn captures_of(&self, decl: &HirFnDecl) -> Sites {
+        let mut facts = EscapeFacts::default();
+        for param in &decl.params {
+            if let HirExpr::Identifier(slot) = self.hir.get(&param.name) {
+                facts.bound.insert(*slot);
+            }
+            if let Some(pattern) = &param.pattern {
+                facts.bound.extend(self.hir.get(pattern).binders(self.hir));
+            }
+        }
+        self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Capture, None);
+        facts.direct.drop_names(&facts.bound);
+        facts.direct
+    }
+
     /// Records escape facts for every lambda.
     pub(super) fn collect_lambda_captures(&mut self) {
         for id in self.hir.lambda_ids() {
             let HirExpr::Literal(HirLiteral::Lambda(decl)) = self.hir.get(&id) else { continue };
-            let mut facts = EscapeFacts::default();
-            self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Capture, None);
-            self.lambda_captures.insert(id, facts.direct.into_names().collect());
+            self.lambda_captures.insert(id, self.captures_of(decl).into_names().collect());
         }
     }
 
@@ -335,7 +359,7 @@ impl<'a> Collector<'a> {
             for p in carriers.held(name) {
                 let fact = &mut row[param_position(params, *p)];
                 fact.escapes = true;
-                fact.beyond_return = true;
+                fact.escapes_beyond_return = true;
                 note_site(&mut fact.escape_site, *at);
             }
         }
@@ -349,9 +373,12 @@ impl<'a> Collector<'a> {
             let callee_fact = self.sigs.param_fact(&forward.callee, forward.callee_param);
             for p in carriers.held(&forward.arg) {
                 let fact = &mut row[param_position(params, *p)];
-                fact.escapes |= callee_fact.escapes;
-                if callee_fact.beyond_return {
-                    fact.beyond_return = true;
+                // A callee that only hands the argument back has not let it out of this body. Where
+                // the result then goes is the value walk's answer, not the edge's, and it reads the
+                // call through the same `hands_back` fact.
+                if callee_fact.escapes_beyond_return {
+                    fact.escapes = true;
+                    fact.escapes_beyond_return = true;
                     note_site(&mut fact.escape_site, forward.at);
                 }
                 fact.mutates |= callee_fact.mutates;
@@ -375,7 +402,7 @@ impl<'a> Collector<'a> {
                 // A name that reaches the argument through a container hands back the container,
                 // not the argument. The caller gets no way back to what it lent.
                 if a.carriers.contains(name, p) {
-                    fact.beyond_return = true;
+                    fact.escapes_beyond_return = true;
                     note_site(&mut fact.escape_site, *at);
                 }
             }
@@ -696,7 +723,12 @@ impl<'a> Collector<'a> {
     fn walk_escapes(&self, expr: &HirId<HirExpr>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<HirId<HirStmt>>) {
         // Record what this node contributes, then recurse through the shared child structure.
         match self.hir.get(expr) {
-            HirExpr::Identifier(s) => if mode == EscapeCollectMode::Capture { facts.direct.note(*s, *expr); },
+            // A closure captures what it reads from an enclosing frame. A name it binds itself is
+            // not a capture, however it is spelled, so `bind` decides it rather than the name.
+            HirExpr::Identifier(s) => if mode == EscapeCollectMode::Capture
+                && !matches!(self.bindings.place_of(expr), Some(Place::Local(_))) {
+                facts.direct.note(*s, *expr);
+            },
             HirExpr::This => if mode == EscapeCollectMode::Capture { facts.direct.note(self.this, *expr); },
             HirExpr::Assign(lhs, rhs) => if mode == EscapeCollectMode::Escape {
                 // Writing through an index mutates the base value in place.
@@ -727,8 +759,9 @@ impl<'a> Collector<'a> {
             },
             // A closure holds what a nested one captures, since it holds the nested one.
             HirExpr::Literal(HirLiteral::Lambda(decl)) if mode == EscapeCollectMode::Capture => {
-                self.walk_escapes(&decl.body, facts, mode, None);
+                facts.direct.merge(self.captures_of(decl));
             },
+            HirExpr::Handle(_, binder, _) => { facts.bound.insert(*binder); },
             _ => {},
         }
         for child in walk::children_of_expr(self.hir, expr) {
@@ -760,21 +793,34 @@ impl<'a> Collector<'a> {
                     };
                 }
             },
-            HirStmt::Say(field) => if let Some(value) = field.value {
-                // Binding a local to a value aliases it, so a parameter is tracked through the local.
-                let local = field.name;
-                for (source, kind, _) in self.reachable_kinds(&value) { facts.aliases.push(Alias { local, source, kind }); }
+            HirStmt::Say(field) => {
+                facts.bound.insert(field.name);
+                if let Some(value) = field.value {
+                    // Binding a local to a value aliases it, so a parameter is tracked through the local.
+                    let local = field.name;
+                    for (source, kind, _) in self.reachable_kinds(&value) { facts.aliases.push(Alias { local, source, kind }); }
+                }
             },
             // A nested function is a closure bound to a name. What it captures leaves only as far
             // as that name does, which is how a lambda's captures are already read.
             HirStmt::Fn(decl) if mode == EscapeCollectMode::Escape => {
-                let mut inner = EscapeFacts::default();
-                self.walk_escapes(&decl.body, &mut inner, EscapeCollectMode::Capture, None);
-                for source in inner.direct.into_names() {
+                facts.bound.insert(decl.name);
+                for source in self.captures_of(decl).into_names() {
                     facts.aliases.push(Alias { local: decl.name, source, kind: AliasKind::Containment });
                 }
             },
-            HirStmt::Fn(decl) => self.walk_escapes(&decl.body, facts, EscapeCollectMode::Capture, None),
+            HirStmt::Fn(decl) => {
+                facts.bound.insert(decl.name);
+                facts.direct.merge(self.captures_of(decl));
+            },
+            HirStmt::Match(_, arms) => for arm in arms {
+                facts.bound.extend(self.hir.get(&arm.matcher).binders(self.hir));
+            },
+            HirStmt::Try(_, Some(catch), _) => if let Some(param) = catch.param {
+                if let HirExpr::Identifier(name) = self.hir.get(&param) { facts.bound.insert(*name); }
+            },
+            HirStmt::While(cond, _) => facts.bound.extend(self.hir.condition_binders(cond)),
+            HirStmt::If(cond, ..) => facts.bound.extend(self.hir.condition_binders(cond)),
             _ => {},
         }
         for child in walk::children_of_stmt(self.hir, stmt) {

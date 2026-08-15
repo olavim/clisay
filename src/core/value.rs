@@ -122,6 +122,10 @@ impl Value {
         self.is_object() && self.as_object().is_borrowed()
     }
 
+    pub fn is_marked(self) -> bool {
+        self.is_object() && self.as_object().is_marked()
+    }
+
     pub fn as_number(self) -> f64 {
         f64::from_bits(self.0)
     }

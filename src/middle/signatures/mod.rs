@@ -19,7 +19,7 @@ pub(crate) struct ParamFact {
     pub escapes: bool,
     /// The body puts it where the caller cannot reach it again. A return is excluded, since that
     /// hands the value back to the caller that supplied it.
-    pub beyond_return: bool,
+    pub escapes_beyond_return: bool,
     /// The body mutates it in place. A read-only borrow leaves its argument untouched, so a mutable
     /// value is admitted only where this is false.
     pub mutates: bool,
@@ -226,7 +226,7 @@ impl Signatures {
 
     /// Whether a parameter escapes somewhere its caller cannot follow, ignoring a plain return.
     pub(crate) fn escapes_beyond_return_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
-        self.param_fact(func, param).beyond_return
+        self.param_fact(func, param).escapes_beyond_return
     }
 
     /// Where a parameter's argument leaves the body.

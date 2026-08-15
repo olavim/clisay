@@ -514,7 +514,7 @@ fn closure_call(value: Value, arg_count: usize) -> Option<(*mut ObjClosure, usiz
             let ptr = object.as_closure_ptr();
             let closure = unsafe { &*ptr };
             if arg_count == closure.arity as usize {
-                return Some((ptr, closure.ip_start, closure.move_mask));
+                return Some((ptr, closure.ip_start, closure.retain_mask));
             }
         }
     }
@@ -531,11 +531,11 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
 
     // Resolve the callee: a cache hit skips the checks and closure deref.
     let cache = unsafe { *vm.call_cache.get_unchecked(slot) };
-    let (closure, ip_start, move_mask) = if cache.site == site && cache.callee == value {
-        (cache.closure, cache.ip_start, cache.move_mask)
-    } else if let Some((closure, ip_start, move_mask)) = closure_call(value, arg_count) {
-        unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start, move_mask } };
-        (closure, ip_start, move_mask)
+    let (closure, ip_start, retain_mask) = if cache.site == site && cache.callee == value {
+        (cache.closure, cache.ip_start, cache.retain_mask)
+    } else if let Some((closure, ip_start, retain_mask)) = closure_call(value, arg_count) {
+        unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start, retain_mask } };
+        (closure, ip_start, retain_mask)
     } else {
         vm.stack.set_top(top);
         vm.ip = ip;
@@ -557,7 +557,13 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     if arg_count != 0 {
         vm.stack.set_top(top);
         vm.ip = ip;
-        vm.transfer_argument_write_ownership(move_mask, stack_start, arg_count)?;
+        // The call cache holds the retain mask so a cached call never reads the closure.
+        // Only a forced run needs the escape mask, so an ordinary run still skips that read.
+        let escape_mask = match vm.forced {
+            true => unsafe { (*closure).escape_mask },
+            false => 0,
+        };
+        vm.transfer_argument_write_ownership(retain_mask, escape_mask, stack_start, arg_count)?;
     }
     become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
 }

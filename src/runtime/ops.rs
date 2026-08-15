@@ -39,10 +39,14 @@ impl Vm {
     /// Lowers the stack out of a frame. Every exit goes through this, because one that lowers the
     /// stack without closing upvalues first leaves a root pointing above the live top. `leaving` is
     /// the value the exit carries out, which lands in the slot the frame started at.
-    fn unwind_to(&mut self, stack_start: *mut Value, write_depth: usize, leaving: Value) {
+    fn unwind_to(&mut self, stack_start: *mut Value, write_depth: usize, leaving: Value) -> Result<(), anyhow::Error> {
         self.close_upvalues(stack_start);
         self.release_write_ownership_above(write_depth, stack_start, leaving);
         self.stack.set_top(stack_start);
+        if self.forced {
+            self.settle_borrow_claims(leaving)?;
+        }
+        Ok(())
     }
 
     /// Puts back the borrow bits marked since the stack was this deep.
@@ -74,7 +78,7 @@ impl Vm {
         // The value outlives this frame, so the scope releases below must not let go of it.
         objects::record_escape(value);
         self.restore_borrows(frame.borrow_depth);
-        self.unwind_to(frame.stack_start, frame.write_depth, value);
+        self.unwind_to(frame.stack_start, frame.write_depth, value)?;
         self.stack.push(value);
         Ok(true)
     }
@@ -89,7 +93,7 @@ impl Vm {
         let value = self.stack.pop();
         objects::record_escape(value);
         self.restore_borrows(frame.borrow_depth);
-        self.unwind_to(frame.stack_start, frame.write_depth, value);
+        self.unwind_to(frame.stack_start, frame.write_depth, value)?;
         if frame.seal {
             crate::core::objects::freeze_value(value, self.current_pos_index());
         }
@@ -119,7 +123,7 @@ impl Vm {
         // Restore borrows marked since the `try` began, whose frame exits the unwind skips.
         self.restore_borrows(frame.borrow_depth);
         self.frames.set_top(frame.origin);
-        self.unwind_to(frame.stack_start, frame.write_depth, value);
+        self.unwind_to(frame.stack_start, frame.write_depth, value)?;
         self.ip = frame.handler_ip;
         self.stack.push(value);
         Ok(())

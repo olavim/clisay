@@ -21,7 +21,8 @@ impl<'a> Checker<'a> {
             HirStmt::Fn(decl) => {
                 // Register the name first so the body may call itself.
                 self.locals.push(Local::func(decl.name, *stmt));
-                self.function(Some(*stmt), self.sigs.writes.get(stmt), decl)?;
+                let confined = self.fn_confined(stmt, decl.params.len());
+                self.function(Some(*stmt), self.sigs.writes.get(stmt), confined, decl)?;
             },
             HirStmt::Type(decl) => self.type_decl(stmt, Some(*stmt), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
@@ -592,14 +593,14 @@ impl<'a> Checker<'a> {
             // The factory's field-locals carry definite assignment, and writing an immutable field
             // in it is initialization. A factory-less type has a `Nop` init to skip.
             self.checking_factory = true;
-            self.function_stmt(&decl.init)?;
+            self.method_stmt(&decl.init)?;
             self.checking_factory = false;
         } else {
             // A trait method reaches only the trait's declared surface through `this`.
             self.current_trait_surface = Some(decl.surface.clone());
         }
         for method in &decl.methods {
-            self.function_stmt(method)?;
+            self.method_stmt(method)?;
         }
         self.current_type = saved_type;
         self.current_trait_surface = saved_surface;
@@ -607,7 +608,18 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    pub(super) fn function(&mut self, stmt: Option<HirId<HirStmt>>, writes: Option<&'a HashSet<Symbol>>, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
+    /// Per parameter, whether the escape summary clears it of ever leaving the call.
+    pub(super) fn fn_confined(&self, stmt: &HirId<HirStmt>, arity: usize) -> Vec<bool> {
+        (0..arity).map(|i| !self.sigs.escapes_beyond_return_at(stmt, i)).collect()
+    }
+
+    /// Per parameter, whether the escape summary clears it of ever leaving the call.
+    pub(super) fn lambda_confined(&self, node: &HirId<HirExpr>, arity: usize) -> Vec<bool> {
+        let escapes = self.sigs.lambda_param_escapes.get(node);
+        (0..arity).map(|i| escapes.is_some_and(|row| row.get(i) == Some(&false))).collect()
+    }
+
+    pub(super) fn function(&mut self, stmt: Option<HirId<HirStmt>>, writes: Option<&'a HashSet<Symbol>>, confined: Vec<bool>, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
         // An unmarked return is inferred whole from the body. When it can both finish with no value
         // and return a bad value, the mixed shape must be named, not inferred.
         let unmarked = decl.is_unmarked();
@@ -624,7 +636,7 @@ impl<'a> Checker<'a> {
         if let Some(stmt) = stmt {
             for (i, param) in decl.params.iter().enumerate() {
                 let cap = param.clause.capability;
-                if !cap.is_move() && self.sigs.escapes_beyond_return_at(&stmt, i) {
+                if !cap.is_retain() && self.sigs.escapes_beyond_return_at(&stmt, i) {
                     let text = self.hir.text(self.hir.ident_sym(&param.name));
                     let barred = param.clause.names.iter().copied().find(|&o| self.sigs.rules_of(o).no_persist);
                     let help = match barred {
@@ -651,7 +663,7 @@ impl<'a> Checker<'a> {
             // A `mut` receiver is lent for the call, so a body that captures it into a value
             // outliving the call keeps writing through a borrow the caller has taken back.
             let cap = decl.receiver.as_ref().map_or(Capability::None, |r| r.capability);
-            if cap.is_mut() && !cap.is_move() && self.sigs.escapes_beyond_return_at(&stmt, decl.params.len()) {
+            if cap.is_mut() && !cap.is_retain() && self.sigs.escapes_beyond_return_at(&stmt, decl.params.len()) {
                 return Err(self.error_help(
                     "a `mut` receiver borrows the instance and cannot let it escape".to_string(),
                     &decl.body,
@@ -670,10 +682,7 @@ impl<'a> Checker<'a> {
             name: Some(decl.name),
             return_clause: decl.clause.pos.clone(),
             params: decl.params.iter().map(|p| (self.hir.ident_sym(&p.name), p.pos.clone())).collect(),
-            param_confined: match stmt {
-                Some(s) => (0..decl.params.len()).map(|i| !self.sigs.escapes_beyond_return_at(&s, i)).collect(),
-                None => Vec::new(),
-            },
+            param_confined: confined,
             writes,
         };
         let saved = std::mem::replace(&mut self.fn_ctx, ctx);
@@ -689,16 +698,18 @@ impl<'a> Checker<'a> {
         result
     }
 
-    pub(super) fn function_stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
+    pub(super) fn method_stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
         if let HirStmt::Fn(decl) = self.hir.get(stmt) {
-            self.function(Some(*stmt), self.sigs.writes.get(stmt), decl)?;
+            let confined = self.fn_confined(stmt, decl.params.len());
+            self.function(Some(*stmt), self.sigs.writes.get(stmt), confined, decl)?;
         }
         Ok(())
     }
 
     /// Checks a lambda body.
     pub(super) fn lambda(&mut self, decl: &HirFnDecl, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        self.function(None, self.sigs.lambda_writes.get(node), decl)
+        let confined = self.lambda_confined(node, decl.params.len());
+        self.function(None, self.sigs.lambda_writes.get(node), confined, decl)
     }
 
     pub(super) fn construct_tag(&self, callee: &HirId<HirExpr>) -> TypeTag {
@@ -815,7 +826,7 @@ impl<'a> Checker<'a> {
     pub(super) fn check_receiver(&mut self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>, callee_fn: HirId<HirStmt>, receiver_typed: &Typed) -> Result<(), anyhow::Error> {
         let Some(sig) = self.sigs.fns.get(&callee_fn) else { return Ok(()) };
         let (marker, params) = (sig.receiver_marker, sig.param_markers.len());
-        if !marker.is_some_and(|m| m.is_move())
+        if !marker.is_some_and(|m| m.is_retain())
             && receiver_typed.mutability == Mutability::Mutable
             && self.sigs.param_stored_at(&callee_fn, params) {
             return Err(self.keeps_receiver_error(callee, receiver));
@@ -828,7 +839,7 @@ impl<'a> Checker<'a> {
             return Err(self.immutable_receiver_error(callee, receiver, "declares `this: mut`"));
         }
         self.claim_receiver_write(receiver)?;
-        if marker.is_move() {
+        if marker.is_retain() {
             // A borrow cannot be given away, so it may not feed a consuming receiver.
             if self.arg_is_borrowed(receiver) {
                 return Err(self.consumes_borrow_error(callee, receiver));
