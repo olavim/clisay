@@ -125,6 +125,8 @@ pub struct Signatures {
     // Name-to-declaration lookups.
     /// Every declaration of each type name.
     pub(crate) types_by_name: HashMap<Symbol, Vec<HirId<HirStmt>>>,
+    /// The trait declarations each name stands for.
+    pub(crate) traits_by_name: HashMap<Symbol, Vec<HirId<HirStmt>>>,
     /// The declaration each identity stands for.
     pub(crate) decls_by_id: HashMap<TypeId, HirId<HirStmt>>,
     pub(crate) fns_by_name: HashMap<Symbol, HirId<HirStmt>>,
@@ -150,6 +152,7 @@ impl Signatures {
             lambda_writes: HashMap::new(),
             any_rebind: HashSet::new(),
             types_by_name: HashMap::new(),
+            traits_by_name: HashMap::new(),
             decls_by_id: HashMap::new(),
             fns_by_name: HashMap::new(),
             methods_by_type: HashMap::new(),
@@ -157,13 +160,10 @@ impl Signatures {
         }
     }
 
-    /// Whether `name` names a declared type.
     pub(crate) fn is_type(&self, name: Symbol) -> bool {
         self.types_by_name.contains_key(&name)
     }
 
-    /// The declaration a type name stands for, when it stands for exactly one. A shadowed name
-    /// names no declaration in particular, and the last one walked is not an answer.
     pub(crate) fn type_decl(&self, name: Symbol) -> Option<HirId<HirStmt>> {
         match self.types_by_name.get(&name) {
             Some(decls) if decls.len() == 1 => decls.first().copied(),
@@ -171,12 +171,17 @@ impl Signatures {
         }
     }
 
-    /// The declaration an identity stands for.
+    pub(crate) fn trait_decl(&self, name: Symbol) -> Option<HirId<HirStmt>> {
+        match self.traits_by_name.get(&name) {
+            Some(decls) if decls.len() == 1 => decls.first().copied(),
+            _ => None,
+        }
+    }
+
     pub(crate) fn decl_of_id(&self, id: TypeId) -> Option<HirId<HirStmt>> {
         self.decls_by_id.get(&id).copied()
     }
 
-    /// The obligation this declaration is the witness of.
     pub(crate) fn obligation_for_witness_id(&self, id: TypeId) -> Option<Symbol> {
         self.witnesses.iter().find_map(|(obligation, witness)| match witness {
             Witness::Type(w) | Witness::Trait(w) => (*w == id).then_some(*obligation),
@@ -184,7 +189,6 @@ impl Signatures {
         })
     }
 
-    /// The obligations one declaration witnesses.
     pub(crate) fn obligations_witnessed_by_decl(&self, decl: &HirTypeDecl) -> Obligations {
         let mut out: Obligations = self.obligation_for_witness_id(decl.id).into_iter().collect();
         for (_, id) in &decl.provides {
@@ -193,8 +197,7 @@ impl Signatures {
         out
     }
 
-    /// The witness of an obligation, when one is known.
-    pub(crate) fn witness(&self, obligation: Symbol) -> Option<&Witness> {
+    pub(crate) fn witness_of(&self, obligation: Symbol) -> Option<&Witness> {
         self.witnesses.get(&obligation)
     }
 
@@ -208,35 +211,27 @@ impl Signatures {
         out.into_iter()
     }
 
-    /// What the argument at `param` undergoes. An unresolved function or position answers that it
-    /// undergoes nothing, leaving that call to the runtime borrow check.
     fn param_fact(&self, func: &HirId<HirStmt>, param: usize) -> ParamFact {
         self.params.get(func).and_then(|row| row.get(param)).copied().unwrap_or_default()
     }
 
-    /// Whether `func` persists the argument to its parameter at position `param`.
     pub(crate) fn param_escapes_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
         self.param_fact(func, param).escapes
     }
 
-    /// Whether the body stores a parameter where a second name can write it.
     pub(crate) fn param_stored_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
         self.param_fact(func, param).stored_away
     }
 
-    /// Whether a parameter escapes somewhere its caller cannot follow, ignoring a plain return.
     pub(crate) fn escapes_beyond_return_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
         self.param_fact(func, param).escapes_beyond_return
     }
 
-    /// Where a parameter's argument leaves the body.
     pub(crate) fn escape_site_at(&self, func: &HirId<HirStmt>, param: usize) -> Option<HirId<HirExpr>> {
         self.param_fact(func, param).escape_site
     }
 
-    /// Whether `func`'s result may be the argument at `param` itself, so binding the result names
-    /// that argument a second time.
-    /// The names `func`'s result may be that are none of its parameters.
+    /// Whether `func`'s result may be the argument at `param` itself.
     pub(crate) fn returns_free(&self, func: &HirId<HirStmt>) -> &[Symbol] {
         self.returns_free.get(func).map_or(&[], Vec::as_slice)
     }
@@ -245,14 +240,11 @@ impl Signatures {
         self.param_fact(func, param).hands_back_itself
     }
 
-    /// Whether `func` mutates the argument to its parameter at position `param` in place.
     pub(crate) fn param_mutates_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
         self.param_fact(func, param).mutates
     }
 
-    /// An obligation's declared rules. An unregistered name forbids nothing. A `to_use` rule is also
-    /// what a proof clears, since a discharge answers that question and nothing else.
-    pub(crate) fn rules_of(&self, obligation: Symbol) -> ObligationRules {
+    pub(crate) fn obligation_rules_of(&self, obligation: Symbol) -> ObligationRules {
         self.rules.get(&obligation).copied().unwrap_or_default()
     }
 

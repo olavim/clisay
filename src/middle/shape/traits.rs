@@ -1,7 +1,10 @@
 //! Trait-contract shape: override return conformance and `req fn` variance.
 
+use anyhow::anyhow;
+
+use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::middle::diagnose::Diagnose;
-use crate::middle::hir::{HirId, HirLiteral, HirMatchElem, HirMatchField, HirMatcher, HirParam, HirStmt, HirTypeDecl, Symbol, SYNTHETIC_PARAM};
+use crate::middle::hir::{HirId, HirLiteral, HirMatchElem, HirMatchField, HirMatcher, HirParam, HirReqMember, HirStmt, HirTypeDecl, Symbol, SYNTHETIC_PARAM};
 use crate::middle::signatures::{Mutability, RetSig};
 use crate::middle::obligations::Obligations;
 
@@ -136,6 +139,76 @@ impl<'a> Shape<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Checks each required member against the member filling it.
+    pub(super) fn check_req_members(&self, node: &HirId<HirStmt>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+        let Some(layout) = self.layout_of(node) else { return Ok(()) };
+        let type_name = self.hir.text(decl.name);
+        for req in &decl.req_members {
+            let name = self.hir.text(req.name);
+            let trait_name = self.hir.text(req.trait_name);
+            let required = req.clause.owed();
+            let error_header = format!("member `{name}` does not satisfy `{trait_name}.{name}`");
+
+            // The member's own declaration is what has to change, so that is where the caret goes.
+            // A missing member is the composer's error, and lowering reports it at the type.
+            let at = decl.field_positions.get(&req.name).unwrap_or(self.hir.pos(node));
+            if !layout.is_field(req.name) {
+                if !req.reassignable && required.is_empty() {
+                    continue;
+                }
+                let method = self.satisfying_method(decl, req.name).map(|m| self.hir.pos(&m).clone());
+                return Err(anyhow!("{}", self.member_error_frame(error_header, method.as_ref().unwrap_or(at),
+                    format!("`{type_name}.{name}` is a method"), node, req,
+                    format!("`{trait_name}` requires state from `{name}`"))
+                    .with_help(format!("fill `{name}` with a field, or drop what the requirement asks of it"))));
+            }
+
+            if req.reassignable && !layout.is_reassignable(req.name) {
+                return Err(anyhow!("{}", self.member_error_frame(error_header, at,
+                    format!("`{type_name}.{name}` is not reassignable"), node, req,
+                    format!("`{trait_name}` requires a reassignable `{name}`"))
+                    .with_help(format!("declare it `pub var {name}` on `{type_name}`"))));
+            }
+
+            let owed = layout.owed(req.name, self.sigs.opt);
+            let extra = self.sorted_difference(&owed, &required);
+            if !extra.is_empty() {
+                return Err(anyhow!("{}", self.member_error_frame(error_header, at,
+                    format!("`{type_name}.{name}` owes {}", quote_list(&extra)), node, req,
+                    format!("`{trait_name}.{name}` does not declare {}", quote_list(&extra)))));
+            }
+
+            let missing = self.sorted_difference(&required, &owed);
+            if req.reassignable && !missing.is_empty() {
+                return Err(anyhow!("{}", self.member_error_frame(error_header, at,
+                    format!("`{type_name}.{name}` does not owe {}", quote_list(&missing)), node, req,
+                    format!("`{trait_name}` writes {} into `{name}`", quote_list(&missing)))
+                    .with_help(format!("declare `{name}: {}` on `{type_name}`", missing.join(" ")))));
+            }
+        }
+        Ok(())
+    }
+
+    fn member_error_frame(&self, header: String, at: &SourcePosition, label: String, node: &HirId<HirStmt>,
+        req: &HirReqMember, site_label: String) -> Diagnostic {
+        let mut frame = Diagnostic::new(header, at.clone())
+            .with_label(label)
+            .with_context_span(req.pos.clone(), site_label);
+        frame = self.enclose_error_site(frame, self.hir.pos(node), at);
+        match self.sigs.trait_decl(req.trait_name) {
+            Some(declaring) => self.enclose_error_site(frame, self.hir.pos(&declaring), &req.pos),
+            None => frame,
+        }
+    }
+
+    /// Shows the declaration an error site sits inside.
+    fn enclose_error_site(&self, frame: Diagnostic, declaration: &SourcePosition, site: &SourcePosition) -> Diagnostic {
+        match declaration.line == site.line {
+            true => frame,
+            false => frame.with_enclosing(declaration.clone()),
+        }
     }
 
     fn param_subject(&self, param: &HirParam, position: usize) -> String {

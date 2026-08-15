@@ -305,6 +305,19 @@ pub struct HirReqFn {
     pub ret: HirSlotClause,
 }
 
+/// A `req "var"? name (":" clause)?;` state hole a composer must fill.
+pub struct HirReqMember {
+    pub name: Symbol,
+    /// The trait that declares this hole.
+    pub trait_name: Symbol,
+    /// The `var name: clause` span in the trait.
+    pub pos: SourcePosition,
+    /// Required to be reassignable, with the `var` marker.
+    pub reassignable: bool,
+    /// What the member must owe.
+    pub clause: HirSlotClause,
+}
+
 /// What lowering names a parameter whose pattern binds no name for the whole value.
 pub const SYNTHETIC_PARAM: &str = "$p";
 
@@ -341,9 +354,13 @@ pub struct HirTypeDecl {
     pub var_fields: HashSet<Symbol>,
     /// Each field's declared `:` clause, for the fields that have one.
     pub field_clauses: HashMap<Symbol, HirSlotClause>,
+    /// Where each field is declared.
+    pub field_positions: HashMap<Symbol, SourcePosition>,
     pub methods: Vec<HirId<HirStmt>>,
     /// The `req fn` holes this composer must satisfy: its own and those of its `with` traits.
     pub req_fns: Vec<HirReqFn>,
+    /// The `req <member>` holes this composer must satisfy: its own and those of its `with` traits.
+    pub req_members: Vec<HirReqMember>,
     /// The declaring trait of each method in `methods`, one entry per method. `None` where the
     /// host type declares the member itself.
     pub method_traits: Vec<Option<Symbol>>,

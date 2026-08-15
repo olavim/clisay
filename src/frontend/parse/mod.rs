@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
-use crate::ast::{MatchArm, Ast, AstId, BuiltinType, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Receiver, ReqFn, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
+use crate::ast::{MatchArm, Ast, AstId, BuiltinType, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Receiver, ReqFn, ReqMember, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
 use crate::frontend::lex::{ContextualKeyword, Diagnostic, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -16,7 +16,7 @@ macro_rules! parse_error {
 enum Visibility { Pub, Inner, Private }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SlotKind { Local, Param, Receiver, Field, Return }
+enum SlotKind { Local, Param, Receiver, Field, Member, Return }
 
 impl SlotKind {
     fn allows_void_clause(self) -> bool {
@@ -38,6 +38,7 @@ impl SlotKind {
             SlotKind::Param => "parameter",
             SlotKind::Receiver => "receiver",
             SlotKind::Field => "field",
+            SlotKind::Member => "required member",
             SlotKind::Return => "return",
         }
     }

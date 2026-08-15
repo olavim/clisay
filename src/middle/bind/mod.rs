@@ -120,6 +120,15 @@ impl TypeLayout {
         self.resolve_id(name).and_then(|id| self.clauses.get(&id))
     }
 
+    /// What a member's declaration says its value owes.
+    pub fn owed(&self, name: Symbol, opt: Symbol) -> Obligations {
+        let mut owed = self.clause_of(name).map(|c| c.owed.clone()).unwrap_or_default();
+        if self.is_nullable(name) {
+            owed.insert(opt);
+        }
+        owed
+    }
+
     /// Whether the member is a field rather than a method.
     pub fn is_field(&self, name: Symbol) -> bool {
         matches!(self.resolve(name), Some(TypeMember::Field(_)))

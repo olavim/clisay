@@ -235,6 +235,22 @@ fn req_fn_return_shape() {
 }
 
 #[test]
+fn req_member_marker_and_clause() {
+    let ast = parse("trait T { req plain; req var count; req data : opt; req var items : [taint]; }");
+    let stmts = top_stmts(&ast);
+    let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a trait") };
+    let read = |i: usize| -> (String, bool, Vec<String>, bool) {
+        let rm = &decl.req_members[i];
+        (ast.text(rm.name).to_string(), rm.reassignable,
+            rm.clause.names.iter().map(|n| ast.text(*n).to_string()).collect(), rm.clause.container)
+    };
+    assert_eq!(read(0), ("plain".to_string(), false, vec![], false));
+    assert_eq!(read(1), ("count".to_string(), true, vec![], false));
+    assert_eq!(read(2), ("data".to_string(), false, vec!["opt".to_string()], false));
+    assert_eq!(read(3), ("items".to_string(), true, vec!["taint".to_string()], true));
+}
+
+#[test]
 fn say_slot_clause() {
     let ast = parse("say v: opt; say w: opt fails;");
     let stmts = top_stmts(&ast);

@@ -255,6 +255,16 @@ pub struct ReqFn {
     pub clause: SlotClause,
 }
 
+/// A `req "var"? name (":" clause)?;` member hole.
+pub struct ReqMember {
+    pub name: Symbol,
+    /// The `var name: clause` span.
+    pub pos: SourcePosition,
+    /// Required to be reassignable, with the `var` marker.
+    pub reassignable: bool,
+    pub clause: SlotClause,
+}
+
 /// A `catch (param) { ... }` clause of a try statement.
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
@@ -302,7 +312,7 @@ pub struct TypeDecl {
     /// Method holes declared via `req fn f(params)`.
     pub req_fns: Vec<ReqFn>,
     /// Member holes declared via `req name`.
-    pub req_members: Vec<Symbol>,
+    pub req_members: Vec<ReqMember>,
     /// Delegation fields declared via `field gives Trait`.
     pub gives: Vec<(Symbol, Symbol)>,
     pub init_name: Symbol,
@@ -311,6 +321,8 @@ pub struct TypeDecl {
     pub nullable_fields: HashSet<Symbol>,
     pub var_fields: HashSet<Symbol>,
     pub field_clauses: Vec<(Symbol, SlotClause)>,
+    /// Where each field is declared.
+    pub field_positions: Vec<(Symbol, SourcePosition)>,
     /// Field defaults (`field = value`), applied by the factory during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,

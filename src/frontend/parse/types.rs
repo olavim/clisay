@@ -73,6 +73,22 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(ReqFn { name, pos, receiver, params, ret, clause })
     }
 
+    /// Parses a `req "var"? name (":" clause)?;` member hole.
+    pub(super) fn parse_req_member(&mut self) -> Result<ReqMember, anyhow::Error> {
+        let start = self.tokens.peek(0).pos.clone();
+        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
+            parse_error!(self, &start, "A reassignable member is required with `var`, not `mut`");
+        }
+        let reassignable = self.take_modifier(ContextualKeyword::Var);
+        let name_pos = self.tokens.peek(0).pos.clone();
+        let name = self.parse_identifier()?;
+        self.check_name_case(&name, NameKind::Member, &name_pos)?;
+        let clause = self.parse_slot_clause(SlotKind::Member)?;
+        let pos = start.to(&self.tokens.previous().pos);
+        self.tokens.expect(TokenType::Semicolon)?;
+        Ok(ReqMember { name: self.ast.intern(&name), pos, reassignable, clause })
+    }
+
     pub(super) fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
         let keyword = if is_trait { TokenType::Trait } else { TokenType::Type };
         let pos = self.tokens.expect(keyword)?.pos.clone();
@@ -92,12 +108,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut nullable_fields: HashSet<Symbol> = HashSet::default();
         let mut var_fields: HashSet<Symbol> = HashSet::default();
         let mut field_clauses: Vec<(Symbol, SlotClause)> = Vec::new();
+        let mut field_positions: Vec<(Symbol, SourcePosition)> = Vec::new();
         let mut field_inits: Vec<(Symbol, AstId<Expr>)> = Vec::new();
         let mut method_stmts: Vec<AstId<Stmt>> = Vec::new();
         let mut pub_members: IndexSet<Symbol> = IndexSet::default();
         let mut inner_members: IndexSet<Symbol> = IndexSet::default();
         let mut req_fns: Vec<ReqFn> = Vec::new();
-        let mut req_members: Vec<Symbol> = Vec::new();
+        let mut req_members: Vec<ReqMember> = Vec::new();
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
 
@@ -112,11 +129,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 if self.tokens.matches(TokenType::Fn) {
                     req_fns.push(self.parse_req_fn()?);
                 } else {
-                    let name_pos = self.tokens.peek(0).pos.clone();
-                    let name = self.parse_identifier()?;
-                    self.check_name_case(&name, NameKind::Member, &name_pos)?;
-                    self.tokens.expect(TokenType::Semicolon)?;
-                    req_members.push(self.ast.intern(&name));
+                    req_members.push(self.parse_req_member()?);
                 }
                 continue;
             }
@@ -178,6 +191,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
                             self.tokens.expect(TokenType::Semicolon)?;
                             fields.insert(field);
+                            field_positions.push((field, member_pos.to(&self.tokens.previous().pos)));
 
                             // A `[obl]` clause names what the elements owe, so its `opt` makes an
                             // element nullable and not the field.
@@ -230,6 +244,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             nullable_fields,
             var_fields,
             field_clauses,
+            field_positions,
             field_inits,
             methods: method_stmts,
             pub_members,
@@ -262,6 +277,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             nullable_fields: HashSet::new(),
             var_fields: HashSet::new(),
             field_clauses: Vec::new(),
+            field_positions: Vec::new(),
             field_inits: Vec::new(),
             methods: Vec::new(),
             pub_members: IndexSet::from([value]),

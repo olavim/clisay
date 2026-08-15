@@ -95,7 +95,7 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
 
 /// Where an obligation clause was written, for the placement rules that key on it.
 #[derive(Clone, Copy, PartialEq)]
-enum ClauseSite { Field, Return, Other }
+enum ClauseSite { Field, Member, Return, Other }
 
 /// What kind of binding a declared name introduces.
 #[derive(Clone, Copy, PartialEq)]
@@ -290,6 +290,8 @@ impl<'a> Resolver<'a> {
             (true, "storing it in a container", "A container cannot hold values owing")
         } else if site == ClauseSite::Field {
             (true, "storing it in a field", "A field cannot owe")
+        } else if site == ClauseSite::Member {
+            (true, "holding it in a member", "A required member cannot owe")
         } else {
             (false, "returning it", "A return cannot owe")
         };
@@ -461,6 +463,8 @@ impl<'a> Resolver<'a> {
         self.out.type_traits.insert(*stmt, ResolvedTraits { with, req, gives });
 
         for (_, clause) in &decl.field_clauses { self.check_clause_placement(clause, ClauseSite::Field, stmt)?; }
+        // A required member holds a value the way a field does, so the same placement rules apply.
+        for req in &decl.req_members { self.check_clause_placement(&req.clause, ClauseSite::Member, stmt)?; }
         for req_fn in &decl.req_fns {
             for param in &req_fn.params { self.collect_matcher_binders(&param.pattern)?; }
         }

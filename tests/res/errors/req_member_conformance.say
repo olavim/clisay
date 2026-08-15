@@ -1,0 +1,95 @@
+trait Counter {
+    req var count;
+}
+
+type Box with Counter {
+    pub count;
+    init(this, *count) { this.count = count; }
+}
+
+// error(full):
+// error: member `count` does not satisfy `Counter.count`
+//  --> req_member_conformance.say:6:5
+//   |
+// 1 | trait Counter {
+// 2 |     req var count;
+//   |         --------- `Counter` requires a reassignable `count`
+// ...
+// 5 | type Box with Counter {
+// 6 |     pub count;
+//   |     ^^^^^^^^^^ `Box.count` is not reassignable
+//   |
+//   = help: declare it `pub var count` on `Box`
+
+// @split
+type W { } obligation taint { witness W; discharge to use; }
+
+trait Reader {
+    req data : opt;
+}
+
+type Box with Reader {
+    pub data: opt taint;
+    init(this, *data: opt taint) { this.data = data; }
+}
+
+// error(full):
+// error: member `data` does not satisfy `Reader.data`
+//  --> req_member_conformance.say:8:5
+//   |
+// 3 | trait Reader {
+// 4 |     req data : opt;
+//   |         ---------- `Reader.data` does not declare 'taint'
+// ...
+// 7 | type Box with Reader {
+// 8 |     pub data: opt taint;
+//   |     ^^^^^^^^^^^^^^^^^^^^ `Box.data` owes 'taint'
+
+// @split
+trait Clearer {
+    req var field : opt;
+    pub fn clear(mut this) { this.field = null; }
+}
+
+type Box with Clearer {
+    pub var field;
+    init(this, *field) { this.field = field; }
+}
+
+// error(full):
+// error: member `field` does not satisfy `Clearer.field`
+//  --> req_member_conformance.say:7:5
+//   |
+// 1 | trait Clearer {
+// 2 |     req var field : opt;
+//   |         --------------- `Clearer` writes 'opt' into `field`
+// ...
+// 6 | type Box with Clearer {
+// 7 |     pub var field;
+//   |     ^^^^^^^^^^^^^^ `Box.field` does not owe 'opt'
+//   |
+//   = help: declare `field: opt` on `Box`
+
+// @split
+trait Reader {
+    req data : opt;
+}
+
+type Box with Reader {
+    pub fn data(this)! { return 5; }
+    init(this) {}
+}
+
+// error(full):
+// error: member `data` does not satisfy `Reader.data`
+//  --> req_member_conformance.say:6:9
+//   |
+// 1 | trait Reader {
+// 2 |     req data : opt;
+//   |         ---------- `Reader` requires state from `data`
+// ...
+// 5 | type Box with Reader {
+// 6 |     pub fn data(this)! { return 5; }
+//   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Box.data` is a method
+//   |
+//   = help: fill `data` with a field, or drop what the requirement asks of it
