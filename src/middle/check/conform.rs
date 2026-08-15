@@ -1,6 +1,6 @@
 //! Whether what a value owes conforms to what its destination accepts.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
@@ -12,6 +12,7 @@ use crate::middle::native::{self, NativeSig};
 use crate::middle::signatures::{Mutability, RetSig, TypeTag, Witness};
 use crate::middle::hir::TypeId;
 
+use super::narrow::whole_value_binders;
 use super::{Checker, Flow, Rule, Site, Typed, Violation, WitnessSet};
 
 impl<'a> Checker<'a> {
@@ -28,7 +29,7 @@ impl<'a> Checker<'a> {
 
         let Flow::Bad { obligations, .. } = &typed.flow else { return Ok(()) };
 
-        let blocking: Obligations = obligations.iter().copied().filter(|o| self.sigs.rules_of(*o).to_use).collect();
+        let blocking: Obligations = obligations.iter().copied().filter(|o| self.sigs.obligation_rules_of(*o).to_use).collect();
         if blocking.is_empty() {
             return Ok(());
         }
@@ -71,7 +72,7 @@ impl<'a> Checker<'a> {
 
     /// The obligations in a set that a rule forbids.
     pub(super) fn owing_rule(&self, obligations: &Obligations, rule: Rule) -> Obligations {
-        obligations.iter().copied().filter(|o| rule.holds(&self.sigs.rules_of(*o))).collect()
+        obligations.iter().copied().filter(|o| rule.holds(&self.sigs.obligation_rules_of(*o))).collect()
     }
 
     /// Refuses an operation the rule forbids on this value.
@@ -109,14 +110,14 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn unprovable_only(&self, obligations: &Obligations) -> Obligations {
-        obligations.iter().copied().filter(|o| self.sigs.witness(*o).is_none()).collect()
+        obligations.iter().copied().filter(|o| self.sigs.witness_of(*o).is_none()).collect()
     }
 
     /// A discharge proves a value is not in some bad state. An operand owing only witnessless
     /// obligations names no such state, so the form has nothing to prove and is rejected.
     pub(super) fn require_witnessed_operand(&self, flow: &Flow, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
-        if obligations.iter().any(|o| self.sigs.witness(*o).is_some()) {
+        if obligations.iter().any(|o| self.sigs.witness_of(*o).is_some()) {
             return Ok(());
         }
         let owed = quoted_obligation_list(self.hir, obligations);
@@ -186,7 +187,7 @@ impl<'a> Checker<'a> {
 
     /// The type or trait that witnesses an obligation at runtime, if it has one.
     pub(super) fn witness_name(&self, obligation: Symbol) -> Option<&'a str> {
-        match self.sigs.witness(obligation)? {
+        match self.sigs.witness_of(obligation)? {
             Witness::Type(id) | Witness::Trait(id) => self.hir.type_info(*id).map(|info| self.hir.text(info.name)),
             Witness::Null => Some("null"),
         }
@@ -209,12 +210,12 @@ impl<'a> Checker<'a> {
 
     pub(super) fn owes_object_witness(&self, flow: &Flow) -> bool {
         matches!(flow, Flow::Bad { obligations, .. }
-            if obligations.iter().any(|o| matches!(self.sigs.witness(*o), Some(Witness::Type(_) | Witness::Trait(_)))))
+            if obligations.iter().any(|o| matches!(self.sigs.witness_of(*o), Some(Witness::Type(_) | Witness::Trait(_)))))
     }
 
     /// The type witness of the built-in `fails` obligation.
     pub(super) fn err_witness(&self) -> Option<TypeId> {
-        match self.sigs.witness(self.sigs.fails) {
+        match self.sigs.witness_of(self.sigs.fails) {
             Some(Witness::Type(e)) => Some(*e),
             _ => None,
         }
@@ -226,7 +227,7 @@ impl<'a> Checker<'a> {
         let err = self.err_witness();
         let mut set = WitnessSet { null: false, witnesses: Vec::new(), contains_user_witnesses: false };
         for &o in obligations {
-            match self.sigs.witness(o) {
+            match self.sigs.witness_of(o) {
                 Some(Witness::Null) => set.null = true,
                 Some(Witness::Type(w) | Witness::Trait(w)) => {
                     if !set.witnesses.contains(w) {
@@ -252,10 +253,10 @@ impl<'a> Checker<'a> {
     pub(super) fn confirmed_witness_name(&self, typed: &Typed) -> Option<&'a str> {
         let TypeTag::Concrete(tag) = &typed.tag else { return None };
         let Flow::Bad { obligations, .. } = &typed.flow else { return None };
-        if !obligations.iter().all(|o| matches!(self.sigs.witness(*o), Some(Witness::Type(_) | Witness::Trait(_)))) {
+        if !obligations.iter().all(|o| matches!(self.sigs.witness_of(*o), Some(Witness::Type(_) | Witness::Trait(_)))) {
             return None;
         }
-        obligations.iter().find_map(|o| match self.sigs.witness(*o) {
+        obligations.iter().find_map(|o| match self.sigs.witness_of(*o) {
             Some(Witness::Type(w)) if self.sigs.decl_of_id(*w) == Some(*tag) =>
                 self.type_name_of(tag).map(|name| self.hir.text(name)),
             _ => None,
@@ -272,7 +273,7 @@ impl<'a> Checker<'a> {
     pub(super) fn single_object_witness_tag(&self, caught: &Obligations) -> TypeTag {
         let mut it = caught.iter();
         match (it.next(), it.next()) {
-            (Some(o), None) => match self.sigs.witness(*o) {
+            (Some(o), None) => match self.sigs.witness_of(*o) {
                 Some(Witness::Type(id)) => self.sigs.decl_of_id(*id).map_or(TypeTag::Unknown, TypeTag::Concrete),
                 _ => TypeTag::Unknown,
             },
@@ -322,20 +323,27 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Checks each argument against a callee's per-parameter nullability.
-    pub(super) fn check_args(&mut self, callee: &HirId<HirExpr>, params: &[bool], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
-        for (i, &param_nullable) in params.iter().enumerate() {
-            if param_nullable {
-                continue;
-            }
+    /// Checks each argument against what its parameter accepts.
+    pub(super) fn check_args(&mut self, callee: &HirId<HirExpr>, params: &[Obligations], arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
+        for (i, accepts) in params.iter().enumerate() {
             let Some(typed) = arg_types.get(i) else { break };
-            self.check_arg(callee, &typed.flow, i, &args[i])?;
+            self.check_arg(callee, &typed.flow, accepts, i, &args[i])?;
         }
         Ok(())
     }
 
-    /// Checks a single argument value against a non-null parameter slot.
-    pub(super) fn check_arg(&mut self, callee: &HirId<HirExpr>, flow: &Flow, position: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    /// Checks a single argument value against the slot its parameter declares.
+    pub(super) fn check_arg(&mut self, callee: &HirId<HirExpr>, flow: &Flow, accepts: &Obligations, position: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        // The parameter's own clause is what the guard admits, so a value owing what it declares
+        // lands rather than trapping.
+        if matches!(flow, Flow::Unknown) {
+            self.record_boundary_barrier(node, accepts);
+            return Ok(());
+        }
+        // A nullable parameter takes null. It still takes a value, so a void result is not one.
+        if accepts.contains(&self.sigs.opt) && !flow.is_void() {
+            return Ok(());
+        }
         let n = position + 1;
         let site_label = format!("{} requires a non-null value here", self.callee_name(callee));
         match self.non_null_violation(flow, node) {
@@ -348,8 +356,16 @@ impl<'a> Checker<'a> {
 
     /// Checks each argument against a native's per-parameter accepted obligation set.
     pub(super) fn check_native_args(&mut self, callee: &HirId<HirExpr>, sig: &NativeSig, arg_types: &[Typed], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
-        let nullable: Vec<bool> = sig.params.iter().map(|p| p.opt).collect();
-        self.check_args(callee, &nullable, arg_types, args)
+        let accepts: Vec<Obligations> = sig.params.iter().map(|p| self.native_set(*p)).collect();
+        self.check_args(callee, &accepts, arg_types, args)
+    }
+
+    /// A native signature's obligation set, which names the built-ins only.
+    fn native_set(&self, set: native::ObSet) -> Obligations {
+        let mut out = Obligations::new();
+        if set.opt { out.insert(self.sigs.opt); }
+        if set.fails { out.insert(self.sigs.fails); }
+        out
     }
 
     /// The obligation that makes an argument have to come back from a call this pass cannot read.
@@ -357,7 +373,7 @@ impl<'a> Checker<'a> {
     pub(super) fn arg_must_survive_call(&self, flow: &Flow) -> Option<Symbol> {
         let Flow::Bad { obligations, .. } = flow else { return None };
         obligations.iter().copied().find(|&o| {
-            let rules = self.sigs.rules_of(o);
+            let rules = self.sigs.obligation_rules_of(o);
             rules.no_persist || rules.before_drop
         })
     }
@@ -465,10 +481,8 @@ impl<'a> Checker<'a> {
                 }
                 self.collect_witness_obligations(inner, at, out)
             },
-            HirMatcher::Type { nominal, shape: Some(shape), .. } => {
-                if let (true, Some(decl)) = (*nominal, self.bindings.type_ref(matcher)) {
-                    self.recover_shape_fields(&decl, shape, out);
-                }
+            HirMatcher::Type { shape: Some(shape), .. } => {
+                self.recover_shape_fields(matcher, shape, out);
                 self.collect_witness_obligations(shape, at, out)
             },
             HirMatcher::Shape(fields) => { for field in fields { self.collect_witness_obligations(&field.value, at, out)?; } Ok(()) },
@@ -522,6 +536,62 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The binders a pattern reads out of a shape, where no test proved what the member holds.
+    /// Such a binder holds whatever the value came with, so a read of it is a dynamic-boundary
+    /// value.
+    pub(super) fn collect_unknown_binders(&self, matcher: &HirId<HirMatcher>) -> HashSet<Symbol> {
+        match self.hir.get(matcher) {
+            HirMatcher::As(_, inner) => self.collect_unknown_binders(inner),
+            HirMatcher::Or(parts) | HirMatcher::And(parts) =>
+                parts.iter().flat_map(|part| self.collect_unknown_binders(part)).collect(),
+            HirMatcher::Type { shape: Some(shape), .. } => self.unknown_in_shape(shape, Some(matcher)),
+            HirMatcher::Shape(_) | HirMatcher::Array(_) => self.unknown_in_shape(matcher, None),
+            _ => HashSet::new(),
+        }
+    }
+
+    /// The unknown binders of one shape. `test` is the type test the shape hangs off, where there
+    /// is one.
+    fn unknown_in_shape(&self, shape: &HirId<HirMatcher>, test: Option<&HirId<HirMatcher>>) -> HashSet<Symbol> {
+        let mut out = HashSet::new();
+        match self.hir.get(shape) {
+            HirMatcher::Shape(fields) => for field in fields {
+                if !self.proves_declared_field(test, &field.key) {
+                    out.extend(whole_value_binders(self.hir, &field.value));
+                }
+                out.extend(self.collect_unknown_binders(&field.value));
+            },
+            // Nothing declares what sits at an index. A `..` name binds a fresh array rather than
+            // anything the value held.
+            HirMatcher::Array(elements) => for element in elements {
+                if let HirMatchElem::Elem(m) = element {
+                    out.extend(whole_value_binders(self.hir, m));
+                    out.extend(self.collect_unknown_binders(m));
+                }
+            },
+            _ => {},
+        }
+        out
+    }
+
+    fn proves_declared_field(&self, test: Option<&HirId<HirMatcher>>, key: &HirLiteral) -> bool {
+        let (Some(test), HirLiteral::String(key)) = (test, key) else { return false };
+        self.hir.symbol_of(key).is_some_and(|member| self.proves_declared_member(test, member))
+    }
+
+    /// The unknown binders of the `~` matchers in a condition.
+    pub(super) fn condition_unknown_binders(&self, cond: &HirId<HirExpr>) -> HashSet<Symbol> {
+        match self.hir.get(cond) {
+            HirExpr::Match(_, matcher) => self.collect_unknown_binders(matcher),
+            HirExpr::Binary(BinOp::And | BinOp::Or, left, right) => {
+                let mut out = self.condition_unknown_binders(left);
+                out.extend(self.condition_unknown_binders(right));
+                out
+            },
+            _ => HashSet::new(),
+        }
+    }
+
     /// The witness obligations each binder inherits from a bindingless alternative sharing its
     /// or-group. In `Node { next } | null` the `next` binder owes `opt`. A bindingless alternative
     /// beside a destructure must be a witness. A non-witness there is a dead binding.
@@ -543,7 +613,7 @@ impl<'a> Checker<'a> {
     /// receiver for a witnessed obligation to admit.
     pub(super) fn reject_receiver_witnesses(&self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
         let Some(clause) = &decl.receiver else { return Ok(()) };
-        let Some(name) = clause.names.iter().find(|n| self.sigs.witness(**n).is_some()) else { return Ok(()) };
+        let Some(name) = clause.names.iter().find(|n| self.sigs.witness_of(**n).is_some()) else { return Ok(()) };
         let text = self.hir.text(*name);
         let pos = clause.pos.clone().unwrap_or_else(|| decl.sig_pos.clone());
         Err(anyhow!("{}", Diagnostic::new(format!("The receiver cannot owe '{text}'"), pos)

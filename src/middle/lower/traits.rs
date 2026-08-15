@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{AstId, Expr, FnDecl, Literal, ReqFn, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
+use crate::ast::{AstId, Expr, FnDecl, Literal, ReqFn, ReqMember, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqParam, HirStmt, HirTypeDecl, TypeId};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqMember, HirReqParam, HirStmt, HirTypeDecl, TypeId};
 
 use super::Lowerer;
 
@@ -53,7 +53,6 @@ impl<'a> Lowerer<'a> {
         self.check_provide_once(type_id, decl, type_pos)?;
         self.check_gives_no_obligations(decl, type_pos)?;
 
-        // Traits provided by delegation (`field gives Trait`): they satisfy `req T` and `is T`.
         let gives_traits: Vec<Symbol> = self.names.gives_traits(&type_id).iter().map(|(_, t, _)| *t).collect();
         self.check_requirements(decl, &traits, &gives_traits, type_pos)?;
         let host_methods: HashSet<Symbol> = decl.methods.iter().map(|m| self.ast_fn(m).name).collect();
@@ -74,22 +73,23 @@ impl<'a> Lowerer<'a> {
             self.fold_trait(*trait_sym, td, &host_methods, &mut composed)?;
         }
 
-        // `field gives Trait`: synthesize a forwarder per exposed trait method.
         self.lower_gives(type_id, &host_methods, type_pos, &mut composed)?;
 
         let init = self.lower_factory(type_id, decl, &composed.field_inits, type_pos)?;
 
-        // The `req fn` holes this type must satisfy.
         let mut req_fns: Vec<HirReqFn> = Vec::new();
         for rf in &decl.req_fns {
             let lowered = self.lower_req_fn(rf, decl.name)?;
             req_fns.push(lowered);
         }
+        let mut req_members: Vec<HirReqMember> = decl.req_members.iter()
+            .map(|rm| self.lower_req_member(rm, decl.name)).collect();
         for (trait_sym, td) in &traits {
             for rf in &td.req_fns {
                 let lowered = self.lower_req_fn(rf, *trait_sym)?;
                 req_fns.push(lowered);
             }
+            req_members.extend(td.req_members.iter().map(|rm| self.lower_req_member(rm, *trait_sym)));
         }
 
         self.provided_traits = prev_provided;
@@ -119,8 +119,10 @@ impl<'a> Lowerer<'a> {
             nullable_fields: decl.nullable_fields.clone(),
             var_fields: decl.var_fields.clone(),
             field_clauses: self.field_clauses(decl),
+            field_positions: decl.field_positions.iter().cloned().collect(),
             methods: composed.methods,
             req_fns,
+            req_members,
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
             inner_members: decl.inner_members.clone(),
@@ -131,7 +133,6 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Lowers a `trait` declaration into a standalone `HirTypeDecl`, so that it can be validated on its own.
     pub(super) fn lower_trait(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
         let surface = self.trait_surface(type_id, decl)?;
 
@@ -157,8 +158,10 @@ impl<'a> Lowerer<'a> {
             nullable_fields: decl.nullable_fields.clone(),
             var_fields: decl.var_fields.clone(),
             field_clauses: self.field_clauses(decl),
+            field_positions: decl.field_positions.iter().cloned().collect(),
             methods: composed.methods,
             req_fns: Vec::new(),
+            req_members: decl.req_members.iter().map(|rm| self.lower_req_member(rm, decl.name)).collect(),
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
             inner_members: decl.inner_members.clone(),
@@ -175,7 +178,7 @@ impl<'a> Lowerer<'a> {
         for field in &decl.fields { surface.insert(*field); }
         for method in &decl.methods { surface.insert(self.ast_fn(method).name); }
         for rf in &decl.req_fns { surface.insert(rf.name); }
-        for name in &decl.req_members { surface.insert(*name); }
+        for rm in &decl.req_members { surface.insert(rm.name); }
 
         for (_, type_decl) in &self.flattened_with(type_id) {
             self.add_exposed(type_decl, &mut surface);
@@ -339,6 +342,16 @@ impl<'a> Lowerer<'a> {
         self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), receiver, params, body, ret, clause }), pos.clone())
     }
 
+    fn lower_req_member(&self, rm: &ReqMember, trait_name: Symbol) -> HirReqMember {
+        HirReqMember {
+            name: rm.name,
+            trait_name,
+            pos: rm.pos.clone(),
+            reassignable: rm.reassignable,
+            clause: self.slot_clause(false, &rm.clause),
+        }
+    }
+
     fn lower_req_fn(&mut self, rf: &ReqFn, trait_name: Symbol) -> Result<HirReqFn, anyhow::Error> {
         let mut params = Vec::with_capacity(rf.params.len());
         for p in &rf.params {
@@ -350,7 +363,6 @@ impl<'a> Lowerer<'a> {
         Ok(HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), receiver, params, ret })
     }
 
-    /// At an instantiable type, every `req T`, `req fn`, and `req <member>` must be satisfied.
     fn check_requirements(&self, decl: &TypeDecl, traits: &[(Symbol, &'a TypeDecl)], gives: &[Symbol], pos: &SourcePosition) -> Result<(), anyhow::Error> {
         let provided: HashSet<Symbol> = traits.iter().map(|(s, _)| *s).chain(gives.iter().copied()).collect();
 
@@ -393,9 +405,10 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        let req_members = decl.req_members.iter().copied()
-            .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_members.iter().copied()));
-        for member_sym in req_members {
+        let req_members = decl.req_members.iter()
+            .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_members.iter()));
+        for member in req_members {
+            let member_sym = member.name;
             if !exposed_names.contains(&member_sym) {
                 return Err(self.error_at(format!("Unsatisfied `req {}`: needs an `inner`/`pub` member '{}'",
                     self.hir.text(member_sym), self.hir.text(member_sym)), pos));

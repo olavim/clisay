@@ -177,17 +177,14 @@ impl<'a> Checker<'a> {
         };
         let Some(target) = self.narrow_target(place) else { return Vec::new() };
         let mut facts = vec![NarrowFact::Discharge(target, self.sigs.opt)];
-        if let NarrowTarget::Local(i) = target {
-            facts.extend(self.object_witnessed(i).map(|o| NarrowFact::Discharge(target, o)));
-        }
+        facts.extend(self.object_witnessed(&target).map(|o| NarrowFact::Discharge(target, o)));
         facts
     }
 
-    /// The obligations a local owes whose witness is an object. An obligation without one is a
-    /// fact about the slot's history, which knowing what the value is says nothing about.
-    fn object_witnessed(&self, i: usize) -> impl Iterator<Item = Symbol> + '_ {
-        self.locals[i].owed.iter().copied()
-            .filter(|o| matches!(self.sigs.witness(*o), Some(Witness::Type(_) | Witness::Trait(_))))
+    /// The object-witnessed obligation names a place owes.
+    fn object_witnessed(&self, target: &NarrowTarget) -> impl Iterator<Item = Symbol> + '_ {
+        self.owed_at(target).into_iter()
+            .filter(|o| matches!(self.sigs.witness_of(*o), Some(Witness::Type(_) | Witness::Trait(_))))
     }
 
     /// Whether being equal to this operand proves a value is in no witness's bad state.
@@ -275,26 +272,44 @@ impl<'a> Checker<'a> {
         self.layout_of(decl).is_some_and(|layout| layout.is_reassignable(field))
     }
 
+    pub(super) fn field_owes(&self, decl: &HirId<HirStmt>, field: Symbol) -> Obligations {
+        match self.layout_of(decl) {
+            Some(layout) => layout.owed(field, self.sigs.opt),
+            None => Obligations::new(),
+        }
+    }
+
+    /// What a place owes before this path's narrowings.
+    fn owed_at(&self, target: &NarrowTarget) -> Obligations {
+        match target {
+            NarrowTarget::Local(i) => self.locals[*i].owed.clone(),
+            NarrowTarget::ThisField(field) => match self.current_type {
+                Some(decl) => self.field_owes(&decl, *field),
+                None => Obligations::new(),
+            },
+            NarrowTarget::LocalField(i, field) => match &self.locals[*i].tag {
+                TypeTag::Concrete(decl) => self.field_owes(decl, *field),
+                _ => Obligations::new(),
+            },
+        }
+    }
+
     /// The true branch of `x ~ M`.
     pub(super) fn narrow_match_positive(&self, scrutinee: &HirId<HirExpr>, matcher: &HirId<HirMatcher>) -> Vec<NarrowFact> {
         let mut facts = match self.hir.get(matcher).rejects_null(self.hir) {
             true => self.narrow_non_null(scrutinee),
             false => Vec::new(),
         };
-        let HirExpr::Identifier(name) = self.hir.get(scrutinee) else { return facts };
-        let Some(i) = self.frame_index_of(*name) else { return facts };
-        if self.locals[i].func.is_some() {
-            return facts;
-        }
-        // A nominal test confirms which type the value has, which later field reads resolve against.
-        if let HirMatcher::Type { nominal: true, .. } = self.hir.get(matcher) {
+        let Some(target) = self.narrow_target(scrutinee) else { return facts };
+        // A nominal test confirms which type the value has.
+        if let (NarrowTarget::Local(i), HirMatcher::Type { nominal: true, .. }) = (target, self.hir.get(matcher)) {
             if let Some((stmt, _)) = self.tested_decl(matcher).filter(|(_, d)| !self.leaves_type_open(d)) {
                 facts.push(NarrowFact::Tag(i, TypeTag::Concrete(stmt)));
             }
         }
-        facts.extend(self.object_witnessed(i)
+        facts.extend(self.object_witnessed(&target)
             .filter(|o| self.matcher_disjoint_from(matcher, *o))
-            .map(|o| NarrowFact::Discharge(NarrowTarget::Local(i), o)));
+            .map(|o| NarrowFact::Discharge(target, o)));
         facts
     }
 
@@ -343,7 +358,7 @@ impl<'a> Checker<'a> {
 
     /// The declaration an obligation's type witness names.
     fn witness_decl(&self, obligation: Symbol) -> Option<HirId<HirStmt>> {
-        let Some(Witness::Type(id)) = self.sigs.witness(obligation) else { return None };
+        let Some(Witness::Type(id)) = self.sigs.witness_of(obligation) else { return None };
         self.sigs.decl_of_id(*id)
     }
 
@@ -375,13 +390,9 @@ impl<'a> Checker<'a> {
 
     /// The witnesses a failed `x ~ M` rules out.
     pub(super) fn narrow_match_negative(&self, scrutinee: &HirId<HirExpr>, matcher: &HirId<HirMatcher>) -> Vec<NarrowFact> {
-        let HirExpr::Identifier(name) = self.hir.get(scrutinee) else { return Vec::new() };
-        let Some(i) = self.frame_index_of(*name) else { return Vec::new() };
-        if self.locals[i].func.is_some() {
-            return Vec::new();
-        }
-        self.matcher_rules_out(matcher, &self.locals[i].owed).iter()
-            .map(|obligation| NarrowFact::Discharge(NarrowTarget::Local(i), *obligation))
+        let Some(target) = self.narrow_target(scrutinee) else { return Vec::new() };
+        self.matcher_rules_out(matcher, &self.owed_at(&target)).iter()
+            .map(|obligation| NarrowFact::Discharge(target, *obligation))
             .collect()
     }
 
@@ -452,23 +463,30 @@ impl<'a> Checker<'a> {
         (r, resolved)
     }
 
-    /// Recovers a nominal destructure's declared field facts onto the names its shape binds. A
+    /// Recovers a type destructure's declared field facts onto the names its shape binds. A
     /// nullable field makes its binder owe `opt`, exactly as reading `x.field` would. A structural
     /// shape names no type, so it reaches this with nothing to resolve against.
-    pub(super) fn recover_shape_fields(&self, decl: &HirId<HirStmt>, shape: &HirId<HirMatcher>, out: &mut HashMap<Symbol, Obligations>) {
-        let (HirMatcher::Shape(fields), Some(layout)) = (self.hir.get(shape), self.layout_of(decl)) else { return };
+    pub(super) fn recover_shape_fields(&self, test: &HirId<HirMatcher>, shape: &HirId<HirMatcher>, out: &mut HashMap<Symbol, Obligations>) {
+        let (HirMatcher::Shape(fields), Some(decl)) = (self.hir.get(shape), self.bindings.type_ref(test)) else { return };
         for field in fields {
             let HirLiteral::String(key) = &field.key else { continue };
             let Some(sym) = self.hir.symbol_of(key) else { continue };
-            let mut owed = layout.clause_of(sym).map(|c| c.owed.clone()).unwrap_or_default();
-            if layout.is_nullable(sym) {
-                owed.insert(self.sigs.opt);
+            if !self.proves_declared_member(test, sym) {
+                continue;
             }
+            let owed = self.field_owes(&decl, sym);
             for name in whole_value_binders(self.hir, &field.value) {
                 let out = out.entry(name).or_default();
                 for ob in owed.iter() { out.insert(*ob); }
             }
         }
+    }
+
+    /// Whether a test proves the member is the one its type declares.
+    pub(super) fn proves_declared_member(&self, test: &HirId<HirMatcher>, member: Symbol) -> bool {
+        let HirMatcher::Type { nominal, .. } = self.hir.get(test) else { return false };
+        let Some(layout) = self.bindings.type_ref(test).and_then(|decl| self.layout_of(&decl)) else { return false };
+        *nominal || layout.is_field(member)
     }
 
     /// Whether an arm always runs once reached. A guarded arm may not.
@@ -537,7 +555,7 @@ impl<'a> Checker<'a> {
 
     /// Whether a matcher matches every value in a witness's bad state.
     pub(super) fn matcher_total_over_witness(&self, matcher: &HirId<HirMatcher>, witness: Symbol) -> bool {
-        self.sigs.witness(witness).is_some_and(|w| self.total_over_witness(matcher, w))
+        self.sigs.witness_of(witness).is_some_and(|w| self.total_over_witness(matcher, w))
     }
 
     /// Whether a matcher matches every value the witness names.

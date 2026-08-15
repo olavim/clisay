@@ -406,11 +406,7 @@ impl<'a> Checker<'a> {
         }
 
         let owed: Obligations = self.locals[i].owed.difference(&self.locals[i].discharged).copied().collect();
-        let flow = if owed.is_empty() {
-            Flow::Clean
-        } else {
-            Flow::Bad { obligations: owed, definite: false, container: self.locals[i].container }
-        };
+        let flow = self.locals[i].read_flow(owed);
 
         Ok(Typed::of(flow, self.locals[i].tag.clone())
             .with_mutability(self.locals[i].alias.mutability)
@@ -442,10 +438,7 @@ impl<'a> Checker<'a> {
                     let flow = match member_kind {
                         TypeMember::Field(_) => {
                             let clause = layout.clause_of(field);
-                            let mut owed = clause.map(|c| c.owed.clone()).unwrap_or_default();
-                            if layout.is_nullable(field) {
-                                owed.insert(self.sigs.opt);
-                            }
+                            let mut owed = self.field_owes(decl, field);
                             if let Some(narrowing) = narrowing {
                                 owed.retain(|ob| !self.discharged(&narrowing, *ob));
                             }
@@ -570,11 +563,7 @@ impl<'a> Checker<'a> {
             false => local.owed.difference(&local.discharged).copied().collect(),
         };
 
-        let flow = if owed.is_empty() {
-            Flow::Clean
-        } else {
-            Flow::Bad { obligations: owed, definite: false, container: local.container }
-        };
+        let flow = local.read_flow(owed);
 
         // A rebindable slot may hold a different value by then, so only an immutable one carries its
         // type and mutability in.
@@ -638,7 +627,7 @@ impl<'a> Checker<'a> {
                 let cap = param.clause.capability;
                 if !cap.is_retain() && self.sigs.escapes_beyond_return_at(&stmt, i) {
                     let text = self.hir.text(self.hir.ident_sym(&param.name));
-                    let barred = param.clause.names.iter().copied().find(|&o| self.sigs.rules_of(o).no_persist);
+                    let barred = param.clause.names.iter().copied().find(|&o| self.sigs.obligation_rules_of(o).no_persist);
                     let help = match barred {
                         Some(owed) => format!("`{}` declares `no persist`, so `*{text}` cannot help; freeze or copy it before persisting", self.hir.text(owed)),
                         None => format!("declare it `*{text}` to retain it, or freeze or copy it before persisting"),
@@ -855,10 +844,9 @@ impl<'a> Checker<'a> {
         // Read the params through the shared signatures borrow so the later check can take &mut self.
         let sigs = self.sigs;
         let Some(sig) = sigs.fns.get(&callee_fn) else { return Ok(()) };
-        let nullable: Vec<bool> = sig.param_clauses.iter().map(|p| p.contains(&sigs.opt)).collect();
         self.check_arg_mutability(callee, &sig.param_markers, arg_types, args)?;
         self.check_arg_obligations(callee, &sig.param_clauses, arg_types, args)?;
-        self.check_args(callee, &nullable, arg_types, args)?;
+        self.check_args(callee, &sig.param_clauses, arg_types, args)?;
         self.consume_move_args(&sig.param_markers, args)?;
         Ok(())
     }

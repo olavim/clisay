@@ -49,6 +49,12 @@ impl Diagnostic {
         return self;
     }
 
+    /// Names the declaration the error sits inside, shown as a plain line above it.
+    pub fn with_enclosing(mut self, pos: SourcePosition) -> Diagnostic {
+        self.spans.push(Span { pos, label: String::new(), kind: SpanKind::Enclosing });
+        return self;
+    }
+
     /// Adds a `help:` note shown below the frame, for how to fix the error.
     pub fn with_help(mut self, help: impl Into<String>) -> Diagnostic {
         self.help.push(help.into());

@@ -35,6 +35,7 @@ impl<'a> Collector<'a> {
                 }
             },
             HirStmt::Trait(decl) => {
+                self.sigs.traits_by_name.entry(decl.name).or_default().push(*stmt);
                 self.sigs.decls_by_id.insert(decl.id, *stmt);
             },
             HirStmt::Nop => {},

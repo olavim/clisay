@@ -60,6 +60,7 @@ impl<'a> Shape<'a> {
             HirStmt::Type(decl) => {
                 self.check_method_overrides(decl)?;
                 self.check_req_conformance(decl)?;
+                self.check_req_members(node, decl)?;
                 self.type_body(decl)?;
             },
             HirStmt::Trait(decl) => self.type_body(decl)?,

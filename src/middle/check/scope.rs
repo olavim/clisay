@@ -1,7 +1,7 @@
 ﻿//! Where a binding lives and how long it lasts: the locals stack, function frames, the binders a
 //! condition or arm introduces, and what a branch saves and merges back.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::middle::hir::{HirExpr, HirId, HirMatchArm, HirParam, HirStmt, Symbol};
 use crate::middle::obligations::Obligations;
@@ -21,6 +21,8 @@ pub(super) struct BinderScope {
     pub(super) sources: HashMap<Symbol, usize>,
     /// The node `bind` declared each binder from.
     pub(super) decls: HashMap<Symbol, usize>,
+    /// The binders that read as dynamic-boundary values, no test having proved what they hold.
+    pub(super) unknown: HashSet<Symbol>,
     pub(super) mutability: Mutability,
     pub(super) source: BinderSource,
 }
@@ -90,6 +92,7 @@ impl<'a> Checker<'a> {
             local.decl = scope.decls.get(&name).copied();
             local.alias.extracted_from = scope.sources.get(&name).map(|&source| (source, None)).into_iter().collect();
             local.alias.mutability = scope.mutability;
+            local.unknown = scope.unknown.contains(&name);
             self.locals.push(local);
         }
     }
@@ -114,6 +117,7 @@ impl<'a> Checker<'a> {
             decls: names.iter().map(|&name| (name, cond.index())).collect(),
             names,
             owed: self.condition_witness_obligations(cond)?,
+            unknown: self.condition_unknown_binders(cond),
             sources: self.binder_sources(cond),
             mutability: Mutability::Unknown,
             source: BinderSource::Condition,
@@ -140,6 +144,7 @@ impl<'a> Checker<'a> {
             decls: names.iter().map(|&name| (name, pattern.index())).collect(),
             names,
             owed: self.matcher_witness_obligations(pattern, &param.name)?,
+            unknown: self.collect_unknown_binders(pattern),
             // A parameter is lent for the call, and a borrow hands out no writer slot.
             sources: HashMap::new(),
             mutability: Mutability::param(param.clause.capability),
@@ -174,7 +179,11 @@ impl<'a> Checker<'a> {
         if let Some(guard) = &arm.guard {
             sources.extend(self.binder_sources(guard));
         }
-        Ok(BinderScope { names, owed, sources, decls, mutability: Mutability::Unknown, source: BinderSource::Arm })
+        let mut unknown = self.collect_unknown_binders(&arm.matcher);
+        if let Some(guard) = &arm.guard {
+            unknown.extend(self.condition_unknown_binders(guard));
+        }
+        Ok(BinderScope { names, owed, sources, decls, unknown, mutability: Mutability::Unknown, source: BinderSource::Arm })
     }
 
     /// Runs `body` in a fresh function frame whose locals are the given params. `frame_start` is

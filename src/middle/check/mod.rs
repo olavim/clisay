@@ -109,6 +109,8 @@ struct Local {
     decl: Option<usize>,
     /// Everything the one-writer rule tracks about this binding, which `alias` owns.
     alias: AliasLocal,
+    /// Bound where no test proved what the member holds, so a read is a dynamic-boundary value.
+    unknown: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -121,10 +123,20 @@ pub(super) enum BinderSource {
 }
 
 impl Local {
+    /// The flow a read of this binding yields, given what it still owes. An unknown binding is a
+    /// dynamic-boundary value, so the slot it enters decides what it may owe.
+    fn read_flow(&self, owed: Obligations) -> Flow {
+        match (owed.is_empty(), self.unknown) {
+            (false, _) => Flow::Bad { obligations: owed, definite: false, container: self.container },
+            (true, true) => Flow::Unknown,
+            (true, false) => Flow::Clean,
+        }
+    }
+
     /// A binding with every fact at its neutral default. Each named constructor overrides only the
     /// fields that distinguish it, so a new field is added here once.
     fn base(name: Symbol) -> Local {
-        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal::default() }
+        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal::default(), unknown: false }
     }
 
     fn param(name: Symbol, owed: Obligations, reassignable: bool) -> Local {

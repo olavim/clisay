@@ -125,7 +125,7 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let pending: Obligations = local.owed.iter().copied()
-                .filter(|o| self.sigs.rules_of(*o).before_drop && !local.handled.contains(o))
+                .filter(|o| self.sigs.obligation_rules_of(*o).before_drop && !local.handled.contains(o))
                 .collect();
             if pending.is_empty() {
                 continue;
@@ -148,7 +148,7 @@ impl<'a> Checker<'a> {
         }
 
         let Flow::Bad { obligations, .. } = flow else { return Ok(()) };
-        let pending: Obligations = obligations.iter().copied().filter(|o| self.sigs.rules_of(*o).before_drop).collect();
+        let pending: Obligations = obligations.iter().copied().filter(|o| self.sigs.obligation_rules_of(*o).before_drop).collect();
         if pending.is_empty() {
             return Ok(());
         }
