@@ -17,6 +17,14 @@ type Node { pub next?; init(this) { this.next = null; } }
 fn f(*p @ Node | null) { } // error: A capability ahead of a combinator needs the pattern grouped
 
 // @split
+type Box { pub data; init(this, *d) { this.data = d; } }
+fn peek(mut Box { data }) { data.push(2); }
+fn named(mut Box) { }
+say b = mut Box(mut [1]);
+peek(b);
+print(b.data[1]); // expect: 2
+
+// @split
 // Grouped, the marker covers the whole pattern and the binder still binds.
 type Node { pub var n; init(this) { this.n = 1; } }
 fn write(mut (p @ Node)) { p.n = 5; }

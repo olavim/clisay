@@ -52,6 +52,8 @@ impl<'a> Lowerer<'a> {
         self.check_provide_require_exclusive(decl, type_pos)?;
         self.check_provide_once(type_id, decl, type_pos)?;
         self.check_gives_no_obligations(decl, type_pos)?;
+
+        // Traits provided by delegation (`field gives Trait`): they satisfy `req T` and `is T`.
         let gives_traits: Vec<Symbol> = self.names.gives_traits(&type_id).iter().map(|(_, t, _)| *t).collect();
         self.check_requirements(decl, &traits, &gives_traits, type_pos)?;
         let host_methods: HashSet<Symbol> = decl.methods.iter().map(|m| self.ast_fn(m).name).collect();
@@ -67,16 +69,27 @@ impl<'a> Lowerer<'a> {
             composed.methods.push(lowered);
             composed.method_traits.push(None);
         }
+
         for (trait_sym, td) in &traits {
             self.fold_trait(*trait_sym, td, &host_methods, &mut composed)?;
         }
+
+        // `field gives Trait`: synthesize a forwarder per exposed trait method.
         self.lower_gives(type_id, &host_methods, type_pos, &mut composed)?;
 
         let init = self.lower_factory(type_id, decl, &composed.field_inits, type_pos)?;
 
-        let mut req_fns: Vec<HirReqFn> = decl.req_fns.iter().map(|rf| self.lower_req_fn(rf, decl.name)).collect();
+        // The `req fn` holes this type must satisfy.
+        let mut req_fns: Vec<HirReqFn> = Vec::new();
+        for rf in &decl.req_fns {
+            let lowered = self.lower_req_fn(rf, decl.name)?;
+            req_fns.push(lowered);
+        }
         for (trait_sym, td) in &traits {
-            req_fns.extend(td.req_fns.iter().map(|rf| self.lower_req_fn(rf, *trait_sym)));
+            for rf in &td.req_fns {
+                let lowered = self.lower_req_fn(rf, *trait_sym)?;
+                req_fns.push(lowered);
+            }
         }
 
         self.provided_traits = prev_provided;
@@ -118,6 +131,7 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// Lowers a `trait` declaration into a standalone `HirTypeDecl`, so that it can be validated on its own.
     pub(super) fn lower_trait(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
         let surface = self.trait_surface(type_id, decl)?;
 
@@ -144,7 +158,7 @@ impl<'a> Lowerer<'a> {
             var_fields: decl.var_fields.clone(),
             field_clauses: self.field_clauses(decl),
             methods: composed.methods,
-            req_fns: Vec::new(), // satisfaction is checked at composing types, not the trait itself
+            req_fns: Vec::new(),
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
             inner_members: decl.inner_members.clone(),
@@ -325,15 +339,18 @@ impl<'a> Lowerer<'a> {
         self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), receiver, params, body, ret, clause }), pos.clone())
     }
 
-    fn lower_req_fn(&self, rf: &ReqFn, trait_name: Symbol) -> HirReqFn {
-        let params = rf.params.iter()
-            .map(|p| HirReqParam { pos: p.pos.clone(), clause: self.slot_clause(p.nullable, &p.clause) })
-            .collect();
+    fn lower_req_fn(&mut self, rf: &ReqFn, trait_name: Symbol) -> Result<HirReqFn, anyhow::Error> {
+        let mut params = Vec::with_capacity(rf.params.len());
+        for p in &rf.params {
+            let clause = self.slot_clause(p.nullable, &p.clause);
+            params.push(HirReqParam { pos: p.pos.clone(), clause, pattern: self.entry_pattern(&p.pattern)? });
+        }
         let ret = self.slot_clause(rf.ret == ReturnShape::Nullable, &rf.clause);
         let receiver = rf.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause));
-        HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), receiver, params, ret }
+        Ok(HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), receiver, params, ret })
     }
 
+    /// At an instantiable type, every `req T`, `req fn`, and `req <member>` must be satisfied.
     fn check_requirements(&self, decl: &TypeDecl, traits: &[(Symbol, &'a TypeDecl)], gives: &[Symbol], pos: &SourcePosition) -> Result<(), anyhow::Error> {
         let provided: HashSet<Symbol> = traits.iter().map(|(s, _)| *s).chain(gives.iter().copied()).collect();
 

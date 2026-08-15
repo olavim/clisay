@@ -1,0 +1,53 @@
+// A destructure binder views the argument at the parameter's declared capability.
+type Box { pub data; init(this, *d) { this.data = d; } }
+
+fn peek(x @ Box { data }) {
+    data.push(2); // error: expected mutable receiver
+}
+peek(mut Box(mut [1]));
+
+// @split
+// Marking the parameter `mut` lends a mutable view instead, and the write stands.
+type Box { pub data; init(this, *d) { this.data = d; } }
+
+fn peek(mut Box { data }) {
+    data.push(2);
+}
+say b = mut Box(mut [1]);
+peek(b);
+print(b.data[1]); // expect: 2
+
+// @split
+// The other route out is the owner, which the plain form still reaches.
+type Box { pub data; init(this, *d) { this.data = d; } }
+
+fn peek(x @ Box { data }) {
+    print(data[0]);
+    x.data.push(2);
+}
+say b = mut Box(mut [1]);
+peek(b); // expect: 1
+print(b.data[1]); // expect: 2
+
+// @split
+// Reading through a plain binder was never in question.
+type Box { pub data; init(this, *d) { this.data = d; } }
+
+fn peek(x @ Box { data }) {
+    print(data[0]);
+}
+peek(Box([7])); // expect: 7
+
+// @split
+// A match arm binder is not a parameter and keeps its own answer, which the runtime settles.
+type Box { pub data; init(this, *d) { this.data = d; } }
+
+fn peek(x @ Box) {
+    match x {
+        Box { data } => data.push(2),
+        _ => print("no"),
+    }
+}
+say b = mut Box(mut [1]);
+peek(b);
+print(b.data[1]); // expect: 2

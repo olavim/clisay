@@ -15,4 +15,4 @@ type Db with Sink {
 // 5 |     pub fn accept(this, x: mut) { }
 //   |                         ^^^^^^ `Db.accept` only borrows `x` here (`mut`)
 //   |
-//   = help: take ownership of `x` to match the trait: `x: *mut`
+//   = help: take ownership of `x` to match the trait, by declaring it `*mut`

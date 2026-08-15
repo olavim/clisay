@@ -12,7 +12,7 @@ use crate::middle::obligations::Obligations;
 use crate::middle::signatures::{Mutability, TypeTag};
 
 use super::scope::FlowSnapshot;
-use super::{Checker, Flow, FnContext, Guard, Local, ReceiverFacts, Typed};
+use super::{BinderSource, Checker, Flow, FnContext, Guard, Local, ReceiverFacts, Typed};
 
 impl<'a> Checker<'a> {
     pub(super) fn stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
@@ -299,7 +299,7 @@ impl<'a> Checker<'a> {
                 self.require_witnessed_operand(&left.flow, left_id)?;
                 let caught = self.owed_of(&left.flow);
                 let tag = self.single_object_witness_tag(&caught);
-                let mut binder_local = Local::binder_owing(*binder, caught);
+                let mut binder_local = Local::binder_owing(*binder, caught, BinderSource::Handler);
                 binder_local.decl = Some(expr.index());
                 binder_local.tag = tag;
                 binder_local.handled = binder_local.owed.clone();
@@ -978,7 +978,7 @@ impl<'a> Checker<'a> {
         if self.locals[i].reassignable || !self.locals[i].assigned {
             return Ok(());
         }
-        if self.locals[i].binder {
+        if self.locals[i].binder.is_some() {
             return Err(self.error_help(format!("Cannot reassign matcher binder `{text}`"), lhs,
                 format!("copy it into a `say var {text}` first to change it")));
         }

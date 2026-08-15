@@ -43,7 +43,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Matches each pattern parameter against its slot on entry, publishing the pattern's binders
-    /// into slots reserved ahead of the body. The match's boolean is discarded.
+    /// into slots reserved ahead of the body. A pattern that can fail throws on a non-match.
     fn compile_entry_steps(&mut self, params: &[HirParam]) -> Result<(), anyhow::Error> {
         for param in params {
             let Some(pattern) = &param.pattern else { continue };
@@ -51,8 +51,30 @@ impl<'a> Compiler<'a> {
             self.reserve_slots(binders.len(), &param.name);
             self.expression(&param.name)?;
             self.compile_binding_matcher(pattern, &binders, &param.name)?;
-            self.emit(Inst::Pop, &param.name);
+            match self.hir.get(pattern).is_irrefutable(self.hir) {
+                true => self.emit(Inst::Pop, &param.name),
+                false => self.abort_on_entry_mismatch(param)?,
+            }
         }
+        Ok(())
+    }
+
+    /// Throws when an entry pattern rejects its argument. The pattern is a precondition the caller
+    /// has to meet, so the blame belongs to the argument. A `try` around the call catches it, since
+    /// it throws rather than ending the run with a diagnostic.
+    fn abort_on_entry_mismatch(&mut self, param: &HirParam) -> Result<(), anyhow::Error> {
+        let matched = self.ir.new_label();
+        let failed = self.ir.new_label();
+        self.emit(Inst::JumpIfFalse(failed), &param.name);
+        self.emit(Inst::Jump(matched), &param.name);
+
+        self.ir.bind(failed);
+        // The parameter's own source spans the binder and the test, so quoting it names both.
+        let message = self.gc.intern(format!("argument does not match `{}`", param.pos.snippet()));
+        let idx = self.ir.add_constant(Value::from(message))?;
+        self.emit(Inst::PushConstant(idx), &param.name);
+        self.emit(Inst::Throw, &param.name);
+        self.ir.bind(matched);
         Ok(())
     }
 

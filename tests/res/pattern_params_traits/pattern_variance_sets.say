@@ -1,0 +1,118 @@
+type P { pub v; init(this, *v) { this.v = v; } }
+type Q { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P | Q); }
+type Half with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+type Q { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P | Q)!; }
+type Swapped with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ Q | P)! { return "took"; }
+}
+print(Swapped().onMove(P(1))); // expect: took
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P); }
+type Literal with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ 1 | 2) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+type Q { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, a @ P, b); }
+type Mixed with Mover {
+    init(this) { }
+    pub fn onMove(this, a, b @ Q) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+trait Shaped { req fn read(this, x); }
+type Structural with Shaped {
+    init(this) { }
+    pub fn read(this, x @ has Shaped) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P)!; }
+type Wild with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ _)! { return "took"; }
+}
+print(Wild().onMove(P(1))); // expect: took
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+type Q { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P | Q | null); }
+type NoNull with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P | Q) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+type Q { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P | Q)!; }
+type WithNull with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P | Q | null)! { return "took"; }
+}
+print(WithNull().onMove(P(1))); // expect: took
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ null); }
+type Typed with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+type Q { pub v; init(this, *v) { this.v = v; } }
+type R { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P | Q | R); }
+type Two with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P | Q) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+type Q { pub v; init(this, *v) { this.v = v; } }
+type R { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P | Q)!; }
+type Three with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P | Q | R)! { return "took"; }
+}
+print(Three().onMove(Q(1))); // expect: took
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P)!; }
+type Mixed with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P | 1)! { return "took"; }
+}
+print(Mixed().onMove(P(1))); // expect: took

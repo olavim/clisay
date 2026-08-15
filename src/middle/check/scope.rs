@@ -10,7 +10,7 @@ use crate::middle::signatures::{Mutability, TypeTag};
 use super::narrow::whole_value_binders;
 use super::alias::WriteOwnershipTransfer;
 use super::{ElementKey, TransferSite};
-use super::{Checker, Local};
+use super::{BinderSource, Checker, Local};
 
 /// The binders a condition or match arm introduces, paired with the obligations each owes.
 #[derive(Default)]
@@ -21,6 +21,8 @@ pub(super) struct BinderScope {
     pub(super) sources: HashMap<Symbol, usize>,
     /// The node `bind` declared each binder from.
     pub(super) decls: HashMap<Symbol, usize>,
+    pub(super) mutability: Mutability,
+    pub(super) source: BinderSource,
 }
 
 /// The flow state of one local.
@@ -84,11 +86,10 @@ impl<'a> Checker<'a> {
     /// recorded for it.
     pub(super) fn push_binders(&mut self, scope: &BinderScope) {
         for &name in &scope.names {
-            let mut local = Local::binder_owing(name, scope.owed.get(&name).cloned().unwrap_or_default());
+            let mut local = Local::binder_owing(name, scope.owed.get(&name).cloned().unwrap_or_default(), scope.source);
             local.decl = scope.decls.get(&name).copied();
-            // The matcher shape could name which element this is, but it does not have to: the
-            // runtime slot tells one element from another by identity.
             local.alias.extracted_from = scope.sources.get(&name).map(|&source| (source, None)).into_iter().collect();
+            local.alias.mutability = scope.mutability;
             self.locals.push(local);
         }
     }
@@ -114,6 +115,8 @@ impl<'a> Checker<'a> {
             names,
             owed: self.condition_witness_obligations(cond)?,
             sources: self.binder_sources(cond),
+            mutability: Mutability::Unknown,
+            source: BinderSource::Condition,
         })
     }
 
@@ -139,6 +142,8 @@ impl<'a> Checker<'a> {
             owed: self.matcher_witness_obligations(pattern, &param.name)?,
             // A parameter is lent for the call, and a borrow hands out no writer slot.
             sources: HashMap::new(),
+            mutability: Mutability::param(param.clause.capability),
+            source: BinderSource::Param,
         })
     }
 
@@ -169,7 +174,7 @@ impl<'a> Checker<'a> {
         if let Some(guard) = &arm.guard {
             sources.extend(self.binder_sources(guard));
         }
-        Ok(BinderScope { names, owed, sources, decls })
+        Ok(BinderScope { names, owed, sources, decls, mutability: Mutability::Unknown, source: BinderSource::Arm })
     }
 
     /// Runs `body` in a fresh function frame whose locals are the given params. `frame_start` is
