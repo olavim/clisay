@@ -91,8 +91,8 @@ impl Vm {
         };
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, ip_start, true)?;
-        let move_mask = unsafe { (*closure_ptr).move_mask };
-        self.transfer_argument_write_ownership(move_mask, stack_start, arg_count)?;
+        let (retain_mask, escape_mask) = unsafe { ((*closure_ptr).retain_mask, (*closure_ptr).escape_mask) };
+        self.transfer_argument_write_ownership(retain_mask, escape_mask, stack_start, arg_count)?;
         Ok(())
     }
 
@@ -300,8 +300,8 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn container_took(&self, container: Value, value: Value) -> Result<(), anyhow::Error> {
-        objects::container_took(container, value).map_err(|_| self.gave_transferred_element_error())
+    pub(super) fn container_took(&mut self, container: Value, value: Value) -> Result<(), anyhow::Error> {
+        objects::container_took(self, container, value).map_err(|_| self.gave_transferred_element_error())
     }
 
     #[cold]

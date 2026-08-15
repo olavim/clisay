@@ -124,7 +124,7 @@ impl Gc {
         ip_start: usize,
         upvalues: &[*mut ObjUpvalue],
         escape_mask: u64,
-        move_mask: u64,
+        retain_mask: u64,
         mut_receiver: bool
     ) -> *mut ObjClosure {
         let count = upvalues.len();
@@ -141,7 +141,7 @@ impl Gc {
                 mut_receiver,
                 ip_start,
                 escape_mask,
-                move_mask
+                retain_mask
             });
             std::ptr::copy_nonoverlapping(
                 upvalues.as_ptr(),

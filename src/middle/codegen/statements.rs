@@ -95,7 +95,7 @@ impl<'a> Compiler<'a> {
                 // The slot was reserved by hoisting so forward references resolve.
                 let slot = self.bindings.slot(stmt_id);
 
-                let const_idx = self.function(stmt_id, decl, FnKind::Function, self.persist_mask(stmt_id, decl.params.len()))?;
+                let const_idx = self.function(stmt_id, decl, FnKind::Function, self.declared_masks(stmt_id, decl))?;
                 self.emit(Inst::PushClosure(const_idx), stmt_id);
 
                 // Store the closure into the reserved slot and discard the placeholder.

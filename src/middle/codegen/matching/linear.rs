@@ -7,6 +7,7 @@ use crate::core::value::Value;
 use crate::middle::bind::TypeLayout;
 use crate::middle::hir::{TypeId, HirExpr, HirId, HirLiteral, HirMatchElem, HirMatcher, Symbol};
 use crate::middle::ir::Inst;
+use crate::frontend::lex::SourcePosition;
 
 use super::{slot_of, split_at_rest, Compiler};
 
@@ -128,7 +129,7 @@ impl<'a> Compiler<'a> {
     fn compile_array(&mut self, elements: &[HirMatchElem], binders: Option<&[(Symbol, u8)]>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // One AND test per step: the length first, then each element by a front or back index, with
         // a named `..` binding the middle slice. A `..` makes the length test a minimum.
-        let steps = array_steps(elements, binders);
+        let steps = array_steps(elements, binders, self.hir.pos(node))?;
         self.compile_test_and(steps.len(), node, &|c, i, n| c.emit_array_step(steps[i], binders, n))
     }
 
@@ -259,8 +260,8 @@ impl<'a> Compiler<'a> {
 /// Builds the ordered AND steps for an array matcher: the length, the prefix elements from the
 /// front, a named rest, then the suffix elements from the back. The rest binds only in binding
 /// mode. The length is exact unless a `..` is present.
-fn array_steps(elements: &[HirMatchElem], binders: Option<&[(Symbol, u8)]>) -> Vec<ArrayStep> {
-    let (prefix, rest, suffix) = split_at_rest(elements);
+fn array_steps(elements: &[HirMatchElem], binders: Option<&[(Symbol, u8)]>, at: &SourcePosition) -> Result<Vec<ArrayStep>, anyhow::Error> {
+    let (prefix, rest, suffix) = split_at_rest(elements, at)?;
     let mut steps = vec![ArrayStep::Len(prefix.len() + suffix.len(), rest.is_none())];
     for (i, elem) in prefix.iter().enumerate() {
         if let HirMatchElem::Elem(matcher) = elem { steps.push(ArrayStep::Front(i, *matcher)); }
@@ -271,5 +272,5 @@ fn array_steps(elements: &[HirMatchElem], binders: Option<&[(Symbol, u8)]>) -> V
     for (i, elem) in suffix.iter().enumerate() {
         if let HirMatchElem::Elem(matcher) = elem { steps.push(ArrayStep::Back(suffix.len() - i, *matcher)); }
     }
-    steps
+    Ok(steps)
 }

@@ -160,7 +160,7 @@ impl Capability {
     }
 
     /// Whether the marker takes its argument, as opposed to borrowing it for the call.
-    pub fn is_move(self) -> bool {
+    pub fn is_retain(self) -> bool {
         matches!(self, Capability::Move | Capability::MoveMut)
     }
 }

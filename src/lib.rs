@@ -152,5 +152,5 @@ pub fn run_with(file_name: &str, src: &str, config: RunConfig) -> Result<Vec<Str
     let ir = if config.optimize { optimize(ir) } else { ir };
 
     let chunk = assemble(ir)?;
-    runtime::execute(chunk, gc)
+    runtime::execute(chunk, gc, config.force_checks)
 }

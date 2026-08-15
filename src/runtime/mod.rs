@@ -51,7 +51,7 @@ struct CallCache {
     closure: *mut ObjClosure,
     ip_start: usize,
     /// The callee's `*mut` positions.
-    move_mask: u64
+    retain_mask: u64
 }
 
 /// A site no instruction pointer can be, which is how an entry says it answers nothing.
@@ -66,7 +66,7 @@ impl IndexCache {
 impl CallCache {
     /// An entry naming nothing. A collection resets to this, since what it named may be freed.
     const fn empty() -> CallCache {
-        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0, move_mask: 0 }
+        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0, retain_mask: 0 }
     }
 }
 
@@ -150,9 +150,33 @@ pub struct TryFrame {
     write_depth: usize
 }
 
+/// An argument a resolved call said it only borrows, watched for as long as that call runs.
+struct BorrowClaim {
+    value: Value,
+    /// Containers the callee put the argument in.
+    into: Vec<Value>,
+    /// The frame depth once the call pushed its own frame. The claim ends when the frames are
+    /// that deep again.
+    depth: usize,
+    /// The lowest slot the call's frame owns. A store below it lands in a frame that outlives the call.
+    stack_start: *mut Value,
+    position: u8,
+    site: usize,
+}
+
 pub struct Vm {
     /// Forced checks this run reached, for the coverage report.
     elisions_reached: FnvHashSet<usize>,
+    /// Whether this run puts the claims the analysis made on trial.
+    forced: bool,
+    /// Arguments a call claimed it borrows, live until that call returns.
+    borrow_claims: Vec<BorrowClaim>,
+    /// Containers a finished call put a borrowed argument into. A collection settles them in place,
+    /// so what is left after it is what outlived the call.
+    settling_containments: Vec<(Value, u8, usize)>,
+    /// How many claims the run put to a callee.
+    claims_made: usize,
+    claims_settled: usize,
     /// Write barriers that had to collect before they could answer, split by what the collection
     /// then said. A trace the barrier did not need is an escape no primitive recorded, so only
     /// those sites are worth naming.
@@ -246,9 +270,8 @@ fn build_err_type(gc: &mut Gc, ids: &[(TypeId, u16)], layout: &BuiltinLayout) ->
     gc.alloc(ty)
 }
 
-/// Executes a compiled `chunk`, returning captured output.
-pub fn execute(chunk: BytecodeChunk, gc: Gc) -> Result<Vec<String>, anyhow::Error> {
-    Vm::execute(chunk, gc)
+pub fn execute(chunk: BytecodeChunk, gc: Gc, forced: bool) -> Result<Vec<String>, anyhow::Error> {
+    Vm::execute(chunk, gc, forced)
 }
 
 impl Host for Vm {
@@ -276,10 +299,14 @@ impl Host for Vm {
     fn receiver_is_frame_local(&self) -> bool {
         self.native_receiver_is_frame_local
     }
+
+    fn note_containment(&mut self, container: Value, value: Value) {
+        self.note_claimed_containment(container, value);
+    }
 }
 
 impl Vm {
-    pub fn execute(chunk: BytecodeChunk, mut gc: Gc) -> Result<Vec<String>, anyhow::Error> {
+    pub fn execute(chunk: BytecodeChunk, mut gc: Gc, forced: bool) -> Result<Vec<String>, anyhow::Error> {
         // The test harness reads this dump, so `capture_output` has to produce it in release too.
         #[cfg(any(debug_assertions, feature = "capture_output"))] {
             disassemble(&chunk);
@@ -311,6 +338,11 @@ impl Vm {
             index_cache: vec![IndexCache::empty(); INDEX_CACHE_SIZE].into_boxed_slice(),
             call_cache: vec![CallCache::empty(); CALL_CACHE_SIZE].into_boxed_slice(),
             elisions_reached: FnvHashSet::default(),
+            forced,
+            borrow_claims: Vec::new(),
+            settling_containments: Vec::new(),
+            claims_made: 0,
+            claims_settled: 0,
             write_barrier_missed_sites: FnvHashSet::default(),
             write_barrier_traced_missed: 0,
             write_barrier_traced_refused: 0,
@@ -403,6 +435,7 @@ impl Vm {
         }
 
         vm.report_elision_coverage();
+        vm.report_claim_coverage();
         vm.report_barrier_traces();
         Ok(result?)
     }
@@ -435,13 +468,20 @@ impl Vm {
         }
     }
 
-    /// How many of the forced checks the run actually reached.
     fn report_elision_coverage(&self) {
         if self.chunk.elisions.is_empty() {
             return;
         }
         eprintln!("forced checks: {} of {} elided sites reached",
             self.elisions_reached.len(), self.chunk.elisions.len());
+    }
+
+    fn report_claim_coverage(&self) {
+        if self.claims_made == 0 {
+            return;
+        }
+        eprintln!("forced claims: {} borrow claims, {} settled by a collection",
+            self.claims_made, self.claims_settled);
     }
 
     /// Whether the instruction now executing is a check the analysis elided and forcing put back.
@@ -638,8 +678,25 @@ impl Vm {
 
         self.gc.trace();
         self.refute_predicted_write_ownership_releases();
+        self.settle_claimed_containments();
+        self.prune_borrow_claims();
         self.prune_write_ownerships();
         self.gc.sweep();
+    }
+
+    fn settle_claimed_containments(&mut self) {
+        #[cfg(debug_assertions)]
+        assert!(self.gc.marks_valid(), "a containment settled outside the window where marks say what survived");
+        self.settling_containments.retain(|(container, _, _)| container.is_marked());
+    }
+
+    fn prune_borrow_claims(&mut self) {
+        #[cfg(debug_assertions)]
+        assert!(self.gc.marks_valid(), "a claim pruned outside the window where marks say what survived");
+        self.borrow_claims.retain_mut(|claim| {
+            claim.into.retain(|container| container.is_marked());
+            claim.value.is_marked()
+        });
     }
 
     /// Refutes the write-ownership a scope exit would have released. A container still reachable

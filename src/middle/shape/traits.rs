@@ -84,7 +84,7 @@ impl<'a> Shape<'a> {
                         &req.pos, format!("`{trait_name}.{name}` declares a read-only `this`"),
                         format!("drop `mut` from `this` in `{type_name}.{name}`")));
                 }
-                if recv.capability.is_move() && !hole.capability.is_move() {
+                if recv.capability.is_retain() && !hole.capability.is_retain() {
                     return Err(self.error_ctx_help("receiver asks more than the trait declares",
                         &sat.sig_pos, format!("`{type_name}.{name}` takes `this` (`*`)"),
                         &req.pos, format!("`{trait_name}.{name}` only borrows `this`"),
@@ -103,7 +103,7 @@ impl<'a> Shape<'a> {
                 }
 
                 // A `*mut` hole only accepts a `*mut` satisfier. A borrow hole accepts either.
-                if hole.clause.capability.is_move() && !sat_param.clause.capability.is_move() {
+                if hole.clause.capability.is_retain() && !sat_param.clause.capability.is_retain() {
                     let param = self.hir.text(self.hir.ident_sym(&sat_param.name));
                     return Err(self.error_ctx_help("parameter is less permissive than the trait requires",
                         &sat_param.pos, format!("`{type_name}.{name}` only borrows `{param}` here (`mut`)"),

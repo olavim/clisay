@@ -394,9 +394,9 @@ impl Vm {
             if self.holds_write_ownership(value, holder) {
                 return Ok(());
             }
-            // A parameter that took write-ownership by `*mut` is entitled to hand it on, so a store
-            // out of that parameter is the transfer continuing rather than a second writer.
-            if self.took_write_ownership_by_move(value) {
+            // A parameter that retained its argument took the write-ownership and may hand it on,
+            // so a store out of it continues the transfer rather than making a second writer.
+            if self.took_write_ownership_by_retain(value) {
                 self.blank_claims_on(value);
             } else {
                 self.refuse_unless_holder_is_gone(value)?;
@@ -407,16 +407,13 @@ impl Vm {
     }
 
     pub(super) fn hand_write_ownership_to_upvalue(&mut self, idx: usize, value: Value) -> Result<(), anyhow::Error> {
-        if !self.took_write_ownership_by_move(value) {
+        if !self.borrow_claims.is_empty() {
+            self.note_claimed_upvalue_store(idx, value)?;
+        }
+        if !self.took_write_ownership_by_retain(value) {
             return Ok(());
         }
-        let upvalue = self.get_upvalue(idx);
-        // A closed upvalue keeps the slot inside itself, so the address is no longer a stack one a
-        // scope exit could ask about. The closure holding it is the container the value now sits in.
-        let holder = match unsafe { (*upvalue).is_closed() } {
-            true => WriteOwnershipHolder::Container(Value::from(unsafe { (*self.frames.top()).closure })),
-            false => WriteOwnershipHolder::Name(unsafe { (*upvalue).location }),
-        };
+        let holder = self.upvalue_holder(idx);
         let how = match holder {
             WriteOwnershipHolder::Container(_) => WriteOwnershipSource::Given,
             _ => WriteOwnershipSource::Bound,
@@ -424,8 +421,18 @@ impl Vm {
         self.claim_write_of(value, holder, how)
     }
 
-    /// Whether the claim standing over this value is one a `*mut` parameter took.
-    fn took_write_ownership_by_move(&self, value: Value) -> bool {
+    /// Who holds a value stored through an upvalue. A closed upvalue keeps the slot inside itself,
+    /// so the address is no longer a stack slot a scope exit could ask about.
+    fn upvalue_holder(&self, idx: usize) -> WriteOwnershipHolder {
+        let upvalue = self.get_upvalue(idx);
+        match unsafe { (*upvalue).is_closed() } {
+            true => WriteOwnershipHolder::Container(Value::from(unsafe { (*self.frames.top()).closure })),
+            false => WriteOwnershipHolder::Name(unsafe { (*upvalue).location }),
+        }
+    }
+
+    /// Whether the claim standing over this value is one a retaining parameter took.
+    fn took_write_ownership_by_retain(&self, value: Value) -> bool {
         self.write_ownerships.iter().rev().find(|held| held.value == value)
             .is_some_and(|held| held.how == WriteOwnershipSource::Taken)
     }
@@ -437,8 +444,8 @@ impl Vm {
         self.write_ownerships.push(WriteOwnership { value, holder, at: self.current_pos_index(), how });
     }
 
-    /// Hands each `*mut` argument's write-ownership to the parameter slot that is about to take it.
-    pub(crate) fn transfer_argument_write_ownership(&mut self, move_mask: u64, stack_start: *mut Value, arity: usize) -> Result<(), anyhow::Error> {
+    /// Hands each retained argument's write-ownership to the parameter slot about to take it.
+    pub(crate) fn transfer_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, stack_start: *mut Value, arity: usize) -> Result<(), anyhow::Error> {
         for position in 0..arity.min(64) {
             // Slot zero holds the receiver, so a parameter sits one above its position.
             let addr = unsafe { stack_start.add(position + 1) };
@@ -447,9 +454,12 @@ impl Vm {
                 continue;
             }
             // A parameter that does not retain its argument borrows it.
-            if move_mask & (1u64 << position) == 0 {
+            if retain_mask & (1u64 << position) == 0 {
                 self.borrows.push((value, value.as_object().is_borrowed()));
                 value.as_object().set_borrowed(true);
+                if self.forced && escape_mask & (1u64 << position) == 0 {
+                    self.watch_borrow_claim(value, position as u8, stack_start);
+                }
                 continue;
             }
             // This parameter retains its argument.
@@ -645,6 +655,93 @@ impl Vm {
         false
     }
 
+    /// Starts watching an argument the call said it only borrows.
+    fn watch_borrow_claim(&mut self, value: Value, position: u8, stack_start: *mut Value) {
+        // The frame is already pushed here, so its saved return address is what names the call.
+        let site = self.code_index_at(unsafe { (*self.frames.top()).return_ip });
+        self.claims_made += 1;
+        self.borrow_claims.push(BorrowClaim {
+            value,
+            into: Vec::new(),
+            depth: self.frames.len(),
+            stack_start,
+            position,
+            site,
+        });
+    }
+
+    /// Notes a container a watched argument was put into. Nothing is watched unless the run forces
+    /// its claims, so this is a load and a branch on an ordinary store.
+    #[inline]
+    pub(super) fn note_claimed_containment(&mut self, container: Value, value: Value) {
+        for claim in self.borrow_claims.iter_mut() {
+            if claim.value == value && !claim.into.contains(&container) {
+                claim.into.push(container);
+            }
+        }
+    }
+
+    /// What a store through an upvalue does to a watched argument. A closed upvalue is a container
+    /// like any other, so the closure is recorded. An open one names a slot, and a slot below the
+    /// call's own frame belongs to a frame that outlives it, which refutes the claim on the spot.
+    fn note_claimed_upvalue_store(&mut self, idx: usize, value: Value) -> Result<(), anyhow::Error> {
+        let slot = match self.upvalue_holder(idx) {
+            WriteOwnershipHolder::Container(closure) => {
+                self.note_claimed_containment(closure, value);
+                return Ok(());
+            },
+            WriteOwnershipHolder::Name(slot) => slot,
+            _ => return Ok(()),
+        };
+        if let Some(claim) = self.borrow_claims.iter().find(|claim| claim.value == value && slot < claim.stack_start) {
+            return Err(self.refuted_claim("is stored where an outer frame keeps it", claim.position, claim.site));
+        }
+        Ok(())
+    }
+
+    /// Settles every claim whose call has just ended.
+    pub(super) fn settle_borrow_claims(&mut self, leaving: Value) -> Result<(), anyhow::Error> {
+        if self.borrow_claims.is_empty() {
+            return Ok(());
+        }
+        let depth = self.frames.len();
+        let ended: Vec<BorrowClaim> = self.borrow_claims.extract_if(.., |claim| claim.depth > depth).collect();
+        // Handing the argument back keeps it as surely as storing it does.
+        for claim in &ended {
+            if claim.value == leaving {
+                return Err(self.refuted_claim("is handed back to the caller", claim.position, claim.site));
+            }
+        }
+        self.claims_settled += ended.iter().filter(|claim| !claim.into.is_empty()).count();
+        self.settling_containments = ended.iter()
+            .flat_map(|claim| claim.into.iter().map(|&container| (container, claim.position, claim.site)))
+            .collect();
+        if self.settling_containments.is_empty() {
+            return Ok(());
+        }
+        // The returned value is off the stack here, so push it back or the collection misses a root.
+        // Collect now rather than wait, so the answer does not depend on when the collector runs.
+        self.stack.push(leaving);
+        self.start_gc();
+        self.stack.truncate(1);
+        let refuted = self.settling_containments.pop();
+        self.settling_containments.clear();
+        match refuted {
+            Some((_, position, site)) => Err(self.refuted_claim("outlives the call it was lent to", position, site)),
+            None => Ok(()),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn refuted_claim(&self, what: &str, position: u8, site: usize) -> anyhow::Error {
+        let pos = self.chunk.code_pos[site].clone();
+        self.raise(Diagnostic::new("unsound claim: a borrowed argument was kept", pos)
+            .with_label(format!("argument {} {}", position + 1, what))
+            .with_help("the escape analysis said this call only borrows the argument, and forcing the claim refuted that"))
+            .unwrap_err()
+    }
+
     /// Clears one value's writer slot. A value that holds none is left alone.
     fn release_write_ownership(&self, value: Value) {
         if value.is_object() && value.as_object().is_write_owned() {
@@ -706,7 +803,7 @@ impl Vm {
         check_arity!(self, arg_count, closure.arity, closure.name);
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-        self.transfer_argument_write_ownership(closure.move_mask, stack_start, arg_count)?;
+        self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count)?;
         Ok(())
     }
 
@@ -723,7 +820,7 @@ impl Vm {
                 check_arity!(self, arg_count, closure.arity, closure.name);
                 let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.move_mask, stack_start, arg_count)?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count)?;
             },
             objects::TAG_NATIVE_FUNCTION => {
                 self.stack.set(arg_count, Value::from(bound_method.target));
@@ -816,7 +913,7 @@ impl Vm {
                 self.stack.pop();
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure.as_closure_ptr(), stack_start, factory.ip_start, seal)?;
-                self.transfer_argument_write_ownership(factory.move_mask, stack_start, arg_count)?;
+                self.transfer_argument_write_ownership(factory.retain_mask, factory.escape_mask, stack_start, arg_count)?;
                 Ok(())
             },
             objects::TAG_CLOSURE => {
@@ -827,7 +924,7 @@ impl Vm {
                 let instance = self.alloc(ObjInstance::new(type_ptr));
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.move_mask, stack_start, arg_count)?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count)?;
                 Ok(())
             },
             // A native factory receives the fresh instance as its target and fills its fields. The

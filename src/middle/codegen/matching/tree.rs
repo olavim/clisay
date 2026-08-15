@@ -386,7 +386,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn lower_array(&self, elements: &'a [HirMatchElem], path: &[Access], binders: &[(Symbol, u8)], node: &HirId<HirStmt>) -> Result<Alternatives, anyhow::Error> {
-        let (prefix, rest, suffix) = split_at_rest(elements);
+        let (prefix, rest, suffix) = split_at_rest(elements, self.hir.pos(node))?;
 
         // The length is one test among the clause's, and the tree decides when it runs.
         let mut groups = vec![vec![vec![MatchStep::Test(path.to_vec(), ValueTest::ArrayLen { min: prefix.len() + suffix.len(), exact: rest.is_none() })]]];

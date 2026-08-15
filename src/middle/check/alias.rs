@@ -722,7 +722,7 @@ impl<'a> Checker<'a> {
                 return Err(self.needs_mut_error(callee, &args[i]));
             }
 
-            if marker.is_move() && self.arg_is_borrowed(&args[i]) {
+            if marker.is_retain() && self.arg_is_borrowed(&args[i]) {
                 return Err(self.consumes_borrow_error(callee, &args[i]));
             }
         }
@@ -749,7 +749,7 @@ impl<'a> Checker<'a> {
 
     pub(super) fn consume_move_args(&mut self, markers: &[Capability], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         for (i, &marker) in markers.iter().enumerate() {
-            if marker.is_move() {
+            if marker.is_retain() {
                 if let Some(arg) = args.get(i) { self.transfer_write_ownership(arg)?; }
             }
         }

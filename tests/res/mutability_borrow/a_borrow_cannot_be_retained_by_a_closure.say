@@ -79,6 +79,27 @@ f(m);
 print(kept!()()); // expect: 7
 
 // @split
+// A closure that binds a name itself has not reached out for it, so sharing a spelling with the
+// caller's parameter is not sharing its value.
+say var kept? = null;
+fn f(x) { kept = (x) => x[0]; }
+f([1]);
+print(kept!([7])); // expect: 7
+
+// @split
+// The same for a name the closure declares rather than takes, read from one nested inside it.
+say var kept? = null;
+fn f(q) { kept = () => { say q = [9]; return () => q[0]; }; }
+f([1]);
+print(kept!()()); // expect: 9
+
+// @split
+// A nested function reaching past itself is still the case the rule is for.
+say var kept? = null;
+fn f(g) { fn h(y) { return g[y]; } kept = h; } // error: cannot retain a borrowed argument
+f([1]);
+
+// @split
 // A bare field name is an identifier like any other, so the rule asks where a name binds rather
 // than matching the name alone. Both of these write the field, not the binding beside them.
 say n = [1];

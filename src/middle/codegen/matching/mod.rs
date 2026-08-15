@@ -7,6 +7,10 @@
 mod linear;
 pub mod tree;
 
+use anyhow::anyhow;
+
+use crate::frontend::lex::{Diagnostic, SourcePosition};
+
 use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{HirId, HirLiteral, HirMatchElem, HirMatcher, Symbol, TypeId};
@@ -87,9 +91,13 @@ fn slot_of(binders: &[(Symbol, u8)], name: Symbol) -> u8 {
 
 /// Splits array elements at the `..` rest. Returns the fixed prefix before it, the rest element
 /// itself, and the fixed suffix after it. With no rest, the prefix holds every element.
-fn split_at_rest(elements: &[HirMatchElem]) -> (&[HirMatchElem], Option<&HirMatchElem>, &[HirMatchElem]) {
-    match elements.iter().position(|e| matches!(e, HirMatchElem::Rest(_))) {
+fn split_at_rest<'e>(elements: &'e [HirMatchElem], at: &SourcePosition) -> Result<(&'e [HirMatchElem], Option<&'e HirMatchElem>, &'e [HirMatchElem]), anyhow::Error> {
+    if elements.len() > u8::MAX as usize {
+        let msg = format!("an array pattern may match at most {} elements", u8::MAX);
+        return Err(anyhow!("{}", Diagnostic::new(msg, at.clone())));
+    }
+    Ok(match elements.iter().position(|e| matches!(e, HirMatchElem::Rest(_))) {
         Some(p) => (&elements[..p], Some(&elements[p]), &elements[p + 1..]),
         None => (elements, None, &[]),
-    }
+    })
 }

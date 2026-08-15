@@ -585,8 +585,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn lambda(&mut self, expr: &HirId<HirExpr>, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
-        let persist_mask = self.lambda_persist_mask(expr, decl.params.len());
-        let const_idx = self.function(expr, decl, kind, persist_mask)?;
+        let const_idx = self.function(expr, decl, kind, self.lambda_masks(expr, decl))?;
         self.emit(Inst::PushClosure(const_idx), expr);
         return Ok(());
     }
@@ -603,17 +602,19 @@ impl<'a> Compiler<'a> {
     fn container_literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral, seal: u8) -> Result<(), anyhow::Error> {
         match literal {
             HirLiteral::Array(elements) => {
+                let count = self.operand_count(elements.len(), "an array literal", "elements", expr)?;
                 for element in elements {
                     self.expression(element)?;
                 }
-                self.emit(Inst::Array(elements.len() as u8, seal), expr);
+                self.emit(Inst::Array(count, seal), expr);
             },
             HirLiteral::Dict(pairs) => {
+                let count = self.operand_count(pairs.len(), "a dict literal", "entries", expr)?;
                 for (key, value) in pairs {
                     self.expression(key)?;
                     self.expression(value)?;
                 }
-                self.emit(Inst::Dict(pairs.len() as u8, seal), expr);
+                self.emit(Inst::Dict(count, seal), expr);
             },
             _ => unreachable!("only an array or dict literal builds a container"),
         }

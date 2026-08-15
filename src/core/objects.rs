@@ -79,7 +79,10 @@ pub fn record_held_borrow(container: Value, value: Value) {
 }
 
 /// Both records a container makes when a value enters it: what it now holds, and who may write it.
-pub fn container_took(container: Value, value: Value) -> Result<(), anyhow::Error> {
+/// The host is told too, since a store made inside a primitive never passes through the bytecode.
+/// Generic rather than `dyn`, to keep the bytecode store path a static call.
+pub fn container_took<H: Host + ?Sized>(host: &mut H, container: Value, value: Value) -> Result<(), anyhow::Error> {
+    host.note_containment(container, value);
     record_held_borrow(container, value);
     give_container_write_ownership(container, value)
 }
@@ -87,8 +90,8 @@ pub fn container_took(container: Value, value: Value) -> Result<(), anyhow::Erro
 /// A closure taking write-ownership of what it captured. A capture cannot be refused the way a
 /// store can: the closure already exists by the time this is asked, and a retired value keeps its
 /// retirement, which traps at its next write anyway.
-pub fn closure_captured(closure: Value, value: Value) {
-    let _ = container_took(closure, value);
+pub fn closure_captured<H: Host + ?Sized>(host: &mut H, closure: Value, value: Value) {
+    let _ = container_took(host, closure, value);
 }
 
 /// What a value records about who holds its write-ownership once the name holding the value is gone.
@@ -531,12 +534,12 @@ pub struct ObjFn {
     pub mut_receiver: bool,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>,
-    /// One bit per parameter, set where the parameter lets its argument escape: it takes it by
-    /// `*mut` or persists it. Parameters past 63 are read as borrowing.
+    /// One bit per parameter that lets its argument out of the caller's sole reach: it retains it,
+    /// hands it back, or passes it to a callee that would. Parameters past 63 are read as borrowing.
     pub escape_mask: u64,
-    /// One bit per parameter taking its argument by `*mut`, so the call can transfer each one's
+    /// One bit per parameter that retains its argument (`*`), so the call can transfer each one's
     /// write-ownership without codegen naming the positions.
-    pub move_mask: u64
+    pub retain_mask: u64
 }
 
 impl ObjFn {
@@ -546,7 +549,7 @@ impl ObjFn {
         position < 64 && self.escape_mask & (1u64 << position) != 0
     }
 
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, move_mask: u64, mut_receiver: bool) -> ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, mut_receiver: bool) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
@@ -555,7 +558,7 @@ impl ObjFn {
             ip_start,
             upvalues,
             escape_mask,
-            move_mask
+            retain_mask
         }
     }
 }
@@ -635,7 +638,7 @@ pub struct ObjClosure {
     pub mut_receiver: bool,
     pub ip_start: usize,
     pub escape_mask: u64,
-    pub move_mask: u64
+    pub retain_mask: u64
 }
 
 impl ObjClosure {

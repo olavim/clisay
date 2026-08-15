@@ -1,5 +1,4 @@
-// A borrow forwarded to an opaque callback that persists it traps at the store site at runtime.
 say sink = mut [];
-fn relay(x, cb) { cb(x); }
+fn relay(x, cb) { cb(x); } // error: cannot pass a borrowed argument to a callee that retains it
 say m = mut [1, 2];
-relay(m, v => sink.push(v)); // error: cannot persist a borrowed value
+relay(m, v => sink.push(v));

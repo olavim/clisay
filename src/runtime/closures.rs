@@ -54,16 +54,16 @@ impl Vm {
         }
 
         let (name, arity, ip_start) = (fn_ref.name, fn_ref.arity, fn_ref.ip_start);
-        let (escape_mask, move_mask) = (fn_ref.escape_mask, fn_ref.move_mask);
+        let (escape_mask, retain_mask) = (fn_ref.escape_mask, fn_ref.retain_mask);
         let mut_receiver = fn_ref.mut_receiver;
         if self.gc.should_collect() {
             self.start_gc();
         }
-        let closure: Object = self.gc.alloc_closure(name, arity, ip_start, &upvalues, escape_mask, move_mask, mut_receiver).into();
+        let closure: Object = self.gc.alloc_closure(name, arity, ip_start, &upvalues, escape_mask, retain_mask, mut_receiver).into();
         // A capture is a store into the closure, so the closure takes what an array would: the
         // write-ownership of each captured value, and the answer for any borrow among them.
         for &upvalue in upvalues.iter() {
-            objects::closure_captured(Value::from(closure), unsafe { *(*upvalue).location });
+            objects::closure_captured(self, Value::from(closure), unsafe { *(*upvalue).location });
         }
         closure
     }

@@ -16,4 +16,6 @@ pub trait Host {
     /// Whether the running native's receiver is a slot the calling frame declared, so a value stored
     /// into it is reachable only through that frame. Answers false where nothing established it.
     fn receiver_is_frame_local(&self) -> bool;
+    /// Tells the host a container took a value.
+    fn note_containment(&mut self, container: Value, value: Value);
 }
