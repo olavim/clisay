@@ -75,6 +75,23 @@ impl<'a> Shape<'a> {
                     &req.pos, format!("`{trait_name}.{name}` forbids {}", quote_list(&diff))));
             }
 
+            // The receiver goes the same way as a parameter: a satisfier may ask less of `this`
+            // than the hole and not more.
+            if let (Some(hole), Some(recv)) = (&req.receiver, &sat.receiver) {
+                if recv.capability.is_mut() && !hole.capability.is_mut() {
+                    return Err(self.error_ctx_help("receiver asks more than the trait declares",
+                        &sat.sig_pos, format!("`{type_name}.{name}` writes `this` (`mut`)"),
+                        &req.pos, format!("`{trait_name}.{name}` declares a read-only `this`"),
+                        format!("drop `mut` from `this` in `{type_name}.{name}`")));
+                }
+                if recv.capability.is_move() && !hole.capability.is_move() {
+                    return Err(self.error_ctx_help("receiver asks more than the trait declares",
+                        &sat.sig_pos, format!("`{type_name}.{name}` takes `this` (`*`)"),
+                        &req.pos, format!("`{trait_name}.{name}` only borrows `this`"),
+                        format!("drop `*` from `this` in `{type_name}.{name}`")));
+                }
+            }
+
             // A satisfier's parameter must accept at least the obligations the hole passes it.
             for (i, hole) in req.params.iter().enumerate() {
                 let Some(sat_param) = sat.params.get(i) else { continue };

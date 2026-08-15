@@ -416,6 +416,9 @@ impl<'a> Resolver<'a> {
     /// A function/lambda/method. Params live in their own scope.
     fn visit_fn(&mut self, decl: &FnDecl) -> Result<(), anyhow::Error> {
         self.check_clause_placement(&decl.clause, ClauseSite::Return, &decl.body)?;
+        if let Some(receiver) = &decl.receiver {
+            self.check_clause_placement(&receiver.clause, ClauseSite::Other, &decl.body)?;
+        }
         self.push_scope();
         for param in &decl.params {
             self.check_clause_placement(&param.clause, ClauseSite::Other, &param.pattern)?;

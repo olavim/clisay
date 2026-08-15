@@ -367,7 +367,8 @@ impl<'a> Lowerer<'a> {
             .map(|p| HirReqParam { pos: p.pos.clone(), clause: self.slot_clause(p.nullable, &p.clause) })
             .collect();
         let ret = self.slot_clause(rf.ret == ReturnShape::Nullable, &rf.clause);
-        HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), params, ret }
+        let receiver = rf.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause));
+        HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), receiver, params, ret }
     }
 
     /// At an instantiable type, every `req T`, `req fn`, and `req <member>` of the flattened trait

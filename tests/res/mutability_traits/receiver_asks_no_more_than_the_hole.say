@@ -1,0 +1,46 @@
+// A `req fn` hole states what a call through the trait grants of `this`. A satisfier may ask less
+// and not more, or the body would need a capability the call never handed it.
+trait Reader {
+    req fn read(this)!;
+}
+type Db with Reader {
+    pub var n;
+    init(this) { this.n = 1; }
+    pub fn read(this: mut)! { this.n = this.n + 1; return this.n; } // error: receiver asks more than the trait declares
+}
+
+// @split
+// Asking less is the safe direction, so a read-only satisfier fills a writing hole.
+trait Reader {
+    req fn read(this: mut)!;
+}
+type Db with Reader {
+    pub var n;
+    init(this) { this.n = 1; }
+    pub fn read(this)! { return this.n; }
+}
+print(mut Db().read()); // expect: 1
+
+// @split
+// Taking `this` is more than borrowing it, so that axis reads the same.
+trait Reader {
+    req fn read(this: mut)!;
+}
+type Db with Reader {
+    pub var n;
+    init(this) { this.n = 1; }
+    pub fn read(this: *mut)! { return this.n; } // error: receiver asks more than the trait declares
+}
+
+// @split
+// An exact match on either axis is fine.
+trait Reader {
+    req fn read(this: mut)!;
+}
+type Db with Reader {
+    pub var n;
+    init(this) { this.n = 1; }
+    pub fn read(this: mut)! { this.n = this.n + 1; return this.n; }
+}
+say d = mut Db();
+print(d.read()); // expect: 2

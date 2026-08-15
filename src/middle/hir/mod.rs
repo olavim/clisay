@@ -297,6 +297,8 @@ pub struct HirReqFn {
     pub trait_name: Symbol,
     /// The `name(params): clause` span in the trait.
     pub pos: SourcePosition,
+    /// What the hole asks of `this`. A satisfier may ask less and not more.
+    pub receiver: Option<HirSlotClause>,
     /// Each parameter's clause and `name: clause` span.
     pub params: Vec<HirReqParam>,
     /// What the return may carry. A satisfier may promise fewer obligations.
