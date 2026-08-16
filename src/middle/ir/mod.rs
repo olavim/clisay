@@ -106,6 +106,7 @@ pub enum Inst {
     StoreUpvalue(u8),
     StoreUpvaluePop(u8),
     CloseUpvalue(u8),
+    CloseSlotUpvalue(u8),
     GetIndex,
     SetIndex(u8, u8),
     GetIndexOrNull(u8),

@@ -9,7 +9,7 @@ use crate::middle::obligations::Obligations;
 use crate::middle::signatures::Witness;
 
 use super::scope::FlowSnapshot;
-use super::{Checker, Local, NarrowFact, NarrowTarget, TypeTag};
+use super::{Checker, Ctx, Local, NarrowFact, NarrowTarget, TypeTag};
 
 /// What the compiler can tell about a condition's truth without running it.
 #[derive(Clone, Copy, PartialEq)]
@@ -17,6 +17,255 @@ enum Truthiness {
     Truthy,
     Falsy,
     Unknown,
+}
+
+impl<'a> Ctx<'a> {
+    pub(super) fn field_owes(&self, decl: &HirId<HirStmt>, field: Symbol) -> Obligations {
+        match self.layout_of(decl) {
+            Some(layout) => layout.owed(field, self.sigs.opt),
+            None => Obligations::new(),
+        }
+    }
+
+    /// Whether no value the matcher accepts can be in the obligation's bad state.
+    pub(super) fn matcher_disjoint_from_obligation(&self, matcher: &HirId<HirMatcher>, obligation: Symbol) -> bool {
+        match self.hir.get(matcher) {
+            HirMatcher::As(_, inner) => self.matcher_disjoint_from_obligation(inner, obligation),
+            HirMatcher::Or(alternatives) => alternatives.iter().all(|m| self.matcher_disjoint_from_obligation(m, obligation)),
+            HirMatcher::And(parts) => parts.iter().any(|m| self.matcher_disjoint_from_obligation(m, obligation)),
+            HirMatcher::Literal(_) | HirMatcher::Array(_) => true,
+            HirMatcher::Type { nominal: true, .. } => match self.matcher_type_decl(matcher) {
+                Some((_, decl)) => !self.hir.is_trait(decl.id)
+                    && !self.sigs.obligations_witnessed_by_decl(decl).contains(&obligation),
+                None => false,
+            },
+            HirMatcher::Type { nominal: false, .. } => self.surface_rules_out_obligation(matcher, obligation),
+            HirMatcher::Shape(fields) => match self.witness_decl_of_obligation(obligation) {
+                Some(witness) => fields.iter().any(|field| self.type_lacks_public_member(&witness, &field.key)),
+                None => false,
+            },
+            HirMatcher::Binder(_) | HirMatcher::Wildcard => false,
+        }
+    }
+
+    /// The declaration node and declaration a type test names.
+    fn matcher_type_decl(&self, matcher: &HirId<HirMatcher>) -> Option<(HirId<HirStmt>, &'a HirTypeDecl)> {
+        let stmt = self.bindings.type_ref(matcher)?;
+        match self.hir.get(&stmt) {
+            HirStmt::Type(decl) | HirStmt::Trait(decl) => Some((stmt, decl)),
+            _ => None,
+        }
+    }
+
+    fn witness_decl_of_obligation(&self, obligation: Symbol) -> Option<HirId<HirStmt>> {
+        let Some(Witness::Type(id)) = self.sigs.witness_of(obligation) else { return None };
+        self.sigs.type_decl_of_id(*id)
+    }
+
+    fn surface_rules_out_obligation(&self, matcher: &HirId<HirMatcher>, obligation: Symbol) -> bool {
+        let Some(witness) = self.witness_decl_of_obligation(obligation) else { return false };
+        let Some(tested) = self.bindings.type_ref(matcher) else { return false };
+        let Some(members) = self.bindings.surface(&tested) else { return false };
+        members.iter().any(|member| self.type_lacks_public_member_named(&witness, *member))
+    }
+
+    fn type_lacks_public_member(&self, decl: &HirId<HirStmt>, key: &HirLiteral) -> bool {
+        let HirLiteral::String(field) = key else { return false };
+        match self.hir.symbol_of(field) {
+            None => true,
+            Some(field) => self.type_lacks_public_member_named(decl, field),
+        }
+    }
+
+    fn type_lacks_public_member_named(&self, decl: &HirId<HirStmt>, field: Symbol) -> bool {
+        match self.bindings.layout_of_decl(decl) {
+            Some(layout) => !layout.members.contains_key(&field) || !layout.is_public(field),
+            None => false,
+        }
+    }
+
+    pub(super) fn test_proves_declared_member(&self, test: &HirId<HirMatcher>, member: Symbol) -> bool {
+        let HirMatcher::Type { nominal, .. } = self.hir.get(test) else { return false };
+        let Some(layout) = self.bindings.type_ref(test).and_then(|decl| self.layout_of(&decl)) else { return false };
+        *nominal || layout.is_field(member)
+    }
+
+    pub(super) fn obligations_ruled_out_by_matcher(&self, matcher: &HirId<HirMatcher>, remaining: &Obligations) -> Obligations {
+        remaining.iter().copied().filter(|o| self.matcher_total_over_obligation(matcher, *o)).collect()
+    }
+
+    pub(super) fn matcher_total_over_obligation(&self, matcher: &HirId<HirMatcher>, obligation: Symbol) -> bool {
+        self.sigs.witness_of(obligation).is_some_and(|w| self.matcher_total_over_witness(matcher, w))
+    }
+
+    pub(super) fn matcher_total_over_witness(&self, matcher: &HirId<HirMatcher>, witness: &Witness) -> bool {
+        match self.hir.get(matcher) {
+            HirMatcher::As(_, inner) => self.matcher_total_over_witness(inner, witness),
+            HirMatcher::Or(alternatives) => alternatives.iter().any(|m| self.matcher_total_over_witness(m, witness)),
+            HirMatcher::And(parts) => parts.iter().all(|m| self.matcher_total_over_witness(m, witness)),
+            HirMatcher::Literal(HirLiteral::Null) => matches!(witness, Witness::Null),
+            HirMatcher::Type { nominal: false, .. } => false,
+            HirMatcher::Type { nominal: true, shape, .. } => {
+                let Some((stmt, decl)) = self.matcher_type_decl(matcher) else { return false };
+                match witness {
+                    Witness::Type(id) => decl.id == *id
+                        && shape.as_ref().is_none_or(|s| self.matcher_total_over_type(s, &stmt)),
+                    Witness::Trait(id) => decl.id == *id && shape.is_none(),
+                    Witness::Null => false,
+                }
+            },
+            _ => false,
+        }
+    }
+
+    pub(super) fn matcher_total_over_type(&self, matcher: &HirId<HirMatcher>, decl: &HirId<HirStmt>) -> bool {
+        let HirMatcher::Shape(fields) = self.hir.get(matcher) else { return false };
+        fields.iter().all(|field| {
+            self.is_public_field(decl, &field.key)
+                && matches!(self.hir.get(&field.value), HirMatcher::Binder(_) | HirMatcher::Wildcard)
+        })
+    }
+
+    pub(super) fn is_public_field(&self, decl: &HirId<HirStmt>, key: &HirLiteral) -> bool {
+        let HirLiteral::String(field) = key else { return false };
+        match self.bindings.layout_of_decl(decl) {
+            Some(layout) => match self.hir.symbol_of(field) {
+                Some(field) => matches!(layout.members.get(&field), Some(TypeMember::Field(_))) && layout.is_public(field),
+                None => false,
+            },
+            None => false,
+        }
+    }
+
+    fn match_arm_always_runs(&self, arm: &HirMatchArm) -> bool {
+        arm.guard.as_ref().is_none_or(|guard| self.is_literal_true(guard))
+    }
+
+    pub(super) fn obligations_ruled_out_by_match_arm(&self, arm: &HirMatchArm, remaining: &Obligations) -> Obligations {
+        match self.match_arm_always_runs(arm) {
+            true => self.obligations_ruled_out_by_matcher(&arm.matcher, remaining),
+            false => Obligations::new(),
+        }
+    }
+
+    pub(super) fn obligations_examined_by_match_arm(&self, arm: &HirMatchArm, remaining: &Obligations) -> Obligations {
+        match self.match_arm_always_runs(arm) {
+            true => self.obligations_settled_by_matcher(&arm.matcher, remaining),
+            false => Obligations::new(),
+        }
+    }
+
+    fn eval_truthiness(&self, cond: &HirId<HirExpr>) -> Truthiness {
+        use Truthiness::{Falsy, Truthy, Unknown};
+        match self.hir.get(cond) {
+            HirExpr::Literal(HirLiteral::Null | HirLiteral::Boolean(false)) => Falsy,
+            HirExpr::Literal(_) => Truthy,
+            HirExpr::Unary(UnOp::Not, x) => self.eval_truthiness(x).negate(),
+            HirExpr::Construct(..) => Truthy,
+            HirExpr::Call(callee, _) if self.names_type(callee) => Truthy,
+            HirExpr::Mut(inner) => self.eval_truthiness(inner),
+            HirExpr::Assign(_, rhs) => self.eval_truthiness(rhs),
+            HirExpr::Binary(BinOp::And, l, r) => match (self.eval_truthiness(l), self.eval_truthiness(r)) {
+                (Falsy, _) | (_, Falsy) => Falsy,
+                (Truthy, Truthy) => Truthy,
+                _ => Unknown,
+            },
+            HirExpr::Binary(BinOp::Or, l, r) => match (self.eval_truthiness(l), self.eval_truthiness(r)) {
+                (Truthy, _) | (_, Truthy) => Truthy,
+                (Falsy, Falsy) => Falsy,
+                _ => Unknown,
+            },
+            _ => Unknown,
+        }
+    }
+
+    pub(super) fn field_is_reassignable(&self, decl: &HirId<HirStmt>, field: Symbol) -> bool {
+        self.layout_of(decl).is_some_and(|layout| layout.is_reassignable(field))
+    }
+
+    pub(super) fn is_literal_true(&self, guard: &HirId<HirExpr>) -> bool {
+        matches!(self.hir.get(guard), HirExpr::Literal(HirLiteral::Boolean(true)))
+    }
+    pub(super) fn is_null(&self, expr: &HirId<HirExpr>) -> bool {
+        matches!(self.hir.get(expr), HirExpr::Literal(HirLiteral::Null))
+    }
+
+    fn obligations_asked_by_matcher(&self, matcher: &HirId<HirMatcher>, remaining: &Obligations) -> Obligations {
+        match self.hir.get(matcher) {
+            HirMatcher::As(_, inner) => self.obligations_asked_by_matcher(inner, remaining),
+            // `And` stops at the first part that fails, so only that one is sure to run.
+            HirMatcher::And(parts) => parts.first()
+                .map_or_else(Obligations::new, |part| self.obligations_asked_by_matcher(part, remaining)),
+            // `Or` tries alternatives until one matches, so whichever it stops at has to answer.
+            // An alternative answers by asking, or by ruling the witness out if it matches. An
+            // alternative that only rules out asked nothing, so at least one has to ask.
+            HirMatcher::Or(parts) => remaining.iter().copied()
+                .filter(|o| {
+                    let answers = |p: &HirId<HirMatcher>| self.obligations_asked_by_matcher(p, remaining).contains(o);
+                    parts.iter().any(answers)
+                        && parts.iter().all(|p| self.matcher_disjoint_from_obligation(p, *o) || answers(p))
+                })
+                .collect(),
+            HirMatcher::Type { nominal: true, shape, .. } => {
+                let Some((stmt, decl)) = self.matcher_type_decl(matcher) else { return Obligations::new() };
+                // A shape that can fail on a real witness may never run, so it asks nothing.
+                if !shape.as_ref().is_none_or(|s| self.matcher_total_over_type(s, &stmt)) {
+                    return Obligations::new();
+                }
+                let witnessed = self.sigs.obligations_witnessed_by_decl(decl);
+                remaining.iter().copied().filter(|o| witnessed.contains(o)).collect()
+            },
+            _ => Obligations::new(),
+        }
+    }
+
+    pub(super) fn obligations_settled_by_matcher(&self, matcher: &HirId<HirMatcher>, remaining: &Obligations) -> Obligations {
+        let mut out = self.obligations_ruled_out_by_matcher(matcher, remaining);
+        out.extend(self.obligations_asked_by_matcher(matcher, remaining));
+        out
+    }
+
+    fn names_type(&self, callee: &HirId<HirExpr>) -> bool {
+        matches!(self.hir.get(callee), HirExpr::Identifier(name) if self.sigs.is_type(*name))
+    }
+
+    fn is_truthy(&self, cond: &HirId<HirExpr>) -> bool {
+        self.eval_truthiness(cond) == Truthiness::Truthy
+    }
+
+    fn is_falsy(&self, cond: &HirId<HirExpr>) -> bool {
+        self.eval_truthiness(cond) == Truthiness::Falsy
+    }
+
+    /// Whether a call could rebind this binding.
+    fn reachable_by_a_rebind(&self, local: &Local) -> bool {
+        self.sigs.any_rebind.contains(&local.name)
+            && local.decl.is_none_or(|decl| self.bindings.is_captured(decl))
+    }
+
+    pub(super) fn collect_matcher_obligations_by_binding(&self, test: &HirId<HirMatcher>, shape: &HirId<HirMatcher>) -> HashMap<Symbol, Obligations> {
+        let mut out = HashMap::new();
+        let (HirMatcher::Shape(fields), Some(decl)) = (self.hir.get(shape), self.bindings.type_ref(test)) else { return out };
+        for field in fields {
+            let HirLiteral::String(key) = &field.key else { continue };
+            let Some(sym) = self.hir.symbol_of(key) else { continue };
+            if !self.test_proves_declared_member(test, sym) {
+                continue;
+            }
+            let owed = self.field_owes(&decl, sym);
+            for name in collect_whole_value_binders(self.hir, &field.value) {
+                out.entry(name).or_default().extend(owed.iter().copied());
+            }
+        }
+        out
+    }
+
+    pub(super) fn has_truthiness(&self, expr: &HirId<HirExpr>, truthy: bool) -> bool {
+        match truthy {
+            true => self.is_truthy(expr),
+            false => self.is_falsy(expr),
+        }
+    }
 }
 
 impl Truthiness {
@@ -36,7 +285,7 @@ impl<'a> Checker<'a> {
         self.locals[i].discharged = Obligations::new();
         self.locals[i].field_discharged.clear();
         if now_non_null {
-            self.locals[i].discharged.insert(self.sigs.opt);
+            self.locals[i].discharged.insert(self.ctx.sigs.opt);
         }
     }
 
@@ -62,10 +311,10 @@ impl<'a> Checker<'a> {
     /// Where `target.field`'s narrowing lands when the place can be narrowed: a `this` field, or a
     /// field of an immutable local.
     pub(super) fn narrowable_field(&self, target: &HirId<HirExpr>, field: Symbol) -> Option<NarrowTarget> {
-        match self.hir.get(target) {
+        match self.ctx.hir.get(target) {
             HirExpr::This => {
                 let decl = self.current_type?;
-                (!self.field_is_reassignable(&decl, field)).then_some(NarrowTarget::ThisField(field))
+                (!self.ctx.field_is_reassignable(&decl, field)).then_some(NarrowTarget::ThisField(field))
             },
             // A rebindable binding narrows too. What a rebind can reach is invalidated where the
             // rebind happens, rather than refused here.
@@ -75,7 +324,7 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let TypeTag::Concrete(decl) = &self.locals[i].tag else { return None };
-                (!self.field_is_reassignable(decl, field)).then_some(NarrowTarget::LocalField(i, field))
+                (!self.ctx.field_is_reassignable(decl, field)).then_some(NarrowTarget::LocalField(i, field))
             },
             _ => None,
         }
@@ -84,12 +333,12 @@ impl<'a> Checker<'a> {
     /// The facts a condition establishes. `positive` selects the branch where it holds versus
     /// the branch where it fails.
     pub(super) fn narrowings(&self, cond: &HirId<HirExpr>, positive: bool) -> Vec<NarrowFact> {
-        match self.hir.get(cond) {
+        match self.ctx.hir.get(cond) {
             // A bare truthiness test narrows in the truthy branch.
             HirExpr::Identifier(_) | HirExpr::Index(_, _, _) if positive => self.narrow_non_null(cond),
-            HirExpr::Match(scrutinee, matcher) if positive => self.narrow_match_positive(scrutinee, matcher),
+            HirExpr::Match(scrutinee, matcher) if positive => self.narrow_match_positive_branch(scrutinee, matcher),
             // The false branch of `x ~ M` rules out every witness `M` covers.
-            HirExpr::Match(scrutinee, matcher) if !positive => self.narrow_match_negative(scrutinee, matcher),
+            HirExpr::Match(scrutinee, matcher) if !positive => self.narrow_match_negative_branch(scrutinee, matcher),
             // `x != null` narrows when true; `x == null` narrows when false.
             HirExpr::Binary(BinOp::NotEqual, l, r) if positive => self.narrow_null_compare(l, r),
             HirExpr::Binary(BinOp::Equal, l, r) if !positive => self.narrow_null_compare(l, r),
@@ -102,15 +351,15 @@ impl<'a> Checker<'a> {
                 narrow.extend(self.narrowings(r, true));
                 narrow
             },
-            HirExpr::Binary(BinOp::And, l, r) if !positive => match (self.never_fails(l), self.never_fails(r)) {
+            HirExpr::Binary(BinOp::And, l, r) if !positive => match (self.ctx.is_truthy(l), self.ctx.is_truthy(r)) {
                 (true, _) => self.narrowings(r, false),
                 (_, true) => self.narrowings(l, false),
-                _ => intersect_facts(self.narrowings(l, false), &self.narrowings(r, false)),
+                _ => intersect_narrow_facts(self.narrowings(l, false), &self.narrowings(r, false)),
             },
-            HirExpr::Binary(BinOp::Or, l, r) if positive => match (self.never_holds(l), self.never_holds(r)) {
+            HirExpr::Binary(BinOp::Or, l, r) if positive => match (self.ctx.is_falsy(l), self.ctx.is_falsy(r)) {
                 (true, _) => self.narrowings(r, true),
                 (_, true) => self.narrowings(l, true),
-                _ => intersect_facts(self.narrowings(l, true), &self.narrowings(r, true)),
+                _ => intersect_narrow_facts(self.narrowings(l, true), &self.narrowings(r, true)),
             },
             HirExpr::Binary(BinOp::Or, l, r) if !positive => {
                 let mut narrow = self.narrowings(l, false);
@@ -122,49 +371,8 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// What a condition's truthiness is, as far as the compiler can tell without running it.
-    fn eval_truthiness(&self, cond: &HirId<HirExpr>) -> Truthiness {
-        use Truthiness::{Falsy, Truthy, Unknown};
-        match self.hir.get(cond) {
-            HirExpr::Literal(HirLiteral::Null | HirLiteral::Boolean(false)) => Falsy,
-            HirExpr::Literal(_) => Truthy,
-            HirExpr::Unary(UnOp::Not, x) => self.eval_truthiness(x).negate(),
-            HirExpr::Construct(..) => Truthy,
-            HirExpr::Call(callee, _) if self.names_type(callee) => Truthy,
-            HirExpr::Mut(inner) => self.eval_truthiness(inner),
-            HirExpr::Assign(_, rhs) => self.eval_truthiness(rhs),
-            HirExpr::Binary(BinOp::And, l, r) => match (self.eval_truthiness(l), self.eval_truthiness(r)) {
-                (Falsy, _) | (_, Falsy) => Falsy,
-                (Truthy, Truthy) => Truthy,
-                _ => Unknown,
-            },
-            HirExpr::Binary(BinOp::Or, l, r) => match (self.eval_truthiness(l), self.eval_truthiness(r)) {
-                (Truthy, _) | (_, Truthy) => Truthy,
-                (Falsy, Falsy) => Falsy,
-                _ => Unknown,
-            },
-            _ => Unknown,
-        }
-    }
-
-    /// Whether a callee names a declared type, so calling it constructs. Case makes a value name
-    /// and a type name distinct, so a local cannot shadow one here.
-    fn names_type(&self, callee: &HirId<HirExpr>) -> bool {
-        matches!(self.hir.get(callee), HirExpr::Identifier(name) if self.sigs.is_type(*name))
-    }
-
-    /// Whether a condition can never hold. An unknown condition might, so it answers no.
-    fn never_holds(&self, cond: &HirId<HirExpr>) -> bool {
-        self.eval_truthiness(cond) == Truthiness::Falsy
-    }
-
-    /// Whether a condition can never fail. An unknown condition might, so it answers no.
-    fn never_fails(&self, cond: &HirId<HirExpr>) -> bool {
-        self.eval_truthiness(cond) == Truthiness::Truthy
-    }
-
     pub(super) fn narrow_null_compare(&self, l: &HirId<HirExpr>, r: &HirId<HirExpr>) -> Vec<NarrowFact> {
-        let place = if self.is_null(l) { r } else if self.is_null(r) { l } else { return Vec::new() };
+        let place = if self.ctx.is_null(l) { r } else if self.ctx.is_null(r) { l } else { return Vec::new() };
         self.narrow_non_null(place)
     }
 
@@ -176,7 +384,7 @@ impl<'a> Checker<'a> {
             _ => return Vec::new(),
         };
         let Some(target) = self.narrow_target(place) else { return Vec::new() };
-        let mut facts = vec![NarrowFact::Discharge(target, self.sigs.opt)];
+        let mut facts = vec![NarrowFact::Discharge(target, self.ctx.sigs.opt)];
         facts.extend(self.object_witnessed(&target).map(|o| NarrowFact::Discharge(target, o)));
         facts
     }
@@ -184,12 +392,12 @@ impl<'a> Checker<'a> {
     /// The object-witnessed obligation names a place owes.
     fn object_witnessed(&self, target: &NarrowTarget) -> impl Iterator<Item = Symbol> + '_ {
         self.owed_at(target).into_iter()
-            .filter(|o| matches!(self.sigs.witness_of(*o), Some(Witness::Type(_) | Witness::Trait(_))))
+            .filter(|o| matches!(self.ctx.sigs.witness_of(*o), Some(Witness::Type(_) | Witness::Trait(_))))
     }
 
     /// Whether being equal to this operand proves a value is in no witness's bad state.
     fn proves_clean(&self, expr: &HirId<HirExpr>) -> bool {
-        match self.hir.get(expr) {
+        match self.ctx.hir.get(expr) {
             HirExpr::Literal(HirLiteral::Number(_) | HirLiteral::String(_) | HirLiteral::Boolean(_)) => true,
             HirExpr::Identifier(name) => self.frame_index_of(*name).is_some_and(|i| {
                 let local = &self.locals[i];
@@ -201,11 +409,11 @@ impl<'a> Checker<'a> {
 
     /// Drops the narrowings of every binding a call may rebind.
     pub(super) fn invalidate_rebound_fields(&mut self, callee: &HirId<HirExpr>) {
-        if self.sigs.any_rebind.is_empty() || self.callee_is_builtin(callee) {
+        if self.ctx.sigs.any_rebind.is_empty() || self.callee_is_builtin(callee) {
             return;
         }
         let hit: Vec<usize> = self.locals.iter().enumerate()
-            .filter(|(_, l)| l.func.is_none() && self.reachable_by_a_rebind(l))
+            .filter(|(_, l)| l.func.is_none() && self.ctx.reachable_by_a_rebind(l))
             .map(|(i, _)| i)
             .collect();
         for i in hit {
@@ -216,22 +424,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Whether a call could rebind this binding. Only a body that captured it can, so a binding no
-    /// nested body names is out of reach however many others share its name.
-    fn reachable_by_a_rebind(&self, local: &Local) -> bool {
-        self.sigs.any_rebind.contains(&local.name)
-            && local.decl.is_none_or(|decl| self.bindings.is_captured(decl))
-    }
-
-    /// Whether a callee is a built-in. A built-in runs no user body, so it rebinds nothing.
     fn callee_is_builtin(&self, callee: &HirId<HirExpr>) -> bool {
-        let HirExpr::Identifier(name) = self.hir.get(callee) else { return false };
-        self.frame_index_of(*name).is_none() && native::builtin(self.hir.text(*name)).is_some()
+        let HirExpr::Identifier(name) = self.ctx.hir.get(callee) else { return false };
+        self.frame_index_of(*name).is_none() && native::builtin(self.ctx.hir.text(*name)).is_some()
     }
 
-    /// Walks a condition, then answers what it proves on each outcome. Evaluating the condition
-    /// runs any call inside it, so a narrowing on a binding one of those may rebind is no longer
-    /// true by the time the branch runs.
+    /// Walks a condition, then answers what it proves on each outcome.
     pub(super) fn condition_narrowings(&mut self, cond: &HirId<HirExpr>) -> Result<(Vec<NarrowFact>, Vec<NarrowFact>), anyhow::Error> {
         // A condition can hold a lambda whose body has a condition of its own, so the outer walk's
         // set is put back rather than dropped.
@@ -249,155 +447,60 @@ impl<'a> Checker<'a> {
         Ok((keep(self.narrowings(cond, true)), keep(self.narrowings(cond, false))))
     }
 
-    /// The place an expression names, when a narrowing can land on one.
     pub(super) fn narrow_target(&self, expr: &HirId<HirExpr>) -> Option<NarrowTarget> {
-        match self.hir.get(expr) {
+        match self.ctx.hir.get(expr) {
             HirExpr::Identifier(name) => self.frame_index_of(*name)
                 .filter(|&i| self.locals[i].func.is_none())
                 .map(NarrowTarget::Local),
-            HirExpr::Index(target, member, _) => self.string_member(member)
+            HirExpr::Index(target, member, _) => self.ctx.string_member(member)
                 .and_then(|field| self.narrowable_field(target, field)),
             _ => None,
         }
     }
 
-    /// A place proven non-null on this branch.
     pub(super) fn narrow_non_null(&self, expr: &HirId<HirExpr>) -> Vec<NarrowFact> {
         self.narrow_target(expr)
-            .map(|target| vec![NarrowFact::Discharge(target, self.sigs.opt)])
+            .map(|target| vec![NarrowFact::Discharge(target, self.ctx.sigs.opt)])
             .unwrap_or_default()
     }
 
-    pub(super) fn field_is_reassignable(&self, decl: &HirId<HirStmt>, field: Symbol) -> bool {
-        self.layout_of(decl).is_some_and(|layout| layout.is_reassignable(field))
-    }
-
-    pub(super) fn field_owes(&self, decl: &HirId<HirStmt>, field: Symbol) -> Obligations {
-        match self.layout_of(decl) {
-            Some(layout) => layout.owed(field, self.sigs.opt),
-            None => Obligations::new(),
-        }
-    }
-
-    /// What a place owes before this path's narrowings.
     fn owed_at(&self, target: &NarrowTarget) -> Obligations {
         match target {
             NarrowTarget::Local(i) => self.locals[*i].owed.clone(),
             NarrowTarget::ThisField(field) => match self.current_type {
-                Some(decl) => self.field_owes(&decl, *field),
+                Some(decl) => self.ctx.field_owes(&decl, *field),
                 None => Obligations::new(),
             },
             NarrowTarget::LocalField(i, field) => match &self.locals[*i].tag {
-                TypeTag::Concrete(decl) => self.field_owes(decl, *field),
+                TypeTag::Concrete(decl) => self.ctx.field_owes(decl, *field),
                 _ => Obligations::new(),
             },
         }
     }
 
-    /// The true branch of `x ~ M`.
-    pub(super) fn narrow_match_positive(&self, scrutinee: &HirId<HirExpr>, matcher: &HirId<HirMatcher>) -> Vec<NarrowFact> {
-        let mut facts = match self.hir.get(matcher).rejects_null(self.hir) {
+    pub(super) fn narrow_match_positive_branch(&self, scrutinee: &HirId<HirExpr>, matcher: &HirId<HirMatcher>) -> Vec<NarrowFact> {
+        let mut facts = match self.ctx.hir.get(matcher).rejects_null(self.ctx.hir) {
             true => self.narrow_non_null(scrutinee),
             false => Vec::new(),
         };
         let Some(target) = self.narrow_target(scrutinee) else { return facts };
         // A nominal test confirms which type the value has.
-        if let (NarrowTarget::Local(i), HirMatcher::Type { nominal: true, .. }) = (target, self.hir.get(matcher)) {
-            if let Some((stmt, _)) = self.tested_decl(matcher).filter(|(_, d)| !self.leaves_type_open(d)) {
+        if let (NarrowTarget::Local(i), HirMatcher::Type { nominal: true, .. }) = (target, self.ctx.hir.get(matcher)) {
+            if let Some((stmt, _)) = self.ctx.matcher_type_decl(matcher).filter(|(_, d)| !self.ctx.hir.is_trait(d.id)) {
                 facts.push(NarrowFact::Tag(i, TypeTag::Concrete(stmt)));
             }
         }
         facts.extend(self.object_witnessed(&target)
-            .filter(|o| self.matcher_disjoint_from(matcher, *o))
+            .filter(|o| self.ctx.matcher_disjoint_from_obligation(matcher, *o))
             .map(|o| NarrowFact::Discharge(target, o)));
         facts
     }
 
-    /// Whether no value the matcher accepts can be in the obligation's bad state.
-    pub(super) fn matcher_disjoint_from(&self, matcher: &HirId<HirMatcher>, obligation: Symbol) -> bool {
-        match self.hir.get(matcher) {
-            HirMatcher::As(_, inner) => self.matcher_disjoint_from(inner, obligation),
-            HirMatcher::Or(alternatives) => alternatives.iter().all(|m| self.matcher_disjoint_from(m, obligation)),
-            HirMatcher::And(parts) => parts.iter().any(|m| self.matcher_disjoint_from(m, obligation)),
-            // A literal and an array are not instances, so they carry no object witness.
-            HirMatcher::Literal(_) | HirMatcher::Array(_) => true,
-            // A concrete type is exactly itself. A trait leaves the concrete type open, so another
-            // type providing it may provide the witness too.
-            HirMatcher::Type { nominal: true, .. } => match self.tested_decl(matcher) {
-                Some((_, decl)) => !self.leaves_type_open(decl)
-                    && !self.sigs.obligations_witnessed_by_decl(decl).contains(&obligation),
-                None => false,
-            },
-            // A structural test reads a surface rather than an identity, so it rules out only a
-            // witness that cannot expose that surface.
-            HirMatcher::Type { nominal: false, .. } => self.surface_rules_out(matcher, obligation),
-            // A shape matches an instance only if its type exposes every member the shape names, so
-            // a witness missing one cannot be what matched.
-            HirMatcher::Shape(fields) => match self.witness_decl(obligation) {
-                Some(witness) => fields.iter().any(|field| self.lacks_member(&witness, &field.key)),
-                None => false,
-            },
-            // A wildcard and a binder match anything, so they rule nothing out.
-            _ => false,
-        }
-    }
-
-    /// The declaration a type test names. A name that resolved to nothing settles nothing.
-    fn tested_decl(&self, matcher: &HirId<HirMatcher>) -> Option<(HirId<HirStmt>, &'a HirTypeDecl)> {
-        let stmt = self.bindings.type_ref(matcher)?;
-        match self.hir.get(&stmt) {
-            HirStmt::Type(decl) | HirStmt::Trait(decl) => Some((stmt, decl)),
-            _ => None,
-        }
-    }
-
-    /// Whether a declaration leaves the concrete type open, which a trait does and a type does not.
-    fn leaves_type_open(&self, decl: &HirTypeDecl) -> bool {
-        self.hir.type_info(decl.id).is_some_and(|info| info.is_trait)
-    }
-
-    /// The declaration an obligation's type witness names.
-    fn witness_decl(&self, obligation: Symbol) -> Option<HirId<HirStmt>> {
-        let Some(Witness::Type(id)) = self.sigs.witness_of(obligation) else { return None };
-        self.sigs.decl_of_id(*id)
-    }
-
-    /// Whether the surface a structural test reads is one the obligation's witness cannot expose.
-    fn surface_rules_out(&self, matcher: &HirId<HirMatcher>, obligation: Symbol) -> bool {
-        let Some(witness) = self.witness_decl(obligation) else { return false };
-        let Some(tested) = self.bindings.type_ref(matcher) else { return false };
-        let Some(members) = self.bindings.surface(&tested) else { return false };
-        members.iter().any(|member| self.lacks_member_named(&witness, *member))
-    }
-
-    /// Whether a type provably does not expose a member.
-    fn lacks_member(&self, decl: &HirId<HirStmt>, key: &HirLiteral) -> bool {
-        let HirLiteral::String(field) = key else { return false };
-        match self.hir.symbol_of(field) {
-            // A name no program interned is a member of nothing.
-            None => true,
-            Some(field) => self.lacks_member_named(decl, field),
-        }
-    }
-
-    fn lacks_member_named(&self, decl: &HirId<HirStmt>, field: Symbol) -> bool {
-        match self.bindings.layout_of_decl(decl) {
-            Some(layout) => !layout.members.contains_key(&field) || !layout.is_public(field),
-            // A trait declares no member shape, so it rules nothing out.
-            None => false,
-        }
-    }
-
-    /// The witnesses a failed `x ~ M` rules out.
-    pub(super) fn narrow_match_negative(&self, scrutinee: &HirId<HirExpr>, matcher: &HirId<HirMatcher>) -> Vec<NarrowFact> {
+    pub(super) fn narrow_match_negative_branch(&self, scrutinee: &HirId<HirExpr>, matcher: &HirId<HirMatcher>) -> Vec<NarrowFact> {
         let Some(target) = self.narrow_target(scrutinee) else { return Vec::new() };
-        self.matcher_rules_out(matcher, &self.owed_at(&target)).iter()
+        self.ctx.obligations_ruled_out_by_matcher(matcher, &self.owed_at(&target)).iter()
             .map(|obligation| NarrowFact::Discharge(target, *obligation))
             .collect()
-    }
-
-    pub(super) fn is_null(&self, expr: &HirId<HirExpr>) -> bool {
-        matches!(self.hir.get(expr), HirExpr::Literal(HirLiteral::Null))
     }
 
     pub(super) fn apply_narrowings(&mut self, narrowings: &[NarrowFact]) {
@@ -409,47 +512,26 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Whether the right operand of a short-circuit always runs, because the left cannot take the
-    /// outcome that skips it.
-    pub(super) fn right_operand_always_runs(&self, l: &HirId<HirExpr>, runs_when: bool) -> bool {
-        match runs_when {
-            true => self.never_fails(l),
-            false => self.never_holds(l),
-        }
-    }
-
-    /// What each local has resolved right now: an obligation it handled, or one the path proved it
-    /// is not in the bad state of.
-    pub(super) fn resolved_now(&self) -> Vec<Obligations> {
+    pub(super) fn obligations_handled_by_local(&self) -> Vec<Obligations> {
         self.frame_locals().iter()
             .map(|l| l.owed.iter().copied().filter(|o| l.handled.contains(o) || l.discharged.contains(o)).collect())
             .collect()
     }
 
-    /// Records what every path through a construct resolved, which is what the construct resolved.
-    pub(super) fn mark_resolved_on_all(&mut self, paths: &[Vec<Obligations>]) {
+    pub(super) fn mark_obligations_handled_when_resolved_on_every_path(&mut self, paths: &[Vec<Obligations>]) {
         for (i, local) in self.frame_locals_mut().iter_mut().enumerate() {
-            let on_all: Vec<Symbol> = match paths.split_first() {
-                Some((first, rest)) => first.get(i).into_iter().flatten().copied()
-                    .filter(|o| rest.iter().all(|p| p.get(i).is_some_and(|r| r.contains(o))))
-                    .collect(),
-                None => Vec::new(),
-            };
-            local.handled.extend(on_all);
+            local.handled.extend(obligations_resolved_on_every_path(paths, i));
         }
     }
 
-    /// Applies flow facts, runs `f` under them, then restores the prior flow state. Returns `f`'s
-    /// result, so a branch can snapshot its end state before the restore. Also returns what each
-    /// local resolved while the facts held. A sibling branch may run instead of this one, so a move
-    /// it made does not survive.
+    /// Applies flow facts, runs `f` under them, then restores the prior flow state.
     pub(super) fn narrow_branch<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> (R, Vec<Obligations>) {
         self.narrow_under(facts, f, Checker::restore)
     }
 
-    /// The same, for the right operand of a short-circuit. That operand runs on a path through the
-    /// condition rather than instead of one, so a value it moved stays moved after the condition.
-    pub(super) fn narrow_operand<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> (R, Vec<Obligations>) {
+    /// Applies flow facts, runs `f` under them, then restores the prior flow state but keeps each
+    /// local's move site and give-back sources.
+    pub(super) fn narrow_branch_keeping_moves<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> (R, Vec<Obligations>) {
         self.narrow_under(facts, f, Checker::restore_keeping_moves)
     }
 
@@ -458,175 +540,48 @@ impl<'a> Checker<'a> {
         let pre = self.snapshot();
         self.apply_narrowings(facts);
         let r = f(self);
-        let resolved = self.resolved_now();
+        let resolved = self.obligations_handled_by_local();
         unwind(self, &pre);
         (r, resolved)
     }
 
-    /// Recovers a type destructure's declared field facts onto the names its shape binds. A
-    /// nullable field makes its binder owe `opt`, exactly as reading `x.field` would. A structural
-    /// shape names no type, so it reaches this with nothing to resolve against.
-    pub(super) fn recover_shape_fields(&self, test: &HirId<HirMatcher>, shape: &HirId<HirMatcher>, out: &mut HashMap<Symbol, Obligations>) {
-        let (HirMatcher::Shape(fields), Some(decl)) = (self.hir.get(shape), self.bindings.type_ref(test)) else { return };
-        for field in fields {
-            let HirLiteral::String(key) = &field.key else { continue };
-            let Some(sym) = self.hir.symbol_of(key) else { continue };
-            if !self.proves_declared_member(test, sym) {
-                continue;
-            }
-            let owed = self.field_owes(&decl, sym);
-            for name in whole_value_binders(self.hir, &field.value) {
-                let out = out.entry(name).or_default();
-                for ob in owed.iter() { out.insert(*ob); }
-            }
-        }
-    }
-
-    /// Whether a test proves the member is the one its type declares.
-    pub(super) fn proves_declared_member(&self, test: &HirId<HirMatcher>, member: Symbol) -> bool {
-        let HirMatcher::Type { nominal, .. } = self.hir.get(test) else { return false };
-        let Some(layout) = self.bindings.type_ref(test).and_then(|decl| self.layout_of(&decl)) else { return false };
-        *nominal || layout.is_field(member)
-    }
-
-    /// Whether an arm always runs once reached. A guarded arm may not.
-    fn arm_always_runs(&self, arm: &HirMatchArm) -> bool {
-        arm.guard.as_ref().is_none_or(|guard| self.is_literal_true(guard))
-    }
-
-    /// The witnesses a match arm rules out for the arms below it.
-    pub(super) fn arm_rules_out(&self, arm: &HirMatchArm, remaining: &Obligations) -> Obligations {
-        match self.arm_always_runs(arm) {
-            true => self.matcher_rules_out(&arm.matcher, remaining),
-            false => Obligations::new(),
-        }
-    }
-
-    /// The obligations a match arm counts as examined on the scrutinee.
-    pub(super) fn arm_settles(&self, arm: &HirMatchArm, remaining: &Obligations) -> Obligations {
-        match self.arm_always_runs(arm) {
-            true => self.matcher_settles(&arm.matcher, remaining),
-            false => Obligations::new(),
-        }
-    }
-
-    /// The obligations this test counts as examined, which is what `discharge before drop` reports
-    /// on at scope end.
-    pub(super) fn matcher_settles(&self, matcher: &HirId<HirMatcher>, remaining: &Obligations) -> Obligations {
-        let mut out = self.matcher_rules_out(matcher, remaining);
-        out.extend(self.matcher_examines(matcher, remaining));
-        out
-    }
-
-    /// The obligations a test asks about, whatever it concludes.
-    fn matcher_examines(&self, matcher: &HirId<HirMatcher>, remaining: &Obligations) -> Obligations {
-        match self.hir.get(matcher) {
-            HirMatcher::As(_, inner) => self.matcher_examines(inner, remaining),
-            // `And` stops at the first part that fails, so only that one is sure to run.
-            HirMatcher::And(parts) => parts.first()
-                .map_or_else(Obligations::new, |part| self.matcher_examines(part, remaining)),
-            // `Or` tries alternatives until one matches, so whichever it stops at has to answer.
-            // An alternative answers by asking, or by ruling the witness out if it matches. An
-            // alternative that only rules out asked nothing, so at least one has to ask.
-            HirMatcher::Or(parts) => remaining.iter().copied()
-                .filter(|o| {
-                    let answers = |p: &HirId<HirMatcher>| self.matcher_examines(p, remaining).contains(o);
-                    parts.iter().any(answers)
-                        && parts.iter().all(|p| self.matcher_disjoint_from(p, *o) || answers(p))
-                })
-                .collect(),
-            HirMatcher::Type { nominal: true, shape, .. } => {
-                let Some((stmt, decl)) = self.tested_decl(matcher) else { return Obligations::new() };
-                // A shape that can fail on a real witness may never run, so it asks nothing.
-                if !shape.as_ref().is_none_or(|s| self.destructure_total(&stmt, s)) {
-                    return Obligations::new();
-                }
-                let witnessed = self.sigs.obligations_witnessed_by_decl(decl);
-                remaining.iter().copied().filter(|o| witnessed.contains(o)).collect()
-            },
-            _ => Obligations::new(),
-        }
-    }
-
-    /// The witnesses a bare matcher rules out, for the `~` one-liner, which has no arms to consult.
-    pub(super) fn matcher_rules_out(&self, matcher: &HirId<HirMatcher>, remaining: &Obligations) -> Obligations {
-        remaining.iter().copied().filter(|w| self.matcher_total_over_witness(matcher, *w)).collect()
-    }
-
-    /// Whether a matcher matches every value in a witness's bad state.
-    pub(super) fn matcher_total_over_witness(&self, matcher: &HirId<HirMatcher>, witness: Symbol) -> bool {
-        self.sigs.witness_of(witness).is_some_and(|w| self.total_over_witness(matcher, w))
-    }
-
-    /// Whether a matcher matches every value the witness names.
-    pub(super) fn total_over_witness(&self, matcher: &HirId<HirMatcher>, witness: &Witness) -> bool {
-        match self.hir.get(matcher) {
-            HirMatcher::As(_, inner) => self.total_over_witness(inner, witness),
-            HirMatcher::Or(alternatives) => alternatives.iter().any(|m| self.total_over_witness(m, witness)),
-            HirMatcher::And(parts) => parts.iter().all(|m| self.total_over_witness(m, witness)),
-            HirMatcher::Literal(HirLiteral::Null) => matches!(witness, Witness::Null),
-            // A structural test reads a surface a real witness can fail, so it covers nothing.
-            HirMatcher::Type { nominal: false, .. } => false,
-            HirMatcher::Type { nominal: true, shape, .. } => {
-                let Some((stmt, decl)) = self.tested_decl(matcher) else { return false };
-                match witness {
-                    Witness::Type(id) => decl.id == *id
-                        && shape.as_ref().is_none_or(|s| self.destructure_total(&stmt, s)),
-                    Witness::Trait(id) => decl.id == *id && shape.is_none(),
-                    Witness::Null => false,
-                }
-            },
-            _ => false,
-        }
-    }
-
-    /// Whether an `is Type { ... }` destructure matches every value of the type: every named field
-    /// is public and binds irrefutably.
-    pub(super) fn destructure_total(&self, decl: &HirId<HirStmt>, shape: &HirId<HirMatcher>) -> bool {
-        let HirMatcher::Shape(fields) = self.hir.get(shape) else { return false };
-        fields.iter().all(|field| {
-            self.is_public_field(decl, &field.key)
-                && matches!(self.hir.get(&field.value), HirMatcher::Binder(_) | HirMatcher::Wildcard)
-        })
-    }
-
-    /// Whether `key` names a public field of the declaration.
-    pub(super) fn is_public_field(&self, decl: &HirId<HirStmt>, key: &HirLiteral) -> bool {
-        let HirLiteral::String(field) = key else { return false };
-        match self.bindings.layout_of_decl(decl) {
-            Some(layout) => match self.hir.symbol_of(field) {
-                Some(field) => matches!(layout.members.get(&field), Some(TypeMember::Field(_))) && layout.is_public(field),
-                None => false,
-            },
-            None => false,
-        }
-    }
-
-    pub(super) fn is_literal_true(&self, guard: &HirId<HirExpr>) -> bool {
-        matches!(self.hir.get(guard), HirExpr::Literal(HirLiteral::Boolean(true)))
-    }
 }
 
-/// The facts both branches of a disjunction establish.
-fn intersect_facts(left: Vec<NarrowFact>, right: &[NarrowFact]) -> Vec<NarrowFact> {
+fn intersect_narrow_facts(left: Vec<NarrowFact>, right: &[NarrowFact]) -> Vec<NarrowFact> {
     left.into_iter().filter(|fact| right.contains(fact)).collect()
 }
 
-/// The names a matcher binds to the whole matched value: a top-level binder or an `as` name. A
-/// shape, array, or type destructure binds sub-values, which are clean payloads.
-pub(super) fn whole_value_binders(hir: &Hir, matcher: &HirId<HirMatcher>) -> Vec<Symbol> {
-    let mut out = Vec::new();
-    collect_whole_value_binders(hir, matcher, &mut out);
-    out
+pub(crate) fn collect_whole_value_binders(hir: &Hir, matcher: &HirId<HirMatcher>) -> Vec<Symbol> {
+    match hir.get(matcher) {
+        HirMatcher::Binder(name) => vec![*name],
+        HirMatcher::As(name, inner) => {
+            let mut out = vec![*name];
+            out.extend(collect_whole_value_binders(hir, inner));
+            out
+        },
+        HirMatcher::And(parts) => {
+            let mut out = Vec::new();
+            for part in parts {
+                out.extend(collect_whole_value_binders(hir, part));
+            }
+            out
+        },
+        // Binding alternatives agree on their names, so the first that binds stands for all.
+        HirMatcher::Or(alternatives) => {
+            if let Some(binding) = alternatives.iter().find(|a| hir.get(*a).binds_anything(hir)) {
+                collect_whole_value_binders(hir, binding)
+            } else {
+                Vec::new()
+            }
+        },
+        _ => Vec::new(),
+    }
 }
 
-fn collect_whole_value_binders(hir: &Hir, matcher: &HirId<HirMatcher>, out: &mut Vec<Symbol>) {
-    match hir.get(matcher) {
-        HirMatcher::Binder(name) => out.push(*name),
-        HirMatcher::As(name, inner) => { out.push(*name); collect_whole_value_binders(hir, inner, out); },
-        HirMatcher::And(parts) => for part in parts { collect_whole_value_binders(hir, part, out); },
-        // Binding alternatives agree on their names, so the first that binds stands for all.
-        HirMatcher::Or(alternatives) => if let Some(binding) = alternatives.iter().find(|a| hir.get(*a).binds_anything(hir)) { collect_whole_value_binders(hir, binding, out); },
-        _ => {},
-    }
+fn obligations_resolved_on_every_path(paths: &[Vec<Obligations>], i: usize) -> Obligations {
+    let Some((first, rest)) = paths.split_first() else { return Obligations::new() };
+    let Some(resolved) = first.get(i) else { return Obligations::new() };
+    resolved.iter().copied()
+        .filter(|o| rest.iter().all(|p| p.get(i).is_some_and(|r| r.contains(o))))
+        .collect()
 }

@@ -130,6 +130,7 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::RELEASE_WRITE_OWNERSHIP => vm.op_release_write_ownership(),
         opcode::RELEASE_WRITE_OWNERSHIP_AT => vm.op_release_write_ownership_at(),
         opcode::CLOSE_UPVALUE => vm.op_close_upvalue(),
+        opcode::CLOSE_SLOT_UPVALUE => vm.op_close_slot_upvalue(),
         opcode::ARRAY => vm.op_array()?,
         opcode::DICT => vm.op_dict()?,
         opcode::MUT => vm.op_mut(),

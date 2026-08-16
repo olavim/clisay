@@ -51,6 +51,12 @@ impl<'a> Resolver<'a> {
         Ok((self.locals.len() - 1) as u8)
     }
 
+    /// Records the frame slots live where a node begins.
+    pub(super) fn record_depth<T: 'static>(&mut self, id: &HirId<T>) {
+        let depth = self.locals.len() as u8 - self.local_offset();
+        self.bindings.depths.insert(id.index(), depth);
+    }
+
     /// The index the current frame's slots are counted from.
     fn local_offset(&self) -> u8 {
         self.fn_frames.last().map_or(0, |frame| frame.local_offset)
@@ -251,6 +257,7 @@ impl<'a> Resolver<'a> {
             self.bindings.match_binders.insert(param.name, binders);
         }
 
+        self.record_depth(&decl.body);
         self.expression(&decl.body)?;
 
         let frame = self.fn_frames.pop().unwrap();

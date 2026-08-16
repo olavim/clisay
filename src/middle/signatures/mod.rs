@@ -178,7 +178,7 @@ impl Signatures {
         }
     }
 
-    pub(crate) fn decl_of_id(&self, id: TypeId) -> Option<HirId<HirStmt>> {
+    pub(crate) fn type_decl_of_id(&self, id: TypeId) -> Option<HirId<HirStmt>> {
         self.decls_by_id.get(&id).copied()
     }
 

@@ -16,17 +16,21 @@ impl Vm {
         }
     }
 
-    pub(super) fn close_upvalues(&mut self, after: *const Value) {
-        debug_assert!(after <= self.stack.top() as *const Value, "closing upvalues above the live stack top");
+    fn close_open_upvalues(&mut self, should_close: impl Fn(*const Value) -> bool) {
         for idx in (0..self.open_upvalues.len()).rev() {
             unsafe {
                 let upvalue = *self.open_upvalues.get_unchecked(idx);
-                if after <= (*upvalue).location {
+                if should_close((*upvalue).location) {
                     (*upvalue).close();
                     self.open_upvalues.swap_remove(idx);
                 }
             }
         }
+    }
+
+    pub(super) fn close_upvalues(&mut self, after: *const Value) {
+        debug_assert!(after <= self.stack.top() as *const Value, "closing upvalues above the live stack top");
+        self.close_open_upvalues(|location| after <= location);
         debug_assert!(!self.open_upvalues.iter().any(|&u| after <= unsafe { (*u).location }),
             "an upvalue at or above the closed slot stayed open");
     }
@@ -70,10 +74,17 @@ impl Vm {
 
     pub(super) fn op_close_upvalue(&mut self) {
         let location = self.read_next() as usize;
-        let p = unsafe { (*self.frames.top()).stack_start.add(location) };
+        let p = self.slot_addr(location);
         debug_assert!((p as *const Value) < self.stack.top() as *const Value, "CLOSE_UPVALUE operand is not a live local");
         self.close_upvalues(p);
         self.stack.truncate(1);
+    }
+
+    pub(super) fn op_close_slot_upvalue(&mut self) {
+        let location = self.read_next() as usize;
+        let p = self.slot_addr(location);
+        debug_assert!((p as *const Value) < self.stack.top() as *const Value, "CLOSE_SLOT_UPVALUE operand is not a live local");
+        self.close_open_upvalues(|location| std::ptr::eq(location, p as *const Value));
     }
 
     /// Builds a type whose methods capture.

@@ -7,10 +7,9 @@ use crate::middle::hir::{HirExpr, HirId, HirMatchArm, HirParam, HirStmt, Symbol}
 use crate::middle::obligations::Obligations;
 use crate::middle::signatures::{Mutability, TypeTag};
 
-use super::narrow::whole_value_binders;
+use super::narrow::collect_whole_value_binders;
 use super::alias::WriteOwnershipTransfer;
-use super::{ElementKey, TransferSite};
-use super::{BinderSource, Checker, Local};
+use super::{BinderSource, Checker, Ctx, ElementKey, Local, TransferSite};
 
 /// The binders a condition or match arm introduces, paired with the obligations each owes.
 #[derive(Default)]
@@ -48,6 +47,24 @@ pub(super) struct FlowSnapshot {
     pub(super) this_narrowed: HashMap<Symbol, Obligations>,
 }
 
+
+impl<'a> Ctx<'a> {
+    /// The binders a parameter's pattern introduces.
+    pub(super) fn param_scope(&self, param: &HirParam) -> Result<BinderScope, anyhow::Error> {
+        let Some(pattern) = &param.pattern else { return Ok(BinderScope::default()) };
+        let names = self.hir.get(pattern).binders(self.hir);
+        Ok(BinderScope {
+            decls: names.iter().map(|&name| (name, pattern.index())).collect(),
+            names,
+            owed: self.collect_matcher_witnessed_obligations(pattern, &param.name)?,
+            unknown: self.collect_matcher_unknown_binders(pattern),
+            // A parameter is lent for the call, and a borrow hands out no writer slot.
+            sources: HashMap::new(),
+            mutability: Mutability::param(param.clause.capability),
+            source: BinderSource::Param,
+        })
+    }
+}
 
 impl<'a> Checker<'a> {
     /// The locals of the current frame.
@@ -112,12 +129,12 @@ impl<'a> Checker<'a> {
     /// The binders a `~` condition introduces, each owing the witnesses of a bindingless alternative
     /// sharing its or-group.
     pub(super) fn condition_scope(&self, cond: &HirId<HirExpr>) -> Result<BinderScope, anyhow::Error> {
-        let names = self.hir.condition_binders(cond);
+        let names = self.ctx.hir.condition_binders(cond);
         Ok(BinderScope {
             decls: names.iter().map(|&name| (name, cond.index())).collect(),
             names,
-            owed: self.condition_witness_obligations(cond)?,
-            unknown: self.condition_unknown_binders(cond),
+            owed: self.ctx.collect_condition_witness_obligations(cond)?,
+            unknown: self.ctx.collect_condition_unknown_binders(cond),
             sources: self.binder_sources(cond),
             mutability: Mutability::Unknown,
             source: BinderSource::Condition,
@@ -127,7 +144,7 @@ impl<'a> Checker<'a> {
     /// The slot each of a condition's binders was destructured out of, for the mutable ones. An
     /// immutable scrutinee has no writer slot to hand out.
     pub(super) fn binder_sources(&self, cond: &HirId<HirExpr>) -> HashMap<Symbol, usize> {
-        self.hir.condition_binder_sources(cond).into_iter()
+        self.ctx.hir.condition_binder_sources(cond).into_iter()
             .filter_map(|(name, scrutinee)| {
                 let source = self.local_of(&scrutinee).filter(|&i| self.holds_mutable(i))?;
                 Some((name, source))
@@ -135,33 +152,16 @@ impl<'a> Checker<'a> {
             .collect()
     }
 
-    /// The binders a parameter's pattern introduces, each owing the witnesses on its or-path plus
-    /// whatever its field declares. A parameter with no pattern introduces none.
-    pub(super) fn param_scope(&self, param: &HirParam) -> Result<BinderScope, anyhow::Error> {
-        let Some(pattern) = &param.pattern else { return Ok(BinderScope::default()) };
-        let names = self.hir.get(pattern).binders(self.hir);
-        Ok(BinderScope {
-            decls: names.iter().map(|&name| (name, pattern.index())).collect(),
-            names,
-            owed: self.matcher_witness_obligations(pattern, &param.name)?,
-            unknown: self.collect_unknown_binders(pattern),
-            // A parameter is lent for the call, and a borrow hands out no writer slot.
-            sources: HashMap::new(),
-            mutability: Mutability::param(param.clause.capability),
-            source: BinderSource::Param,
-        })
-    }
-
     /// The binders a match arm introduces: its matcher binders and any guard binders. A whole-value
     /// binder owes what the scrutinee still owes. A destructure binder owes the witnesses on its
     /// or-path, as in `Node { next } | null`.
     pub(super) fn arm_scope(&self, arm: &HirMatchArm, remaining: &Obligations, at: &HirId<HirStmt>, scrutinee: &HirId<HirExpr>) -> Result<BinderScope, anyhow::Error> {
-        let whole = whole_value_binders(self.hir, &arm.matcher);
-        let witness = self.matcher_witness_obligations(&arm.matcher, at)?;
-        let mut names = self.hir.get(&arm.matcher).binders(self.hir);
+        let whole = collect_whole_value_binders(self.ctx.hir, &arm.matcher);
+        let witness = self.ctx.collect_matcher_witnessed_obligations(&arm.matcher, at)?;
+        let mut names = self.ctx.hir.get(&arm.matcher).binders(self.ctx.hir);
         let mut decls: HashMap<Symbol, usize> = names.iter().map(|&n| (n, arm.matcher.index())).collect();
         if let Some(guard) = &arm.guard {
-            let guard_names = self.hir.condition_binders(guard);
+            let guard_names = self.ctx.hir.condition_binders(guard);
             decls.extend(guard_names.iter().map(|&n| (n, guard.index())));
             names.extend(guard_names);
         }
@@ -174,14 +174,14 @@ impl<'a> Checker<'a> {
         // that guard matched, which it knows itself.
         let mut sources: HashMap<Symbol, usize> = HashMap::new();
         if let Some(source) = self.local_of(scrutinee).filter(|&i| self.holds_mutable(i)) {
-            sources.extend(self.hir.get(&arm.matcher).binders(self.hir).into_iter().map(|name| (name, source)));
+            sources.extend(self.ctx.hir.get(&arm.matcher).binders(self.ctx.hir).into_iter().map(|name| (name, source)));
         }
         if let Some(guard) = &arm.guard {
             sources.extend(self.binder_sources(guard));
         }
-        let mut unknown = self.collect_unknown_binders(&arm.matcher);
+        let mut unknown = self.ctx.collect_matcher_unknown_binders(&arm.matcher);
         if let Some(guard) = &arm.guard {
-            unknown.extend(self.condition_unknown_binders(guard));
+            unknown.extend(self.ctx.collect_condition_unknown_binders(guard));
         }
         Ok(BinderScope { names, owed, sources, decls, unknown, mutability: Mutability::Unknown, source: BinderSource::Arm })
     }
@@ -195,13 +195,13 @@ impl<'a> Checker<'a> {
         let saved_this_narrowed = std::mem::take(&mut self.this_narrowed);
 
         for (position, param) in params.iter().enumerate() {
-            let name = self.hir.ident_sym(&param.name);
+            let name = self.ctx.hir.ident_sym(&param.name);
             let mut owed = param.clause.owed();
 
             // A witness alternative is the real obligation, so `x @ Node | null` owes `opt` exactly
             // as `x: opt` does.
             if let Some(pattern) = &param.pattern {
-                owed.extend(self.resolved().admitted_obligations(pattern));
+                owed.extend(self.ctx.resolved().admitted_obligations(pattern));
             }
 
             let mut local = Local::param(name, owed, param.reassignable);
@@ -225,7 +225,7 @@ impl<'a> Checker<'a> {
         // A pattern's binders live for the whole body, so they are pushed beside the parameters
         // rather than scoped to a branch.
         for param in params {
-            let scope = self.param_scope(param)?;
+            let scope = self.ctx.param_scope(param)?;
             self.push_binders(&scope);
         }
 

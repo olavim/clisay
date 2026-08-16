@@ -94,6 +94,7 @@ opcodes! {
     JumpIfLeLocalConst => JUMP_IF_LE_LOCAL_CONST(Jump, Local, Const),
     JumpIfLtLocalConst => JUMP_IF_LT_LOCAL_CONST(Jump, Local, Const),
     CloseUpvalue => CLOSE_UPVALUE(Byte),
+    CloseSlotUpvalue => CLOSE_SLOT_UPVALUE(Byte),
     Array => ARRAY(Byte, Byte),
     Dict => DICT(Byte, Byte),
     Mut => MUT,

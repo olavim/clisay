@@ -15,7 +15,7 @@ use crate::frontend::lex::SourcePosition;
 use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{Hir, HirExpr, HirId, HirStmt, ReturnShape, Symbol};
-use crate::middle::obligations::{Obligations, Rule, Site};
+use crate::middle::obligations::{Obligations, ObligationRule, Site};
 use crate::middle::signatures::Resolved;
 use crate::middle::signatures::{Mutability, Signatures, TypeTag};
 
@@ -24,8 +24,7 @@ use alias::{AliasLocal, ElementKey, TransferSite};
 pub use barriers::{Barrier, Barriers, Guard, WitnessSet};
 
 pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures, force_checks: bool) -> Result<Barriers, anyhow::Error> {
-    let mut checker = Checker::new(hir, bindings, sigs);
-    checker.force_checks = force_checks;
+    let mut checker = Checker::new(hir, bindings, sigs, force_checks);
     checker.stmt(&hir.get_root())?;
     checker.out.witness_decls = sigs.object_witnesses().map(|(_, id)| id).collect();
     Ok(checker.out)
@@ -33,7 +32,7 @@ pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures, force_checks: bo
 
 /// The obligation state of a value as it flows.
 #[derive(Clone)]
-enum Flow {
+enum Debt {
     /// A present value owing no obligations.
     Clean,
     /// A void result: no value at all.
@@ -42,13 +41,13 @@ enum Flow {
     Unknown,
     /// A value owing obligations. `definite` marks a value known to be in the bad state, as
     /// opposed to one that only may be. `container` marks an array or dict whose elements owe
-    /// the obligations, so a read of it yields a pending element.
-    Bad { obligations: Obligations, definite: bool, container: bool },
+    /// the obligations.
+    Owed { obligations: Obligations, definite: bool, container: bool },
 }
 
-impl Flow {
+impl Debt {
     fn is_void(&self) -> bool {
-        matches!(self, Flow::Void)
+        matches!(self, Debt::Void)
     }
 }
 
@@ -59,9 +58,10 @@ enum Violation {
     Nullable,
 }
 
+/// What the pass knows about a value at a point: what it owes, what it is, and who may write it.
 #[derive(Clone)]
-struct Typed {
-    flow: Flow,
+struct ValueState {
+    debt: Debt,
     tag: TypeTag,
     /// What the value is: whether anything may mutate it at all.
     mutability: Mutability,
@@ -69,16 +69,16 @@ struct Typed {
     writable: Mutability,
 }
 
-impl Typed {
-    fn unknown() -> Typed { Typed { flow: Flow::Unknown, tag: TypeTag::Unknown, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
-    fn nonnull() -> Typed { Typed { flow: Flow::Clean, tag: TypeTag::Unknown, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
-    fn of(flow: Flow, tag: TypeTag) -> Typed { Typed { flow, tag, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
-    fn with_mutability(mut self, mutability: Mutability) -> Typed {
+impl ValueState {
+    fn unknown() -> ValueState { ValueState { debt: Debt::Unknown, tag: TypeTag::Unknown, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
+    fn nonnull() -> ValueState { ValueState { debt: Debt::Clean, tag: TypeTag::Unknown, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
+    fn of(debt: Debt, tag: TypeTag) -> ValueState { ValueState { debt, tag, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
+    fn with_mutability(mut self, mutability: Mutability) -> ValueState {
         self.mutability = mutability;
         self.writable = mutability;
         self
     }
-    fn with_writable(mut self, writable: Mutability) -> Typed { self.writable = writable; self }
+    fn with_writable(mut self, writable: Mutability) -> ValueState { self.writable = writable; self }
 }
 
 /// A tracked binding in the current function frame.
@@ -123,13 +123,12 @@ pub(super) enum BinderSource {
 }
 
 impl Local {
-    /// The flow a read of this binding yields, given what it still owes. An unknown binding is a
-    /// dynamic-boundary value, so the slot it enters decides what it may owe.
-    fn read_flow(&self, owed: Obligations) -> Flow {
+    /// What a read of this binding owes, given what the binding still owes.
+    fn read_debt(&self, owed: Obligations) -> Debt {
         match (owed.is_empty(), self.unknown) {
-            (false, _) => Flow::Bad { obligations: owed, definite: false, container: self.container },
-            (true, true) => Flow::Unknown,
-            (true, false) => Flow::Clean,
+            (false, _) => Debt::Owed { obligations: owed, definite: false, container: self.container },
+            (true, true) => Debt::Unknown,
+            (true, false) => Debt::Clean,
         }
     }
 
@@ -214,12 +213,76 @@ struct FnContext<'a> {
     writes: Option<&'a HashSet<Symbol>>,
 }
 
-struct Checker<'a> {
-    /// What the pass hands to codegen.
-    out: Barriers,
+/// What the pass reads and never writes.
+#[derive(Clone, Copy)]
+pub(super) struct Ctx<'a> {
     hir: &'a Hir,
     bindings: &'a Bindings,
     sigs: &'a Signatures,
+    /// Whether to record the runtime checks the pass proves unnecessary, so codegen can emit them anyway.
+    force_checks: bool,
+}
+
+impl<'a> Diagnose for Ctx<'a> {
+    fn hir(&self) -> &Hir { self.hir }
+}
+
+impl<'a> Ctx<'a> {
+    fn resolved(&self) -> Resolved<'a> {
+        Resolved { hir: self.hir, bindings: self.bindings, sigs: self.sigs }
+    }
+
+    /// The layout of a tracked concrete type.
+    pub(super) fn layout_of(&self, decl: &HirId<HirStmt>) -> Option<&'a TypeLayout> {
+        self.bindings.layout_of_decl(decl)
+    }
+
+    fn binding_display_name(&self, name: Symbol) -> String {
+        let text = self.hir.text(name);
+        text.strip_prefix('$').unwrap_or(text).to_string()
+    }
+
+    fn constructor_init(&self, callee: &HirId<HirExpr>) -> Option<HirId<HirStmt>> {
+        let type_stmt = self.resolved().type_named(callee)?;
+        let HirStmt::Type(decl) = self.hir.get(&type_stmt) else { return None };
+        Some(decl.init)
+    }
+
+    fn is_factory_field(&self, name: Symbol) -> bool {
+        self.hir.text(name).starts_with('$')
+    }
+
+    fn opt_debt(&self, definite: bool) -> Debt {
+        Debt::Owed { obligations: Obligations::from([self.sigs.opt]), definite, container: false }
+    }
+
+    fn nullable_to_obligations(&self, nullable: bool) -> Obligations {
+        if nullable { Obligations::from([self.sigs.opt]) } else { Obligations::new() }
+    }
+
+    /// Whether a type has a factory. A factory-less type (not all-defaulted, no `init`) is built
+    /// only by brace, so `T(..)` cannot construct it.
+    fn type_has_factory(&self, decl: &HirId<HirStmt>) -> bool {
+        match self.hir.get(decl) {
+            HirStmt::Type(decl) if decl.builtin.is_some() => true,
+            HirStmt::Type(decl) => matches!(self.hir.get(&decl.init), HirStmt::Fn(_)),
+            _ => false,
+        }
+    }
+
+    fn type_name_of(&self, decl: &HirId<HirStmt>) -> Option<Symbol> {
+        match self.hir.get(decl) {
+            HirStmt::Type(decl) | HirStmt::Trait(decl) => Some(decl.name),
+            _ => None,
+        }
+    }
+
+}
+
+struct Checker<'a> {
+    ctx: Ctx<'a>,
+    /// What the pass hands to codegen.
+    out: Barriers,
     locals: Vec<Local>,
     /// The start index in `locals` of the current function frame. Value reads only see
     /// bindings at or above this, so a closure does not read an enclosing local's flow state.
@@ -240,34 +303,22 @@ struct Checker<'a> {
     fn_ctx: FnContext<'a>,
     /// Set while descending into a `mut` construction.
     pub(super) mut_construction: bool,
-    /// Whether to record the runtime checks the pass proves unnecessary, so codegen can emit them anyway.
-    force_checks: bool,
     /// Locals a call in the expression being walked may have rebound. Read once, where a condition
     /// turns into the facts it proves.
     rebound_in_expr: HashSet<usize>,
-    /// How many times an element's writer slot has been handed to a container, which is what
-    /// `Guard::StoreIntoContainer` records. A construction takes its elements before it is assigned,
-    /// so the container is often not a local yet, and a scope compares this at entry and exit rather
-    /// than asking which local received them.
+    /// How many times an element's write-ownership has been handed to a container.
     elements_handed_over: usize,
 }
 
 impl<'a> Diagnose for Checker<'a> {
-    fn hir(&self) -> &Hir { self.hir }
+    fn hir(&self) -> &Hir { self.ctx.hir }
 }
 
 impl<'a> Checker<'a> {
-    fn resolved(&self) -> Resolved<'a> {
-        Resolved { hir: self.hir, bindings: self.bindings, sigs: self.sigs }
-    }
-
-    fn new(hir: &'a Hir, bindings: &'a Bindings, sigs: &'a Signatures) -> Checker<'a> {
+    fn new(hir: &'a Hir, bindings: &'a Bindings, sigs: &'a Signatures, force_checks: bool) -> Checker<'a> {
         Checker {
-            hir,
-            bindings,
-            sigs,
+            ctx: Ctx { hir, bindings, sigs, force_checks },
             resolved_callees: HashMap::new(),
-            force_checks: false,
             rebound_in_expr: HashSet::new(),
             elements_handed_over: 0,
             locals: Vec::new(),
@@ -291,81 +342,26 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn this_typed(&self) -> Typed {
+    fn this_typed(&self) -> ValueState {
         let receiver = &self.fn_ctx.receiver;
-        let flow = if receiver.owed.is_empty() {
-            Flow::Clean
+        let debt = if receiver.owed.is_empty() {
+            Debt::Clean
         } else {
-            Flow::Bad { obligations: receiver.owed.clone(), definite: false, container: false }
+            Debt::Owed { obligations: receiver.owed.clone(), definite: false, container: false }
         };
-        Typed::of(flow, self.this_tag()).with_mutability(receiver.mutability)
+        ValueState::of(debt, self.this_tag()).with_mutability(receiver.mutability)
     }
 
-    /// A value owing `opt`. `definite` marks a known-null value versus a possibly-null one.
-    fn opt_flow(&self, definite: bool) -> Flow {
-        Flow::Bad { obligations: Obligations::from([self.sigs.opt]), definite, container: false }
-    }
-
-    fn opt_set(&self, nullable: bool) -> Obligations {
-        if nullable { Obligations::from([self.sigs.opt]) } else { Obligations::new() }
-    }
-
-    fn constructor_init(&self, callee: &HirId<HirExpr>) -> Option<HirId<HirStmt>> {
-        let type_stmt = self.resolved().type_named(callee)?;
-        let HirStmt::Type(decl) = self.hir.get(&type_stmt) else { return None };
-        Some(decl.init)
-    }
-
-    /// Whether a type has a factory. A factory-less type (not all-defaulted, no `init`) is built
-    /// only by brace, so `T(..)` cannot construct it.
-    fn type_has_factory(&self, decl: &HirId<HirStmt>) -> bool {
-        match self.hir.get(decl) {
-            // A built-in's factory is the native one the VM installed, which no declaration shows.
-            HirStmt::Type(decl) if decl.builtin.is_some() => true,
-            HirStmt::Type(decl) => matches!(self.hir.get(&decl.init), HirStmt::Fn(_)),
-            _ => false,
-        }
-    }
-
-    /// The nearest binding of `name` across all frames. Functions resolve across frames so a
-    /// nested body can call an enclosing function.
     fn func_of(&self, name: Symbol) -> Option<HirId<HirStmt>> {
         self.locals.iter().rev().find(|l| l.name == name).and_then(|l| l.func)
     }
 
-    /// A binding's display name, hiding the `$` prefix of a synthetic field-local. A source name
-    /// cannot start with `$`, so only a field-local is affected.
-    fn binding_text(&self, name: Symbol) -> String {
-        let text = self.hir.text(name);
-        text.strip_prefix('$').unwrap_or(text).to_string()
-    }
-
-    /// Whether a binding is a factory's synthetic field-local. Its `$` prefix cannot occur in a
-    /// source name, so a diagnostic can present it as the field it stands for.
-    fn is_field_local(&self, name: Symbol) -> bool {
-        self.hir.text(name).starts_with('$')
-    }
-
-    /// The layout of a tracked concrete type.
-    fn layout_of(&self, decl: &HirId<HirStmt>) -> Option<&'a TypeLayout> {
-        self.bindings.layout_of_decl(decl)
-    }
-
-    /// A declaration's name.
-    fn type_name_of(&self, decl: &HirId<HirStmt>) -> Option<Symbol> {
-        match self.hir.get(decl) {
-            HirStmt::Type(decl) | HirStmt::Trait(decl) => Some(decl.name),
-            _ => None,
-        }
-    }
-
-    /// Inside a trait body, `this` reaches only the surface the trait declares or requires.
-    fn trait_member(&self, name: &str, node: &HirId<HirExpr>) -> Result<Typed, anyhow::Error> {
-        let in_surface = self.current_trait_surface.as_ref().is_some_and(|surface| surface.iter().any(|m| self.hir.text(*m) == name));
+    fn trait_member(&self, name: &str, node: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
+        let in_surface = self.current_trait_surface.as_ref().is_some_and(|surface| surface.iter().any(|m| self.ctx.hir.text(*m) == name));
         if !in_surface {
             return Err(self.error_help(format!("'{}' is not declared or required by this trait", name), node, "declare it or add a 'req'"));
         }
-        Ok(Typed::unknown())
+        Ok(ValueState::unknown())
     }
 
 }

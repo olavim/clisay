@@ -6,7 +6,7 @@ use crate::frontend::lex::Diagnostic;
 use crate::core::gc::Gc;
 use crate::middle::hir::TypeId;
 use crate::middle::ir::{Inst, Ir, Label, SourceRole};
-use crate::middle::bind::{Bindings, Cleanup, FnKind};
+use crate::middle::bind::{Bindings, Cleanup, FnKind, Place};
 use crate::middle::check::Barriers;
 use crate::middle::signatures::Signatures;
 use crate::middle::hir::Hir;
@@ -75,6 +75,10 @@ pub struct Compiler<'a> {
     dup_root: Option<HirId<HirExpr>>,
     /// Whether to drop every placed guard.
     floor_only: bool,
+    /// Each live `??` binder: the slot bind gave its name, and the slot its operand landed in.
+    handle_binder_slots: Vec<(u8, u8)>,
+    /// How many slots the frame being emitted holds.
+    depth: usize,
 }
 
 #[macro_export]
@@ -100,13 +104,31 @@ impl<'a> Compiler<'a> {
             sigs,
             fn_kinds: Vec::new(),
             try_frames: Vec::new(),
-            witness_ids: FnvHashMap::default()
+            witness_ids: FnvHashMap::default(),
+            depth: 0,
+            handle_binder_slots: Vec::new(),
         };
 
         compiler.assign_witness_ids();
         let stmt_id = compiler.hir.get_root();
         compiler.statement(&stmt_id)?;
         Ok(compiler.finish())
+    }
+
+    /// Where a name lives. A `??` binder is the one name bind cannot number, because its slot
+    /// depends on what the expression around it already pushed.
+    fn place(&self, node: &HirId<HirExpr>) -> Place {
+        match self.bindings.place(node) {
+            Place::Local(slot) => Place::Local(self.real_slot(slot)),
+            other => other,
+        }
+    }
+
+    /// The slot a name really reads. Only a `??` binder's differs from what bind gave it.
+    fn real_slot(&self, slot: u8) -> u8 {
+        self.handle_binder_slots.iter()
+            .find_map(|&(binder_slot, operand_slot)| (binder_slot == slot).then_some(operand_slot))
+            .unwrap_or(slot)
     }
 
     fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &HirId<T>) -> anyhow::Error {
@@ -150,6 +172,14 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit<T: 'static>(&mut self, inst: Inst, node_id: &HirId<T>) {
+        match inst {
+            Inst::PushNull => self.depth += 1,
+            Inst::Pop
+                | Inst::JumpIfFalseOrPop(_)
+                | Inst::JumpIfTrueOrPop(_)
+                | Inst::JumpIfNotNullOrPop(_) => self.depth = self.depth.saturating_sub(1),
+            _ => {},
+        }
         let pos = self.hir.pos(node_id);
         self.ir.emit(inst, pos);
     }

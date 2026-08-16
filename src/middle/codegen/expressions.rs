@@ -18,6 +18,14 @@ enum IndexOp {
 
 impl<'a> Compiler<'a> {
     pub (super) fn expression(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let before = self.depth;
+        self.expression_inner(expr)?;
+        // An expression leaves exactly one value.
+        self.depth = before + 1;
+        Ok(())
+    }
+
+    fn expression_inner(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // A barrier compares the element against the root it was reached through, and fires once
         // the path is built, by which point indexing has consumed that root. So a root no binding
         // can name is marked here and copied by the node that produces it.
@@ -42,7 +50,7 @@ impl<'a> Compiler<'a> {
             HirExpr::Index(target, member, is_dot) => self.index(target, member, *is_dot, IndexOp::Load)?,
             HirExpr::Literal(lit) => self.literal(expr, lit)?,
             HirExpr::Identifier(_) => {
-                let place = self.bindings.place(expr);
+                let place = self.place(expr);
                 self.emit_load(place, expr)?;
             },
             // A plain brace seals inline (seal flag 1).
@@ -55,7 +63,7 @@ impl<'a> Compiler<'a> {
                     None => self.compile_matcher_test(matcher, expr)?,
                 }
             },
-            HirExpr::This => self.emit_load(self.bindings.place(expr), expr)?,
+            HirExpr::This => self.emit_load(self.place(expr), expr)?,
             HirExpr::Coalesce(left, right) => self.coalesce(expr, left, right)?,
             HirExpr::SafeAccess(target, member, is_dot) => self.safe_access(expr, target, member, *is_dot)?,
             HirExpr::SafeCall(callee, args) => self.safe_call(expr, callee, args)?,
@@ -92,7 +100,7 @@ impl<'a> Compiler<'a> {
             match self.hir.get(&current) {
                 HirExpr::Index(target, _, _) | HirExpr::SafeAccess(target, _, _) => current = *target,
                 HirExpr::Assert(inner) | HirExpr::Propagate(inner) | HirExpr::Mut(inner) => current = *inner,
-                HirExpr::Identifier(_) | HirExpr::This => return (current, match self.bindings.place(&current) {
+                HirExpr::Identifier(_) | HirExpr::This => return (current, match self.place(&current) {
                     Place::Local(slot) => PathRoot::Local(slot),
                     Place::Upvalue(idx) => PathRoot::Upvalue(idx),
                     _ => PathRoot::Unnamed,
@@ -166,7 +174,7 @@ impl<'a> Compiler<'a> {
             // The slot rides the name, so the same name writing again is not a second writer. The
             // store makes the same claim from its own root operand, so this is the faster spelling
             // of a claim the runtime would make anyway.
-            Guard::WriteThroughName => if let Place::Local(slot) = self.bindings.place(node) {
+            Guard::WriteThroughName => if let Place::Local(slot) = self.place(node) {
                 self.emit(Inst::TakeWriteOwnership(slot), node);
             },
         }
@@ -234,24 +242,28 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// Jumps to `clean` when the value on top is clean, leaving it there.
+    fn emit_clean_jump(&mut self, node: &HirId<HirExpr>, at: &HirId<HirExpr>, clean: Label) -> Result<(), anyhow::Error> {
+        match self.barriers.witness_set(node) {
+            // A user witness is a type test, so its jumps fire on a bad value. That leaves
+            // `clean` needing a jump of its own.
+            Some(set) if set.contains_user_witnesses => {
+                let bad = self.ir.new_label();
+                self.emit_witness_jumps(at, set, bad)?;
+                self.emit(Inst::Jump(clean), at);
+                self.ir.bind(bad);
+            },
+            _ => self.emit(Inst::JumpIfClean(clean), at),
+        }
+        Ok(())
+    }
+
     /// Compiles `a?!`: on a bad value the enclosing function returns it.
     fn propagate(&mut self, node: &HirId<HirExpr>, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let cont = self.ir.new_label();
         self.expression(operand)?;
-        match self.barriers.witness_set(node) {
-            Some(set) if set.contains_user_witnesses => {
-                let set = set.clone();
-                let do_return = self.ir.new_label();
-                self.emit_witness_jumps(operand, &set, do_return)?;
-                self.emit(Inst::Jump(cont), operand);
-                self.ir.bind(do_return);
-                self.emit(Inst::Return, operand);
-            },
-            _ => {
-                self.emit(Inst::JumpIfClean(cont), operand);
-                self.emit(Inst::Return, operand);
-            },
-        }
+        self.emit_clean_jump(node, operand, cont)?;
+        self.emit(Inst::Return, operand);
         self.ir.bind(cont);
         Ok(())
     }
@@ -277,12 +289,19 @@ impl<'a> Compiler<'a> {
 
     /// Compiles `a ?? p => h`: yield `a` when clean, else bind the bad value to `p` and yield `h`.
     fn handle(&mut self, node: &HirId<HirExpr>, left: &HirId<HirExpr>, handler: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let slot = self.bindings.handle_binder(node);
         let end = self.ir.new_label();
         self.expression(left)?;
-        self.emit(Inst::JumpIfClean(end), left);
-        self.expression(handler)?;
-        self.emit(Inst::StoreLocalPop(slot), node);
+        let operand_slot = self.operand_count(self.depth - 1, "a frame", "slots", node)?;
+        self.emit_clean_jump(node, left, end)?;
+        self.handle_binder_slots.push((self.bindings.handle_binder(node), operand_slot));
+        let compiled = self.expression(handler);
+        self.handle_binder_slots.pop();
+        compiled?;
+        // An upvalue over the binder has to be closed before the result lands on its slot.
+        if self.bindings.is_captured(node.index()) {
+            self.emit(Inst::CloseSlotUpvalue(operand_slot), node);
+        }
+        self.emit(Inst::StoreLocalPop(operand_slot), node);
         self.ir.bind(end);
         Ok(())
     }
@@ -301,10 +320,7 @@ impl<'a> Compiler<'a> {
     /// Emits the `?` chain's short-circuit: on a bad operand, jump to `end` keeping the operand.
     fn chain_guard(&mut self, node: &HirId<HirExpr>, at: &HirId<HirExpr>, end: Label) -> Result<(), anyhow::Error> {
         match self.barriers.witness_set(node) {
-            Some(set) if set.contains_user_witnesses => {
-                let set = set.clone();
-                self.emit_witness_jumps(at, &set, end)?;
-            },
+            Some(set) if set.contains_user_witnesses => self.emit_witness_jumps(at, set, end)?,
             Some(_) => self.emit(Inst::JumpIfBad(end), at),
             None => self.emit(Inst::JumpIfNull(end), at),
         }
@@ -418,7 +434,7 @@ impl<'a> Compiler<'a> {
     fn compile_assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>, discarded: bool) -> Result<(), anyhow::Error> {
         match self.hir.get(lhs) {
             HirExpr::Identifier(_) => {
-                let place = self.bindings.place(lhs);
+                let place = self.place(lhs);
                 // The slot goes back while the name still holds the value that took it.
                 if let (true, Place::Local(slot)) = (self.barriers.releases_on_rebind(lhs), place) {
                     self.emit(Inst::ReleaseWriteOwnershipAt(slot), lhs);

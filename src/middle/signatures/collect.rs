@@ -68,8 +68,10 @@ impl<'a> Collector<'a> {
         for (name, decl) in self.hir.obligations() {
             self.sigs.rules.insert(name, decl.rules);
             if let Some(witness) = &decl.witness {
-                let is_trait = self.hir.type_info(witness.id).is_some_and(|info| info.is_trait);
-                let w = if is_trait { Witness::Trait(witness.id) } else { Witness::Type(witness.id) };
+                let w = match self.hir.is_trait(witness.id) {
+                    true => Witness::Trait(witness.id),
+                    false => Witness::Type(witness.id),
+                };
                 self.sigs.witnesses.insert(name, w);
             }
         }

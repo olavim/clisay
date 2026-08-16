@@ -159,6 +159,8 @@ pub struct Bindings {
     /// Type/trait declaration => its public member names, for the `x has T` surface form. A type
     /// contributes its public members; a trait its declared surface.
     surfaces: FnvHashMap<HirId<HirStmt>, Vec<Symbol>>,
+    /// Statements and function bodies (by HIR node index) => frame slots live at that point.
+    depths: FnvHashMap<usize, u8>,
     /// Scope nodes (by HIR node index) => locals to clean up on exit.
     cleanups: FnvHashMap<usize, Vec<Cleanup>>,
     /// Declaration nodes whose binding some nested body captures. A binding absent here is named by
@@ -271,16 +273,20 @@ impl Bindings {
     pub fn handle_binder(&self, id: &HirId<HirExpr>) -> u8 {
         self.handle_binders[id]
     }
+
+    /// Frame slots live where this node begins.
+    pub fn depth_at<T: 'static>(&self, id: &HirId<T>) -> u8 {
+        self.depths[&id.index()]
+    }
+
 }
 
 struct Local {
-    /// `None` for the callee/`this` slot of a method or factory: it's
-    /// addressed positionally (slot 0), never resolved by name.
+    /// `None` for the callee/`this` slot of a method or factory.
     name: Option<Symbol>,
     depth: u8,
     is_captured: bool,
-    /// The node that declared this binding. `None` where nothing outside
-    /// this pass names the binding.
+    /// The node that declared this binding.
     decl: Option<usize>,
 }
 
@@ -352,6 +358,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn statement(&mut self, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
+        self.record_depth(stmt_id);
         match self.hir.get(stmt_id) {
             HirStmt::Return(expr) => {
                 if let Some(expr) = expr {
@@ -434,6 +441,12 @@ impl<'a> Resolver<'a> {
                     // stores land inside the reserved block that codegen pushes.
                     if let Some(guard) = &arm.guard {
                         self.resolve_condition(guard, true, guard.index())?;
+                    }
+
+                    // codegen pushes the whole block whatever arm runs, so an arm with fewer
+                    // binders still has all of it below its body.
+                    while self.locals.len() < block_base + binder_slots {
+                        self.declare_temp()?;
                     }
 
                     self.expression(&arm.body)?;
@@ -617,8 +630,7 @@ impl<'a> Resolver<'a> {
             HirExpr::Propagate(operand) => self.expression(operand)?,
             HirExpr::Handle(left, binder, handler) => {
                 self.expression(left)?;
-                // The binder is live only while resolving the handler. Its slot is where the bad
-                // value already sits, so it is dropped without a cleanup. Slot reused for the result.
+                // The binder lives only while the handler resolves.
                 let mark = self.locals.len();
                 let slot = self.declare_local(*binder, expr.index())?;
                 self.bindings.handle_binders.insert(*expr, slot);

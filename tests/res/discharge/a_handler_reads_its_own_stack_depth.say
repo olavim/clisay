@@ -1,0 +1,19 @@
+// A short-circuit drops its left operand, so a handler to the right of one sits a slot lower.
+fn sink(y)! { return y; }
+
+say a: fails = Err("a");
+say r = true && sink(a ?? e => 7);
+print(r); // expect: 7
+
+say s = false || (a ?? e => 8);
+print(s); // expect: 8
+
+// @split
+type W { pub d; init(this, *d) { this.d = d; } }
+obligation warned { witness W; discharge to use; }
+
+fn sink(y)! { return y; }
+fn f(x: warned)! { return sink(x ?? e => ((a, b) => b)(1, 2)); }
+
+print(f(W(3))); // expect: 2
+print(f(9));    // expect: 9

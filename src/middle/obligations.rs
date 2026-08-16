@@ -102,24 +102,24 @@ impl<'a> IntoIterator for &'a Obligations {
 
 /// A rule an obligation may declare, paired with how a refusal spells it.
 #[derive(Clone, Copy)]
-pub enum Rule { NoPersist, NoReturn, BeforeDrop }
+pub enum ObligationRule { NoPersist, NoReturn, BeforeDrop }
 
-impl Rule {
+impl ObligationRule {
     /// Whether these rules declare it.
     pub fn holds(self, rules: &ObligationRules) -> bool {
         match self {
-            Rule::NoPersist => rules.no_persist,
-            Rule::NoReturn => rules.no_return,
-            Rule::BeforeDrop => rules.before_drop,
+            ObligationRule::NoPersist => rules.no_persist,
+            ObligationRule::NoReturn => rules.no_return,
+            ObligationRule::BeforeDrop => rules.before_drop,
         }
     }
 
     /// The rule as written in a declaration, for the citation in a help line.
     pub fn spelling(self) -> &'static str {
         match self {
-            Rule::NoPersist => "no persist",
-            Rule::NoReturn => "no return",
-            Rule::BeforeDrop => "discharge before drop",
+            ObligationRule::NoPersist => "no persist",
+            ObligationRule::NoReturn => "no return",
+            ObligationRule::BeforeDrop => "discharge before drop",
         }
     }
 }

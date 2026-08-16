@@ -120,7 +120,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         Call(b) | CallMut(b)
         | PushConstant(b) | PushClosure(b) | PushType(b) | BuildType(b)
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
-        | CloseUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
+        | CloseUpvalue(b) | CloseSlotUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
         | GetField(b)
         | TakeWriteOwnership(b)
         | TransferWriteOwnership(b) | TransferWriteOwnershipUp(b) | TransferWriteOwnershipAt(b)

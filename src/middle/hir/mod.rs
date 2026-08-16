@@ -519,6 +519,10 @@ impl Hir {
         self.type_info.get(&id)
     }
 
+    pub fn is_trait(&self, id: TypeId) -> bool {
+        self.type_info(id).is_some_and(|info| info.is_trait)
+    }
+
     pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: Option<ObligationWitness>, rules: ObligationRules) {
         self.obligations.insert(name, ObligationDecl { witness, rules });
     }

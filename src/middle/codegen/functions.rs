@@ -1,4 +1,4 @@
-use crate::core::objects::ObjFn;
+use crate::core::objects::{ObjFn, UpvalueLocation};
 use crate::core::value::Value;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirParam, HirStmt};
 use crate::middle::ir::Inst;
@@ -89,16 +89,27 @@ impl<'a> Compiler<'a> {
         let body = self.ir.new_label();
         self.ir.bind(body);
 
+        let caller_depth = self.depth;
+        // A binder names a slot of the frame that made it, so a nested body starts with none.
+        let caller_binders = std::mem::take(&mut self.handle_binder_slots);
         self.compile_entry_steps(&decl.params)?;
+        self.depth = self.bindings.depth_at(&decl.body) as usize;
         self.expression(&decl.body)?;
         self.exit_function(&decl.body, kind);
+        self.depth = caller_depth;
+        self.handle_binder_slots = caller_binders;
         self.ir.bind(skip);
 
         self.fn_kinds.pop();
 
         let name = self.gc.intern(self.hir.text(decl.name));
         let arity = decl.params.len() as u8;
-        let upvalues = self.bindings.upvalues(&decl.body).to_vec();
+        let upvalues = self.bindings.upvalues(&decl.body).iter()
+            .map(|u| match u.is_local {
+                true => UpvalueLocation { location: self.real_slot(u.location), is_local: true },
+                false => *u,
+            })
+            .collect();
 
         let escape_mask = masks.retains | masks.escapes;
 

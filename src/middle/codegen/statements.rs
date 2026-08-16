@@ -8,6 +8,10 @@ use super::{Compiler, WriteOwnershipHolderPlace, TryCatchPosition, TryFrame};
 
 impl<'a> Compiler<'a> {
     pub (super) fn statement(&mut self, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
+        // bind counted the slots live here while deciding where each name lives, so the depth is
+        // read rather than derived.
+        self.depth = self.bindings.depth_at(stmt_id) as usize;
+
         match self.hir.get(stmt_id) {
             HirStmt::Nop => {},
             HirStmt::Return(expr) => {

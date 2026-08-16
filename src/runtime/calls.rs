@@ -508,7 +508,7 @@ impl Vm {
     }
 
     /// The address of a local in the running frame, which is what identifies a holder.
-    fn slot_addr(&self, slot: usize) -> *mut Value {
+    pub(super) fn slot_addr(&self, slot: usize) -> *mut Value {
         unsafe { (*self.frames.top()).stack_start.add(slot) }
     }
 
