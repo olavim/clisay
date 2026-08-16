@@ -1,0 +1,2 @@
+fn fail(): fails { return Err("boom"); }
+fail(); // error: this result owes 'fails' and is never discharged

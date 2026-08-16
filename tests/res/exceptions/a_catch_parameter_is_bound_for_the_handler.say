@@ -1,0 +1,20 @@
+// A caught value is bound for the handler and nothing reassigns it, so neither marker is accepted.
+try {
+    throw "boom";
+} catch (e) {
+    print(e); // expect: boom
+}
+
+// @split
+try {
+    throw "boom";
+} catch (mut e) { // error: A catch parameter cannot be `mut`
+    print(e);
+}
+
+// @split
+try {
+    throw "boom";
+} catch (var e) { // error: A catch parameter cannot be `var`
+    print(e);
+}

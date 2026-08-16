@@ -1,0 +1,20 @@
+// A lambda's parameter is borrowed for the call like any other.
+say k = (a) => { say b = () => a[0]; return b(); };
+print(k([7])); // expect: 7
+
+// @split
+// A closure that outlives the call is the case the rule is for.
+say var kept? = null;
+say k = (a) => { kept = () => a[0]; return 1; }; // error: a borrowed value cannot be retained, and this closure outlives the call
+print(k([7]));
+
+// @split
+// Every parameter is answered from its own entry, not from one verdict for the whole lambda.
+say k = (a, b) => { say p = () => a[0]; say q = () => b[0]; return p() + q(); };
+print(k([3], [4])); // expect: 7
+
+// @split
+// The named-function spelling of the first case behaves the same, which is what it was measured
+// against.
+fn f(x) { say cb = () => x[0]; print(cb()); } // expect: 7
+f([7]);

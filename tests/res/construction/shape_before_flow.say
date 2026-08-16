@@ -1,0 +1,9 @@
+// The shape error wins even though the flow error is on an earlier line: `say v = null` assigns
+// null to a non-null binding, which the flow pass refuses on its own.
+type T {
+    pub a;
+    pub b;
+}
+
+say v = null;
+say t = T { a: v }; // error: Construction of 'T' is missing non-null field 'b'

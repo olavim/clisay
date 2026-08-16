@@ -2,7 +2,7 @@
 type A {
     pub x = 1;
 
-    pub fn get(key) {
+    pub fn get(this, key) {
         return this[key]; // error: Invalid index: 'this' has no computed member; member names are statically known
     }
 }

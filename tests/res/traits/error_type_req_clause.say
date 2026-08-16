@@ -1,0 +1,3 @@
+// `req` leaves a trait for someone else to supply, and a type is the final type.
+trait Clock { pub fn tick(this) { return 1; } }
+type Player req Clock { init(this) {} } // error: 'req' is a trait-only clause

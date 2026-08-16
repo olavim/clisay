@@ -1,0 +1,16 @@
+obligation borrowed { no persist; no return; }
+type Box {
+    pub var item;
+    init(this) { this.item = 0; }
+    fn stash(mut this, x: borrowed) { this.item = x; }
+}
+// error(full):
+// error: cannot retain a borrowed argument
+//  --> error_escape_store.say:5:51
+//   |
+// 5 |     fn stash(mut this, x: borrowed) { this.item = x; }
+//   |                        -----------                ^ `x` is retained here
+//   |                        |
+//   |                        `x` is borrowed here
+//   |
+//   = help: `borrowed` declares `no persist`, so `*x` cannot help; freeze or copy it before persisting

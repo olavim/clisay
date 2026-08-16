@@ -1,17 +1,17 @@
 // Regression test for a use-after-free in the GC's method-binding path.
 
 type Counter {
-    pub mut n;
-    init() {
+    pub var n;
+    init(this) {
         this.n = 0;
     }
-    pub fn inc() {
+    pub fn inc(mut this) {
         this.n = this.n + 1;
     }
 }
 
 say c = mut Counter();
-say mut i = 0;
+say var i = 0;
 while i < 100000 {
     c.inc();
     i = i + 1;

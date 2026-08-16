@@ -3,7 +3,8 @@
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt};
 
 use super::{Collector, Mutability, TypeTag};
-use super::walk::Child;
+use crate::middle::walk::Child;
+use crate::middle::walk;
 
 impl<'a> Collector<'a> {
     /// Infers every function's return type tag.
@@ -99,37 +100,27 @@ impl<'a> Collector<'a> {
             HirExpr::This => TypeTag::SelfType,
             // A `: mut` factory returns `mut Ctor()`, so classify the wrapped construction.
             HirExpr::Mut(inner) => self.classify_return(inner),
-            HirExpr::Construct(callee, _, _) => {
-                self.sigs.type_named(self.hir, callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
-            },
-            HirExpr::Call(callee, _) => match self.hir.get(callee) {
-                HirExpr::Identifier(name) if self.sigs.is_type(*name) => TypeTag::Concrete(*name),
-                HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
-                    .and_then(|stmt| self.sigs.ret_tags.get(stmt).cloned())
-                    .unwrap_or(TypeTag::Unknown),
-                _ => TypeTag::Unknown,
+            HirExpr::Construct(callee, _) => self.resolved().constructed_tag(callee),
+            // A callee naming a type is a factory call, so it reports the type it builds.
+            HirExpr::Call(callee, _) => match self.resolved().type_named(callee) {
+                Some(decl) => TypeTag::Concrete(decl),
+                None => match self.hir.get(callee) {
+                    HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
+                        .and_then(|stmt| self.sigs.ret_tags.get(stmt).cloned())
+                        .unwrap_or(TypeTag::Unknown),
+                    _ => TypeTag::Unknown,
+                },
             },
             _ => TypeTag::Unknown,
         }
     }
 
+    /// A nested function's returns belong to that function, which the walk treats as a leaf.
     pub(super) fn collect_returns(&self, expr: &HirId<HirExpr>, out: &mut Vec<HirId<HirExpr>>) {
-        for child in self.children_of_expr(expr) {
-            match child {
-                Child::Expr(e) => self.collect_returns(&e, out),
-                Child::Stmt(s) => self.collect_returns_stmt(&s, out),
+        walk::visit_body(self.hir, expr, &mut |node| {
+            if let Child::Stmt(s) = node {
+                if let HirStmt::Return(Some(e)) = self.hir.get(&s) { out.push(*e); }
             }
-        }
-    }
-
-    fn collect_returns_stmt(&self, stmt: &HirId<HirStmt>, out: &mut Vec<HirId<HirExpr>>) {
-        // A nested function's returns belong to that function, so the traversal treats it as a leaf.
-        if let HirStmt::Return(Some(e)) = self.hir.get(stmt) { out.push(*e); }
-        for child in self.children_of_stmt(stmt) {
-            match child {
-                Child::Expr(e) => self.collect_returns(&e, out),
-                Child::Stmt(s) => self.collect_returns_stmt(&s, out),
-            }
-        }
+        });
     }
 }

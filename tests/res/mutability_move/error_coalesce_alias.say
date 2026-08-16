@@ -1,5 +1,5 @@
-// A value taken from `??` is moved, so the source is dead afterward.
+// A value taken from `??` gives its write-ownership away, so the source only reads it.
 say a = mut [1];
 say c = mut [2];
 say b = a ?? c;
-print(a[0]); // error: value used after it was moved
+print(a[0]); // expect: 1

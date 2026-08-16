@@ -1,17 +1,17 @@
-fn cb(a: mut, b: *mut) { }
-fn apply(f, x: mut, y: mut) {
+fn cb(mut a, *mut b) { }
+fn apply(f, mut x, mut y) {
   f(x, y);
 }
 say p = mut {};
 say q = mut {};
 apply(cb, p, q);
 // error(full):
-// error: cannot pass a borrowed argument to a callee that lets it escape
+// error: cannot pass a borrowed argument to a callee that retains it
 //  --> opaque_consume_barrier_arg.say:3:8
 //   |
-// 2 | fn apply(f, x: mut, y: mut) {
+// 2 | fn apply(f, mut x, mut y) {
 // 3 |   f(x, y);
-//   |        ^ the callee lets `y` escape
+//   |        ^ `y` is borrowed but the callee retains it
 //   |
 // 	at apply (opaque_consume_barrier_arg.say:3)
 // 	at script (opaque_consume_barrier_arg.say:7)

@@ -1,0 +1,82 @@
+// A value whose write-ownership was given away has none left to give.
+fn drop(*mut c) { }
+fn run(g, *mut c) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say keep = mut [];
+say e = mut [0];
+run(drop, e);
+keep.push(f(e)); // error: cannot give away a value whose write-ownership was given away
+
+// @split
+// A mutable literal is a container that writes, so it refuses the store like any other.
+fn drop(*mut c) { }
+fn run(g, *mut c) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say e = mut [0];
+run(drop, e);
+say w = mut [f(e)]; // error: cannot give away a value whose write-ownership was given away
+
+// @split
+// An immutable container writes nothing, so the mutable element is what is wrong here.
+fn drop(*mut c) { }
+fn run(g, *mut c) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say e = mut [0];
+run(drop, e);
+say w = [f(e)]; // error: cannot store a mutable value in an immutable container
+
+// @split
+// An index store into a container that writes refuses it the same way a push does.
+fn drop(*mut c) { }
+fn run(g, *mut c) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say keep = mut [0];
+say e = mut [0];
+run(drop, e);
+keep[0] = f(e); // error: cannot give away a value whose write-ownership was given away
+
+// @split
+// A field store asks the same question.
+type Box { pub var item; init(this) { this.item = 0; } }
+fn drop(*mut c) { }
+fn run(g, *mut c) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say b = mut Box();
+say e = mut [0];
+run(drop, e);
+b.item = f(e); // error: cannot give away a value whose write-ownership was given away
+
+// @split
+// A dict literal takes its values like an array literal does.
+fn drop(*mut c) { }
+fn run(g, *mut c) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say e = mut [0];
+run(drop, e);
+say w = mut { "k": f(e) }; // error: cannot give away a value whose write-ownership was given away
+
+// @split
+// Reading it is still fine, which is the whole difference between a give and a read.
+fn drop(*mut c) { }
+fn run(g, *mut c) { g(c); }
+fn get(x)! { return x; }
+say f = get;
+say e = mut [1];
+run(drop, e);
+print(f(e)[0]); // expect: 1
+
+// @split
+// A value nobody gave away is stored through the same call and written through the container.
+fn get(x)! { return x; }
+say f = get;
+say keep = mut [];
+say e = mut [0];
+keep.push(f(e));
+keep[0][0] = 7;
+print(keep[0][0]); // expect: 7

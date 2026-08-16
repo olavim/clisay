@@ -1,0 +1,2 @@
+// A nominal name in a parameter pattern resolves like any other matcher type reference.
+fn f(Nope { a }) { print(a); } // error: 'Nope' is not a type or trait

@@ -1,4 +1,4 @@
 // A legitimate Err crossing the dynamic boundary into a `fails` slot lands there. `??` discharges it.
-say errs = [Err("boom")];
-say r: fails = errs[0];
+say make = () => Err("boom");
+say r: fails = make();
 print(r ?? "recovered"); // expect: recovered

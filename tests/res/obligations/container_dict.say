@@ -1,4 +1,4 @@
 // The single `[obl]` clause covers dicts as well as arrays.
-obligation taint;
+type Taint { } obligation taint { witness Taint; discharge to use; }
 say d: [taint] = {};
 print(d.size()); // expect: 0

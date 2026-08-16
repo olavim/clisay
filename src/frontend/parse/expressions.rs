@@ -6,18 +6,18 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub(super) fn make_lambda(&mut self, params: Vec<AstId<Expr>>, body: AstId<Expr>) -> Expr {
         let name = self.ast.intern("lambda");
         // Lambda parameters take no markers. The return shape is inferred from the body.
-        let params = params.into_iter()
-            .map(|name| Param {
-                pos: self.ast.pos(&name).clone(),
-                name,
-                nullable: false,
-                mutable: false,
-                clause: SlotClause::default()
-            })
-            .collect();
+        let mut lambda_params = Vec::with_capacity(params.len());
+        for param in params {
+            let pos = self.ast.pos(&param).clone();
+            let Expr::Identifier(sym) = self.ast.get(&param) else { unreachable!("a lambda parameter is an identifier") };
+            let pattern = self.ast.add_matcher(Matcher::Binder(*sym), pos.clone());
+            lambda_params.push(Param { pattern, pos, nullable: false, reassignable: false, clause: SlotClause::default() });
+        }
+        let params = lambda_params;
         Expr::Literal(Literal::Lambda(FnDecl {
             name,
             sig_pos: self.ast.pos(&body).clone(),
+            receiver: None,
             params,
             body,
             ret: ReturnShape::Inferred,
@@ -69,6 +69,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         })?;
 
         self.tokens.expect_close(TokenType::RightBrace, &open)?;
+
+        if let Expr::Call(_, args) = self.ast.get(&callee) {
+            if !args.is_empty() {
+                return Err(self.error("cannot mix constructor arguments and brace fields; use `K(..)` or `K { .. }`", &open));
+            }
+        }
+
         Ok(self.node_expr(Expr::Construct(callee, fields), pos))
     }
 

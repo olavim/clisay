@@ -1,4 +1,4 @@
-trait Powered { pub fn start() { return "vroom"; } }
+trait Powered { pub fn start(this) { return "vroom"; } }
 type Car {
     engine gives Powered = Engine(); // error: Undefined variable 'Engine'
 }

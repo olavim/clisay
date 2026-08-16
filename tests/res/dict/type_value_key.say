@@ -1,0 +1,12 @@
+// A type with a capturing method is built afresh each time its declaration runs, so one
+// declaration mints many objects. `==` reads them as one value, and a dict key has to agree.
+say outer = 1;
+fn make()! { type T { init(this) {} pub fn m(this)! { return outer; } } return T; }
+say a = make();
+say b = make();
+print(a == b); // expect: true
+say d = mut {};
+d[a] = "from-a";
+print(d[b]); // expect: from-a
+print(d.containsKey(b)); // expect: true
+print(d.size()); // expect: 1

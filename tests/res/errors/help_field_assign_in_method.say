@@ -1,14 +1,14 @@
 type T {
     pub value;
-    init() { this.value = 1; }
-    fn reset() { this.value = 2; }
+    init(this) { this.value = 1; }
+    fn reset(mut this) { this.value = 2; }
 }
 T();
 // error(full):
-// error: Cannot assign immutable field `T.value`
-//  --> help_field_assign_in_method.say:4:18
+// error: Cannot reassign field `T.value`
+//  --> help_field_assign_in_method.say:4:26
 //   |
-// 3 |     init() { this.value = 1; }
-// 4 |     fn reset() { this.value = 2; }
-//   |                  ^^^^^^^^^^
-//   = help: you can make `T.value` mutable by declaring it as `pub mut value;`
+// 3 |     init(this) { this.value = 1; }
+// 4 |     fn reset(mut this) { this.value = 2; }
+//   |                          ^^^^^^^^^^
+//   = help: you can make `T.value` reassignable by declaring it as `pub var value;`

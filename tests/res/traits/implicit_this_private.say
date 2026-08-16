@@ -1,13 +1,13 @@
 trait Counter {
-    fn step()! { return 1; }
-    pub fn bump()! { return step() + step(); }
-    pub fn shadow(step)! { return step; }
+    fn step(this)! { return 1; }
+    pub fn bump(this)! { return step() + step(); }
+    pub fn shadow(this, step)! { return step; }
 }
 trait Other {
-    fn step()! { return 100; }
-    pub fn other()! { return step(); }
+    fn step(this)! { return 100; }
+    pub fn other(this)! { return step(); }
 }
-type Widget with Counter, Other { init() {} }
+type Widget with Counter, Other { init(this) {} }
 say w = Widget();
 print(w.bump());     // expect: 2
 print(w.shadow(40)); // expect: 40

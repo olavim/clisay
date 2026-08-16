@@ -1,4 +1,4 @@
 // An `[obl]` slot holds a container whose elements owe the obligation.
-obligation taint;
+type Taint { } obligation taint { witness Taint; discharge to use; }
 say a: [taint] = [];
 print(a.length()); // expect: 0

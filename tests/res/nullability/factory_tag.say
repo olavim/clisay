@@ -1,6 +1,6 @@
 // A factory's inferred return type propagates its tag to the call site.
 type Cache {
-    pub fn find()? {
+    pub fn find(this)? {
         return null;
     }
 }

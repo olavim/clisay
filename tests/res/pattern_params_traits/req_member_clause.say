@@ -1,0 +1,36 @@
+// A required member takes a `var` marker and a clause, and refuses what a member cannot hold.
+trait Counter {
+    req var count;
+    req data : opt;
+    req plain;
+    pub fn read(this)! { return this.plain; }
+}
+
+type Box with Counter {
+    pub var count;
+    pub data?;
+    pub plain;
+    init(this, *count, *data?, *plain) { this.count = count; this.data = data; this.plain = plain; }
+}
+
+print(Box(1, null, 2).read()); // expect: 2
+
+// @split
+trait Store {
+    req buffer : mut; // error: A required member cannot carry a mutability capability
+}
+
+// @split
+trait Failing {
+    req r : fails; // error: A required member cannot owe 'fails'
+}
+
+// @split
+trait Counting {
+    req mut count; // error: A reassignable member is required with `var`, not `mut`
+}
+
+// @split
+trait Tainting {
+    req token : nope; // error: Obligation 'nope' is not declared
+}

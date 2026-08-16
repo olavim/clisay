@@ -1,0 +1,2 @@
+// `fails` witnesses `Err` already, and a witness names one obligation.
+obligation myfail { witness Err; discharge to use; } // error: Witness 'Err' is already claimed by 'fails'

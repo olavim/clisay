@@ -1,0 +1,46 @@
+// A write-ownership record is not a GC root, so a collection prunes what it can. These pin that
+// pruning changes no answer.
+say sink = mut [];
+say a = mut [mut [0]];
+sink.push(a[0]);
+gcCollect();
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// The container that took the element still writes it after a collection.
+say sink = mut [];
+say a = mut [mut [0]];
+sink.push(a[0]);
+gcCollect();
+sink[0][0] = 5;
+print(sink[0][0]); // expect: 5
+
+// @split
+// A container the caller keeps survives the prune with its claim, since the prune drops only what
+// nothing reaches.
+fn wrap(*v)! { say c = mut []; c.push(v); return c; }
+say a = mut [mut [0]];
+say kept = wrap(a[0]);
+gcCollect();
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// Nothing a record names is a root, so a batch of elements handed to containers that then die
+// leaves the heap where it started.
+fn stash(v) { say c = mut []; c.push(v); }
+say var i = 0;
+while (i < 200) { say b = mut [mut [0]]; stash(b[0]); i = i + 1; }
+gcCollect();
+say size = gcHeapSize();
+i = 0;
+while (i < 200) { say b = mut [mut [0]]; stash(b[0]); i = i + 1; }
+gcCollect();
+print(gcHeapSize() <= size); // expect: true
+
+// @split
+// A second name is still refused across a collection, where no container is involved at all.
+say a = mut [mut [0]];
+say e = a[0];
+e[0] = 1;
+gcCollect();
+a[0][0] = 2; // error: cannot write an element another name already writes

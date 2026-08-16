@@ -1,0 +1,6 @@
+// Reading a borrow in its own frame is use in place, so only the capture is the escape.
+obligation borrowed { no persist; no return; }
+fn f(x: borrowed) {
+    print(x); // expect: 5
+}
+f(5);

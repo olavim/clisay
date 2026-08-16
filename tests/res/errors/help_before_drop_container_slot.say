@@ -1,0 +1,8 @@
+say pending: [fails] = [];
+// error(full):
+// error: A container cannot hold values owing 'fails'
+//  --> help_before_drop_container_slot.say:1:14
+//   |
+// 1 | say pending: [fails] = [];
+//   |              ^^^^^^^
+//   = help: store what the `Err` carries, not the `Err` itself

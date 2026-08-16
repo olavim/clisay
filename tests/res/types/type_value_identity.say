@@ -1,0 +1,28 @@
+// Two type values built from one declaration are the same type, whether or not a method captures.
+fn plain()! { type T { pub x; init(this, *a) { this.x = a; } } return T; }
+fn capturing(c)! { type T { pub x; pub t; init(this, *a) { this.x = a; this.t = c; } } return T; }
+print(plain() == plain()); // expect: true
+print(capturing(1) == capturing(2)); // expect: true
+
+// @split
+// Two declarations sharing a name are still two types.
+fn mk()! { type T { pub x; init(this, *a) { this.x = a; } } return T; }
+fn other()! { type T { pub y; init(this, *a) { this.y = a; } } return T; }
+print(mk() == other()); // expect: false
+print(mk() == mk()); // expect: true
+
+// @split
+// A capturing type keeps its own captures, so being the same type is not being the same object.
+fn mk(v)! { type T { pub n; init(this) { this.n = v; } } return T; }
+say maker = mk(7);
+say other = mk(9);
+print(maker == other); // expect: true
+print(maker().n); // expect: 7
+print(other().n); // expect: 9
+
+// @split
+// A type the VM builds for itself has no declaration, so it stays its own identity.
+say a = [1];
+say d = mut { "k": 1 };
+print(a == d); // expect: false
+print(a == a); // expect: true

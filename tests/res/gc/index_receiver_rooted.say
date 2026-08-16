@@ -1,0 +1,24 @@
+// Reading a member by index resolves it the same way a dotted read does, so the receiver has to
+// stay on the stack across the bound-method allocation there too.
+gcStress(true);
+fn mk()! { say tag = 7; type T { pub v; init(this) { this.v = tag; } pub fn read(this)! { return this.v + tag; } } return T(); }
+say f = mk()["read"];
+print(f()); // expect: 14
+
+// @split
+// The same on a temporary of a native type, which binds its method the same way.
+gcStress(true);
+fn mk()! { return mut [1, 2]; }
+say push = mk()["push"];
+print("bound"); // expect: bound
+
+// @split
+// Two member reads at one site are two questions, so the cache cannot answer the second with the
+// first. Both reads below share one bytecode site.
+type P { pub a; pub b; init(this) { this.a = 1; this.b = 2; } }
+say p = P();
+say keys = ["a", "b"];
+say var i = 0;
+while (i < 2) { print(p[keys[i]]); i = i + 1; }
+// expect: 1
+// expect: 2

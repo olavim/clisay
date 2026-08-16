@@ -1,0 +1,13 @@
+// The `Err` declaration the compiler supplies is appended after the program, so a name collision
+// with it has to be reported where the program declares the name, not where the built-in lands.
+print(1);
+print(2);
+type Err { pub x; }
+
+// error(full):
+// error: 'Err' is a built-in and cannot be redeclared
+//  --> builtin_err_declarations.say:5:1
+//   |
+// 4 | print(2);
+// 5 | type Err { pub x; }
+//   | ^^^^^^^^^^^^^^^^^^^

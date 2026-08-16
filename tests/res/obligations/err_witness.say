@@ -1,2 +1,0 @@
-obligation myfail: discharge to use Err;
-print("ok"); // expect: ok

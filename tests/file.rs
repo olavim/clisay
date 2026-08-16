@@ -124,6 +124,11 @@ fn construction(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
+#[test_resources("tests/res/receiver")]
+fn receiver(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
 #[test_resources("tests/res/this")]
 fn this(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
@@ -216,5 +221,20 @@ fn mutability_traits(resource: &str) -> Result<(), Failed> {
 
 #[test_resources("tests/res/mutability_borrow")]
 fn mutability_borrow(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/mutability_capability")]
+fn mutability_capability(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/pattern_params")]
+fn pattern_params(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/pattern_params_traits")]
+fn pattern_params_traits(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }

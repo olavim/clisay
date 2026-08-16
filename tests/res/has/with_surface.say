@@ -1,13 +1,13 @@
 // A `with`-composed type folds its traits' public members into its own `has` surface.
-trait Clock { pub fn tick()! { return 1; } }
+trait Clock { pub fn tick(this)! { return 1; } }
 trait Greeter {
     req greeting;
-    pub fn greet()! { return this.greeting; }
+    pub fn greet(this)! { return this.greeting; }
 }
 type Player with Clock, Greeter {
     pub greeting = "hi";
     pub name;
-    init(name) { this.name = name; }
+    init(this, *name) { this.name = name; }
 }
 
 say p = Player("hero");

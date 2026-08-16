@@ -1,0 +1,3 @@
+// A built-in's layout is not in place where a program can name it, so a brace cannot build one.
+// It is still a declared type, which is what the message has to say.
+say e = Err { value: 7 }; // error: 'Err' cannot be built with a brace

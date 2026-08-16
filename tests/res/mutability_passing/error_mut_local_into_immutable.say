@@ -1,5 +1,6 @@
-// A directly-minted `mut` value handed to a parameter that persists it is the keeps-argument error.
-type Sink { pub mut item; init() { this.item = 0; } fn keep(x) { this.item = x; } }
-say s = Sink();
+// A directly-minted `mut` value handed to a parameter that persists it is refused in the callee,
+// which is the body that stores what it borrowed.
+type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(mut this, x) { this.item = x; } } // error: cannot retain a borrowed argument
+say s = mut Sink();
 say m = mut {};
-s.keep(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+s.keep(m);

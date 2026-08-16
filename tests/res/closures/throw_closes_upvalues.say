@@ -1,0 +1,14 @@
+// A throw unwinds past the scope's CLOSE_UPVALUE, so the frame teardown has to close upvalues.
+// Without that, both lambdas share one upvalue that later closes over leftover stack.
+say box = mut [];
+say var i = 0;
+while (i < 2) {
+    try {
+        say a = i * 100;
+        box.push(() => a);
+        throw "x";
+    } catch (e) { }
+    i = i + 1;
+}
+print(box[0]()); // expect: 0
+print(box[1]()); // expect: 100

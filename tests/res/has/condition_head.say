@@ -1,13 +1,13 @@
 // In an `if`/`while` head a trailing `{` is the body, not part of a `has`/`is` test.
 trait K { req a; }
-type T with K { pub a; pub b; init() { this.a = 1; this.b = 2; } }
+type T with K { pub a; pub b; init(this) { this.a = 1; this.b = 2; } }
 say x = T();
 
 if x has T { print("if"); } // expect: if
 if x has T && x is K { print("and"); } // expect: and
 if x is K && x has T { print("and"); } // expect: and
 
-say mut n = 0;
+say var n = 0;
 while n < 2 && x has K { print("while"); n = n + 1; }
 // expect: while
 // expect: while

@@ -1,0 +1,7 @@
+// A call that hands its argument back gives the caller a second name for it, so binding the result
+// moves the original the way any other second name would.
+type Box { pub var v; init(this) { this.v = 0; } }
+fn f(mut x)!: mut { return x; }
+say a = mut Box();
+say b = f(a);
+a.v = 1; // error: cannot write `a`, which gave its write-ownership away

@@ -1,0 +1,15 @@
+// The rule bans a field on its own terms: a field has no drop point to discharge at.
+type Held { } obligation held { witness Held; discharge before drop; }
+type Box { pub var item; init(this) { this.item = 0; } }
+fn stash(x: held) {
+    say b = mut Box();
+    b.item = x;
+}
+// error(full):
+// error: cannot store value owing 'held' in a field
+//  --> help_before_drop_undeclared_field.say:6:14
+//   |
+// 5 |     say b = mut Box();
+// 6 |     b.item = x;
+//   |              ^
+//   = help: `held` declares `discharge before drop`, which prevents storing it in a field

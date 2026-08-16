@@ -1,7 +1,7 @@
 // `is`/`has` are singular tests; combine them with `&&`/`||` like any boolean.
 trait Polygon { req sides; }
 trait Logger { req log; }
-type Shape { pub sides; init() { this.sides = 3; } }
+type Shape { pub sides; init(this) { this.sides = 3; } }
 
 say d = { sides: 3, log: 1 };
 print(d has Polygon && d has Logger); // expect: true

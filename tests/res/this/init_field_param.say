@@ -1,6 +1,6 @@
 type A {
     pub val;
-    init(x) {
+    init(this, *x) {
         this.val = x;
     }
 }

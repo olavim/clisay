@@ -1,0 +1,12 @@
+type T {
+    pub n = 0;
+    pub fn value(this: nope)! { return this.n; }
+}
+// error(full):
+// error: Obligation 'nope' is not declared
+//  --> help_obligation_undeclared_receiver.say:3:24
+//   |
+// 2 |     pub n = 0;
+// 3 |     pub fn value(this: nope)! { return this.n; }
+//   |                        ^^^^
+//   = help: declare it with `obligation` first, or name a built-in (`opt`, `fails`)

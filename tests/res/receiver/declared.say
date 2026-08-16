@@ -1,0 +1,32 @@
+// Every method declares its receiver. `this: mut` is what lets one write the instance, and an
+// obligation in the clause makes `this` owe it until the body discharges it.
+type Counter {
+    var n;
+    init(this, *start) { this.n = start; }
+
+    pub fn value(this)! { return this.n; }
+    pub fn bump(mut this) { this.n = this.n + 1; }
+}
+
+say c = mut Counter(1);
+print(c.value()); // expect: 1
+c.bump();
+print(c.value()); // expect: 2
+
+// @split
+// A declared obligation in the receiver clause is a contract on `this` like any other slot's.
+obligation pinned { no persist; }
+type T {
+    pub v;
+    init(this, *v) { this.v = v; }
+    pub fn m(this: pinned)! { return this.v; }
+}
+print(T(1).m()); // expect: 1
+
+// @split
+// An undeclared one is refused there, as it is on a parameter or a field.
+type T {
+    pub v;
+    init(this, *v) { this.v = v; }
+    pub fn m(this: nosuch)! { return this.v; } // error: Obligation 'nosuch' is not declared
+}

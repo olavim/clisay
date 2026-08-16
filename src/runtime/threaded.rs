@@ -18,9 +18,24 @@ macro_rules! rs {
     }}
 }
 
-/// Push onto the stack top.
+/// Push onto the stack top. Every unbounded growth of the value stack runs through here, so this
+/// is where the stack's limit is enforced.
 macro_rules! push {
-    ($top:ident, $v:expr) => {{ let v = $v; unsafe { *$top = v; } $top = unsafe { $top.add(1) }; }}
+    ($vm:ident, $ip:ident, $top:ident, $v:expr) => {{
+        let v = $v;
+        if $top >= $vm.stack.end() { return overflowed($vm, $ip, $top); }
+        unsafe { *$top = v; }
+        $top = unsafe { $top.add(1) };
+    }}
+}
+
+/// Reports a value-stack overflow.
+#[cold]
+#[inline(never)]
+fn overflowed(vm: &mut Vm, ip: *const OpCode, top: *mut Value) -> R {
+    vm.stack.set_top(top);
+    vm.ip = ip;
+    Err(vm.stack_overflow())
 }
 
 /// Pop from the stack top.
@@ -89,7 +104,7 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     match op {
         opcode::CONSTRUCT => vm.op_construct()?,
         opcode::CALL_MUT => vm.op_call_mut()?,
-        opcode::RETURN_FAC => vm.op_return_fac(),
+        opcode::RETURN_FAC => vm.op_return_fac()?,
         opcode::THROW => vm.op_throw()?,
         opcode::PUSH_TRY => vm.op_push_try(),
         opcode::POP_TRY => vm.op_pop_try(),
@@ -101,17 +116,27 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::JUMP_IF_BAD => vm.op_jump_if_bad(),
         opcode::JUMP_IF_IS => vm.op_jump_if_is(),
         opcode::ASSERT_NON_NULL => vm.op_assert_non_null()?,
+        opcode::ASSERT_NO_OTHER_WRITER => vm.op_assert_no_other_writer()?,
+        opcode::ASSERT_NO_OTHER_WRITER_UP => vm.op_assert_no_other_writer_up()?,
+        opcode::ASSERT_NO_WRITER => vm.op_assert_no_writer()?,
+        opcode::ASSERT_NO_OTHER_WRITER_ROOT => vm.op_assert_no_other_writer_root()?,
+        opcode::ASSERT_IMMUTABLE => vm.op_assert_immutable()?,
         opcode::BARRIER_GUARD => vm.op_barrier_guard()?,
-        opcode::ASSERT_BORROW => vm.op_assert_borrow()?,
-        opcode::MARK_BORROW => vm.op_mark_borrow(),
-        opcode::RELEASE_BORROW => vm.op_release_borrow(),
+        opcode::ASSERT_NO_RETAIN => vm.op_assert_no_retain()?,
+        opcode::TAKE_WRITE_OWNERSHIP => vm.op_take_write_ownership()?,
+        opcode::TRANSFER_WRITE_OWNERSHIP => vm.op_transfer_write_ownership()?,
+        opcode::TRANSFER_WRITE_OWNERSHIP_UP => vm.op_transfer_write_ownership_up()?,
+        opcode::TRANSFER_WRITE_OWNERSHIP_AT => vm.op_transfer_write_ownership_at()?,
+        opcode::RELEASE_WRITE_OWNERSHIP => vm.op_release_write_ownership(),
+        opcode::RELEASE_WRITE_OWNERSHIP_AT => vm.op_release_write_ownership_at(),
         opcode::CLOSE_UPVALUE => vm.op_close_upvalue(),
-        opcode::ARRAY => vm.op_array(),
-        opcode::DICT => vm.op_dict(),
+        opcode::ARRAY => vm.op_array()?,
+        opcode::DICT => vm.op_dict()?,
         opcode::MUT => vm.op_mut(),
         opcode::SEAL_CHECK => vm.op_seal_check()?,
         opcode::PUSH_CLOSURE => vm.op_push_closure()?,
         opcode::PUSH_TYPE => vm.op_push_type(),
+        opcode::BUILD_TYPE => vm.op_build_type()?,
         opcode::LOAD_GLOBAL => vm.op_load_global()?,
         opcode::INVOKE => vm.op_invoke()?,
         opcode::GET_INDEX => vm.op_get_index()?,
@@ -137,9 +162,11 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::GREATER_THAN_EQUAL => vm.op_greater_than_equal()?,
         opcode::IS => vm.op_is(),
         opcode::HAS_MEMBER => vm.op_has_member(),
+        opcode::MEMBER_ADMITS => vm.op_member_admits(),
         opcode::IS_SHAPED => vm.op_is_shaped(),
         opcode::ARRAY_LEN => vm.op_array_len(),
         opcode::ARRAY_MIDDLE => vm.op_array_middle(),
+        opcode::ARRAY_ELEM => vm.op_array_elem(),
         _ => unsafe { std::hint::unreachable_unchecked() }
     }
     let top = vm.stack.top();
@@ -151,7 +178,7 @@ fn load_local(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value)
     let mut ip = ip;
     let mut top = top;
     let idx = rb!(ip) as usize;
-    push!(top, unsafe { *base.add(idx) });
+    push!(vm, ip, top, unsafe { *base.add(idx) });
     become dispatch(vm, ip, top, base)
 }
 
@@ -177,7 +204,7 @@ fn load_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Valu
     let mut top = top;
     let idx = rb!(ip) as usize;
     let upvalue = vm.get_upvalue(idx);
-    push!(top, unsafe { *(*upvalue).location });
+    push!(vm, ip, top, unsafe { *(*upvalue).location });
     become dispatch(vm, ip, top, base)
 }
 
@@ -186,12 +213,18 @@ fn store_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Val
     let idx = rb!(ip) as usize;
     let value = peek!(top, 0);
     // A captured variable outlives the lending call, so a borrowed value may not be stored into one.
-    if value.is_borrowed() {
+    if objects::carries_borrow(value) {
         vm.stack.set_top(top);
         vm.ip = ip;
-        vm.ensure_not_borrowed(value)?;
+        vm.ensure_borrowed_does_not_persist(value, crate::middle::ir::WRITE_ROOT_UPVALUE, idx as u8)?;
     }
+    // The slot written belongs to an enclosing frame, so the value outlives this one and the
+    // claim over it moves there rather than dying with this frame.
+    vm.stack.set_top(top);
+    vm.ip = ip;
+    vm.hand_write_ownership_to_upvalue(idx, value)?;
     let upvalue = vm.get_upvalue(idx);
+    crate::core::objects::record_escape(value);
     unsafe { *(*upvalue).location = value };
     become dispatch(vm, ip, top, base)
 }
@@ -201,12 +234,16 @@ fn store_upvalue_pop(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut
     let mut top = top;
     let idx = rb!(ip) as usize;
     let value = pop!(top);
-    if value.is_borrowed() {
+    if objects::carries_borrow(value) {
         vm.stack.set_top(top);
         vm.ip = ip;
-        vm.ensure_not_borrowed(value)?;
+        vm.ensure_borrowed_does_not_persist(value, crate::middle::ir::WRITE_ROOT_UPVALUE, idx as u8)?;
     }
+    vm.stack.set_top(top);
+    vm.ip = ip;
+    vm.hand_write_ownership_to_upvalue(idx, value)?;
     let upvalue = vm.get_upvalue(idx);
+    crate::core::objects::record_escape(value);
     unsafe { *(*upvalue).location = value };
     become dispatch(vm, ip, top, base)
 }
@@ -215,25 +252,25 @@ fn push_constant(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Val
     let mut ip = ip;
     let mut top = top;
     let idx = rb!(ip) as usize;
-    push!(top, vm.chunk.constants[idx]);
+    push!(vm, ip, top, vm.chunk.constants[idx]);
     become dispatch(vm, ip, top, base)
 }
 
 fn push_null(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut top = top;
-    push!(top, Value::NULL);
+    push!(vm, ip, top, Value::NULL);
     become dispatch(vm, ip, top, base)
 }
 
 fn push_true(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut top = top;
-    push!(top, Value::TRUE);
+    push!(vm, ip, top, Value::TRUE);
     become dispatch(vm, ip, top, base)
 }
 
 fn push_false(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut top = top;
-    push!(top, Value::FALSE);
+    push!(vm, ip, top, Value::FALSE);
     become dispatch(vm, ip, top, base)
 }
 
@@ -347,8 +384,8 @@ fn store_local_add(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut V
     if a.is_number() && b.is_number() {
         unsafe { *base.add(dst) = Value::from(a.as_number() + b.as_number()) };
     } else {
-        push!(top, a);
-        push!(top, b);
+        push!(vm, ip, top, a);
+        push!(vm, ip, top, b);
         vm.stack.set_top(top);
         vm.ip = ip;
         vm.op_add()?;
@@ -372,8 +409,8 @@ macro_rules! inc_dec_fn {
             if a.is_number() && b.is_number() {
                 unsafe { *base.add(l) = Value::from(a.as_number() $op b.as_number()) };
             } else {
-                push!(top, a);
-                push!(top, b);
+                push!(vm, ip, top, a);
+                push!(vm, ip, top, b);
                 vm.stack.set_top(top);
                 vm.ip = ip;
                 vm.$slow()?;
@@ -400,10 +437,10 @@ macro_rules! fused_lc_fn {
             let a = unsafe { *base.add(a_idx) };
             let b = vm.chunk.constants[b_idx];
             if a.is_number() && b.is_number() {
-                push!(top, Value::from(a.as_number() $op b.as_number()));
+                push!(vm, ip, top, Value::from(a.as_number() $op b.as_number()));
             } else {
-                push!(top, a);
-                push!(top, b);
+                push!(vm, ip, top, a);
+                push!(vm, ip, top, b);
                 vm.stack.set_top(top);
                 vm.ip = ip;
                 vm.$slow()?;
@@ -425,10 +462,10 @@ macro_rules! fused_cl_fn {
             let a = vm.chunk.constants[a_idx];
             let b = unsafe { *base.add(b_idx) };
             if a.is_number() && b.is_number() {
-                push!(top, Value::from(a.as_number() $op b.as_number()));
+                push!(vm, ip, top, Value::from(a.as_number() $op b.as_number()));
             } else {
-                push!(top, a);
-                push!(top, b);
+                push!(vm, ip, top, a);
+                push!(vm, ip, top, b);
                 vm.stack.set_top(top);
                 vm.ip = ip;
                 vm.$slow()?;
@@ -452,7 +489,7 @@ macro_rules! num_binop_fn {
             let a = peek!(top, 1);
             if a.is_number() && b.is_number() {
                 top = unsafe { top.sub(2) };
-                push!(top, Value::from(a.as_number() $op b.as_number()));
+                push!(vm, ip, top, Value::from(a.as_number() $op b.as_number()));
             } else {
                 vm.stack.set_top(top);
                 vm.ip = ip;
@@ -470,14 +507,14 @@ num_binop_fn!(multiply, *, op_multiply);
 num_binop_fn!(divide, /, op_divide);
 
 #[inline]
-fn closure_call(value: Value, arg_count: usize) -> Option<(*mut ObjClosure, usize)> {
+fn closure_call(value: Value, arg_count: usize) -> Option<(*mut ObjClosure, usize, u64)> {
     if value.is_callable() {
         let object = value.as_object();
         if object.tag() == objects::TAG_CLOSURE {
             let ptr = object.as_closure_ptr();
             let closure = unsafe { &*ptr };
             if arg_count == closure.arity as usize {
-                return Some((ptr, closure.ip_start));
+                return Some((ptr, closure.ip_start, closure.retain_mask));
             }
         }
     }
@@ -494,11 +531,11 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
 
     // Resolve the callee: a cache hit skips the checks and closure deref.
     let cache = unsafe { *vm.call_cache.get_unchecked(slot) };
-    let (closure, ip_start) = if cache.site == site && cache.callee == value {
-        (cache.closure, cache.ip_start)
-    } else if let Some((closure, ip_start)) = closure_call(value, arg_count) {
-        unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start } };
-        (closure, ip_start)
+    let (closure, ip_start, retain_mask) = if cache.site == site && cache.callee == value {
+        (cache.closure, cache.ip_start, cache.retain_mask)
+    } else if let Some((closure, ip_start, retain_mask)) = closure_call(value, arg_count) {
+        unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start, retain_mask } };
+        (closure, ip_start, retain_mask)
     } else {
         vm.stack.set_top(top);
         vm.ip = ip;
@@ -515,7 +552,19 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     }
 
     let stack_start = unsafe { top.sub(arg_count + 1) };
-    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true });
+    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true, write_depth: vm.write_ownerships.len(), borrow_depth: vm.borrows.len() });
+    // The transfer records the site it happened at, so `ip` has to be current for the diagnostic.
+    if arg_count != 0 {
+        vm.stack.set_top(top);
+        vm.ip = ip;
+        // The call cache holds the retain mask so a cached call never reads the closure.
+        // Only a forced run needs the escape mask, so an ordinary run still skips that read.
+        let escape_mask = match vm.forced {
+            true => unsafe { (*closure).escape_mask },
+            false => 0,
+        };
+        vm.transfer_argument_write_ownership(retain_mask, escape_mask, stack_start, arg_count)?;
+    }
     become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
 }
 
@@ -525,8 +574,9 @@ fn halt(vm: &mut Vm, _ip: *const OpCode, _top: *mut Value, _base: *mut Value) ->
 }
 
 fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R {
-    // The top-level ends in HALT, so every RETURN has a caller frame to pop.
-    if vm.open_upvalues.is_empty() {
+    // The top-level ends in HALT, so every RETURN has a caller frame to pop. A live lend sends the
+    // return down the slow path, which is where the borrow floor asks what the value holds.
+    if vm.open_upvalues.is_empty() && vm.write_ownerships.is_empty() && vm.borrows.is_empty() {
         let frame = vm.frames.pop();
         let value = unsafe { *top.sub(1) };
         unsafe { *frame.stack_start = value };
@@ -546,12 +596,12 @@ fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R 
 fn not(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut top = top;
     let v = pop!(top);
-    push!(top, Value::from(v.is_falsy()));
+    push!(vm, ip, top, Value::from(v.is_falsy()));
     become dispatch(vm, ip, top, base)
 }
 
 fn dup(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut top = top;
-    push!(top, peek!(top, 0));
+    push!(vm, ip, top, peek!(top, 0));
     become dispatch(vm, ip, top, base)
 }

@@ -1,7 +1,7 @@
 // Binding the raw `this` in init would let a half-built object outlive construction.
 type T {
     pub x;
-    init() {
+    init(this) {
         this.x = 1;
         say self = this; // error: the partially-constructed 'this' is not a value in a factory
     }

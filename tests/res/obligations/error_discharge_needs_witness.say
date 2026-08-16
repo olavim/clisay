@@ -1,0 +1,2 @@
+// A discharge proves a value is not in some bad state, and the witness is that state.
+obligation gated { discharge to use; } // error: Obligation 'gated' declares a `discharge` rule with no witness

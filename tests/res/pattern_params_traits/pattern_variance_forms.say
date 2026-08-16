@@ -1,0 +1,93 @@
+// A structural shape matches an instance as readily as a dict, so against a named type it may
+// accept more or less depending on that type's members. It is not placed either way.
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P)!; }
+type Shaped with Mover {
+    init(this) { }
+    pub fn onMove(this, { v })! { return v; }
+}
+print(Shaped().onMove(P(2))); // expect: 2
+
+// @split
+trait Mover { req fn onMove(this, { v })!; }
+type Shaped with Mover {
+    init(this) { }
+    pub fn onMove(this, { v })! { return v; }
+}
+print(Shaped().onMove({ v: 3 })); // expect: 3
+
+// @split
+trait Mover { req fn onMove(this, { v })!; }
+type Wide with Mover {
+    init(this) { }
+    pub fn onMove(this, x)! { return x["v"]; }
+}
+print(Wide().onMove({ v: 4 })); // expect: 4
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P); }
+type Arrays with Mover {
+    init(this) { }
+    pub fn onMove(this, [a, b]) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+trait Mover { req fn onMove(this, [a, b])!; }
+type Arrays with Mover {
+    init(this) { }
+    pub fn onMove(this, [a, b])! { return a + b; }
+}
+print(Arrays().onMove([1, 2])); // expect: 3
+
+// @split
+type P { pub v; init(this, *v) { this.v = v; } }
+trait Sh { req fn m(this)!; }
+type S with Sh { pub v; init(this, *v) { this.v = v; } pub fn m(this)! { return this.v; } }
+
+trait Mover { req fn onMove(this, x @ P)!; }
+type Structural with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ has Sh)! { return x.m(); }
+}
+print(Structural().onMove(S(5))); // expect: 5
+
+// @split
+trait Sh { req fn m(this)!; }
+
+trait Mover { req fn onMove(this, x); }
+type Structural with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ has Sh { v }) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+// A conjunction has to satisfy every side, so every side has to cover the hole. A structural side
+// cannot be placed against a named type, so this pair is left to the entry test.
+type P { pub v; init(this, *v) { this.v = v; } }
+trait Sh { req fn m(this)!; }
+type S with Sh { pub v; init(this, *v) { this.v = v; } pub fn m(this)! { return this.v; } }
+
+trait Mover { req fn onMove(this, x @ P)!; }
+type Both with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P & has Sh)! { return x.v; }
+}
+
+// @split
+// Two named sides are both placeable, and the second one the hole did not ask for narrows it.
+type P { pub v; init(this, *v) { this.v = v; } }
+type Q { pub v; init(this, *v) { this.v = v; } }
+
+trait Mover { req fn onMove(this, x @ P); }
+type Both with Mover {
+    init(this) { }
+    pub fn onMove(this, x @ P & Q) { } // error: parameter accepts less than the trait declares
+}
+
+// @split
+// A hole's pattern names types the same way a declared parameter's does, so a name that is not one
+// is refused where it is written rather than blamed on whoever satisfies it.
+trait Mover { req fn onMove(this, x @ Nope); } // error: 'Nope' is not a type or trait

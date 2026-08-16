@@ -1,0 +1,37 @@
+// A surface test reads members, not identity, so it can be false for a genuine witness. Failing it
+// proves nothing, and the obligation stays owed.
+fn load()! { return Err("boom"); }
+fn f() {
+    say r: fails = load(); // error: 'r' owes 'fails' and is never discharged
+    if (r has Err) { print("has"); } else { print("clean"); }
+}
+
+// @split
+// The nominal test on the same value does settle it, since that one reads identity.
+fn load()! { return Err("boom"); }
+fn f() {
+    say r: fails = load();
+    if (r is Err) { print("is an Err"); }
+}
+f(); // expect: is an Err
+
+// @split
+// A conjunct behind a failing one never runs, so it has asked nothing.
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+type W2 with Wt { pub a; init(this) { this.a = 1; } }
+fn f() {
+    say b: warned = W2 { a: 1 }; // error: 'b' owes 'warned' and is never discharged
+    match (b) { { zz: 1 } & W2 => print("both"), _ => print("other"), }
+}
+
+// @split
+// The conjunct that always runs does ask.
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+type W2 with Wt { pub a; init(this) { this.a = 1; } }
+fn f() {
+    say b: warned = W2 { a: 1 };
+    match (b) { W2 & { a: 1 } => print("both"), _ => print("other"), }
+}
+f(); // expect: both

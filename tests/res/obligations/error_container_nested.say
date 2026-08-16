@@ -1,2 +1,2 @@
-obligation taint;
+type Taint { } obligation taint { witness Taint; discharge to use; }
 say a: [[taint]] = []; // error: A container obligation cannot nest

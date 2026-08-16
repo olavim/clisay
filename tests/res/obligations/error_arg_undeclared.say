@@ -1,0 +1,4 @@
+// A parameter admits exactly what it declares, so an owing argument needs a matching clause.
+type Taint { } obligation taint { witness Taint; discharge to use; }
+fn clean(y)! { return y; }
+fn f(x: taint) { clean(x); } // error: cannot pass a value owing 'taint'

@@ -1,12 +1,15 @@
 // Tail-call dispatch (`become`) in the VM needs this. Nightly-only until it stabilizes.
 #![feature(explicit_tail_calls)]
+#![feature(variant_count)]
 #![allow(incomplete_features)]
 
-#[cfg(debug_assertions)]
-#[cfg_attr(debug_assertions, path = "debug_output.rs")]
+// Capture is a debug facility, and `capture_output` turns it on in release so the test harness can
+// collect `print` output there too.
+#[cfg(any(debug_assertions, feature = "capture_output"))]
+#[cfg_attr(any(debug_assertions, feature = "capture_output"), path = "debug_output.rs")]
 mod output;
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(any(debug_assertions, feature = "capture_output")))]
 mod output {
     pub struct Output;
     impl Output {
@@ -31,16 +34,28 @@ pub use output::Output;
 /// and not a stable public API.
 #[doc(hidden)]
 pub mod internals {
-    pub use crate::ast::{MatchArm, Ast, AstId, Capability, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRule, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
+    pub use crate::ast::{MatchArm, Ast, AstId, Capability, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
     pub use crate::frontend::lex::{ContextualKeyword, Token, TokenType};
     pub use crate::middle::hir::{
         Hir, HirMatchArm, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, HirTypeDecl,
     };
+    pub use crate::core::objects::TypeMember;
     pub use crate::middle::bind::{Bindings, TypeLayout};
     pub use crate::middle::check::Barriers;
+    pub use crate::middle::check::scope::{intersect_narrowings, merge_flow, LocalFlow};
+    pub use crate::middle::check::alias::{ElementKey, WriteOwnershipTransfer, TransferSite};
+    pub use crate::middle::obligations::Obligations;
+    pub use crate::middle::signatures::{Mutability, TypeTag};
+
+    pub use crate::middle::codegen::matching::{Scalar, tree::{build_tree, Access, Clause, DecisionTree, Path, ValueTest}};
+    pub use crate::middle::ir::{Ir, Label};
 
     use crate::frontend::lex::{tokenize, TokenStream};
     use crate::frontend::parse::Parser;
+
+    pub fn symbol(id: u32) -> Symbol {
+        Symbol::from_raw(id)
+    }
 
     pub fn lex(src: &str) -> Vec<Token> {
         tokenize(String::new(), src.to_string()).expect("lex error")
@@ -74,10 +89,15 @@ pub mod internals {
         (hir, bindings)
     }
 
+    /// Runs the signature pass alone, so a benchmark can time it without the rest of the pipeline.
+    pub fn signatures(hir: &Hir, bindings: &Bindings) {
+        crate::middle::signatures::collect(hir, bindings);
+    }
+
     pub fn nullck(src: &str) -> Barriers {
         let (hir, bindings) = bind(src);
         let sigs = crate::middle::signatures::collect(&hir, &bindings);
-        crate::middle::check::check(&hir, &bindings, &sigs).expect("nullck error")
+        crate::middle::check::check(&hir, &bindings, &sigs, false).expect("nullck error")
     }
 }
 
@@ -89,11 +109,34 @@ use crate::middle::codegen::Compiler;
 use crate::middle::lower::lower;
 use crate::middle::names::resolve as resolve_names;
 use crate::middle::check::check;
+use crate::middle::shape::check as check_shape;
 use crate::middle::optimize::optimize;
 use crate::middle::bind::resolve as resolve_bindings;
 use crate::middle::signatures::collect as collect_signatures;
 
+/// How the pipeline is built for one run. The default is the shipped pipeline.
+#[derive(Clone, Copy)]
+pub struct RunConfig {
+    /// Whether the peephole pass runs.
+    pub optimize: bool,
+    /// Whether codegen also emits the checks the check pass proved unnecessary, so a firing one
+    /// refutes the proof.
+    pub force_checks: bool,
+    /// Whether codegen drops every guard it places.
+    pub floor_only: bool,
+}
+
+impl Default for RunConfig {
+    fn default() -> RunConfig {
+        RunConfig { optimize: true, force_checks: false, floor_only: false }
+    }
+}
+
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
+    run_with(file_name, src, RunConfig::default())
+}
+
+pub fn run_with(file_name: &str, src: &str, config: RunConfig) -> Result<Vec<String>, anyhow::Error> {
     let mut gc = Gc::new();
 
     let tokens = tokenize(String::from(file_name), String::from(src))?;
@@ -103,10 +146,11 @@ pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
     let hir = lower(ast, &names)?;
     let bindings = resolve_bindings(&hir)?;
     let sigs = collect_signatures(&hir, &bindings);
-    let barriers = check(&hir, &bindings, &sigs)?;
-    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs)?;
-    let ir = optimize(ir);
-    
+    check_shape(&hir, &bindings, &sigs)?;
+    let barriers = check(&hir, &bindings, &sigs, config.force_checks)?;
+    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs, config.floor_only)?;
+    let ir = if config.optimize { optimize(ir) } else { ir };
+
     let chunk = assemble(ir)?;
-    runtime::execute(chunk, gc)
+    runtime::execute(chunk, gc, config.force_checks)
 }

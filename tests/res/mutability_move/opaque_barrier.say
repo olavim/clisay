@@ -1,23 +1,23 @@
 // The opaque-call mode barrier: a borrowed argument may only reach a callee that also borrows it.
-fn borrows(x: mut) { x["k"] = 1; }
-fn apply(cb, val: mut) { cb(val); }
+fn borrows(mut x) { x["k"] = 1; }
+fn apply(cb, mut val) { cb(val); }
 say v = mut {};
 apply(borrows, v);
 print(v["k"]); // expect: 1
 
 // @split
 // A borrowed argument handed to a consuming callee is rejected at the boundary.
-fn consumes(x: *mut) { }
-fn apply(cb, val: mut) {
-  cb(val); // error: cannot pass a borrowed argument to a callee that lets it escape
+fn consumes(*mut x) { }
+fn apply(cb, mut val) {
+  cb(val); // error: cannot pass a borrowed argument to a callee that retains it
 }
 say v = mut {};
 apply(consumes, v);
 
 // @split
 // An owned argument the caller is done with may reach either kind of callee.
-fn borrows(x: mut) { }
-fn consumes(x: *mut) { }
+fn borrows(mut x) { }
+fn consumes(*mut x) { }
 fn useIt(cb) {
   say v = mut {};
   cb(v);

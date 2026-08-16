@@ -1,0 +1,13 @@
+// A nullable parameter admits null, and judges its argument on every other axis.
+type W { } obligation taint { witness W; discharge to use; }
+fn nullable(x?)! { return 1; }
+
+say bag = { "d": W(), "n": null };
+print(nullable(bag["n"])); // expect: 1
+try { print(nullable(bag["d"])); } catch (e) { print("witness caught"); } // expect: witness caught
+
+// @split
+fn v() { }
+fn nullable(x?)! { return 1; }
+
+nullable(v()); // error: Argument 1 is a void result; the call returns no value

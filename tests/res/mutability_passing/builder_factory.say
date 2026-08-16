@@ -1,9 +1,9 @@
 // A `: mut` factory hands back a live mutable value built through fluent methods.
 type UserBuilder {
-  pub mut name;
-  init() { this.name = ""; }
-  pub fn setName(n)! { this.name = n; return this; }
-  pub fn build()! { return this.name; }
+  pub var name;
+  init(this) { this.name = ""; }
+  pub fn setName(mut this, *n)! { this.name = n; return this; }
+  pub fn build(this)! { return this.name; }
 }
 fn getBuilder(): mut {
   say b = mut UserBuilder();

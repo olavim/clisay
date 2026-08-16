@@ -1,7 +1,7 @@
 // `!` on an unknown value asserts against every witness, so one that is a user witness is thrown
 // rather than passing through as clean.
-type Token { pub v; init(x) { this.v = x; } }
-obligation parsed: discharge to use Token;
+type Token { pub v; init(this, *x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
 say bag = [Token(1)];
 try {
     say y = bag[0]!;

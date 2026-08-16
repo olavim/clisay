@@ -1,6 +1,6 @@
-// A shape key and a surface member with the same name are one presence test, so the `{ x }` binder
-// and `has T` share the `x` check.
-type T { pub x; init(a) { this.x = a; } }
+// A shape key tests presence, while a surface member of a declared type tests what the declaration
+// admits. They are different tests on the same name, so the `{ x }` arm does not share with `has T`.
+type T { pub x; init(this, *a) { this.x = a; } }
 say t = T(1);
 match t {
     { x } => 0,
@@ -8,42 +8,46 @@ match t {
 }
 // expect asm:
 // 0: PUSH_NULL
-// 1: JUMP <20>
+// 1: JUMP <22>
 // 4: LOAD_LOCAL L2
 // 6: LOAD_LOCAL L1
 // 8: STORE_LOCAL_POP L2
 // 10: LOAD_LOCAL L2
 // 12: LOAD_LOCAL L0
-// 14: SET_FIELD_POP <0>
-// 16: POP
-// 17: LOAD_LOCAL L0
-// 19: RETURN_FAC
-// 20: PUSH_TYPE <type T>
-// 22: STORE_LOCAL L0
-// 24: POP
-// 25: LOAD_LOCAL L0
-// 27: PUSH_CONSTANT 1
-// 29: CALL <1>
-// 31: STORE_LOCAL L1
-// 33: LOAD_LOCAL L1
-// 35: PUSH_NULL
-// 36: LOAD_LOCAL L2
-// 38: HAS_MEMBER "x"
-// 40: JUMP_IF_FALSE <52>
-// 43: LOAD_LOCAL L2
-// 45: GET_INDEX_OR_NULL "x"
-// 47: STORE_LOCAL_POP L3
-// 49: JUMP <55>
-// 52: JUMP <67>
-// 55: PUSH_CONSTANT 0
-// 57: POP
-// 58: JUMP <67>
-// 61: PUSH_CONSTANT 0
-// 63: POP
-// 64: JUMP <67>
-// 67: POP
-// 68: POP
-// 69: POP
-// 70: POP
-// 71: PUSH_NULL
-// 72: HALT
+// 14: SET_FIELD_POP <0> <3> <0>
+// 18: POP
+// 19: LOAD_LOCAL L0
+// 21: RETURN_FAC
+// 22: PUSH_TYPE <type T>
+// 24: STORE_LOCAL L0
+// 26: POP
+// 27: LOAD_LOCAL L0
+// 29: PUSH_CONSTANT 1
+// 31: CALL <1>
+// 33: STORE_LOCAL L1
+// 35: LOAD_LOCAL L1
+// 37: PUSH_NULL
+// 38: LOAD_LOCAL L2
+// 40: HAS_MEMBER "x"
+// 42: JUMP_IF_FALSE <54>
+// 45: LOAD_LOCAL L2
+// 47: GET_INDEX_OR_NULL "x"
+// 49: STORE_LOCAL_POP L3
+// 51: JUMP <70>
+// 54: LOAD_LOCAL L2
+// 56: MEMBER_ADMITS "x" <0> #0
+// 61: JUMP_IF_FALSE <67>
+// 64: JUMP <76>
+// 67: JUMP <82>
+// 70: PUSH_CONSTANT 0
+// 72: POP
+// 73: JUMP <82>
+// 76: PUSH_CONSTANT 0
+// 78: POP
+// 79: JUMP <82>
+// 82: POP
+// 83: POP
+// 84: POP
+// 85: POP
+// 86: PUSH_NULL
+// 87: HALT

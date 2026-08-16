@@ -1,6 +1,6 @@
 // A brace verifies gives delegates like any construction.
-trait Powered { pub fn go()! { return "v"; } }
-type Engine with Powered { init() {} }
-type Plain { init() {} }
+trait Powered { pub fn go(this)! { return "v"; } }
+type Engine with Powered { init(this) {} }
+type Plain { init(this) {} }
 type Car { pub engine gives Powered; }
 say c = Car{engine: Plain{}}; // error: Delegate field 'engine' does not provide trait 'Powered'

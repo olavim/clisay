@@ -1,0 +1,9 @@
+// A test that does rule the witness out settles it.
+fn f(c): opt fails { if c { return Err("b"); } return 1; }
+fn isTest()   { say x: opt fails = f(true); if x is Err { } }
+fn matchArm() { say x: opt fails = f(true); match x { Err { value: e } => 1, other => 2 } }
+fn tilde()    { say x: opt fails = f(true); if x ~ Err { } }
+isTest();
+matchArm();
+tilde();
+print("ok"); // expect: ok

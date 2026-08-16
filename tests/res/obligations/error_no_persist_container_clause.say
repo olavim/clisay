@@ -1,0 +1,2 @@
+obligation borrowed { no persist; no return; }
+say a: [borrowed] = []; // error: A container cannot hold values owing 'borrowed'

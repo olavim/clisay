@@ -1,0 +1,8 @@
+fn f(x: nope) { }
+// error(full):
+// error: Obligation 'nope' is not declared
+//  --> help_obligation_undeclared.say:1:9
+//   |
+// 1 | fn f(x: nope) { }
+//   |         ^^^^
+//   = help: declare it with `obligation` first, or name a built-in (`opt`, `fails`)

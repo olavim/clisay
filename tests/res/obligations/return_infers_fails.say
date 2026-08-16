@@ -1,0 +1,4 @@
+// `fails` is inferred into the signature, so a marked return admits it without declaring it.
+fn load()! { return Err("boom"); }
+say r = load() ?? e => e.value;
+print(r); // expect: boom

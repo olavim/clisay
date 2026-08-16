@@ -8,7 +8,7 @@ fn get(flag)? {
 fn run(flag) {
     match get(flag) {
         null if true => print("null"),
-        is Err { value: e } => print(e),
+        Err { value: e } => print(e),
         v => print(v + 5),
     }
 }

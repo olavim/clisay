@@ -1,5 +1,5 @@
 type A {
-    init() {
+    init(this) {
         return 1; // error: Cannot return a value from a factory
     }
 }

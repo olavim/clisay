@@ -1,0 +1,7 @@
+// The clean side of a `==` can be either operand.
+fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
+fn run(k) {
+    say x: opt = maybe(k);
+    if ("v" == x) { say y = x; print(y); } // expect: v
+}
+run(2);

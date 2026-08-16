@@ -1,0 +1,15 @@
+// A nested type resolves `this` against its own layout, and a narrowing inside it stays inside.
+type T {
+    x: opt;
+    init(this, *a: opt) { this.x = a; }
+    pub fn run(this) {
+        type K {
+            x;
+            init(this) { this.x = 1; }
+            pub fn runK(this) { print(this.x + 1); }
+        }
+        K().runK(); // expect: 2
+        print(this.x ?? "outer still owes"); // expect: 5
+    }
+}
+T(5).run();

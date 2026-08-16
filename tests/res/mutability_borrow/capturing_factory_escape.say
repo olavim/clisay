@@ -1,0 +1,8 @@
+// A factory that captures is installed as a closure. Handing it a mutable value lets it retain the
+// value and take its write-ownership. Reading the value afterwards is still fine.
+fn pick(c)! { type Box { pub inner; pub tag; init(this, *x) { this.inner = x; this.tag = c; } } return Box; }
+say maker = pick(1);
+say v = mut [1, 2];
+say b = maker(v);
+print(v[0]); // expect: 1
+print(b.inner[1]); // expect: 2

@@ -1,0 +1,110 @@
+// A block gives back the writer slots its own containers took. Nothing it declared leaves it, so
+// no path reaches those containers afterwards to write what they were given.
+say a = mut [mut [0]];
+{
+    say c = mut [];
+    c.push(a[0]);
+}
+a[0][0] = 1;
+print(a[0][0]); // expect: 1
+
+// @split
+// A second name for the aggregate agrees, which is what a claim left on the popped slot got wrong.
+say a = mut [mut [0]];
+{
+    say c = mut [];
+    c.push(a[0]);
+}
+{
+    say d = a;
+    d[0][0] = 1;
+    print(d[0][0]); // expect: 1
+}
+
+// @split
+// A function body is the same scope question, so a container that dies with the call gives its
+// slot back too.
+fn stash(v) { say c = mut []; c.push(v); }
+say a = mut [mut [0]];
+stash(a[0]);
+a[0][0] = 1;
+print(a[0][0]); // expect: 1
+
+// @split
+// A block that hands its container out keeps the claim, since something still reaches it.
+say sink = mut [];
+say a = mut [mut [0]];
+{
+    say c = mut [];
+    c.push(a[0]);
+    sink.push(c);
+}
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// So does one whose container a closure captured.
+say a = mut [mut [0]];
+say fns = mut [];
+{
+    say c = mut [];
+    c.push(a[0]);
+    fns.push(() => c.length());
+}
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// A container assigned to a binding outside the block is reachable through that binding.
+say a = mut [mut [0]];
+say var keep = mut [];
+{
+    say c = mut [];
+    c.push(a[0]);
+    keep = c;
+}
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// So is one stored in a field.
+type T { pub var f; }
+say a = mut [mut [0]];
+say t = mut T { f: mut [] };
+{
+    say c = mut [];
+    c.push(a[0]);
+    t.f = c;
+}
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// So is one stored into an element of an outer container.
+say a = mut [mut [0]];
+say outer = mut [mut []];
+{
+    say c = mut [];
+    c.push(a[0]);
+    outer[0] = c;
+}
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// And one the caller keeps after it is returned.
+fn wrap(*v)! { say c = mut []; c.push(v); return c; }
+say a = mut [mut [0]];
+say kept = wrap(a[0]);
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// A container returned and then dropped is reachable from nothing, so the element is free again.
+fn wrap(*v)! { say c = mut []; c.push(v); return c; }
+say a = mut [mut [0]];
+wrap(a[0]);
+a[0][0] = 1;
+print(a[0][0]); // expect: 1
+
+// @split
+// A method that only reads its receiver leaves nothing holding the element.
+type Box { pub var inner; pub fn peek(this)! { return this.inner[0]; } }
+say a = mut [mut [0]];
+{ say c = mut Box { inner: a[0] }; print(c.peek()); } // expect: 0
+a[0][0] = 1;
+print(a[0][0]); // expect: 1

@@ -1,16 +1,16 @@
 // An annotated program run with the check pass enabled. Phase one collects its signatures.
 // Nothing is enforced yet, so it runs to completion.
 type Box {
-    pub mut value;
-    init(v) {
+    pub var value;
+    init(this, *v) {
         value = v;
     }
-    pub fn get()! {
+    pub fn get(this)! {
         return this.value;
     }
 }
 
-fn makeBox(v)! {
+fn makeBox(*v)! {
     return Box(v);
 }
 

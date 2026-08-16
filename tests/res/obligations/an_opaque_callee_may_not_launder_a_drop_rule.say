@@ -1,0 +1,40 @@
+// A callee this pass cannot read may not take a value the caller still has to discharge.
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+type W with Wt { }
+say sink = mut [];
+fn stash(*v) { sink.push(v); }
+fn f(g) {
+    say b: warned = W { };
+    g(b); // error: cannot pass a value owing 'warned' to a callee that retains it
+    print(b ?? "handled");
+}
+f(stash);
+
+// @split
+// The resolved spelling of the same program, which was already refused.
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+type W with Wt { }
+say sink = mut [];
+fn stash(*v) { sink.push(v); }
+fn f() {
+    say b: warned = W { };
+    stash(b); // error: cannot pass a value owing 'warned'
+    print(b ?? "handled");
+}
+f();
+
+// @split
+// An obligation that may be persisted has nothing to keep, so it still passes through an opaque
+// call. The rule is what the obligation declares, not that it owes anything at all.
+type Token { pub v; init(this, *x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+say sink = mut [];
+fn stash(*v) { sink.push(v); }
+fn f(g) {
+    say b: parsed = Token(1);
+    g(b);
+}
+f(stash);
+print("passed through"); // expect: passed through

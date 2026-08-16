@@ -1,0 +1,14 @@
+// When one operand cannot decide the test, the other decides it alone: an `||` whose left never
+// holds narrows from the right, and an `&&` whose left never fails narrows from the right too.
+fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
+fn run(k) {
+    say a: opt = maybe(k);
+    if ((false || false) || a != null) { say ya = a; print(ya); } // expect: v
+    say b: opt = maybe(k);
+    if ((false && true) || b != null) { say yb = b; print(yb); } // expect: v
+    say c: opt = maybe(k);
+    if (c == null && (true || false)) { print("null"); } else { say yc = c; print(yc); } // expect: v
+    say d: opt = maybe(k);
+    if ((true && true) && d == null) { print("null"); } else { say yd = d; print(yd); } // expect: v
+}
+run(2);

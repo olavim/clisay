@@ -1,6 +1,6 @@
 type A {
-    pub mut a = "a";
-    init() {
+    pub var a = "a";
+    init(this) {
         print("init");
         a = "b";
     }

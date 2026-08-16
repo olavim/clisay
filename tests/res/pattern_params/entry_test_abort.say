@@ -1,0 +1,41 @@
+// A parameter pattern the argument might not match is a caller-visible precondition. A non-match
+// throws at entry and names the parameter, so a `try` around the call catches it.
+fn ranked(n @ 1 | 2 | 3) {
+    print(n);
+}
+ranked(2); // expect: 2
+
+try {
+    ranked(9);
+} catch (e) {
+    print(e); // expect: argument does not match `n @ 1 | 2 | 3`
+}
+
+// @split
+// A destructure is the same precondition, and the argument that satisfies it still passes through.
+type Node { pub next; init(this, *n) { this.next = n; } }
+
+fn takes(x @ Node { next }) {
+    print(next);
+}
+takes(Node(4)); // expect: 4
+
+try {
+    takes(7);
+} catch (e) {
+    print(e); // expect: argument does not match `x @ Node { next }`
+}
+
+// @split
+// A total pattern cannot fail, so nothing is tested and nothing can throw.
+fn anything(x @ _) {
+    print(x);
+}
+anything(1); // expect: 1
+
+// @split
+// An uncaught mismatch ends the program, and the caret marks the test the argument failed.
+fn ranked(n @ 1 | 2 | 3) { // error: Uncaught exception: "argument does not match `n @ 1 | 2 | 3`"
+    print(n);
+}
+ranked(9);

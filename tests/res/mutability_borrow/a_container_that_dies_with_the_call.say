@@ -1,0 +1,26 @@
+// A borrow stored into a container that dies with the call has escaped nothing, so the store is
+// allowed. What settles it is where the container goes, not that a store happened.
+fn f(mut x) { say a = mut [x]; }
+say m = mut [1];
+f(m);
+print(m[0]); // expect: 1
+
+// @split
+// An unmarked parameter may still hold a borrow the caller lent, and the same store is fine.
+fn f(x) { say a = mut [x]; }
+say m = mut [1];
+f(m);
+print(m[0]); // expect: 1
+
+// @split
+// A `mut` parameter may be written through the container it was stored into.
+fn f(mut x) { say a = mut [x]; a[0][0] = 5; }
+say m = mut [1];
+f(m);
+print(m[0]); // expect: 5
+
+// @split
+// Only a number leaves the call, so the container takes nothing with it.
+fn f(mut x)! { say a = mut [x]; return a[0][0]; }
+say m = mut [7];
+print(f(m)); // expect: 7

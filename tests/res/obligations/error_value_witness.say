@@ -1,2 +1,2 @@
 say v = 0;
-obligation bad: discharge to use v; // error: 'v' is not a type or trait
+obligation bad { witness v; discharge to use; } // error: 'v' is not a type or trait

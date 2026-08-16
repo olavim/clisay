@@ -1,5 +1,5 @@
 trait Greeter {
-    pub fn greet() {
+    pub fn greet(this) {
         say self = this;
         self.untracked;
     }

@@ -1,5 +1,5 @@
 // Rebinding a mutable slot drops the frozen fact, so the fresh value mutates.
-say mut d = mut {};
+say var d = mut {};
 freeze(d);
 d = mut {};
 d["a"] = 1;

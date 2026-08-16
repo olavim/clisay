@@ -1,9 +1,9 @@
 fn risky(): fails { return Err("x"); }
 trait Loader {
-    req fn load();
+    req fn load(this);
 }
 type App with Loader {
-    pub fn load() { return risky()?!; } // error: return owes an obligation the trait forbids
-    init() {}
+    pub fn load(this) { return risky()?!; } // error: return owes an obligation the trait forbids
+    init(this) {}
 }
 print("unreachable");

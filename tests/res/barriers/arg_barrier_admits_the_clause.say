@@ -1,0 +1,8 @@
+// A parameter's clause is what its argument's boundary guard admits.
+type W { } obligation taint { witness W; discharge to use; }
+fn takes(x: taint)! { return 1; }
+fn clean(y)! { return 2; }
+
+say bag = { "d": W() };
+print(takes(bag["d"])); // expect: 1
+try { print(clean(bag["d"])); } catch (e) { print("clean caught"); } // expect: clean caught

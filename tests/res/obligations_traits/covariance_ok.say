@@ -1,9 +1,9 @@
 trait Source {
-    req fn read(): fails;
+    req fn read(this): fails;
 }
 type File with Source {
-    pub fn read()! { return 1; }
-    init() {}
+    pub fn read(this)! { return 1; }
+    init(this) {}
 }
 say f = File();
 print(f.read()); // expect: 1

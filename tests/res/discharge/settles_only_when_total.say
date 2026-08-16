@@ -1,0 +1,39 @@
+// Naming a witness settles it only if the test must run. A shape that can fail on a real witness
+// may never match, so it asks nothing.
+type Wt { pub a; pub b; init(this, *x) { this.a = x; this.b = x; } }
+obligation warned { witness Wt; discharge before drop; }
+fn f() {
+    say b: warned = Wt(1); // error: 'b' owes 'warned' and is never discharged
+    match (b) { Wt { a: 5 } => print("five"), _ => print("other") }
+}
+
+// @split
+// An irrefutable destructure does have to run, so it settles.
+type Wt { pub a; pub b; init(this, *x) { this.a = x; this.b = x; } }
+obligation warned { witness Wt; discharge before drop; }
+fn f() {
+    say b: warned = Wt(1);
+    match (b) { Wt { a: _ } => print("shape"), _ => print("other") }
+}
+f(); // expect: shape
+
+// @split
+// A wrapper asks at least as much as the test it wraps, so the wider test is not the weaker one.
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+type W2 with Wt { }
+fn f() {
+    say b: warned = W2 { };
+    if (b ~ W2 | null) { print("or"); }
+}
+f(); // expect: or
+
+// @split
+// An `as` wrapper settles for the scrutinee too, so only the name it introduces is left owing.
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+type W2 with Wt { }
+fn f() {
+    say b: warned = W2 { };
+    if (b ~ seen @ W2) { print("as"); } // error: 'seen' owes 'warned' and is never discharged
+}

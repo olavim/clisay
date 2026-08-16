@@ -2,8 +2,10 @@
 
 use anyhow::bail;
 
+use crate::ast::BuiltinType;
 use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::opcode;
+use crate::core::objects::TypeMember;
 use crate::frontend::lex::SourcePosition;
 use crate::middle::ir::{Inst, Ir, Label};
 
@@ -25,13 +27,49 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     }
 
     let mut chunk = BytecodeChunk::new();
+    chunk.witness_ids = ir.witness_ids().to_vec();
+    if ir.builtin_layouts().iter().any(Option::is_none) {
+        bail!("a built-in type reached assembly with no layout");
+    }
+
+    // `Err`'s native factory writes field 0 and nothing else, so its declaration has to match.
+    let err = ir.builtin_layouts()[BuiltinType::Err.index()].as_ref().expect("every built-in layout is present");
+    if err.field_count != 1 || !err.members.iter().any(|(name, m)| name == "value" && matches!(m, TypeMember::Field(0))) {
+        bail!("Err's native factory writes one field, so its declaration must have exactly `value` at id 0");
+    }
+
+    chunk.witness_allows = ir.witness_allows().to_vec();
+    chunk.owed_names = ir.owed_names().to_vec();
     chunk.constants = ir.constants().to_vec();
-    chunk.witness_names = ir.witness_names().to_vec();
+    chunk.elisions = ir.elisions().iter().map(|&idx| offsets[idx]).collect();
+    for (&(idx, role), pos) in ir.source_map() {
+        let end = offsets.get(idx + 1).copied().unwrap_or(size);
+        for offset in offsets[idx]..end {
+            chunk.source_map.insert((offset, role), pos.clone());
+        }
+    }
     for (i, inst) in ir.code().iter().enumerate() {
         encode(inst, &offsets, &ir, &mut chunk, &ir.positions()[i]);
     }
+    chunk.builtin_layouts = ir.into_builtin_layouts();
 
     Ok(chunk)
+}
+
+/// Writes a barrier's guarded positions as a count byte followed by one byte each.
+fn write_positions(ir: &Ir, chunk: &mut BytecodeChunk, idx: u16, pos: &SourcePosition) {
+    let positions = ir.survive_positions(idx);
+    chunk.write(positions.len() as u8, pos);
+    for (p, arg_pos) in positions {
+        chunk.write(*p, arg_pos);
+    }
+}
+
+/// Writes a declaration id as two little-endian bytes.
+fn write_u16(chunk: &mut BytecodeChunk, value: u16, pos: &SourcePosition) {
+    for byte in value.to_le_bytes() {
+        chunk.write(byte, pos);
+    }
 }
 
 /// The encoded byte length of an instruction: its opcode plus operand bytes. A
@@ -44,10 +82,8 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
             Some(sz) => len += sz,
             None => match *inst {
                 Inst::Construct(fields_idx, _) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
-                Inst::BarrierGuard(idx) => len += 1 + ir.barrier_allow(idx).names.len(), // count byte + name indices
-                Inst::AssertBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
-                Inst::MarkBorrow(_, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
-                _ => unreachable!("only Construct, BarrierGuard, AssertBorrow, and MarkBorrow have a List operand"),
+                Inst::AssertNoRetain(_, _, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
+                _ => unreachable!("only Construct and AssertNoRetain have a List operand"),
             },
         }
     }
@@ -60,10 +96,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
     chunk.write(opcode::opcode_of(inst), pos);
 
     let target_of = |label: Label| offsets[ir.label_target(label)] as u16;
-    let write_jump = |chunk: &mut BytecodeChunk, target: u16| {
-        chunk.write(target as u8, pos);
-        chunk.write((target >> 8) as u8, pos);
-    };
+    let write_jump = |chunk: &mut BytecodeChunk, target: u16| write_u16(chunk, target, pos);
 
     match *inst {
         Return | ReturnFac
@@ -71,10 +104,13 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Throw
         | PopTry
         | AssertNonNull
+        | AssertNoWriter
+        | AssertNoOtherWriterRoot
+        | AssertImmutable
         | Pop | Dup
         | PushNull | PushTrue | PushFalse
-        | GetIndex | SetIndex
-        | GetProperty | SetProperty
+        | GetIndex
+        | GetProperty
         | Add | Subtract | Multiply | Divide | Negate | Not
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
         | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
@@ -82,13 +118,18 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Mut | SealCheck => {}
 
         Call(b) | CallMut(b)
-        | Array(b) | Dict(b)
-        | PushConstant(b) | PushClosure(b) | PushType(b)
+        | PushConstant(b) | PushClosure(b) | PushType(b) | BuildType(b)
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
         | CloseUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
-        | GetField(b) | SetField(b) | SetFieldPop(b)
-        | ReleaseBorrow(b)
-        | Is(b) | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
+        | GetField(b)
+        | TakeWriteOwnership(b)
+        | TransferWriteOwnership(b) | TransferWriteOwnershipUp(b) | TransferWriteOwnershipAt(b)
+        | AssertNoOtherWriter(b) | AssertNoOtherWriterUp(b)
+        | ReleaseWriteOwnership(b)
+        | ReleaseWriteOwnershipAt(b)
+        | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
+
+        Is(id) => write_u16(chunk, id, pos),
 
         Jump(l)
         | JumpIfFalse(l)
@@ -108,9 +149,9 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(c, pos);
         }
 
-        JumpIfIs(l, c) => {
+        JumpIfIs(l, id) => {
             write_jump(chunk, target_of(l));
-            chunk.write(c, pos);
+            write_u16(chunk, id, pos);
         }
 
         AddLocalConst(local, c) | SubLocalConst(local, c)
@@ -119,23 +160,22 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(c, pos);
         }
 
-        ArrayMiddle(prefix, suffix) => {
-            chunk.write(prefix, pos);
-            chunk.write(suffix, pos);
+        ArrayMiddle(a, b) | ArrayElem(a, b) => {
+            chunk.write(a, pos);
+            chunk.write(b, pos);
         }
 
-        AssertBorrow(arg_count, idx) | MarkBorrow(arg_count, idx) => {
-            let positions = ir.survive_positions(idx);
+        AssertNoRetain(arg_count, owed_idx, idx) => {
             chunk.write(arg_count, pos);
-            chunk.write(positions.len() as u8, pos);
-            for (p, arg_pos) in positions {
-                chunk.write(*p, arg_pos);
-            }
+            write_u16(chunk, owed_idx, pos);
+            write_positions(ir, chunk, idx, pos);
         }
 
-        Invoke(name, arg_count) => {
+        Invoke(name, arg_count, kind, operand) => {
             chunk.write(name, pos);
             chunk.write(arg_count, pos);
+            chunk.write(kind, pos);
+            chunk.write(operand, pos);
         }
 
         Construct(fields_idx, seal) => {
@@ -147,13 +187,31 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(seal, pos);
         }
 
-        BarrierGuard(idx) => {
-            let allow = ir.barrier_allow(idx);
-            chunk.write(allow.null_allowed as u8, pos);
-            chunk.write(allow.names.len() as u8, pos);
-            for &i in &allow.names {
-                chunk.write(i, pos);
-            }
+        BarrierGuard(null_allowed, idx) => {
+            chunk.write(null_allowed as u8, pos);
+            write_u16(chunk, idx, pos);
+        }
+
+        MemberAdmits(member, null_allowed, idx) => {
+            chunk.write(member, pos);
+            chunk.write(null_allowed as u8, pos);
+            write_u16(chunk, idx, pos);
+        }
+
+        Array(a, b) | Dict(a, b) => {
+            chunk.write(a, pos);
+            chunk.write(b, pos);
+        }
+
+        SetIndex(kind, operand) | SetProperty(kind, operand) => {
+            chunk.write(kind, pos);
+            chunk.write(operand, pos);
+        }
+
+        SetField(member, kind, operand) | SetFieldPop(member, kind, operand) => {
+            chunk.write(member, pos);
+            chunk.write(kind, pos);
+            chunk.write(operand, pos);
         }
 
         SubConstLocal(c, local) | AddConstLocal(c, local) => {

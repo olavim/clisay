@@ -1,17 +1,17 @@
-trait A { pub fn a()! { return "a"; } }
-trait B { pub fn b()! { return "b"; } }
+trait A { pub fn a(this)! { return "a"; } }
+trait B { pub fn b(this)! { return "b"; } }
 
-type AB with A, B { init() {} }
+type AB with A, B { init(this) {} }
 say x = AB();
 print(x.a()); // expect: a
 print(x.b()); // expect: b
 
 // @split
 
-trait A { pub fn a()! { return "a"; } }
-trait B { pub fn b()! { return "b"; } }
+trait A { pub fn a(this)! { return "a"; } }
+trait B { pub fn b(this)! { return "b"; } }
 
-type BA with B, A { init() {} }
+type BA with B, A { init(this) {} }
 say y = BA();
 print(y.a()); // expect: a
 print(y.b()); // expect: b

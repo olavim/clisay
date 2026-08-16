@@ -1,5 +1,5 @@
-obligation taint;
+type Taint { } obligation taint { witness Taint; discharge to use; }
 say t: taint = "x";
-say mut a = [];
+say a = mut [];
 a.push(t);
 print(a[0] + 1); // error: unchecked value owes 'taint'

@@ -1,10 +1,10 @@
 // Laundering `this` through a method return loses the trait-self tag, so the access falls back
 // to a dynamic boundary rather than the surface check.
 trait Greeter {
-    pub fn passthrough()! {
+    pub fn passthrough(this)! {
         return this;
     }
-    pub fn greet() {
+    pub fn greet(this) {
         say self = this.passthrough();
         self.untracked.foo;
     }

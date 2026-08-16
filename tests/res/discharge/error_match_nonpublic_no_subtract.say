@@ -8,6 +8,6 @@ fn get(flag)? {
 }
 match get(3) {
     null => print("null"),
-    is Err { bogus: b } => print("nope"),
+    Err { bogus: b } => print("nope"),
     v => print(v + 5), // error: unchecked value owes 'fails'
 }

@@ -1,0 +1,8 @@
+// `fails` is `no persist` but not `no return`: a failure moves along a call chain and cannot be
+// parked anywhere that outlives the frame handling it.
+fn make(flag): fails { if flag { return Err("boom"); } return 7; }
+fn forward(x: fails): fails { return x; }
+fn relay(): fails { return make(true)?!; }
+
+print(forward(make(false)) ?? "recovered"); // expect: 7
+print(relay() ?? "recovered");              // expect: recovered

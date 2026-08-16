@@ -1,0 +1,21 @@
+// A type declaration may not mask an outer trait, exactly as it may not mask an outer type.
+trait Tr { pub fn go(this)! { return "outer-trait"; } }
+fn f()! {
+    type Tr { pub a; init(this) { this.a = 9; } } // error: 'Tr' shadows a type or trait declared in an enclosing scope
+    return Tr();
+}
+
+// @split
+// A type nested in a mixed-in method body is relocated into the host's scope chain, which is the
+// one way an inner declaration can reach an outer scope's entry and erase it.
+type T { pub x; init(this) { this.x = 1; } }
+trait Tr { pub fn m(this)! { type T { init(this) {} } return 1; } } // error: 'T' shadows a type or trait declared in an enclosing scope
+type Host with Tr { init(this) {} }
+say v = mut T();
+v.x = 99;
+
+// @split
+// A type mixing the trait where nothing masks it still reaches it.
+trait Tr { pub fn go(this)! { return "outer-trait"; } }
+type Host with Tr { pub h; init(this) { this.h = 1; } }
+print(Host().go()); // expect: outer-trait

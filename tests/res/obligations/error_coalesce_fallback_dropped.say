@@ -1,0 +1,6 @@
+// `??` yields its fallback, so a fallback that owes leaves the result owing. The discharge applies
+// to the left operand, not to whatever the right side produces.
+fn f(): fails { return Err("b"); }
+fn g() {
+    f() ?? f(); // error: this result owes 'fails' and is never discharged
+}

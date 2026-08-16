@@ -1,0 +1,5 @@
+fn f(): opt fails { return Err("b"); }
+fn g() {
+    say x: opt fails = f(); // error: 'x' owes 'fails' and is never discharged
+    if x == null { }
+}

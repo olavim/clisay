@@ -1,12 +1,12 @@
 // An unknown value into an `opt` slot is guarded. A foreign `Err` is thrown, not laundered as `opt`;
 // null or a clean value passes through.
-say bad = [Err("boom")];
-say good = [5];
+say bad = () => Err("boom");
+say good = () => 5;
 try {
-    say y: opt = bad[0];
+    say y: opt = bad();
     print("unreachable");
 } catch (e) {
     print("caught"); // expect: caught
 }
-say z: opt = good[0];
+say z: opt = good();
 print("ok"); // expect: ok

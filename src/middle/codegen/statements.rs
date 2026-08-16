@@ -3,7 +3,7 @@ use crate::middle::hir::{HirCatchClause, HirExpr, HirFieldInit, HirId, HirStmt};
 use crate::middle::ir::Inst;
 use crate::middle::bind::FnKind;
 
-use super::{Compiler, TryCatchPosition, TryFrame};
+use super::{Compiler, WriteOwnershipHolderPlace, TryCatchPosition, TryFrame};
 
 
 impl<'a> Compiler<'a> {
@@ -95,7 +95,7 @@ impl<'a> Compiler<'a> {
                 // The slot was reserved by hoisting so forward references resolve.
                 let slot = self.bindings.slot(stmt_id);
 
-                let const_idx = self.function(stmt_id, decl, FnKind::Function, self.persist_mask(stmt_id))?;
+                let const_idx = self.function(stmt_id, decl, FnKind::Function, self.declared_masks(stmt_id, decl))?;
                 self.emit(Inst::PushClosure(const_idx), stmt_id);
                 self.emit(Inst::StoreLocal(slot), stmt_id);
                 self.emit(Inst::Pop, stmt_id);
@@ -106,7 +106,10 @@ impl<'a> Compiler<'a> {
                 let slot = self.bindings.slot(stmt_id);
 
                 let inst = if let Some(expr) = value {
-                    self.expression(expr)?;
+                    let saved = self.receiving_slot.replace(WriteOwnershipHolderPlace::Local(slot));
+                    let compiled = self.expression(expr);
+                    self.receiving_slot = saved;
+                    compiled?;
                     Inst::StoreLocal(slot)
                 } else {
                     Inst::LoadLocal(slot)
@@ -202,7 +205,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Pushes `count` null placeholders to reserve a slot for each live binder.
-    fn reserve_slots(&mut self, count: usize, node: &HirId<HirStmt>) {
+    pub(super) fn reserve_slots<T: 'static>(&mut self, count: usize, node: &HirId<T>) {
         for _ in 0..count {
             self.emit(Inst::PushNull, node);
         }
@@ -246,7 +249,12 @@ impl<'a> Compiler<'a> {
     /// which lets forward references resolve.
     fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
-            if matches!(self.hir.get(stmt_id), HirStmt::Fn(_) | HirStmt::Type(_)) {
+            let reserves = match self.hir.get(stmt_id) {
+                HirStmt::Fn(_) => true,
+                HirStmt::Type(decl) => decl.builtin.is_none(),
+                _ => false,
+            };
+            if reserves {
                 self.emit(Inst::PushNull, stmt_id);
             }
         }

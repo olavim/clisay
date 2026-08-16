@@ -1,0 +1,6 @@
+// A callee the pass can resolve still decides at compile time, with no runtime proof involved.
+type Box { pub var v; init(this) { this.v = 0; } }
+fn eats(*mut x) { }
+say a = mut Box();
+eats(a);
+a.v = 1; // error: cannot write `a`, which gave its write-ownership away

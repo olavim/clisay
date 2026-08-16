@@ -2,7 +2,7 @@
 type T {
     pub x;
     y;
-    init() { // error: Non-null field 'y' is never initialized
+    init(this) { // error: Non-null field 'y' is never initialized
         this.x = 1;
     }
 }

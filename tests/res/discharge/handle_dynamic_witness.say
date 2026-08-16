@@ -1,5 +1,6 @@
-say arr = [Err("boom")];
-say caught = arr[0] ?? x => x is Err;
+// An `Err` arriving from an opaque call is unknown statically, so `??` tests it at runtime.
+say make = () => Err("boom");
+say caught = make() ?? x => x is Err;
 print(caught); // expect: true
-say payload = arr[0] ?? x => x.value;
+say payload = make() ?? x => x.value;
 print(payload); // expect: boom

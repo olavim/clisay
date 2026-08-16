@@ -1,3 +1,3 @@
-// A `~` whose matcher is a bare name binds unconditionally, which is an assignment, not a test.
+// A `~` whose matcher always matches is an assignment, not a test.
 say x = 1;
-if x ~ y { print(y); } // error: `~` binding must be fallible; `y` always matches.
+if x ~ y @ _ { print(y); } // error: `~` binding must be fallible; `y @ _` always matches.

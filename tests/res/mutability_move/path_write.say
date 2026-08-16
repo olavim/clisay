@@ -1,0 +1,95 @@
+// A write reaching an element through a path names nothing, so it takes no writer slot.
+say a = mut [mut [0]];
+say e = a[0];
+e[0] = 1;
+a[0][0] = 2; // error: cannot write an element another name already writes
+
+// @split
+// The same through a field.
+type T { pub var x; init(this, *mut v) { this.x = v; } }
+say a = mut [mut [0]];
+say e = a[0];
+say t = mut T(e);
+e[0] = 1;
+t.x[0] = 2; // error: cannot write an element another name already writes
+
+// @split
+// A mutating method on a path receiver is a path write too.
+say a = mut [mut [0]];
+say e = a[0];
+e[0] = 1;
+a[0].push(2); // error: cannot write an element another name already writes
+
+// @split
+// So is a compound assignment, which lowers to the same write.
+say a = mut [mut [0]];
+say e = a[0];
+e[0] = 1;
+a[0][0] += 2; // error: cannot write an element another name already writes
+
+// @split
+// With no name holding the element, paths write it freely.
+say a = mut [mut [0], mut [0]];
+a[0][0] = 1;
+a[0][0] = 2;
+a[1][0] = 3;
+print(a[0][0]); // expect: 2
+print(a[1][0]); // expect: 3
+
+// @split
+// The slot goes back with the name that took it, so a later path write is free again.
+say a = mut [mut [0]];
+{
+    say e = a[0];
+    e[0] = 1;
+}
+a[0][0] = 2;
+print(a[0][0]); // expect: 2
+
+// @split
+// Reading through a path never conflicts.
+say a = mut [mut [0]];
+say e = a[0];
+e[0] = 7;
+print(a[0][0]); // expect: 7
+
+// @split
+// An element handed to a second container goes with its writer slot, so the receiver writes it.
+say a = mut [mut [0]];
+say b = mut [a[0]];
+b[0][0] = 1;
+print(b[0][0]); // expect: 1
+
+// @split
+// The container it came from still reads it.
+say a = mut [mut [0]];
+say b = mut [a[0]];
+b[0][0] = 7;
+print(a[0][0]); // expect: 7
+
+// @split
+// And no longer writes it.
+say a = mut [mut [0]];
+say b = mut [a[0]];
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// The same through a method that stores it.
+say a = mut [mut [0]];
+say b = mut [];
+b.push(a[0]);
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// An immutable element is free to share, since nothing can write it.
+say a = mut [[0], [0]];
+say b = mut [];
+b.push(a[0]);
+b.push(a[1]);
+print(b.length()); // expect: 2
+
+// @split
+// A value the container is given rather than one it took is fine.
+say b = mut [];
+b.push(mut [0]);
+print(b.length()); // expect: 1

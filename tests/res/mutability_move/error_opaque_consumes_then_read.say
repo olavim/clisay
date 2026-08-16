@@ -1,0 +1,8 @@
+// A parameter that retains its argument takes its write-ownership, so the call alone is fine and
+// the later write is what fails.
+type Box { pub var v; init(this) { this.v = 0; } }
+fn eats(*mut x) { }
+say consume = eats;
+say a = mut Box();
+consume(a);
+a.v = 1; // error: cannot write a value whose write-ownership was given away

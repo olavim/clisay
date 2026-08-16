@@ -1,0 +1,9 @@
+// Rebinding gives the slot a value of its own, so the earlier call has nothing left to prove.
+type Box { pub var v; init(this) { this.v = 0; } }
+fn eats(*mut x) { }
+say consume = eats;
+say var a = mut Box();
+consume(a);
+a = mut Box();
+a.v = 1;
+print(a.v); // expect: 1
