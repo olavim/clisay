@@ -1,0 +1,36 @@
+// Each witness alternative places its own obligation, and every binder under one owes them all.
+fn source()! { return Err("boom"); }
+
+fn two(x @ null | Err) {
+    print(x ?? "handled"); // expect: handled
+}
+two(source());
+
+fn one(x @ null | Err) {
+    print(x ?? "handled"); // expect: handled
+}
+one(null);
+
+// @split
+fn two(x @ null | Err) {
+    say y = x; // error: cannot assign a value owing 'fails' to 'y'
+}
+
+// @split
+fn two(x @ null | Err) {
+    say y: fails = x; // error: Cannot assign a nullable value to non-null binding 'y'
+}
+
+// @split
+type Node { pub next; init(this, *n) { this.next = n; } }
+
+fn dead(x @ Node { next } | 5) { // error: a non-witness alternative beside a destructure is a dead binding
+    print(next);
+}
+
+// @split
+type Node { pub next; init(this, *n) { this.next = n; } }
+
+fn split(x @ Node { next } | Err { value }) { // error: or-matcher alternatives must bind the same names
+    print(next);
+}
