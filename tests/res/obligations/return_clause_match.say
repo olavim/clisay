@@ -1,0 +1,7 @@
+// A return whose clause names what the body returns is the conforming case.
+type Taint { } obligation taint { witness Taint; discharge to use; }
+fn f(x: taint): taint { return x; }
+fn g(x: taint)! { return x!; }
+print(g(7)); // expect: 7
+say v: taint = f(3);
+print(v!); // expect: 3

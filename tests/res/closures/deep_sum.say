@@ -1,5 +1,5 @@
-fn getAdder(a, b, c, d, e)! {
-    say mut sum = 0;
+fn getAdder(*a, *b, *c, *d, *e)! {
+    say var sum = 0;
     fn addA()! {
         sum = sum + a;
         fn addB()! {

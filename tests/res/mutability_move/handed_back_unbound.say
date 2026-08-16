@@ -1,0 +1,17 @@
+// Binding is what makes the second name, so a discarded or chained result moves nothing.
+type C {
+    pub var v;
+    init(this) { this.v = 0; }
+    pub fn set(mut this, *n)! { this.v = n; return this; }
+    pub fn reader(this)! { return () => this.v; }
+}
+say a = mut C();
+a.set(1);
+print(a.v);        // expect: 1
+a.set(2).set(3);
+print(a.v);        // expect: 3
+
+// A closure holding the receiver is not the receiver, so binding one moves nothing either.
+say r = a.reader();
+a.set(4);
+print(r());        // expect: 4

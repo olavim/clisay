@@ -1,6 +1,6 @@
 type Box {
     secret; // private by default
-    init(s) { this.secret = s; }
+    init(this, *s) { this.secret = s; }
 }
 say b = Box(42);
 // A private member is invisible to external code: it is not in the runtime name map, so the access

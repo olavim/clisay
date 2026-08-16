@@ -39,11 +39,13 @@ pub fn enable_color(on: bool) {
 }
 
 /// A caretted span's role in a frame. The primary points at the error; a context span points at
-/// a related site the message refers to.
+/// a related site the message refers to; an enclosing span names the declaration the error sits
+/// inside, and draws no carets of its own.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum SpanKind {
     Primary,
     Context,
+    Enclosing,
 }
 
 impl SpanKind {
@@ -51,7 +53,7 @@ impl SpanKind {
     fn style(self) -> (char, &'static str) {
         match self {
             SpanKind::Primary => ('^', COLOR_RED),
-            SpanKind::Context => ('-', COLOR_CYAN),
+            SpanKind::Context | SpanKind::Enclosing => ('-', COLOR_CYAN),
         }
     }
 }
@@ -64,7 +66,6 @@ pub(crate) struct Span {
     pub kind: SpanKind,
 }
 
-/// Wraps `text` in an ANSI color code when color is on, otherwise returns it unchanged.
 fn paint(text: &str, code: &str) -> String {
     if COLOR.with(Cell::get) {
         return format!("\x1b[{code}m{text}\x1b[0m");
@@ -72,7 +73,6 @@ fn paint(text: &str, code: &str) -> String {
     return text.to_string();
 }
 
-/// A gutter cell: a right-aligned line number and its ` |` rail. A blank label makes an empty rail.
 pub(crate) fn rail(label: &str, width: usize) -> String {
     return paint(&format!("{label:>width$} |"), COLOR_CYAN);
 }
@@ -84,15 +84,11 @@ fn expand_tabs(line: &str) -> String {
     return line.replace('\t', &" ".repeat(TAB_WIDTH));
 }
 
-/// Display columns `text` occupies once tabs are expanded. Uses char counting
+/// Display columns `text` occupies once tabs are expanded.
 fn display_width(text: &str) -> usize {
     return text.chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum();
 }
 
-/// Renders several labeled spans in one frame, in source order. Spans are assumed sorted by
-/// position and to share one source. Spans on different lines each get their own caret row;
-/// spans on the same line share a caret row and stack their labels below it. A jump over
-/// unshown lines is marked with a `...` rail.
 fn render_spans(spans: &[Span], help: &[String]) -> String {
     let content = &spans[0].pos.source.content;
     let width = spans.iter().map(|s| s.pos.line).max().unwrap().to_string().len();
@@ -100,10 +96,12 @@ fn render_spans(spans: &[Span], help: &[String]) -> String {
     let mut lines = vec![bar.clone()];
 
     // Show the line before the first span for context, but only when that span is the primary.
-    // A leading context span already introduces its own site, so the extra line is just noise.
+    // A leading context span already introduces its own site, so the extra line is just noise. An
+    // enclosing span names a line of its own, and showing another beside it reads as clutter.
     let first = &spans[0];
     let (first_start, _) = first.pos.line_bounds(first.pos.start);
-    if first.kind == SpanKind::Primary && first_start > 0 {
+    let encloses = spans.iter().any(|s| s.kind == SpanKind::Enclosing);
+    if first.kind == SpanKind::Primary && first_start > 0 && !encloses {
         let prev_start = content[..first_start - 1].rfind('\n').map_or(0, |i| i + 1);
         let prev = expand_tabs(&content[prev_start..first_start - 1]);
         if !prev.trim().is_empty() {
@@ -111,8 +109,7 @@ fn render_spans(spans: &[Span], help: &[String]) -> String {
         }
     }
 
-    // Draw one source line at a time, gathering all the spans that fall on it. A gap between
-    // consecutive lines is elided with a `...` rail.
+    // Draw one source line at a time, gathering all the spans that fall on it.
     let mut i = 0;
     let mut prev_line: Option<usize> = None;
     while i < spans.len() {
@@ -137,12 +134,14 @@ fn render_spans(spans: &[Span], help: &[String]) -> String {
     return lines.join("\n") + &render_help(width, help);
 }
 
-/// Renders one source line, then the carets for every span on it. The last span's label sits
-/// inline after its carets; earlier labels stack below, each joined to its carets by a `|`.
 fn render_span_line(lines: &mut Vec<String>, bar: &str, width: usize, group: &[Span]) {
     let content = &group[0].pos.source.content;
     let (start, end) = group[0].pos.line_bounds(group[0].pos.start);
     lines.push(format!("{} {}", rail(&group[0].pos.line.to_string(), width), expand_tabs(&content[start..end])));
+
+    if group.iter().all(|s| s.kind == SpanKind::Enclosing) {
+        return;
+    }
 
     let cols: Vec<usize> = group.iter().map(|s| display_width(&content[start..s.pos.start])).collect();
 
@@ -152,7 +151,8 @@ fn render_span_line(lines: &mut Vec<String>, bar: &str, width: usize, group: &[S
     for (k, span) in group.iter().enumerate() {
         let (glyph, color) = span.kind.style();
         let carets = display_width(&content[span.pos.start..span.pos.end.min(end)]).max(1);
-        row.push_str(&" ".repeat(cols[k] - col));
+        // Two spans can share a column, such as a recursive call reporting the same site twice.
+        row.push_str(&" ".repeat(cols[k].saturating_sub(col)));
         row.push_str(&paint(&glyph.to_string().repeat(carets), color));
         col = cols[k] + carets;
     }
@@ -169,8 +169,7 @@ fn render_span_line(lines: &mut Vec<String>, bar: &str, width: usize, group: &[S
     }
 }
 
-/// A row with a `|` at each column in `bars`, then `label` placed at its column, if given. Each
-/// connector and the label take the color of the span they belong to.
+/// A row with a `|` at each column in `bars`, then `label` placed at its column, if given.
 fn connector_row(bars: &[(usize, SpanKind)], label: Option<(usize, &str, SpanKind)>) -> String {
     let mut row = String::new();
     let mut col = 0;
@@ -186,8 +185,6 @@ fn connector_row(bars: &[(usize, SpanKind)], label: Option<(usize, &str, SpanKin
     return row;
 }
 
-/// The `help:` notes shown under a frame, each on its own gutter-aligned line. A note may carry
-/// embedded newlines; continuation lines align under the note text, without a repeated `= help:`.
 fn render_help(width: usize, help: &[String]) -> String {
     let prefix = paint(&format!("{} = help:", " ".repeat(width)), COLOR_CYAN);
     let indent = " ".repeat(width + " = help: ".len());
@@ -271,7 +268,6 @@ impl SourcePosition {
         return out;
     }
 
-    /// Renders the failure point plus the unclosed opener it belongs to.
     pub fn render_snippet_pair(&self, label: Option<&str>, opener: &SourcePosition, opener_label: &str, help: &[String]) -> String {
         let content = &self.source.content;
         let (p_start, p_end) = self.line_bounds(self.start);

@@ -3,11 +3,11 @@
 type A {
     pub x;
 
-    init(v) {
+    init(this, *v) {
         this.x = v;
     }
 
-    pub fn withParam(x)! {
+    pub fn withParam(this, x)! {
         return this.x + "/" + x;
     }
 }

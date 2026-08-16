@@ -1,0 +1,14 @@
+// A field narrowing is recorded against the local it was tested on, so a nested body that captures
+// that local does not inherit it. `t.x` is narrowed outside and still owes inside.
+type T {
+    pub x: opt;
+    init(this, *a: opt) { this.x = a; }
+    pub fn run(this) {
+        say t = this;
+        if (t.x == null) { return; }
+        type K {
+            pub fn runK(this) { print(t.x + 1); } // error: unchecked value owes 'opt'
+        }
+        K().runK();
+    }
+}

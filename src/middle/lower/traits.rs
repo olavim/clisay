@@ -1,19 +1,20 @@
 //! Trait composition.
 
+use indexmap::IndexSet;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{AstId, Expr, Literal, ReqFn, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
+use crate::ast::{AstId, Expr, FnDecl, Literal, ReqFn, ReqMember, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqParam, HirStmt, HirTypeDecl};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqMember, HirReqParam, HirStmt, HirTypeDecl, TypeId};
 
 use super::Lowerer;
 
 struct Composed {
-    fields: HashSet<Symbol>,
+    fields: IndexSet<Symbol>,
     field_inits: Vec<(Symbol, AstId<Expr>)>,
-    pub_members: HashSet<Symbol>,
+    pub_members: IndexSet<Symbol>,
     methods: Vec<HirId<HirStmt>>,
     /// The declaring trait of each entry in `methods` (parallel); `None` = host-declared.
     method_traits: Vec<Option<Symbol>>,
@@ -25,9 +26,9 @@ impl Composed {
     /// An empty accumulator. A standalone trait folds its own members into one of these.
     fn empty() -> Composed {
         Composed {
-            fields: HashSet::new(),
+            fields: IndexSet::new(),
             field_inits: Vec::new(),
-            pub_members: HashSet::new(),
+            pub_members: IndexSet::new(),
             methods: Vec::new(),
             method_traits: Vec::new(),
             trait_privates: HashMap::new(),
@@ -52,11 +53,11 @@ fn is_exposed(type_decl: &TypeDecl, name: &Symbol) -> bool {
 
 impl<'a> Lowerer<'a> {
     pub(super) fn lower_type(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, type_pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
-        // The flattened `with`-set, resolved by the `names` pre-pass.
         let traits = self.flattened_with(type_id);
         self.check_provide_require_exclusive(decl, type_pos)?;
         self.check_provide_once(type_id, decl, type_pos)?;
         self.check_gives_no_obligations(decl, type_pos)?;
+
         // Traits provided by delegation (`field gives Trait`): they satisfy `req T` and `is T`.
         let gives_traits: Vec<Symbol> = self.names.gives_traits(&type_id).iter().map(|(_, t, _)| *t).collect();
         self.check_requirements(decl, &traits, &gives_traits, type_pos)?;
@@ -76,19 +77,30 @@ impl<'a> Lowerer<'a> {
             composed.methods.push(lowered);
             composed.method_traits.push(None);
         }
+
         for (trait_sym, td) in &traits {
             self.fold_trait(*trait_sym, td, &host_methods, &mut composed)?;
         }
-        // `field gives Trait`: synthesize a forwarder per exposed trait method (host methods of the
-        // same name are overrides and keep their own definition).
+
+        // `field gives Trait`: synthesize a forwarder per exposed trait method.
         self.lower_gives(type_id, &host_methods, type_pos, &mut composed)?;
 
         let init = self.lower_factory(type_id, decl, &composed.field_inits, type_pos)?;
 
-        // The `req fn` holes this type must satisfy: its own and those of every `with` trait.
-        let mut req_fns: Vec<HirReqFn> = decl.req_fns.iter().map(|rf| self.lower_req_fn(rf, decl.name)).collect();
+        // The `req fn` and `req <member>` holes this type must satisfy.
+        let mut req_fns: Vec<HirReqFn> = Vec::new();
+        for rf in &decl.req_fns {
+            let lowered = self.lower_req_fn(rf, decl.name)?;
+            req_fns.push(lowered);
+        }
+        let mut req_members: Vec<HirReqMember> = decl.req_members.iter()
+            .map(|rm| self.lower_req_member(rm, decl.name)).collect();
         for (trait_sym, td) in &traits {
-            req_fns.extend(td.req_fns.iter().map(|rf| self.lower_req_fn(rf, *trait_sym)));
+            for rf in &td.req_fns {
+                let lowered = self.lower_req_fn(rf, *trait_sym)?;
+                req_fns.push(lowered);
+            }
+            req_members.extend(td.req_members.iter().map(|rm| self.lower_req_member(rm, *trait_sym)));
         }
 
         // Restore the previous composer context so sibling types in the same scope
@@ -96,65 +108,93 @@ impl<'a> Lowerer<'a> {
         self.provided_traits = prev_provided;
         self.emitted_aliases = prev_aliases;
 
-        // What `x is T` matches: the type's own name, every transitively `with`-mixed trait, and
-        // every trait it provides by `gives` delegation.
-        let provides = std::iter::once(decl.name)
-            .chain(self.names.flattened_with(&type_id).iter().map(|(sym, _)| *sym))
-            .chain(gives_traits.iter().copied())
-            .collect();
+        // Each entry names the declaration it came from, so an id is assigned here even for a trait
+        // this type mixes that has not been lowered yet.
+        let mixed: Vec<(Symbol, AstId<Stmt>)> = self.names.flattened_with(&type_id).to_vec();
+        let given: Vec<(Symbol, Symbol, AstId<Stmt>)> = self.names.gives_traits(&type_id).to_vec();
+        let own_id = self.type_id(type_id)?;
+        self.hir.declare_type(own_id, decl.name, false);
+
+        let mut provides = vec![(decl.name, own_id)];
+        for (sym, trait_decl) in mixed.into_iter().chain(given.iter().map(|(_, t, d)| (*t, *d))) {
+            let id = self.type_id(trait_decl)?;
+            provides.push((sym, id));
+        }
+        let mut gives: Vec<(Symbol, Symbol, TypeId)> = Vec::with_capacity(given.len());
+        for (field, trait_sym, decl) in given {
+            gives.push((field, trait_sym, self.type_id(decl)?));
+        }
 
         Ok(HirTypeDecl {
             name: decl.name,
+            id: own_id,
+            builtin: decl.builtin,
             init,
             fields: composed.fields,
             nullable_fields: decl.nullable_fields.clone(),
-            mut_fields: decl.mut_fields.clone(),
+            var_fields: decl.var_fields.clone(),
+            field_clauses: self.field_clauses(decl),
+            field_positions: decl.field_positions.iter().cloned().collect(),
             methods: composed.methods,
             req_fns,
+            req_members,
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
             inner_members: decl.inner_members.clone(),
             trait_privates: composed.trait_privates,
-            surface: HashSet::new(), // gating applies to standalone traits, not composed types
+            surface: IndexSet::new(), // gating applies to standalone traits, not composed types
             provides,
-            gives: self.names.gives_traits(&type_id).iter().map(|(f, t, _)| (*f, *t)).collect(),
+            gives,
         })
     }
 
-    /// Lowers a `trait` declaration into a standalone `HirTypeDecl` for self-containment validation.
-    /// The resolver validates the body against the trait's surface independently of any composing type.
+    /// Lowers a `trait` declaration into a standalone `HirTypeDecl`, so that it can be validated on its own.
     pub(super) fn lower_trait(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl, pos: &SourcePosition) -> Result<HirTypeDecl, anyhow::Error> {
         let surface = self.trait_surface(type_id, decl)?;
 
         let mut composed = Composed::empty();
         self.fold_trait(decl.name, decl, &HashSet::new(), &mut composed)?;
         let init = self.hir.add(HirStmt::Nop, pos.clone());
+        // A type mixing this trait may have minted its id already, and both must agree.
+        let id = self.type_id(type_id)?;
+        self.hir.declare_type(id, decl.name, true);
+
+        // A value matching this trait matches every trait it mixes.
+        let mut provides = vec![(decl.name, id)];
+        for (sym, mixed) in self.names.flattened_with(&type_id).to_vec() {
+            provides.push((sym, self.type_id(mixed)?));
+        }
 
         Ok(HirTypeDecl {
             name: decl.name,
+            id,
+            builtin: None,
             init,
             fields: composed.fields,
             nullable_fields: decl.nullable_fields.clone(),
-            mut_fields: decl.mut_fields.clone(),
+            var_fields: decl.var_fields.clone(),
+            field_clauses: self.field_clauses(decl),
+            field_positions: decl.field_positions.iter().cloned().collect(),
             methods: composed.methods,
-            req_fns: Vec::new(), // satisfaction is checked at composing types, not the trait itself
+            req_fns: Vec::new(),
+            req_members: decl.req_members.iter().map(|rm| self.lower_req_member(rm, decl.name)).collect(),
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
             inner_members: decl.inner_members.clone(),
             trait_privates: composed.trait_privates,
             surface,
             gives: Vec::new(),
-            provides: Vec::new(),
+            provides,
         })
     }
 
     /// The set of member names a trait's body may reach through `this`.
-    fn trait_surface(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl) -> Result<HashSet<Symbol>, anyhow::Error> {
-        let mut surface: HashSet<Symbol> = HashSet::new();
+    fn trait_surface(&mut self, type_id: AstId<Stmt>, decl: &TypeDecl) -> Result<IndexSet<Symbol>, anyhow::Error> {
+        let mut surface: IndexSet<Symbol> = IndexSet::new();
         for field in &decl.fields { surface.insert(*field); }
         for method in &decl.methods { surface.insert(self.ast_fn(method).name); }
         for rf in &decl.req_fns { surface.insert(rf.name); }
-        for name in &decl.req_members { surface.insert(*name); }
+        for rm in &decl.req_members { surface.insert(rm.name); }
 
         // Exposed members provided through `with` (transitively).
         for (_, type_decl) in &self.flattened_with(type_id) {
@@ -171,7 +211,7 @@ impl<'a> Lowerer<'a> {
         Ok(surface)
     }
 
-    fn add_exposed(&self, type_decl: &TypeDecl, surface: &mut HashSet<Symbol>) {
+    fn add_exposed(&self, type_decl: &TypeDecl, surface: &mut IndexSet<Symbol>) {
         for name in type_decl.pub_members.iter().chain(type_decl.inner_members.iter()) {
             surface.insert(*name);
         }
@@ -263,21 +303,27 @@ impl<'a> Lowerer<'a> {
 
     /// Synthesizes a forwarding method for each exposed method of every `gives` trait's surface.
     fn lower_gives(&mut self, type_id: AstId<Stmt>, host_methods: &HashSet<Symbol>, pos: &SourcePosition, composed: &mut Composed) -> Result<(), anyhow::Error> {
-        let mut forwarded: HashSet<Symbol> = HashSet::new();
+        let mut forwarded: HashMap<Symbol, (AstId<Stmt>, Symbol)> = HashMap::new();
         for (field, _, trait_id) in self.names.gives_traits(&type_id).to_vec() {
             let mut decls = self.flattened_with(trait_id);
             decls.push((self.ast_type(&trait_id).name, self.ast_type(&trait_id)));
-            for (_, type_decl) in decls {
+            for (provider, type_decl) in decls {
                 for method in &type_decl.methods {
                     let fd = self.ast_fn(method);
                     let name = fd.name;
                     if !is_exposed(type_decl, &name) { continue; }
                     if host_methods.contains(&name) { continue; }
-                    if !forwarded.insert(name) { continue; }
-                    let arity = fd.params.len();
-                    let ret = fd.ret;
+                    // Two delegations offering one name leave nothing to pick between them, the
+                    // same as two mixed traits do. Reaching one method twice is a diamond, not a
+                    // clash, so the method itself says which case this is.
+                    match forwarded.insert(name, (*method, provider)) {
+                        Some((seen, _)) if seen == *method => continue,
+                        Some((_, first)) => return Err(self.error_help_at(format!("Delegated method '{}' clashes between traits {}", self.hir.text(name), self.trait_list(&[first, provider])),
+                            pos, format!("declare '{}' in the host type to resolve it", self.hir.text(name)))),
+                        None => {},
+                    }
                     let is_pub = type_decl.pub_members.contains(&name);
-                    let forwarder = self.make_forwarder(field, name, arity, ret, pos);
+                    let forwarder = self.make_forwarder(field, fd, pos);
                     composed.methods.push(forwarder);
                     composed.method_traits.push(None);
                     if is_pub { composed.pub_members.insert(name); }
@@ -287,22 +333,27 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    /// Builds a forwarder `fn <method>($g0, …) { return this.<field>.<method>($g0, …); }`.
-    /// The forwarder carries the delegated method's return shape so it conforms to the trait.
-    fn make_forwarder(&mut self, field: Symbol, method: Symbol, arity: usize, ret: ReturnShape, pos: &SourcePosition) -> HirId<HirStmt> {
+    /// Builds a forwarder `fn <method>($g0, …) { return this.<field>.<method>($g0, …); }`. The
+    /// forwarder carries the delegated method's own slot clauses, so it is neither wider nor
+    /// narrower than the method it proxies.
+    fn make_forwarder(&mut self, field: Symbol, fd: &FnDecl, pos: &SourcePosition) -> HirId<HirStmt> {
+        let method = fd.name;
         let field_name = self.hir.text(field).to_string();
         let method_name = self.hir.text(method).to_string();
+        let (ret, clause) = self.return_clause(fd);
 
-        let mut params = Vec::with_capacity(arity);
-        let mut args = Vec::with_capacity(arity);
-        for i in 0..arity {
+        let mut params = Vec::with_capacity(fd.params.len());
+        let mut args = Vec::with_capacity(fd.params.len());
+        for (i, param) in fd.params.iter().enumerate() {
             let psym = self.hir.intern(&format!("$g{i}"));
+            let slot = self.slot_clause(param.nullable, &param.clause);
             params.push(HirParam {
                 name: self.hir.add(HirExpr::Identifier(psym), pos.clone()),
+                pattern: None,
                 pos: pos.clone(),
-                nullable: false,
-                mutable: false,
-                clause: HirSlotClause::default(),
+                nullable: slot.names.contains(&self.opt),
+                reassignable: param.reassignable,
+                clause: slot,
             });
             args.push(self.hir.add(HirExpr::Identifier(psym), pos.clone()));
         }
@@ -315,22 +366,33 @@ impl<'a> Lowerer<'a> {
         let call = self.hir.add(HirExpr::Call(method_access, args), pos.clone());
         let ret_stmt = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
         let body = self.hir.add(HirExpr::Block(vec![ret_stmt]), pos.clone());
-        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), params, body, ret, clause: HirSlotClause::default() }), pos.clone())
+        // The forwarder only reads `this.<field>`, so it needs no capability of its own.
+        let receiver = Some(HirSlotClause::default());
+        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), receiver, params, body, ret, clause }), pos.clone())
     }
 
-    /// Lowers a `req fn` hole to its per-slot clauses, folding each `?` marker into the clause the
-    /// same way a declared parameter or return does. The `[obl]` container flag rides along so the
-    /// variance check can keep container and bare shapes distinct.
-    fn lower_req_fn(&self, rf: &ReqFn, trait_name: Symbol) -> HirReqFn {
-        let params = rf.params.iter()
-            .map(|p| HirReqParam { pos: p.pos.clone(), clause: self.slot_clause(p.nullable, &p.clause) })
-            .collect();
+    fn lower_req_member(&self, rm: &ReqMember, trait_name: Symbol) -> HirReqMember {
+        HirReqMember {
+            name: rm.name,
+            trait_name,
+            pos: rm.pos.clone(),
+            reassignable: rm.reassignable,
+            clause: self.slot_clause(false, &rm.clause),
+        }
+    }
+
+    fn lower_req_fn(&mut self, rf: &ReqFn, trait_name: Symbol) -> Result<HirReqFn, anyhow::Error> {
+        let mut params = Vec::with_capacity(rf.params.len());
+        for p in &rf.params {
+            let clause = self.slot_clause(p.nullable, &p.clause);
+            params.push(HirReqParam { pos: p.pos.clone(), clause, pattern: self.entry_pattern(&p.pattern)? });
+        }
         let ret = self.slot_clause(rf.ret == ReturnShape::Nullable, &rf.clause);
-        HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), params, ret }
+        let receiver = rf.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause));
+        Ok(HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), receiver, params, ret })
     }
 
-    /// At an instantiable type, every `req T`, `req fn`, and `req <member>` of the flattened trait
-    /// set (and the type's own) must be satisfied.
+    /// At an instantiable type, every `req T`, `req fn`, and `req <member>` must be satisfied.
     fn check_requirements(&self, decl: &TypeDecl, traits: &[(Symbol, &'a TypeDecl)], gives: &[Symbol], pos: &SourcePosition) -> Result<(), anyhow::Error> {
         let provided: HashSet<Symbol> = traits.iter().map(|(s, _)| *s).chain(gives.iter().copied()).collect();
 
@@ -378,9 +440,10 @@ impl<'a> Lowerer<'a> {
         }
 
         // `req <member>`: every member hole must be filled by an exposed field/method of that name.
-        let req_members = decl.req_members.iter().copied()
-            .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_members.iter().copied()));
-        for member_sym in req_members {
+        let req_members = decl.req_members.iter()
+            .chain(traits.iter().flat_map(|(_, type_decl)| type_decl.req_members.iter()));
+        for member in req_members {
+            let member_sym = member.name;
             if !exposed_names.contains(&member_sym) {
                 return Err(self.error_at(format!("Unsatisfied `req {}`: needs an `inner`/`pub` member '{}'",
                     self.hir.text(member_sym), self.hir.text(member_sym)), pos));
@@ -455,10 +518,11 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
         let sig_pos = decl.sig_pos.clone();
+        let receiver = decl.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause));
         let params = self.params(&decl.params)?;
         let (ret, clause) = self.return_clause(decl);
         let body = self.expr(&decl.body)?;
-        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, sig_pos, params, body, ret, clause }), pos))
+        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, sig_pos, receiver, params, body, ret, clause }), pos))
     }
 
     pub(super) fn as_qualified_method_call(&self, callee: &AstId<Expr>) -> Option<(Symbol, String)> {

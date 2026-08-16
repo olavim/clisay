@@ -1,14 +1,14 @@
 type A {
-  pub fn boom()! { return 1 + true; }
+  pub fn boom(this)! { return 1 + true; }
 }
 say a = A();
 a.boom();
 // error(full):
 // error: Operator '+' cannot be applied to operands number and boolean
-//  --> frame_method.say:2:31
+//  --> frame_method.say:2:35
 //   |
 // 1 | type A {
-// 2 |   pub fn boom()! { return 1 + true; }
-//   |                               ^^^^
+// 2 |   pub fn boom(this)! { return 1 + true; }
+//   |                                   ^^^^
 // 	at A.boom (frame_method.say:2)
 // 	at script (frame_method.say:5)

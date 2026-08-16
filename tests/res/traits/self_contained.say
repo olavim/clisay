@@ -2,13 +2,13 @@
 // its `req fn` holes and `req` members. It may also freely use free functions / locals.
 fn helper(n)! { return n + 100; } // free function in scope
 
-trait Clock { pub fn tick()! { return 1; } }
+trait Clock { pub fn tick(this)! { return 1; } }
 
 trait Mover req Clock {
     req count; // required state (held by the composing type)
     req speed;
-    req fn onMove(d)!;
-    pub fn step(dir)! {
+    req fn onMove(this, d)!;
+    pub fn step(this, dir)! {
         say local = dir;           // local: ok
         return this.tick()         // from `req Clock`
              + this.speed          // `req` member
@@ -19,8 +19,8 @@ trait Mover req Clock {
 type Player with Mover, Clock {
     pub count = 0;
     pub speed = 2;
-    inner fn onMove(d)! { return d; }
-    init() {}
+    inner fn onMove(this, d)! { return d; }
+    init(this) {}
 }
 say p = Player();
 print(p.step(5)); // 1 + 2 + 5 + (0+100) = 108

@@ -1,0 +1,14 @@
+// A helper that returns its argument hands the value to whatever binds the result. Both names read
+// it, and the one that bound the result is the one that writes it.
+fn identity(x)! { return x; }
+say a = mut [1, 2];
+say b = identity(a);
+b[0] = 2;
+print(b[0]); // expect: 2
+
+// @split
+// The source may not write it afterwards, since binding the result moved it.
+fn identity(x)! { return x; }
+say a = mut [1, 2];
+say b = identity(a);
+a[0] = 1; // error: cannot write `a`, which gave its write-ownership away

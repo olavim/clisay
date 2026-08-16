@@ -3,7 +3,8 @@
 mod init;
 mod traits;
 
-use std::collections::HashSet;
+use indexmap::IndexSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
@@ -11,7 +12,7 @@ use crate::frontend::lex::{Diagnostic, SourcePosition};
 
 use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirSlotClause, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, UnOp,
+    BinOp, Hir, HirSlotClause, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, ObligationWitness, TypeId, UnOp,
 };
 use crate::middle::names::NameBindings;
 
@@ -21,12 +22,15 @@ pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
     let mut hir = Hir::new(ident_ids, ident_texts);
     let opt = hir.intern("opt");
     hir.intern("fails");
+    hir.intern("Err");
+    hir.intern("this");
     let mut lowerer = Lowerer {
         ast: &ast,
         names,
         hir,
         opt,
         provided_traits: HashSet::new(),
+        type_ids: HashMap::new(),
         emitted_aliases: HashSet::new(),
         in_factory: None,
     };
@@ -42,12 +46,15 @@ struct Lowerer<'a> {
     opt: Symbol,
     /// The traits the composer currently being lowered provides (its flattened `with`-set).
     provided_traits: HashSet<Symbol>,
+    /// Each type or trait declaration's identity. Keyed by the AST node, so a type can name what it
+    /// mixes before that trait is lowered.
+    type_ids: HashMap<AstId<Stmt>, TypeId>,
     /// Qualified-call alias method names (`"<Trait>.<method>"`) emitted for the current composer.
     emitted_aliases: HashSet<String>,
     /// While lowering a factory body or its field defaults, the enclosing type's field names and the
     /// factory's param names. Inside a factory `this` is not a value, and each `this.<field>` or bare
     /// field name (not shadowed by a param) is the field's synthetic local.
-    in_factory: Option<(HashSet<Symbol>, HashSet<Symbol>)>,
+    in_factory: Option<(IndexSet<Symbol>, IndexSet<Symbol>)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -62,6 +69,29 @@ impl<'a> Lowerer<'a> {
     /// An error carrying a `help:` note on how to fix it.
     fn error_help_at(&self, msg: impl Into<String>, pos: &SourcePosition, help: impl Into<String>) -> anyhow::Error {
         anyhow!("{}", Diagnostic::new(msg, pos.clone()).with_help(help))
+    }
+
+    /// The name a binder node carries. A rest element holds one so its name has a position.
+    fn binder_name(&self, binder: &AstId<Matcher>) -> Symbol {
+        match self.ast.get(binder) {
+            Matcher::Binder(name) => *name,
+            _ => unreachable!("a rest element holds a binder"),
+        }
+    }
+
+    /// A declaration's identity. Whichever site asks first assigns it, so a type mixing a trait
+    /// declared later still names the same id that trait gets when it gets lowered.
+    fn type_id(&mut self, decl: AstId<Stmt>) -> Result<TypeId, anyhow::Error> {
+        if let Some(id) = self.type_ids.get(&decl) {
+            return Ok(*id);
+        }
+        // `TypeId::MAX` marks a type the VM builds for itself, so it is not handed out.
+        let next = TypeId::try_from(self.type_ids.len()).ok().filter(|id| *id < TypeId::MAX);
+        let Some(next) = next else {
+            return Err(self.error(format!("a program may declare at most {} types and traits", TypeId::MAX as usize), &decl));
+        };
+        self.type_ids.insert(decl, next);
+        Ok(next)
     }
 
     /// The `TypeDecl` of a `type`/`trait` declaration statement.
@@ -120,8 +150,16 @@ impl<'a> Lowerer<'a> {
                 HirStmt::Match(scrutinee, arms)
             },
             Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
-            Stmt::Obligation { name, witness, rule } => {
-                self.hir.declare_obligation(*name, *witness, *rule);
+            Stmt::Obligation { name, witness, rules } => {
+                let (name, witness, rules) = (*name, *witness, *rules);
+                let witness = match witness {
+                    Some(witness) => {
+                        let decl = self.names.witness_decl(name).expect("a witness names a declared type or trait");
+                        Some(ObligationWitness { name: witness, id: self.type_id(decl)? })
+                    },
+                    None => None,
+                };
+                self.hir.declare_obligation(name, witness, rules);
                 HirStmt::Nop
             },
             Stmt::Fn(decl) => HirStmt::Fn(self.fn_decl(decl)?),
@@ -202,19 +240,24 @@ impl<'a> Lowerer<'a> {
                     HirExpr::Identifier(*name)
                 }
             },
-            Expr::Is(target, name) => HirExpr::Is(self.expr(target)?, *name),
+            // `x is T` is `x ~ T`: the same nominal test, and the same code.
+            Expr::Is(target, name) => {
+                let target = self.expr(target)?;
+                let matcher = HirMatcher::Type { nominal: true, name: *name, shape: None };
+                HirExpr::Match(target, self.hir.add(matcher, pos.clone()))
+            },
             Expr::Construct(callee, fields) => {
-                // The callee is a bare type name `C` or a call `C(args)`. Split off the args; the
-                // remaining type expression is evaluated to the type value at runtime.
-                let (callee, args) = match self.ast.get(callee) {
-                    Expr::Call(c, a) => (self.expr(c)?, self.exprs(a)?),
-                    _ => (self.expr(callee)?, Vec::new()),
+                // The callee is a bare type name `C` or an empty call `C()`. The parser rejects
+                // arguments beside a brace, so only the type expression is left to evaluate.
+                let callee = match self.ast.get(callee) {
+                    Expr::Call(c, _) => self.expr(c)?,
+                    _ => self.expr(callee)?,
                 };
                 let mut brace = Vec::with_capacity(fields.len());
                 for (name, value) in fields {
                     brace.push((*name, self.expr(value)?));
                 }
-                HirExpr::Construct(callee, args, brace)
+                HirExpr::Construct(callee, brace)
             },
             Expr::Mut(inner) => return self.lower_value_mut(expr_id, inner),
             Expr::This => {
@@ -234,11 +277,12 @@ impl<'a> Lowerer<'a> {
             Expr::Has(left, matcher) => {
                 let left = self.expr(left)?;
                 self.validate_has_operand(matcher)?;
-                HirExpr::Has(left, Box::new(self.lower_matcher(matcher)?))
+                // `x has M` is equivalent to `x ~ has M`.
+                HirExpr::Match(left, self.lower_matcher(matcher)?)
             },
             Expr::Match(scrutinee, matcher) => {
                 let scrutinee = self.expr(scrutinee)?;
-                HirExpr::Match(scrutinee, Box::new(self.lower_matcher(matcher)?))
+                HirExpr::Match(scrutinee, self.lower_matcher(matcher)?)
             },
         };
         Ok(self.hir.add(kind, pos))
@@ -281,14 +325,10 @@ impl<'a> Lowerer<'a> {
     fn validate_has_operand(&self, id: &AstId<Matcher>) -> Result<(), anyhow::Error> {
         match self.ast.get(id) {
             Matcher::Wildcard | Matcher::Literal(_) => Ok(()),
-            Matcher::Binder(name) => {
-                let text = self.hir.text(*name);
-                if self.names.is_type_or_trait(*name) {
-                    Err(self.error(format!("`has` does not bind; `{text}` would bind it. Write `is {text}` or `has {text}` to test the type"), id))
-                } else {
-                    Err(self.error(format!("`has` does not bind; `{text}` would bind it. Use a literal or `_` to test the value, or `match` to bind"), id))
-                }
-            },
+            Matcher::Binder(_) => Err(self.error_help_at(
+                "unexpected binder in a `has` test",
+                self.ast.pos(id),
+                "`has` only tests. To test and bind, use the `~` match operator; to test without binding, use `_`")),
             Matcher::As(..) => Err(self.error("`has` binds nothing; an `@` as-binding is only for `match`", id)),
             Matcher::Type { name, shape, .. } => {
                 if !self.names.is_type_or_trait(*name) {
@@ -305,8 +345,10 @@ impl<'a> Lowerer<'a> {
                     if let Matcher::Binder(b) = self.ast.get(&field.value) {
                         if let MatchScalar::String(s) = &field.key {
                             if s == self.hir.text(*b) {
-                                return Err(self.error(format!(
-                                    "`has` does not bind; `{{ {s} }}` would bind {s}. For key presence write `{{ {s}: _ }}`"), &field.value));
+                                return Err(self.error_help_at(
+                                    "unexpected binder in a `has` test",
+                                    self.ast.pos(&field.value),
+                                    format!("for key presence write `{{ {s}: _ }}`")));
                             }
                         }
                     }
@@ -338,42 +380,45 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    fn lower_matcher(&mut self, id: &AstId<Matcher>) -> Result<HirMatcher, anyhow::Error> {
-        Ok(match self.ast.get(id) {
+    fn lower_matcher(&mut self, id: &AstId<Matcher>) -> Result<HirId<HirMatcher>, anyhow::Error> {
+        let kind = match self.ast.get(id) {
             Matcher::Wildcard => HirMatcher::Wildcard,
             Matcher::Literal(scalar) => HirMatcher::Literal(match_scalar(scalar)),
             Matcher::Binder(name) => HirMatcher::Binder(*name),
             Matcher::Type { nominal, name, shape } => {
                 let shape = match shape {
-                    Some(shape) => Some(Box::new(self.lower_matcher(shape)?)),
+                    Some(shape) => Some(self.lower_matcher(shape)?),
                     None => None,
                 };
                 HirMatcher::Type { nominal: *nominal, name: *name, shape }
             },
             Matcher::Shape(fields) => {
+                let fields: Vec<_> = fields.iter().map(|f| (match_scalar(&f.key), f.value)).collect();
                 let mut lowered = Vec::with_capacity(fields.len());
-                for field in fields {
-                    lowered.push(HirMatchField { key: match_scalar(&field.key), value: self.lower_matcher(&field.value)? });
+                for (key, value) in fields {
+                    lowered.push(HirMatchField { key, value: self.lower_matcher(&value)? });
                 }
                 HirMatcher::Shape(lowered)
             },
             Matcher::Array(elements) => {
+                let elements: Vec<_> = elements.to_vec();
                 let mut lowered = Vec::with_capacity(elements.len());
-                for element in elements {
+                for element in &elements {
                     lowered.push(match element {
                         MatchElem::Elem(matcher) => HirMatchElem::Elem(self.lower_matcher(matcher)?),
-                        MatchElem::Rest(name) => HirMatchElem::Rest(*name),
+                        MatchElem::Rest(binder) => HirMatchElem::Rest(binder.map(|b| self.binder_name(&b))),
                     });
                 }
                 HirMatcher::Array(lowered)
             },
-            Matcher::As(name, inner) => HirMatcher::As(*name, Box::new(self.lower_matcher(inner)?)),
-            Matcher::Or(alternatives) => HirMatcher::Or(self.lower_matchers(alternatives)?),
-            Matcher::And(parts) => HirMatcher::And(self.lower_matchers(parts)?),
-        })
+            Matcher::As(name, inner) => HirMatcher::As(*name, self.lower_matcher(inner)?),
+            Matcher::Or(alternatives) => HirMatcher::Or(self.lower_matchers(&alternatives.clone())?),
+            Matcher::And(parts) => HirMatcher::And(self.lower_matchers(&parts.clone())?),
+        };
+        Ok(self.hir.add(kind, self.ast.pos(id).clone()))
     }
 
-    fn lower_matchers(&mut self, ids: &[AstId<Matcher>]) -> Result<Vec<HirMatcher>, anyhow::Error> {
+    fn lower_matchers(&mut self, ids: &[AstId<Matcher>]) -> Result<Vec<HirId<HirMatcher>>, anyhow::Error> {
         ids.iter().map(|id| self.lower_matcher(id)).collect()
     }
 
@@ -393,6 +438,13 @@ impl<'a> Lowerer<'a> {
             },
             Literal::Lambda(decl) => HirLiteral::Lambda(self.fn_decl(decl)?),
         })
+    }
+
+    /// Each field's lowered `:` clause. A field with no clause carries nothing.
+    pub(super) fn field_clauses(&self, decl: &TypeDecl) -> HashMap<Symbol, HirSlotClause> {
+        decl.field_clauses.iter()
+            .map(|(field, clause)| (*field, self.slot_clause(decl.nullable_fields.contains(field), clause)))
+            .collect()
     }
 
     fn slot_clause(&self, marker_nullable: bool, clause: &SlotClause) -> HirSlotClause {
@@ -425,16 +477,36 @@ impl<'a> Lowerer<'a> {
 
     /// Lowers a parameter list, desugaring each param's `?` marker and `:` clause into one clause.
     pub(super) fn params(&mut self, params: &[Param]) -> Result<Vec<HirParam>, anyhow::Error> {
-        params.iter().map(|p| {
+        params.iter().enumerate().map(|(i, p)| {
             let clause = self.slot_clause(p.nullable, &p.clause);
+            let (sym, pattern) = self.param_slot(p, i)?;
             Ok(HirParam {
-                name: self.expr(&p.name)?,
+                name: self.hir.add(HirExpr::Identifier(sym), p.pos.clone()),
+                pattern,
                 pos: p.pos.clone(),
                 nullable: clause.names.contains(&self.opt),
-                mutable: p.mutable,
+                reassignable: p.reassignable,
                 clause,
             })
         }).collect()
+    }
+
+    /// A parameter's slot name and the pattern its entry step matches, decided together.
+    fn param_slot(&mut self, param: &Param, index: usize) -> Result<(Symbol, Option<HirId<HirMatcher>>), anyhow::Error> {
+        let name = match param.binder(self.ast) {
+            Some(name) => name,
+            None => self.hir.intern(&format!("{}{index}", crate::middle::hir::SYNTHETIC_PARAM)),
+        };
+        Ok((name, self.entry_pattern(&param.pattern)?))
+    }
+
+    /// The part of a parameter's pattern an entry step still has to match.
+    pub(super) fn entry_pattern(&mut self, pattern: &AstId<Matcher>) -> Result<Option<HirId<HirMatcher>>, anyhow::Error> {
+        match self.ast.get(pattern) {
+            Matcher::Binder(_) | Matcher::Wildcard => Ok(None),
+            Matcher::As(_, inner) => Ok(Some(self.lower_matcher(&(*inner))?)),
+            _ => Ok(Some(self.lower_matcher(pattern)?)),
+        }
     }
 
     fn fn_decl(&mut self, decl: &FnDecl) -> Result<HirFnDecl, anyhow::Error> {
@@ -442,6 +514,7 @@ impl<'a> Lowerer<'a> {
         Ok(HirFnDecl {
             name: decl.name,
             sig_pos: decl.sig_pos.clone(),
+            receiver: decl.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause)),
             params: self.params(&decl.params)?,
             body: self.expr(&decl.body)?,
             ret,
@@ -462,7 +535,7 @@ impl<'a> Lowerer<'a> {
             name: field.name,
             value: self.opt_expr(&field.value)?,
             nullable: clause.names.contains(&self.opt),
-            mutable: field.mutable,
+            reassignable: field.reassignable,
             clause,
         })
     }
@@ -472,7 +545,7 @@ impl<'a> Lowerer<'a> {
             Some(param) => Some(self.expr(param)?),
             None => None,
         };
-        Ok(HirCatchClause { param, mutable: catch.mutable, body: self.expr(&catch.body)? })
+        Ok(HirCatchClause { param, body: self.expr(&catch.body)? })
     }
 }
 

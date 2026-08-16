@@ -1,0 +1,46 @@
+// The right operand of a short-circuit runs on one outcome of the left only, so the condition
+// resolves an obligation when both outcomes do.
+fn f(): fails { return Err("e"); }
+say x: fails = f(); // error: 'x' owes 'fails' and is never discharged
+say ok = true;
+if (ok || (x ?? 0) == 0) { print("a"); }
+
+// @split
+// A left that cannot skip the right leaves one path, so the right answers for the condition.
+fn f(): fails { return Err("e"); }
+say x: fails = f();
+if (true && !(x ~ Err)) { print("in"); }
+print("end"); // expect: end
+
+// @split
+// The same, either operand position.
+fn f(): fails { return Err("e"); }
+say x: fails = f();
+if (false || !(x ~ Err)) { print("in"); }
+print("end"); // expect: end
+
+// @split
+// Each outcome may answer differently: the left proves it clean, the right asks.
+fn f(): fails { return Err("e"); }
+say x: fails = f();
+if (x == 5 || !(x ~ Err)) { say y = x; print("clean"); }
+print("end"); // expect: end
+
+// @split
+// A match merges its outcomes the same way, whichever order the arms are written.
+fn fail(): fails { return Err("boom"); }
+fn f(k) { say x: fails = fail(); match (k) { 1 => { if (x != 5) { return; } }, _ => { x ?? 0; }, } print("end"); }
+f(2); // expect: end
+
+// @split
+fn fail(): fails { return Err("boom"); }
+fn f(k) { say x: fails = fail(); match (k) { _ => { x ?? 0; }, 1 => { if (x != 5) { return; } }, } print("end"); }
+f(2); // expect: end
+
+// @split
+// An or-matcher answers when every alternative does, so the order it is written in does not matter.
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+type W2 with Wt { }
+fn f() { say b: warned = W2 { }; if (b ~ null | W2) { print("or"); } }
+f(); // expect: or

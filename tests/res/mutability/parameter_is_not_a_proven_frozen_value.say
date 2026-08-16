@@ -1,0 +1,62 @@
+// A parameter without `mut` may hold a mutable the caller lent, which no signature records. So its
+// value is not proven frozen, whatever the binding permits, and a construction sealing over it asks
+// the runtime. Without that, passing a value through a parameter launders it past the check.
+type T { pub x; }
+fn touch(v) { say t = T { x: v }; print("made"); } // error: cannot store a mutable value in an immutable container
+say a = mut [mut [0]];
+touch(a[0]);
+
+// @split
+// The same through a lambda, which has no call-site argument check at all.
+type T { pub x; }
+say a = mut [mut [0]];
+say f = v => T { x: v }; // error: cannot store a mutable value in an immutable container
+say t = f(a[0]);
+
+// @split
+// The same into a container literal rather than a construction.
+type T { pub x; }
+fn touch(v) { say t = [v]; print("made"); } // error: cannot store a mutable value in an immutable container
+say a = mut [mut [0]];
+touch(a[0]);
+
+// @split
+// The direct form, which was refused all along, and by the same runtime check.
+type T { pub x; }
+say a = mut [mut [0]];
+say t = T { x: a[0] }; // error: cannot store a mutable value in an immutable container
+
+// @split
+// The property travels with the value, so copying the parameter into a local first does not shed it.
+type T { pub x; }
+fn touch(v) { say w = v; say t = T { x: w }; print("made"); } // error: cannot store a mutable value in an immutable container
+say a = mut [mut [0]];
+touch(a[0]);
+
+// @split
+type T { pub x; }
+fn touch(v) { say w = v; say u = w; say t = T { x: u }; print("made"); } // error: cannot store a mutable value in an immutable container
+say a = mut [mut [0]];
+touch(a[0]);
+
+// @split
+type T { pub x; }
+fn touch(v) { say var w = 0; w = v; say t = T { x: w }; print("made"); } // error: cannot store a mutable value in an immutable container
+say a = mut [mut [0]];
+touch(a[0]);
+
+// @split
+// An immutable value really reaching the parameter is fine, which is the case the check must let
+// through rather than refusing every parameter.
+type T { pub x; }
+fn touch(*v)! { return T { x: v }; }
+say a = [[0]];
+print(touch(a[0]).x[0]); // expect: 0
+
+// @split
+// A parameter the body never seals over is untouched by any of this.
+fn peek(v) { print("seen"); }
+say a = mut [mut [0]];
+peek(a[0]); // expect: seen
+a[0][0] = 1;
+print(a[0][0]); // expect: 1

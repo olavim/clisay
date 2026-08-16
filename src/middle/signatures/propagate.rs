@@ -4,9 +4,11 @@
 use std::collections::HashSet;
 
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol};
+use crate::middle::obligations::Obligations;
 
 use super::Collector;
-use super::walk::Child;
+use crate::middle::walk::Child;
+use crate::middle::walk;
 
 impl<'a> Collector<'a> {
     /// Adds each `?!` operand's obligations to the enclosing function's return set.
@@ -41,17 +43,17 @@ impl<'a> Collector<'a> {
 
     /// The obligations a `?!` operand carries. This mirrors the check pass's `chain_result`, so a
     /// chain does not launder an object witness out of the propagated set.
-    fn operand_obligations(&self, operand: &HirId<HirExpr>, decl: &HirFnDecl) -> HashSet<Symbol> {
+    fn operand_obligations(&self, operand: &HirId<HirExpr>, decl: &HirFnDecl) -> Obligations {
         match self.hir.get(operand) {
             HirExpr::Call(callee, _) => {
                 if self.is_err_call(operand) {
-                    return HashSet::from([self.fails]);
+                    return Obligations::from([self.fails]);
                 }
                 match self.hir.get(callee) {
                     HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
                         .map(|s| self.sigs.fns[s].ret.obligations.clone())
                         .unwrap_or_default(),
-                    _ => HashSet::new(),
+                    _ => Obligations::new(),
                 }
             },
             // A `?` chain carries its operand's obligations from the guarded access.
@@ -60,39 +62,28 @@ impl<'a> Collector<'a> {
                 set.insert(self.opt);
                 set
             },
-            HirExpr::Literal(HirLiteral::Null) => HashSet::from([self.opt]),
+            HirExpr::Literal(HirLiteral::Null) => Obligations::from([self.opt]),
             HirExpr::Identifier(name) => self.param_obligations(*name, decl),
-            _ => HashSet::new(),
+            _ => Obligations::new(),
         }
     }
 
     /// The declared obligation set of `name` when it is a parameter of `decl`.
-    fn param_obligations(&self, name: Symbol, decl: &HirFnDecl) -> HashSet<Symbol> {
+    fn param_obligations(&self, name: Symbol, decl: &HirFnDecl) -> Obligations {
         for p in &decl.params {
             if matches!(self.hir.get(&p.name), HirExpr::Identifier(pname) if *pname == name) {
                 return p.clause.names.iter().copied().collect();
             }
         }
-        HashSet::new()
+        Obligations::new()
     }
 
     /// Collects each `?!` operand in a body, skipping nested function and lambda bodies.
     fn collect_propagates(&self, expr: &HirId<HirExpr>, out: &mut Vec<HirId<HirExpr>>) {
-        if let HirExpr::Propagate(operand) = self.hir.get(expr) { out.push(*operand); }
-        for child in self.children_of_expr(expr) {
-            match child {
-                Child::Expr(e) => self.collect_propagates(&e, out),
-                Child::Stmt(s) => self.collect_propagates_stmt(&s, out),
+        walk::visit_body(self.hir, expr, &mut |node| {
+            if let Child::Expr(e) = node {
+                if let HirExpr::Propagate(operand) = self.hir.get(&e) { out.push(*operand); }
             }
-        }
-    }
-
-    fn collect_propagates_stmt(&self, stmt: &HirId<HirStmt>, out: &mut Vec<HirId<HirExpr>>) {
-        for child in self.children_of_stmt(stmt) {
-            match child {
-                Child::Expr(e) => self.collect_propagates(&e, out),
-                Child::Stmt(s) => self.collect_propagates_stmt(&s, out),
-            }
-        }
+        });
     }
 }

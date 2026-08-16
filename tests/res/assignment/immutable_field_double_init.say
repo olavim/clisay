@@ -1,7 +1,7 @@
 // A factory may assign a field more than once; the last write wins.
 type T {
     pub value;
-    init() {
+    init(this) {
         this.value = 1;
         this.value = 2;
     }

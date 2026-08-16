@@ -1,14 +1,19 @@
-// Traits are lexically scoped like type/fn/say: a trait declared in a function is
-// visible only there, and shadows a same-named trait in an outer scope.
-trait Tagged { pub fn tag()! { return "TOP"; } }
-
+// Traits are lexically scoped like type/fn/say: a trait declared in a function is visible only
+// there, so two functions may each declare their own.
 fn makeInner()! {
-    trait Tagged { pub fn tag()! { return "INNER"; } } // shadows the top-level Tagged
-    type Widget with Tagged { init() {} }
+    trait Tagged { pub fn tag(this)! { return "INNER"; } }
+    type Widget with Tagged { init(this) {} }
     return Widget();
 }
-
-type OuterThing with Tagged { init() {} }
-
+fn makeOuter()! {
+    trait Tagged { pub fn tag(this)! { return "OUTER"; } }
+    type Thing with Tagged { init(this) {} }
+    return Thing();
+}
 print(makeInner().tag()); // expect: INNER
-print(OuterThing().tag()); // expect: TOP
+print(makeOuter().tag()); // expect: OUTER
+
+// @split
+// A trait declared in a function cannot be named outside it.
+fn makeInner()! { trait Tagged { pub fn tag(this)! { return "INNER"; } } type Widget with Tagged { init(this) {} } return Widget(); }
+type Thing with Tagged { init(this) {} } // error: Trait 'Tagged' is not declared

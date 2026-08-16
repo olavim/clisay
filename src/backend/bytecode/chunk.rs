@@ -1,7 +1,13 @@
 use std::mem;
 
+use fnv::{FnvHashMap, FnvHashSet};
+
 use crate::frontend::lex::SourcePosition;
+use crate::middle::ir::SourceRole;
 use crate::core::gc::{Gc, GcTraceable};
+use crate::ast::BuiltinType;
+use crate::core::objects::TypeId;
+use crate::core::objects::BuiltinLayout;
 use crate::core::value::Value;
 
 use super::opcode::{self, OpCode, Operand};
@@ -10,20 +16,46 @@ use super::opcode::{self, OpCode, Operand};
 
 #[derive(Clone)]
 pub struct BytecodeChunk {
+    /// Each registered object witness declaration and its id, for the types the VM builds itself.
+    pub witness_ids: Vec<(TypeId, u16)>,
+    /// Each built-in's member layout, by [`BuiltinType::index`].
+    pub builtin_layouts: [Option<BuiltinLayout>; BuiltinType::COUNT],
+    /// The witness ids each barrier allows, by pool index.
+    pub witness_allows: Vec<Box<[u16]>>,
+    /// The obligation each survive barrier's guarded positions owe, by pool index. A position
+    /// guarded because it is borrowed has no entry.
+    pub owed_names: Vec<Box<[(u8, Box<str>)]>>,
     pub code: Vec<OpCode>,
     pub constants: Vec<Value>,
-    pub witness_names: Vec<Value>,
-    pub code_pos: Vec<SourcePosition>
+    /// One source position per code byte, not per instruction. Every byte of an instruction usually
+    /// carries the same span, but an operand byte may carry a narrower one, which is how a read
+    /// part-way through an instruction resolves to the operand it just consumed.
+    pub code_pos: Vec<SourcePosition>,
+    /// Byte offsets of the checks forcing put back. Empty unless forcing is on, which is what keeps
+    /// an ordinary run from paying for the lookup.
+    pub elisions: FnvHashSet<usize>,
+    /// Extra source positions, keyed by byte offset and role.
+    pub source_map: FnvHashMap<(usize, SourceRole), SourcePosition>,
 }
 
 impl BytecodeChunk {
     pub fn new() -> BytecodeChunk {
         BytecodeChunk {
+            elisions: FnvHashSet::default(),
+            witness_ids: Vec::new(),
+            builtin_layouts: std::array::from_fn(|_| None),
+            witness_allows: Vec::new(),
+            owed_names: Vec::new(),
             code: Vec::new(),
             constants: Vec::new(),
-            witness_names: Vec::new(),
-            code_pos: Vec::new()
+            code_pos: Vec::new(),
+            source_map: FnvHashMap::default(),
         }
+    }
+
+    /// An extra position recorded for the instruction `offset` falls inside.
+    pub fn source_at(&self, offset: usize, role: SourceRole) -> Option<&SourcePosition> {
+        self.source_map.get(&(offset, role))
     }
 
     pub fn write(&mut self, op: OpCode, pos: &SourcePosition) {
@@ -58,6 +90,8 @@ impl GcTraceable for BytecodeChunk {
                     Operand::Local => format!("L{}", byte!()),
                     Operand::Const => self.constants[byte!() as usize].fmt(),
                     Operand::Jump => format!("<{}>", short!()),
+                    Operand::Pool => format!("#{}", short!()),
+                    Operand::TypeId => format!("<type {}>", short!()),
                     // A count followed by that many raw bytes.
                     Operand::List => {
                         let count = byte!();
@@ -81,16 +115,13 @@ impl GcTraceable for BytecodeChunk {
         for constant in &self.constants {
             constant.mark(gc);
         }
-        for name in &self.witness_names {
-            name.mark(gc);
-        }
     }
 
     fn size(&self) -> usize {
         mem::size_of::<BytecodeChunk>()
             + self.code.capacity() * mem::size_of::<OpCode>()
             + self.constants.capacity() * mem::size_of::<Value>()
-            + self.witness_names.capacity() * mem::size_of::<Value>()
             + self.code_pos.capacity() * mem::size_of::<SourcePosition>()
+            + self.witness_ids.capacity() * mem::size_of::<(TypeId, u16)>()
     }
 }

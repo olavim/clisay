@@ -2,6 +2,7 @@
 
 mod operator;
 
+use indexmap::IndexSet;
 use core::fmt;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
@@ -11,7 +12,7 @@ pub use operator::Operator;
 use crate::frontend::lex::SourcePosition;
 
 /// An interned identifier.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Symbol(u32);
 
 impl Symbol {
@@ -109,9 +110,11 @@ pub struct MatchField {
 }
 
 /// An element of an array matcher. `Rest` is `..` or `..name`, at most one per array.
+#[derive(Clone, Copy)]
 pub enum MatchElem {
     Elem(AstId<Matcher>),
-    Rest(Option<Symbol>),
+    /// The name a `..name` binds, as a binder node so it carries its own position.
+    Rest(Option<AstId<Matcher>>),
 }
 
 pub enum Matcher {
@@ -135,27 +138,30 @@ pub enum Matcher {
     And(Vec<AstId<Matcher>>),
 }
 
-/// The value-mutability capability leading a slot clause.
+/// What a slot asks of its value, over two independent axes. `mut` demands one that may be written.
+/// `*` takes write-ownership rather than borrowing it for the call.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Capability {
-    /// An immutable value.
+    /// Borrows, and asks nothing of the value.
     #[default]
     None,
-    /// `mut`: a borrowed mutable value.
+    /// `mut`: borrows a value that may be written.
     Mut,
-    /// `*mut`: a moved mutable value.
+    /// `*`: takes write-ownership, and asks nothing of the value.
+    Move,
+    /// `*mut`: takes write-ownership of a value that may be written.
     MoveMut,
 }
 
 impl Capability {
-    /// Whether the marker grants mutability.
+    /// Whether the marker demands a value it may write.
     pub fn is_mut(self) -> bool {
         matches!(self, Capability::Mut | Capability::MoveMut)
     }
 
-    /// Whether the marker consumes its argument, as opposed to borrowing it.
-    pub fn is_move(self) -> bool {
-        matches!(self, Capability::MoveMut)
+    /// Whether the marker takes its argument, as opposed to borrowing it for the call.
+    pub fn is_retain(self) -> bool {
+        matches!(self, Capability::Move | Capability::MoveMut)
     }
 }
 
@@ -175,19 +181,39 @@ pub struct FieldInit {
     pub value: Option<AstId<Expr>>,
     /// Declared nullable with a `?` marker (`say x?`).
     pub nullable: bool,
-    /// Declared reassignable with a `mut` modifier (`say mut x`).
-    pub mutable: bool,
+    /// Declared reassignable with a `var` modifier (`say var x`).
+    pub reassignable: bool,
     /// The `:` slot clause
     pub clause: SlotClause,
 }
 
-/// A function/method/lambda parameter.
+/// A function/method/lambda parameter: one pattern over its positional slot, plus a slot clause.
+/// A lone binder is the ordinary parameter, `_` discards the slot, and any other pattern is a
+/// precondition on the argument.
 pub struct Param {
-    pub name: AstId<Expr>,
-    /// The `name[: clause]` span.
+    pub pattern: AstId<Matcher>,
+    /// The `pattern[: clause]` span.
     pub pos: SourcePosition,
     pub nullable: bool,
-    pub mutable: bool,
+    /// Reserved for a reassignable parameter. Never parsed today.
+    pub reassignable: bool,
+    pub clause: SlotClause,
+}
+
+impl Param {
+    /// The name the whole argument binds to, when the pattern is one. A test or `_` names nothing.
+    pub fn binder(&self, ast: &Ast) -> Option<Symbol> {
+        match ast.get(&self.pattern) {
+            Matcher::Binder(name) | Matcher::As(name, _) => Some(*name),
+            _ => None,
+        }
+    }
+}
+
+/// The `this` parameter of an instance method. It names no slot of its own, since the receiver
+/// already occupies slot 0, so it carries only its span and its `:` clause.
+pub struct Receiver {
+    pub pos: SourcePosition,
     pub clause: SlotClause,
 }
 
@@ -210,27 +236,38 @@ pub struct FnDecl {
     pub name: Symbol,
     /// The `name(params): clause` signature span.
     pub sig_pos: SourcePosition,
+    /// The declared `this`, present on an instance method and absent on a plain function.
+    pub receiver: Option<Receiver>,
     pub params: Vec<Param>,
     pub body: AstId<Expr>,
     pub ret: ReturnShape,
     pub clause: SlotClause,
 }
 
-/// A `req fn f(params): clause;` method hole.
+/// A `req fn f(this, params): clause;` method hole.
 pub struct ReqFn {
     pub name: Symbol,
     /// The `name(params): clause` span.
     pub pos: SourcePosition,
+    pub receiver: Option<Receiver>,
     pub params: Vec<Param>,
     pub ret: ReturnShape,
+    pub clause: SlotClause,
+}
+
+/// A `req "var"? name (":" clause)?;` member hole.
+pub struct ReqMember {
+    pub name: Symbol,
+    /// The `var name: clause` span.
+    pub pos: SourcePosition,
+    /// Required to be reassignable, with the `var` marker.
+    pub reassignable: bool,
     pub clause: SlotClause,
 }
 
 /// A `catch (param) { ... }` clause of a try statement.
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
-    /// Declared reassignable with a `mut` modifier (`catch (mut e)`).
-    pub mutable: bool,
     pub body: AstId<Expr>
 }
 
@@ -246,10 +283,26 @@ pub struct TraitRef {
     pub pos: SourcePosition,
 }
 
+/// A type whose runtime object the VM builds itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinType {
+    Err,
+}
+
+impl BuiltinType {
+    pub const COUNT: usize = std::mem::variant_count::<BuiltinType>();
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 pub struct TypeDecl {
     pub name: Symbol,
     /// `true` for a `trait` declaration, `false` for a `type`.
     pub is_trait: bool,
+    /// Which built-in this declares.
+    pub builtin: Option<BuiltinType>,
     /// Traits mixed in via `with T1, T2, ...`.
     pub with_traits: Vec<Symbol>,
     /// Source spans of every `with`/`req`/`gives` trait mention, for conflict diagnostics.
@@ -259,20 +312,22 @@ pub struct TypeDecl {
     /// Method holes declared via `req fn f(params)`.
     pub req_fns: Vec<ReqFn>,
     /// Member holes declared via `req name`.
-    pub req_members: Vec<Symbol>,
+    pub req_members: Vec<ReqMember>,
     /// Delegation fields declared via `field gives Trait`.
     pub gives: Vec<(Symbol, Symbol)>,
     pub init_name: Symbol,
     pub init: Option<AstId<Stmt>>,
-    pub fields: HashSet<Symbol>,
+    pub fields: IndexSet<Symbol>,
     pub nullable_fields: HashSet<Symbol>,
-    pub mut_fields: HashSet<Symbol>,
+    pub var_fields: HashSet<Symbol>,
     pub field_clauses: Vec<(Symbol, SlotClause)>,
+    /// Where each field is declared.
+    pub field_positions: Vec<(Symbol, SourcePosition)>,
     /// Field defaults (`field = value`), applied by the factory during lowering.
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,
-    pub pub_members: HashSet<Symbol>,
-    pub inner_members: HashSet<Symbol>,
+    pub pub_members: IndexSet<Symbol>,
+    pub inner_members: IndexSet<Symbol>,
 }
 
 pub struct MatchArm {
@@ -281,11 +336,30 @@ pub struct MatchArm {
     pub body: AstId<Expr>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ObligationRule {
-    ToUse,
-    NoPersist,
-    NoDrop,
+/// The rules an obligation declares.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ObligationRules {
+    /// The value cannot be read until the obligation is discharged.
+    pub to_use: bool,
+    /// The value may not be stored where it would outlive its binding: a field, a container, or a
+    /// closure. It may still be handed along a call chain.
+    pub no_persist: bool,
+    /// The value may not leave its frame by `return`, so its lifetime is the call.
+    pub no_return: bool,
+    /// The binding must be discharged before its scope ends.
+    pub before_drop: bool,
+    /// Reserved for typestate.
+    pub no_drop: bool,
+}
+
+/// The rules of the built-in obligations. They have no source declaration to read a rule set from,
+/// so theirs lives here.
+pub fn builtin_obligation_rules(name: &str) -> Option<ObligationRules> {
+    Some(match name {
+        "opt" => ObligationRules { to_use: true, ..Default::default() },
+        "fails" => ObligationRules { to_use: true, no_persist: true, before_drop: true, ..Default::default() },
+        _ => return None,
+    })
 }
 
 pub enum Stmt {
@@ -302,7 +376,7 @@ pub enum Stmt {
     Say(FieldInit),
     Fn(FnDecl),
     Type(Box<TypeDecl>),
-    Obligation { name: Symbol, witness: Option<Symbol>, rule: ObligationRule },
+    Obligation { name: Symbol, witness: Option<Symbol>, rules: ObligationRules },
     /// A match statement dispatching the scrutinee over arms.
     Match(AstId<Expr>, Vec<MatchArm>)
 }

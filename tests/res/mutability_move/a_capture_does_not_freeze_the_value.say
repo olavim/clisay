@@ -1,0 +1,40 @@
+// A closure taking over the writing costs the name its write permission.
+type T { pub x; }
+say sink = mut [];
+say t = T { x: sink }; // error: cannot store a mutable value in an immutable container
+
+// @split
+// Capturing it first used to launder it past that check.
+type T { pub x; }
+say sink = mut [];
+fn add(*v) { sink.push(v); }
+add(1);
+say t = T { x: sink }; // error: cannot store a mutable value in an immutable container
+
+// @split
+// An immutable container literal is the same question.
+say sink = mut [];
+fn add(*v) { sink.push(v); }
+add(1);
+say frozen = [sink]; // error: cannot store a mutable value in an immutable container
+
+// @split
+// The name still loses its writing, which is the half that must not be lost.
+say sink = mut [];
+fn add(*v) { sink.push(v); }
+add(1);
+sink.push(2); // error: cannot mutate a value whose write-ownership moved to function `add`
+
+// @split
+// And a mutating method on the same binding is refused for the same reason.
+type C { pub var n; init(this) { this.n = 0; } pub fn bump(mut this) { this.n = 1; } }
+say c = mut C();
+fn touch() { c.bump(); }
+touch();
+c.bump(); // error: cannot mutate a value whose write-ownership moved to function `touch`
+
+// @split
+// A value nobody captured is stored freely, since it was never anyone's second writer.
+say sink = mut [];
+say kept = [sink.length()];
+print(kept[0]); // expect: 0

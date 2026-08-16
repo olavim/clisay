@@ -1,0 +1,4 @@
+// A witness names one obligation, so a second claim on it is rejected.
+type Stale { }
+obligation first { witness Stale; discharge to use; }
+obligation second { witness Stale; no persist; } // error: Witness 'Stale' is already claimed by 'first'

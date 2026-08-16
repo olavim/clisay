@@ -1,0 +1,21 @@
+// A receiver no binding names is still a container. It is on the stack when the element is handed
+// to it, so the claim is keyed to its value rather than to a slot number it does not have.
+say sink = mut [];
+fn get()! { return sink; }
+say a = mut [mut [0]];
+get().push(a[0]);
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// A named receiver answers the same, by the slot it does have.
+say sink = mut [];
+say a = mut [mut [0]];
+sink.push(a[0]);
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container
+
+// @split
+// A value out of no container is nobody's element, so an unnamed receiver takes nothing.
+say sink = mut [];
+fn get()! { return sink; }
+get().push(mut [0]);
+print(sink.length()); // expect: 1

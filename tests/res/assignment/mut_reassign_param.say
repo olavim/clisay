@@ -1,5 +1,5 @@
 fn f(param) {
-    say mut param = param;
+    say var param = param;
     param = 1;
     print(param);
 }

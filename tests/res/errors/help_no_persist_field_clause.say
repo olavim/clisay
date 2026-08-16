@@ -1,0 +1,13 @@
+obligation borrowed { no persist; no return; }
+type Box {
+    r: borrowed;
+    init(this, v) { this.r = v; }
+}
+// error(full):
+// error: A field cannot owe 'borrowed'
+//  --> help_no_persist_field_clause.say:3:8
+//   |
+// 2 | type Box {
+// 3 |     r: borrowed;
+//   |        ^^^^^^^^
+//   = help: `borrowed` declares `no persist`, which prevents storing it in a field

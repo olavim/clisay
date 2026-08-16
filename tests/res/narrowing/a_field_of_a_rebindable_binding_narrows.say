@@ -1,0 +1,45 @@
+// A rebindable binding narrows its field like any other. Nothing between the proof and the use can
+// reach `b`, so refusing this outright refused an obvious program.
+type Box { pub value: opt; }
+fn run() {
+    say var b = Box { value: "v" };
+    if (b.value == null) { return; }
+    say y = b.value;
+    print(y); // expect: v
+}
+run();
+
+// @split
+// An immutable binding narrows, which is the control.
+type Box { pub value: opt; }
+fn run() {
+    say b = Box { value: "v" };
+    if (b.value == null) { return; }
+    say y = b.value;
+    print(y); // expect: v
+}
+run();
+
+// @split
+// A rebind in the same frame drops the narrowing where it happens.
+type Box { pub value: opt; }
+fn run() {
+    say var b = Box { value: "v" };
+    if (b.value == null) { return; }
+    b = Box { value: null };
+    say y = b.value; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+run();
+
+// @split
+// A rebind on one path of a branch drops it for the join.
+type Box { pub value: opt; }
+fn run(k) {
+    say var b = Box { value: "v" };
+    if (b.value == null) { return; }
+    if (k == 1) { b = Box { value: null }; }
+    say y = b.value; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+run(1);

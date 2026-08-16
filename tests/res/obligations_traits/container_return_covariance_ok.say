@@ -1,10 +1,10 @@
 // A `[obl]` container return is covariant in its element set: a satisfier may promise a subset.
 trait Source {
-    req fn read(): [opt fails];
+    req fn read(this): [opt fails];
 }
 type File with Source {
-    pub fn read(): [opt] { return [null]; }
-    init() {}
+    pub fn read(this): [opt] { return [null]; }
+    init(this) {}
 }
 say f = File();
 print("ok"); // expect: ok

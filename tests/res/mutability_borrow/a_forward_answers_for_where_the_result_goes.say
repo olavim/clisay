@@ -1,0 +1,38 @@
+// A callee that hands its argument straight back has not let it out of the forwarding body.
+obligation borrowed { no persist; no return; }
+fn hand(v)! { return v; }
+fn drops(v) { hand(v); }
+fn relay(x: borrowed, cb) { cb(x); }
+say m = mut [1];
+relay(m, drops);
+print("ran"); // expect: ran
+
+// @split
+// Storing the result is letting it out, and the value walk reads the call for what it hands back.
+obligation borrowed { no persist; no return; }
+say sink = mut [];
+fn hand(v)! { return v; }
+fn keeps(v) { sink.push(hand(v)); } // error: cannot retain a borrowed argument
+fn relay(x: borrowed, cb) { cb(x); }
+say m = mut [1];
+relay(m, keeps);
+
+// @split
+// So is returning it, which the caller is then refused for.
+obligation borrowed { no persist; no return; }
+fn hand(v)! { return v; }
+fn passes(v)! { return hand(v); }
+fn relay(x: borrowed, cb) { cb(x); } // error: cannot pass a value owing 'borrowed' to a callee that retains it
+say m = mut [1];
+relay(m, passes);
+
+// @split
+// A callee that keeps the argument past its own return lets it out whatever the caller does with
+// the result, so that edge still carries.
+obligation borrowed { no persist; no return; }
+say sink = mut [];
+fn stash(*v) { sink.push(v); }
+fn drops(v) { stash(v); } // error: cannot retain a borrowed argument
+fn relay(x: borrowed, cb) { cb(x); }
+say m = mut [1];
+relay(m, drops);

@@ -1,5 +1,21 @@
-// A parameter wrapped in a container literal and persisted escapes with the container.
-type Box { pub mut item; init() { this.item = 0; } pub fn keep(x) { this.item = [x]; } }
-say b = Box();
+// A parameter wrapped in a container literal and persisted escapes with the container. The callee
+// is what breaks the rule, since it stores a value it only borrowed.
+type Box { pub var item; init(this) { this.item = 0; } pub fn keep(mut this, x) { this.item = mut [x]; } } // error: cannot retain a borrowed argument
+say b = mut Box();
 say m = mut [1, 2];
-b.keep(m); // error: 'm' is mutable and this function keeps its argument; freeze or copy it, or take it by '*mut'
+b.keep(m);
+
+// @split
+// An immutable literal cannot hold a mutable value at all, so that rule answers before the borrow
+// has anywhere to escape to.
+type Box { pub var item; init(this) { this.item = 0; } pub fn keep(mut this, x) { this.item = [x]; } } // error: cannot retain a borrowed argument
+say b = mut Box();
+say m = mut [1, 2];
+b.keep(m);
+
+// @split
+// The literal stays inside the call, so it may hold the borrow.
+type Box { pub var item; init(this) { this.item = 0; } pub fn look(this, x) { say seen = mut [x]; print(seen[0][0]); } }
+say b = mut Box();
+say m = mut [1, 2];
+b.look(m); // expect: 1

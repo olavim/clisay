@@ -1,0 +1,3 @@
+// Declaring the obligation on the return does not make returning it legal.
+obligation borrowed { no persist; no return; }
+fn leak(x: borrowed): borrowed { return x; } // error: A return cannot owe 'borrowed'

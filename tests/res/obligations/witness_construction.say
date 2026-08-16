@@ -1,0 +1,45 @@
+// Constructing an obligation's witness puts the value in that obligation's bad state.
+type Wt { pub a; init(this) { this.a = 1; } }
+obligation warned { witness Wt; discharge to use; }
+
+say v = Wt(); // error: cannot assign a value owing 'warned' to 'v'
+
+// @split
+// A brace construction is the same construction.
+type Wt { pub a; }
+obligation warned { witness Wt; discharge to use; }
+
+say v = Wt { a: 1 }; // error: cannot assign a value owing 'warned' to 'v'
+
+// @split
+// A type mixing a witness trait carries it too, since an instance of it is in the bad state.
+trait Wt { }
+type Carrier with Wt { pub a; init(this) { this.a = 1; } }
+obligation warned { witness Wt; discharge to use; }
+
+say v = Carrier(); // error: cannot assign a value owing 'warned' to 'v'
+
+// @split
+// A slot declaring the obligation takes it, and the value still owes it downstream.
+type Wt { pub a; init(this) { this.a = 1; } }
+obligation warned { witness Wt; discharge to use; }
+
+say v: warned = Wt();
+say y = v; // error: cannot assign a value owing 'warned' to 'y'
+
+// @split
+// `discharge before drop` is not bypassed by constructing the witness directly.
+type Wt { pub a; init(this) { this.a = 1; } }
+obligation warned { witness Wt; discharge before drop; }
+
+say v: warned = Wt(); // error: 'v' owes 'warned' and is never discharged
+print("unreachable");
+
+// @split
+// A type that witnesses nothing constructs clean, so the ordinary case is unchanged.
+type Plain { pub a; init(this) { this.a = 1; } }
+type Wt { pub b; init(this) { this.b = 1; } }
+obligation warned { witness Wt; discharge to use; }
+
+say v = Plain();
+print(v.a); // expect: 1

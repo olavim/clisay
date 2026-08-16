@@ -1,0 +1,11 @@
+fn keep(mut bin, mut x) { bin.push(x); }
+// error(full):
+// error: cannot retain a borrowed argument
+//  --> error_persist_borrow_advice.say:1:36
+//   |
+// 1 | fn keep(mut bin, mut x) { bin.push(x); }
+//   |                  -----             ^ `x` is retained here
+//   |                  |
+//   |                  `x` is borrowed here
+//   |
+//   = help: declare it `*x` to retain it, or freeze or copy it before persisting

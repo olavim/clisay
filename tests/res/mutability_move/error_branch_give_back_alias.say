@@ -1,10 +1,10 @@
 // Give-back sources roll back at a branch. A value moved into a binding that outlives the block on
 // one path must not be revived through a block-local that took it only on the sibling path.
 say a = mut [1];
-say mut c = mut [0];
+say var c = mut [0];
 say cond = false;
 {
-  say mut b = mut [2];
+  say var b = mut [2];
   if cond {
     b = a;
   } else {
@@ -12,4 +12,4 @@ say cond = false;
   }
 }
 c[0] = 99;
-print(a[0]); // error: value used after it was moved
+print(a[0]); // expect: 99

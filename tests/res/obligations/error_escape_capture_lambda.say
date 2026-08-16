@@ -1,0 +1,6 @@
+// A closure outlives the frame it captures from, so capturing a borrow persists it.
+obligation borrowed { no persist; no return; }
+fn f(x: borrowed) {
+    say g = () => x; // error: cannot capture value owing 'borrowed'
+    g();
+}

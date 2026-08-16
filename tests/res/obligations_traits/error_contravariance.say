@@ -1,10 +1,10 @@
 // A `req fn` passing an `opt` needs a satisfier that accepts one; a clean param would get an unguarded null.
 trait Mover {
-    req fn onMove(x: opt);
+    req fn onMove(this, x: opt);
 }
 type Player with Mover {
-    pub fn onMove(x) { } // error: parameter rejects an obligation the trait passes
-    init() {}
+    pub fn onMove(this, x) { } // error: parameter rejects an obligation the trait passes
+    init(this) {}
 }
 say p = Player();
 print("unreachable");

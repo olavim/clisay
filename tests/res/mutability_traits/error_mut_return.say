@@ -1,9 +1,9 @@
 // A `: mut` hole cannot be satisfied by an immutable return.
 trait Source {
-    req fn read(): mut;
+    req fn read(this): mut;
 }
 type File with Source {
-    pub fn read() { return []; } // error: return is immutable but trait requires mutable
-    init() {}
+    pub fn read(this) { return []; } // error: return is immutable but trait requires mutable
+    init(this) {}
 }
 print("unreachable");

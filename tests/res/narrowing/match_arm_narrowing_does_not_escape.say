@@ -1,0 +1,14 @@
+// A `this` narrowing proved in one arm must not hold after the match, however the arms are ordered.
+type Box {
+    pub value: opt;
+    pub fn run(this, k): void {
+        match k {
+            1 => { if (this.value == null) { return; } },
+            _ => { print("other"); }
+        }
+        say y = this.value; // error: Cannot assign a nullable value to non-null binding 'y'
+        print(y.length());
+    }
+}
+say b = Box { value: null };
+b.run(2);

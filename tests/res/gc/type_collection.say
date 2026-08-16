@@ -8,14 +8,14 @@ say bytesStart = gcHeapSize();
     type Local {
         pub a;
         pub b;
-        init() {
+        init(this) {
             this.a = "a";
             this.b = "b";
         }
-        pub fn first()! {
+        pub fn first(this)! {
             return this.a;
         }
-        pub fn second()! {
+        pub fn second(this)! {
             return this.b;
         }
     }

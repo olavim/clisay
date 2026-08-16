@@ -1,0 +1,18 @@
+// Every discharge form settles the deadline, as does handing the debt to a slot that declares it.
+fn fail(): fails { return Err("boom"); }
+fn takes(y: fails) { y ?? 0; }
+fn relay(): fails { say r: fails = fail(); return r?!; }
+
+fn coalesce() { say r: fails = fail(); print(r ?? "a"); }   // expect: a
+fn assert_() { say r: fails = fail(); print(r ?? "b"); r!; }
+fn tested()  { say r: fails = fail(); if r ~ Err { print("c"); } }
+fn handed()  { say r: fails = fail(); takes(r); }
+fn returned(): fails { say r: fails = fail(); return r; }
+fn branched(c) { say r: fails = fail(); if c { r ?? 0; } else { r!; } }
+
+coalesce();
+tested(); // expect: c
+handed();
+branched(true);
+print(relay() ?? "d"); // expect: d
+print(returned() ?? "e"); // expect: e

@@ -1,0 +1,14 @@
+// A nominal destructure resolves its fields against the type, so a nullable field's binder owes
+// `opt`. A structural shape names no type, so its binders are unknown and owe nothing.
+type Box { pub item?; pub tag; init(this, *i?, *t) { this.item = i; this.tag = t; } }
+
+fn nominal(x @ Box { item, tag }) {
+    print(item ?? "none"); // expect: none
+    print(tag);            // expect: 5
+}
+nominal(Box(null, 5));
+
+fn structural(x @ { field: fb }) {
+    print(fb + 1); // expect: 5
+}
+structural({ field: 4 });

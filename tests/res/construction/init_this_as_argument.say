@@ -3,7 +3,7 @@ fn keep(t?) {
 }
 type T {
     pub x;
-    init() {
+    init(this) {
         this.x = 1;
         keep(this); // error: the partially-constructed 'this' is not a value in a factory
     }

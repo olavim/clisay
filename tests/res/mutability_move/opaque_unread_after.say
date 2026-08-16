@@ -1,0 +1,25 @@
+// A caller that never reads the argument again does not care what the callee did with it, so both
+// a borrowing and a consuming callee are accepted.
+type Box { pub var v; init(this) { this.v = 0; } }
+fn eats(*mut x) { }
+fn borrows(mut x) { x.v = 1; }
+
+say consume = eats;
+say lend = borrows;
+
+say a = mut Box();
+consume(a);
+
+say b = mut Box();
+lend(b);
+
+// Not reading it after a branch or a loop is the same as not reading it at all.
+say c = mut Box();
+if (1 > 0) { consume(c); }
+
+say d = mut Box();
+say var i = 0;
+while (i < 2) { i = i + 1; }
+consume(d);
+
+print("ok"); // expect: ok

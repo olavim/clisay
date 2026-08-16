@@ -1,0 +1,14 @@
+// Only a mutable argument has an owner to lose, so an immutable one is untouched by the rule.
+type Box { pub v; init(this, *n) { this.v = n; } }
+fn eats(*mut x) { }
+say consume = eats;
+say noop = (x) => 0;
+
+say a = Box(1);
+say r = noop(a);
+print(a.v);   // expect: 1
+
+say frozen = mut Box(2);
+freeze(frozen);
+say s = noop(frozen);
+print(frozen.v); // expect: 2

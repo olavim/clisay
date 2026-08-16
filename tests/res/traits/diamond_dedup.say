@@ -1,9 +1,9 @@
 // A behavior trait reached via two paths is folded once.
-trait Base { pub fn id()! { return 7; } }
-trait Left  with Base { pub fn l()! { return 1; } }
-trait Right with Base { pub fn r()! { return 2; } }
+trait Base { pub fn id(this)! { return 7; } }
+trait Left  with Base { pub fn l(this)! { return 1; } }
+trait Right with Base { pub fn r(this)! { return 2; } }
 
-type T with Left, Right { init() {} }
+type T with Left, Right { init(this) {} }
 
 say t = T();
 print(t.id()); // expect: 7

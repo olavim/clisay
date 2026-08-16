@@ -1,4 +1,4 @@
-fn fill(x: mut) { x["k"] = 1; }
+fn fill(mut x) { x["k"] = 1; }
 say m = mut {};
 freeze(m);
 fill(m);

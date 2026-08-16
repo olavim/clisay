@@ -1,0 +1,11 @@
+// An arm that resolves nothing keeps the obligation owed, however many arms follow it.
+fn f(): fails { return Err("e"); }
+fn run(k): void {
+    say x: fails = f(); // error: 'x' owes 'fails' and is never discharged
+    match k {
+        1 => { if (x ~ Err) { return; } },
+        2 => { print("two"); },
+        _ => { if (x ~ Err) { return; } }
+    }
+}
+run(2);

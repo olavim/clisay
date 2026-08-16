@@ -1,10 +1,10 @@
 //! Factory lowering.
 
-use std::collections::HashSet;
+use indexmap::IndexSet;
 
-use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl};
+use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl, SlotClause};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirParam, HirStmt, UnOp};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirStmt, UnOp};
 
 use super::Lowerer;
 
@@ -32,12 +32,17 @@ impl<'a> Lowerer<'a> {
 
         // A factory body and its field defaults name `this` only as `this.<field>`, and each field
         // access desugars to the field's local. A param shadows a same-named field's bare access.
-        let params_set: HashSet<Symbol> = match &decl.init {
-            Some(init_id) => self.ast_fn(init_id).params.iter()
-                .filter_map(|p| match self.ast.get(&p.name) { Expr::Identifier(s) => Some(*s), _ => None })
-                .collect(),
-            None => HashSet::new(),
-        };
+        // A destructuring param shadows under every name its pattern binds.
+        let mut params_set: IndexSet<Symbol> = IndexSet::new();
+        for param in &params {
+            let HirExpr::Identifier(slot) = self.hir.get(&param.name) else {
+                unreachable!("a parameter's slot is named by an identifier")
+            };
+            params_set.insert(*slot);
+            if let Some(pattern) = &param.pattern {
+                params_set.extend(self.hir.get(pattern).binders(&self.hir));
+            }
+        }
         let saved_in_factory = self.in_factory.replace((decl.fields.clone(), params_set));
 
         // A stable field order keeps the synthesized locals deterministic.
@@ -53,7 +58,8 @@ impl<'a> Lowerer<'a> {
                 None if nullable => Some(self.hir.add(HirExpr::Literal(HirLiteral::Null), type_pos.clone())),
                 None => None,
             };
-            body.push(self.field_local_decl(field, value, nullable, type_pos));
+            let clause = decl.field_clauses.iter().find(|(f, _)| *f == field).map(|(_, c)| c);
+            body.push(self.field_local_decl(field, value, nullable, clause, type_pos));
         }
 
         // The declared body, with each `this.<field>` now a field-local.
@@ -91,16 +97,17 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Declares a factory's field-local: `say mut $<field> [= value]`. A nullable field is `opt`, so
+    /// Declares a factory's field-local: `say var $<field> [= value]`. A nullable field is `opt`, so
     /// a null seed and later null writes are accepted.
-    fn field_local_decl(&mut self, field: Symbol, value: Option<HirId<HirExpr>>, nullable: bool, pos: &SourcePosition) -> HirId<HirStmt> {
+    fn field_local_decl(&mut self, field: Symbol, value: Option<HirId<HirExpr>>, nullable: bool, declared: Option<&SlotClause>, pos: &SourcePosition) -> HirId<HirStmt> {
         let name = self.field_local_sym(field);
-        let clause = if nullable {
-            HirSlotClause { names: vec![self.opt], ..Default::default() }
-        } else {
-            HirSlotClause::default()
+        // The local stands for the field, so it accepts exactly what the field declares.
+        let clause = match declared {
+            Some(declared) => self.slot_clause(nullable, declared),
+            None if nullable => HirSlotClause { names: vec![self.opt], ..Default::default() },
+            None => HirSlotClause::default(),
         };
-        let field_init = HirFieldInit { name, value, nullable, mutable: true, clause };
+        let field_init = HirFieldInit { name, value, nullable, reassignable: true, clause };
         self.hir.add(HirStmt::Say(field_init), pos.clone())
     }
 
@@ -115,7 +122,9 @@ impl<'a> Lowerer<'a> {
             let this = self.hir.add(HirExpr::This, pos.clone());
             let field_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(field_name.clone())), pos.clone());
             let access = self.hir.add(HirExpr::Index(this, field_lit, true), pos.clone());
-            let is_check = self.hir.add(HirExpr::Is(access, trait_sym), pos.clone());
+            let matcher = HirMatcher::Type { nominal: true, name: trait_sym, shape: None };
+            let matcher = self.hir.add(matcher, pos.clone());
+            let is_check = self.hir.add(HirExpr::Match(access, matcher), pos.clone());
             let not_check = self.hir.add(HirExpr::Unary(UnOp::Not, is_check), pos.clone());
 
             let msg = format!("Delegate field '{field_name}' does not provide trait '{trait_name}'");
@@ -137,7 +146,9 @@ impl<'a> Lowerer<'a> {
 
     fn make_factory_fn(&mut self, name: Symbol, params: Vec<HirParam>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
         let body = self.hir.add(HirExpr::Block(body), pos.clone());
-        let fn_decl = HirFnDecl { name, sig_pos: pos.clone(), params, body, ret: ReturnShape::Inferred, clause: HirSlotClause::default() };
+        // A factory always has a receiver: the instance it is building up.
+        let receiver = Some(HirSlotClause::default());
+        let fn_decl = HirFnDecl { name, sig_pos: pos.clone(), receiver, params, body, ret: ReturnShape::Inferred, clause: HirSlotClause::default() };
         self.hir.add(HirStmt::Fn(fn_decl), pos.clone())
     }
 }

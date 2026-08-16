@@ -1,9 +1,10 @@
 // The reverse also fails: a container return does not satisfy a hole expecting a bare value.
+type Taint { } obligation taint { witness Taint; discharge to use; }
 trait Source {
-    req fn read(): fails;
+    req fn read(this): taint;
 }
 type File with Source {
-    pub fn read(): [fails] { return [Err("x")]; } // error: return shape does not match the trait
-    init() {}
+    pub fn read(this): [taint] { return [1]; } // error: return shape does not match the trait
+    init(this) {}
 }
 print("unreachable");

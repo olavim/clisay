@@ -1,0 +1,7 @@
+// A collection frees the closures the call cache names. Null is a legal callee, so clearing the
+// callee rather than the site would make the second call a false hit into a freed closure.
+fn one()! { return 1; }
+fn get(m)! { return m["f"](); } // error: null is not callable
+print(get({"f": one})); // expect: 1
+gcCollect();
+print(get({}));

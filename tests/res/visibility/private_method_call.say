@@ -1,8 +1,8 @@
 // A private method is callable internally (via `this`) but not externally.
 type Service {
-    fn helper()! { return 7; } // private method
-    pub fn run()! { return this.helper(); } // internal call: ok
-    init() {}
+    fn helper(this)! { return 7; } // private method
+    pub fn run(this)! { return this.helper(); } // internal call: ok
+    init(this) {}
 }
 say s = Service();
 print(s.run()); // expect: 7

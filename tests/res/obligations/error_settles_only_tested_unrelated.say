@@ -1,0 +1,6 @@
+fn f(): opt fails { return Err("b"); }
+type Nope { }
+fn g() {
+    say x: opt fails = f(); // error: 'x' owes 'fails' and is never discharged
+    if x is Nope { }
+}

@@ -16,15 +16,20 @@ pub enum Operand {
     /// A `u8` count followed by that many raw bytes. Variable length; the
     /// disassembler reads the count then the bytes.
     List,
+    /// A 16-bit index into a side table, little-endian.
+    Pool,
+    /// A 16-bit declaration id, little-endian.
+    TypeId,
 }
 
 impl Operand {
     /// The fixed number of bytes this operand occupies, or `None` for a
-    /// variable-length operand (`List`), which the reader sizes from its count.
+    /// variable-length operand, which the reader sizes from its count.
     pub fn size(&self) -> Option<usize> {
         match self {
             Operand::Byte | Operand::Local | Operand::Const => Some(1),
             Operand::Jump => Some(2),
+            Operand::Pool | Operand::TypeId => Some(2),
             Operand::List => None,
         }
     }
@@ -68,7 +73,7 @@ opcodes! {
     Call => CALL(Byte),
     CallMut => CALL_MUT(Byte),
     Construct => CONSTRUCT(List, Byte),
-    Invoke => INVOKE(Const, Byte),
+    Invoke => INVOKE(Const, Byte, Byte, Byte),
     Jump => JUMP(Jump),
     JumpIfFalse => JUMP_IF_FALSE(Jump),
     JumpIfFalseOrPop => JUMP_IF_FALSE_OR_POP(Jump),
@@ -77,7 +82,7 @@ opcodes! {
     JumpIfNull => JUMP_IF_NULL(Jump),
     JumpIfClean => JUMP_IF_CLEAN(Jump),
     JumpIfBad => JUMP_IF_BAD(Jump),
-    JumpIfIs => JUMP_IF_IS(Jump, Const),
+    JumpIfIs => JUMP_IF_IS(Jump, TypeId),
     JumpIfGe => JUMP_IF_GE(Jump),
     JumpIfGt => JUMP_IF_GT(Jump),
     JumpIfLe => JUMP_IF_LE(Jump),
@@ -89,8 +94,8 @@ opcodes! {
     JumpIfLeLocalConst => JUMP_IF_LE_LOCAL_CONST(Jump, Local, Const),
     JumpIfLtLocalConst => JUMP_IF_LT_LOCAL_CONST(Jump, Local, Const),
     CloseUpvalue => CLOSE_UPVALUE(Byte),
-    Array => ARRAY(Byte),
-    Dict => DICT(Byte),
+    Array => ARRAY(Byte, Byte),
+    Dict => DICT(Byte, Byte),
     Mut => MUT,
     SealCheck => SEAL_CHECK,
     Return => RETURN,
@@ -100,10 +105,19 @@ opcodes! {
     PushTry => PUSH_TRY(Jump),
     PopTry => POP_TRY,
     AssertNonNull => ASSERT_NON_NULL,
-    BarrierGuard => BARRIER_GUARD(Byte, List),
-    AssertBorrow => ASSERT_BORROW(Byte, List),
-    MarkBorrow => MARK_BORROW(Byte, List),
-    ReleaseBorrow => RELEASE_BORROW(Byte),
+    AssertNoOtherWriter => ASSERT_NO_OTHER_WRITER(Byte),
+    AssertNoOtherWriterUp => ASSERT_NO_OTHER_WRITER_UP(Byte),
+    AssertNoOtherWriterRoot => ASSERT_NO_OTHER_WRITER_ROOT,
+    AssertNoWriter => ASSERT_NO_WRITER,
+    AssertImmutable => ASSERT_IMMUTABLE,
+    BarrierGuard => BARRIER_GUARD(Byte, Pool),
+    AssertNoRetain => ASSERT_NO_RETAIN(Byte, Pool, List),
+    TakeWriteOwnership => TAKE_WRITE_OWNERSHIP(Byte),
+    TransferWriteOwnership => TRANSFER_WRITE_OWNERSHIP(Byte),
+    TransferWriteOwnershipUp => TRANSFER_WRITE_OWNERSHIP_UP(Byte),
+    TransferWriteOwnershipAt => TRANSFER_WRITE_OWNERSHIP_AT(Byte),
+    ReleaseWriteOwnership => RELEASE_WRITE_OWNERSHIP(Byte),
+    ReleaseWriteOwnershipAt => RELEASE_WRITE_OWNERSHIP_AT(Byte),
 
     // Explicit stack manipulation
     Pop => POP,
@@ -114,6 +128,7 @@ opcodes! {
     PushFalse => PUSH_FALSE,
     PushClosure => PUSH_CLOSURE(Const),
     PushType => PUSH_TYPE(Const),
+    BuildType => BUILD_TYPE(Const),
 
     // Variable bindings (local/upvalue/global)
     LoadGlobal => LOAD_GLOBAL(Const),
@@ -127,13 +142,13 @@ opcodes! {
 
     // Object access: by key (`[]`), by name (`.`), or by resolved member id
     GetIndex => GET_INDEX,
-    SetIndex => SET_INDEX,
+    SetIndex => SET_INDEX(Byte, Byte),
     GetIndexOrNull => GET_INDEX_OR_NULL(Const),
     GetProperty => GET_PROPERTY,
-    SetProperty => SET_PROPERTY,
+    SetProperty => SET_PROPERTY(Byte, Byte),
     GetField => GET_FIELD(Byte),
-    SetField => SET_FIELD(Byte),
-    SetFieldPop => SET_FIELD_POP(Byte),
+    SetField => SET_FIELD(Byte, Byte, Byte),
+    SetFieldPop => SET_FIELD_POP(Byte, Byte, Byte),
 
     // Arithmetic
     Add => ADD,
@@ -162,9 +177,11 @@ opcodes! {
     LessThanEqual => LESS_THAN_EQUAL,
     GreaterThan => GREATER_THAN,
     GreaterThanEqual => GREATER_THAN_EQUAL,
-    Is => IS(Const),
+    Is => IS(TypeId),
     HasMember => HAS_MEMBER(Const),
+    MemberAdmits => MEMBER_ADMITS(Const, Byte, Pool),
     IsShaped => IS_SHAPED,
     ArrayLen => ARRAY_LEN,
     ArrayMiddle => ARRAY_MIDDLE(Byte, Byte),
+    ArrayElem => ARRAY_ELEM(Byte, Byte),
 }

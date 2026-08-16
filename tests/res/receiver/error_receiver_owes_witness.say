@@ -1,0 +1,4 @@
+type T {
+    pub n = 0;
+    pub fn value(this: opt)! { return this.n; } // error: The receiver cannot owe 'opt'
+}

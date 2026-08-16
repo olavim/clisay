@@ -2,8 +2,8 @@
 // (in this phase, with no traits yet) not externally accessible.
 type Widget {
     inner state;
-    pub fn read()! { return this.state; } // internal: ok
-    init(s) { this.state = s; }
+    pub fn read(this)! { return this.state; } // internal: ok
+    init(this, *s) { this.state = s; }
 }
 say w = Widget("ready");
 print(w.read()); // expect: ready

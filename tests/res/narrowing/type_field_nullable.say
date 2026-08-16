@@ -2,7 +2,7 @@
 type Node {
     pub next?;
     pub value;
-    init(v) {
+    init(this, *v) {
         value = v;
     }
 }

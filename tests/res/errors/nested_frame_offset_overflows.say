@@ -1,0 +1,38 @@
+// A frame counts its slots from its own callee slot, and that index is a byte. A nested closure
+// pushes one without declaring anything, so the bound has to hold there too. Unchecked, the
+// offset wraps and the innermost body reads whatever slot 0 holds, which is a closure.
+say a00 = 0; say a01 = 0; say a02 = 0; say a03 = 0; say a04 = 0; say a05 = 0; say a06 = 0; say a07 = 0;
+say a10 = 0; say a11 = 0; say a12 = 0; say a13 = 0; say a14 = 0; say a15 = 0; say a16 = 0; say a17 = 0;
+say a20 = 0; say a21 = 0; say a22 = 0; say a23 = 0; say a24 = 0; say a25 = 0; say a26 = 0; say a27 = 0;
+say a30 = 0; say a31 = 0; say a32 = 0; say a33 = 0; say a34 = 0; say a35 = 0; say a36 = 0; say a37 = 0;
+say a40 = 0; say a41 = 0; say a42 = 0; say a43 = 0; say a44 = 0; say a45 = 0; say a46 = 0; say a47 = 0;
+say a50 = 0; say a51 = 0; say a52 = 0; say a53 = 0; say a54 = 0; say a55 = 0; say a56 = 0; say a57 = 0;
+say a60 = 0; say a61 = 0; say a62 = 0; say a63 = 0; say a64 = 0; say a65 = 0; say a66 = 0; say a67 = 0;
+say a70 = 0; say a71 = 0; say a72 = 0; say a73 = 0; say a74 = 0; say a75 = 0; say a76 = 0; say a77 = 0;
+say a80 = 0; say a81 = 0; say a82 = 0; say a83 = 0; say a84 = 0; say a85 = 0; say a86 = 0; say a87 = 0;
+say a90 = 0; say a91 = 0; say a92 = 0; say a93 = 0; say a94 = 0; say a95 = 0; say a96 = 0; say a97 = 0;
+say a100 = 0; say a101 = 0; say a102 = 0; say a103 = 0; say a104 = 0; say a105 = 0; say a106 = 0; say a107 = 0;
+say a110 = 0; say a111 = 0; say a112 = 0; say a113 = 0; say a114 = 0; say a115 = 0; say a116 = 0; say a117 = 0;
+say a120 = 0; say a121 = 0; say a122 = 0; say a123 = 0; say a124 = 0; say a125 = 0; say a126 = 0; say a127 = 0;
+say a130 = 0; say a131 = 0; say a132 = 0; say a133 = 0; say a134 = 0; say a135 = 0; say a136 = 0; say a137 = 0;
+say a140 = 0; say a141 = 0; say a142 = 0; say a143 = 0; say a144 = 0; say a145 = 0; say a146 = 0; say a147 = 0;
+say a150 = 0; say a151 = 0; say a152 = 0; say a153 = 0; say a154 = 0; say a155 = 0; say a156 = 0; say a157 = 0;
+say a160 = 0; say a161 = 0; say a162 = 0; say a163 = 0; say a164 = 0; say a165 = 0; say a166 = 0; say a167 = 0;
+say a170 = 0; say a171 = 0; say a172 = 0; say a173 = 0; say a174 = 0; say a175 = 0; say a176 = 0; say a177 = 0;
+say a180 = 0; say a181 = 0; say a182 = 0; say a183 = 0; say a184 = 0; say a185 = 0; say a186 = 0; say a187 = 0;
+say a190 = 0; say a191 = 0; say a192 = 0; say a193 = 0; say a194 = 0; say a195 = 0; say a196 = 0; say a197 = 0;
+say a200 = 0; say a201 = 0; say a202 = 0; say a203 = 0; say a204 = 0; say a205 = 0; say a206 = 0; say a207 = 0;
+say a210 = 0; say a211 = 0; say a212 = 0; say a213 = 0; say a214 = 0; say a215 = 0; say a216 = 0; say a217 = 0;
+say a220 = 0; say a221 = 0; say a222 = 0; say a223 = 0; say a224 = 0; say a225 = 0; say a226 = 0; say a227 = 0;
+say a230 = 0; say a231 = 0; say a232 = 0; say a233 = 0; say a234 = 0; say a235 = 0; say a236 = 0; say a237 = 0;
+say a240 = 0; say a241 = 0; say a242 = 0; say a243 = 0; say a244 = 0; say a245 = 0; say a246 = 0; say a247 = 0;
+say a250 = 0; say a251 = 0; say a252 = 0; say a253 = 0; say a254 = 0; say a255 = 0; say a256 = 0; say a257 = 0;
+say a260 = 0; say a261 = 0; say a262 = 0; say a263 = 0; say a264 = 0; say a265 = 0; say a266 = 0; say a267 = 0;
+say a270 = 0; say a271 = 0; say a272 = 0; say a273 = 0; say a274 = 0; say a275 = 0; say a276 = 0; say a277 = 0;
+say a280 = 0; say a281 = 0; say a282 = 0; say a283 = 0; say a284 = 0; say a285 = 0; say a286 = 0; say a287 = 0;
+say a290 = 0; say a291 = 0; say a292 = 0; say a293 = 0; say a294 = 0; say a295 = 0; say a296 = 0; say a297 = 0;
+say a300 = 0; say a301 = 0; say a302 = 0; say a303 = 0; say a304 = 0; say a305 = 0; say a306 = 0; say a307 = 0;
+say a310 = 0; say a311 = 0; say a312 = 0; say a313 = 0; say a314 = 0; say a315 = 0; say a316 = 0; say a317 = 0;
+print((() => { return (() => { return (() => { return (() => { return (() => { return (() => { return (() => { return (() => { return (() => { return (() => { return (() => { return (() => { return (() => { return (() => { return a00; })(); })(); })(); })(); })(); })(); })(); })(); })(); })(); })(); })(); })(); })());
+// error(full):
+// Too many variables in scope

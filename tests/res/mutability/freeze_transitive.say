@@ -1,7 +1,9 @@
+// The name is taken back out of the container because storing `inner` moved that binding.
 say inner = mut {};
 inner["x"] = 1;
 say outer = mut {};
 outer["inner"] = inner;
 freeze(outer);
 print(outer["inner"]["x"]); // expect: 1
-inner["x"] = 2; // error: cannot mutate an immutable value
+say alias = outer["inner"];
+alias["x"] = 2; // error: cannot mutate an immutable value

@@ -1,0 +1,21 @@
+trait Wt { }
+obligation warned { witness Wt; discharge before drop; }
+type W with Wt { }
+say sink = mut [];
+fn stash(*v) { sink.push(v); }
+fn f(g) {
+    say b: warned = W { };
+    g(b);
+    print(b ?? "handled");
+}
+f(stash);
+// error(full):
+// error: cannot pass a value owing 'warned' to a callee that retains it
+//  --> opaque_consume_barrier_owed.say:8:7
+//   |
+// 7 |     say b: warned = W { };
+// 8 |     g(b);
+//   |       ^ `b` owes 'warned' but the callee retains it
+//   |
+// 	at f (opaque_consume_barrier_owed.say:8)
+// 	at script (opaque_consume_barrier_owed.say:11)

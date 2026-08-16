@@ -2,7 +2,7 @@
 fn find()? {
     return null;
 }
-say mut h?;
+say var h?;
 if (h != null) {
     h = find();
     h.x; // error: unchecked value owes 'opt'

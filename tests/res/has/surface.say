@@ -1,8 +1,8 @@
-type Point { pub x; pub y; init(a, b) { this.x = a; this.y = b; } }
-trait Drawable { pub fn draw() { } }
+type Point { pub x; pub y; init(this, *a, *b) { this.x = a; this.y = b; } }
+trait Drawable { pub fn draw(this) { } }
 trait PointLike { req x; req y; }
 trait NotPointLike { req x; req z; }
-type Sprite with Drawable { init() { } }
+type Sprite with Drawable { init(this) { } }
 
 // `is` implies `has`; the reverse does not hold
 say p = Point(1, 2);

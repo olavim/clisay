@@ -4,10 +4,8 @@ use fnv::FnvHashMap;
 use crate::frontend::lex::Diagnostic;
 
 use crate::core::gc::Gc;
-use crate::core::value::Value;
-use crate::core::objects::ObjType;
-use crate::core::objects::ObjString;
-use crate::middle::ir::{Inst, Ir, Label};
+use crate::middle::hir::TypeId;
+use crate::middle::ir::{Inst, Ir, Label, SourceRole};
 use crate::middle::bind::{Bindings, Cleanup, FnKind};
 use crate::middle::check::Barriers;
 use crate::middle::signatures::Signatures;
@@ -16,10 +14,11 @@ use crate::middle::hir::HirExpr;
 use crate::middle::hir::HirFnDecl;
 use crate::middle::hir::HirId;
 use crate::middle::hir::HirStmt;
+use crate::middle::hir::HirMatcher;
 
 mod expressions;
 mod statements;
-mod matching;
+pub mod matching;
 mod functions;
 mod types;
 
@@ -36,6 +35,25 @@ struct TryFrame {
     finally: Option<HirId<HirExpr>>
 }
 
+/// How a path write names the container it reaches through.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum PathRoot {
+    Local(u8),
+    Upvalue(u8),
+    /// No binding names it, so the barrier compares against the value itself.
+    Unnamed,
+}
+
+/// Where the container taking an element's write-ownership lives. This is the compile-time half of
+/// the runtime's `WriteOwnershipHolder`: a place to read the holder from, rather than the holder.
+#[derive(Clone, Copy)]
+pub(super) enum WriteOwnershipHolderPlace {
+    Local(u8),
+    Upvalue(u8),
+    /// On the stack, this far below the value being handed over. For a receiver no binding names.
+    Stack(u8),
+}
+
 /// Lowers a resolved HIR to IR.
 pub struct Compiler<'a> {
     ir: Ir,
@@ -48,7 +66,15 @@ pub struct Compiler<'a> {
     /// The kind of each enclosing function, for factory return handling.
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
-    types: FnvHashMap<*mut ObjString, *mut ObjType>
+    /// The id of each registered object witness, by declaration.
+    witness_ids: FnvHashMap<TypeId, u16>,
+    /// The slot that will hold the container being built, while its parts are compiled. An element
+    /// handed to it takes its writer slot in that slot's name.
+    receiving_slot: Option<WriteOwnershipHolderPlace>,
+    /// The root node of a path whose write barrier compares against it.
+    dup_root: Option<HirId<HirExpr>>,
+    /// Whether to drop every placed guard.
+    floor_only: bool,
 }
 
 #[macro_export]
@@ -57,8 +83,15 @@ macro_rules! compiler_error {
 }
 
 impl<'a> Compiler<'a> {
-    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures) -> Result<Ir, anyhow::Error> {
+    pub(super) fn operand_count<T: 'static>(&self, count: usize, subject: &str, unit: &str, at: &HirId<T>) -> Result<u8, anyhow::Error> {
+        u8::try_from(count).map_err(|_| self.error(format!("{subject} may have at most {} {unit}", u8::MAX), at))
+    }
+
+    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures, floor_only: bool) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
+            receiving_slot: None,
+            dup_root: None,
+            floor_only,
             ir: Ir::new(),
             hir,
             gc,
@@ -67,10 +100,10 @@ impl<'a> Compiler<'a> {
             sigs,
             fn_kinds: Vec::new(),
             try_frames: Vec::new(),
-            types: FnvHashMap::default()
+            witness_ids: FnvHashMap::default()
         };
 
-        compiler.record_witness_registry();
+        compiler.assign_witness_ids();
         let stmt_id = compiler.hir.get_root();
         compiler.statement(&stmt_id)?;
         Ok(compiler.finish())
@@ -80,13 +113,34 @@ impl<'a> Compiler<'a> {
         anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node_id).clone()))
     }
 
-    /// Interns the program's object witness names into the `Ir`, so the VM can recognize a
-    /// crossing value as a witness at a boundary barrier.
-    fn record_witness_registry(&mut self) {
-        let names = self.barriers.witness_names().iter()
-            .map(|name| Value::from(self.gc.intern(self.hir.text(*name))))
-            .collect();
-        self.ir.set_witness_names(names);
+    /// Numbers every registered object witness.
+    fn assign_witness_ids(&mut self) {
+        for &decl in self.barriers.witness_decls() {
+            let next = self.witness_ids.len() as u16;
+            self.witness_ids.entry(decl).or_insert(next);
+        }
+        // The VM builds some types itself, so it needs the numbering to mark them the same way.
+        let ids = self.witness_ids.iter().map(|(decl, id)| (*decl, *id)).collect();
+        self.ir.set_witness_ids(ids);
+    }
+
+    /// The runtime identity of the declaration a type test names.
+    pub(super) fn type_test_id<T: 'static>(&self, matcher: &HirId<HirMatcher>, node: &HirId<T>) -> Result<TypeId, anyhow::Error> {
+        let Some(decl) = self.bindings.type_ref(matcher) else {
+            compiler_error!(self, node, "a type test names no declaration");
+        };
+        match self.hir.get(&decl) {
+            HirStmt::Type(decl) | HirStmt::Trait(decl) => Ok(decl.id),
+            _ => compiler_error!(self, node, "a type test names no declaration"),
+        }
+    }
+
+    /// The witness ids the given declarations are numbered by, sorted.
+    pub(super) fn witness_id_set(&self, decls: &[TypeId]) -> Box<[u16]> {
+        let mut ids: Vec<u16> = decls.iter().filter_map(|decl| self.witness_ids.get(decl)).copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.into_boxed_slice()
     }
 
     fn finish(mut self) -> Ir {
@@ -100,6 +154,17 @@ impl<'a> Compiler<'a> {
         self.ir.emit(inst, pos);
     }
 
+    fn emit_store_inst(&mut self, inst: Inst, node: &HirId<HirExpr>, value: &HirId<HirExpr>) {
+        let at = self.ir.next_index();
+        self.emit(inst, node);
+        let role = match self.hir.get(value) {
+            HirExpr::Identifier(_) => SourceRole::StoredName,
+            _ => SourceRole::StoredValue,
+        };
+        let pos = self.hir.pos(value).clone();
+        self.ir.map_source(at, role, pos);
+    }
+
     /// Emits a conditional branch to a fresh (unbound) label and returns it.
     /// The caller should bind the label to the jump's destination.
     fn emit_conditional_jump<T: 'static>(&mut self, cond: &HirId<HirExpr>, node_id: &HirId<T>) -> Result<Label, anyhow::Error> {
@@ -111,6 +176,11 @@ impl<'a> Compiler<'a> {
 
     fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
         let cleanups = self.bindings.cleanup(node_id).to_vec();
+        // Writer slots go back before the locals holding them are popped. The count is how many
+        // values to look at, not how many were taken.
+        if self.barriers.releases_write_ownership(node_id) {
+            self.emit(Inst::ReleaseWriteOwnership(cleanups.len() as u8), node_id);
+        }
         for cleanup in cleanups {
             let inst = match cleanup {
                 Cleanup::Pop => Inst::Pop,

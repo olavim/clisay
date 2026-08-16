@@ -1,0 +1,30 @@
+// A native mutating method needs a mutable receiver, the same as a declared `this: mut` does.
+say a = mut [0];
+a.push(1);
+print(a.length()); // expect: 2
+say d = mut {};
+d["k"] = 1;
+print(d.remove("k")); // expect: 1
+
+// @split
+// A read-only parameter cannot be pushed into.
+fn f(x) { x.push(1); } // error: expected mutable receiver
+say a = mut [0];
+f(a);
+
+// @split
+// A `mut` parameter can.
+fn f(mut x) { x.push(1); }
+say a = mut [0];
+f(a);
+print(a.length()); // expect: 2
+
+// @split
+// An unmarked container rejects a mutating method, as it already rejects an index write.
+say a = [0];
+a.push(1); // error: expected mutable receiver
+
+// @split
+// Reading one never needs a mutable receiver.
+say a = [1, 2];
+print(a.length()); // expect: 2

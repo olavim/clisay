@@ -1,14 +1,19 @@
 //! The signature-building walk: records every function and method signature, registers obligations,
 //! and infers each function's declared return shape.
 
-use std::collections::HashSet;
-
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnShape, Symbol};
+use super::Resolved;
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnShape};
+use crate::middle::obligations::Obligations;
 
 use super::{Collector, FnSig, RetSig, Witness};
-use super::walk::Child;
+use crate::middle::walk::Child;
+use crate::middle::walk;
 
 impl<'a> Collector<'a> {
+    pub(super) fn resolved(&self) -> Resolved<'_> {
+        Resolved { hir: self.hir, bindings: self.bindings, sigs: &self.sigs }
+    }
+
     pub(super) fn stmt(&mut self, stmt: &HirId<HirStmt>) {
         match self.hir.get(stmt) {
             HirStmt::Fn(decl) => {
@@ -18,19 +23,24 @@ impl<'a> Collector<'a> {
                 self.expr(&decl.body);
             },
             HirStmt::Type(decl) => {
-                self.sigs.types_by_name.insert(decl.name, *stmt);
+                self.sigs.types_by_name.entry(decl.name).or_default().push(*stmt);
+                self.sigs.decls_by_id.insert(decl.id, *stmt);
                 self.collect_sig(&decl.init);
                 for method in &decl.methods {
                     if let HirStmt::Fn(m) = self.hir.get(method) {
-                        self.sigs.methods_by_type.insert((decl.name, m.name), *method);
+                        self.sigs.methods_by_type.insert((*stmt, m.name), *method);
                     }
-                    self.sigs.method_owner.insert(*method, decl.name);
+                    self.sigs.method_owner.insert(*method, *stmt);
                     self.collect_sig(method);
                 }
             },
-            HirStmt::Trait(_) | HirStmt::Nop => {},
+            HirStmt::Trait(decl) => {
+                self.sigs.traits_by_name.entry(decl.name).or_default().push(*stmt);
+                self.sigs.decls_by_id.insert(decl.id, *stmt);
+            },
+            HirStmt::Nop => {},
             // A non-declaration statement holds no signatures of its own. Recurse into its children.
-            _ => for child in self.children_of_stmt(stmt) {
+            _ => for child in walk::children_of_stmt(self.hir, stmt) {
                 match child {
                     Child::Expr(e) => self.expr(&e),
                     Child::Stmt(s) => self.stmt(&s),
@@ -45,7 +55,7 @@ impl<'a> Collector<'a> {
             self.expr(&decl.body);
             return;
         }
-        for child in self.children_of_expr(expr) {
+        for child in walk::children_of_expr(self.hir, expr) {
             match child {
                 Child::Expr(e) => self.expr(&e),
                 Child::Stmt(s) => self.stmt(&s),
@@ -56,13 +66,10 @@ impl<'a> Collector<'a> {
     /// Registers each user obligation's witness and rule.
     pub(super) fn register_obligations(&mut self) {
         for (name, decl) in self.hir.obligations() {
-            self.sigs.rules.insert(name, decl.rule);
-            if let Some(witness) = decl.witness {
-                let w = if self.sigs.is_type(witness) {
-                    Witness::Type(witness)
-                } else {
-                    Witness::Trait(witness)
-                };
+            self.sigs.rules.insert(name, decl.rules);
+            if let Some(witness) = &decl.witness {
+                let is_trait = self.hir.type_info(witness.id).is_some_and(|info| info.is_trait);
+                let w = if is_trait { Witness::Trait(witness.id) } else { Witness::Type(witness.id) };
                 self.sigs.witnesses.insert(name, w);
             }
         }
@@ -77,12 +84,30 @@ impl<'a> Collector<'a> {
         }
     }
 
+    /// Folds each parameter's witness alternatives into the obligations its signature advertises,
+    /// so a caller sees `x @ Node | null` exactly as it sees `x: opt`.
+    pub(super) fn admit_pattern_obligations(&mut self) {
+        let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
+        for stmt in stmts {
+            let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
+            let admitted: Vec<(usize, Obligations)> = decl.params.iter().enumerate()
+                .filter_map(|(i, p)| Some((i, self.resolved().admitted_obligations(p.pattern.as_ref()?))))
+                .filter(|(_, admits)| !admits.is_empty())
+                .collect();
+            let Some(sig) = self.sigs.fns.get_mut(&stmt).filter(|_| !admitted.is_empty()) else { continue };
+            for (i, admits) in admitted {
+                sig.param_clauses[i].extend(admits);
+            }
+        }
+    }
+
     fn fn_sig(&self, decl: &HirFnDecl) -> FnSig {
         let mut ret = self.ret_sig(decl);
         if self.body_fails(&decl.body) {
             ret.obligations.insert(self.fails);
         }
         FnSig {
+            receiver_marker: decl.receiver.as_ref().map(|r| r.capability),
             param_clauses: decl.params.iter().map(|p| p.clause.names.iter().copied().collect()).collect(),
             param_markers: decl.params.iter().map(|p| p.clause.capability).collect(),
             ret,
@@ -105,10 +130,10 @@ impl<'a> Collector<'a> {
     /// its obligations are filled by the propagation pass.
     fn ret_sig(&self, decl: &HirFnDecl) -> RetSig {
         if decl.is_unmarked() {
-            return RetSig { obligations: HashSet::new(), void: self.has_void_path(&decl.body) };
+            return RetSig { obligations: Obligations::new(), void: self.has_void_path(&decl.body) };
         }
         // A synthesized forwarder carries a `?` marker with no clause, so honor the marker too.
-        let mut obligations: HashSet<Symbol> = decl.clause.names.iter().copied().collect();
+        let mut obligations: Obligations = decl.clause.names.iter().copied().collect();
         if decl.ret == ReturnShape::Nullable {
             obligations.insert(self.opt);
         }

@@ -1,0 +1,38 @@
+// Whether a signature is honest does not turn on what a caller passes, so a parameter that is not
+// taken may not let its argument outlive the call.
+fn f(x)! { return mut [x]; } // error: cannot retain a borrowed argument
+say m = mut [1];
+print(f(m)[0][0]);
+
+// @split
+// The same body with the take declared, which is how it is spelled.
+fn f(*x)! { return mut [x]; }
+say m = mut [1];
+print(f(m)[0][0]); // expect: 1
+
+// @split
+// `*` takes and asks nothing of the value, so an immutable argument still reaches it.
+fn f(*x)! { return [x]; }
+print(f([1])[0][0]); // expect: 1
+
+// @split
+// Handing the argument back as itself is not keeping it, so neither marker is needed.
+fn hand(x)! { return x; }
+print(hand([1])[0]); // expect: 1
+
+// @split
+// A factory is the same case: the argument lives on inside what the factory returns.
+type Box { pub v; init(this, v) { this.v = v; } } // error: cannot retain a borrowed argument
+say b = Box([1]);
+
+// @split
+// Declared, it is the ordinary way to write a constructor.
+type Box { pub v; init(this, *v) { this.v = v; } }
+say b = Box([1]);
+print(b.v[0]); // expect: 1
+
+// @split
+// Storing into a receiver is a different case, since the receiver is not what the call hands back.
+type Box { pub var v; init(this) { this.v = 0; } pub fn keep(mut this, x) { this.v = x; } } // error: cannot retain a borrowed argument
+say b = mut Box();
+b.keep([1]);

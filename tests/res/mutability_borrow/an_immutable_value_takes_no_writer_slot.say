@@ -1,0 +1,32 @@
+// A writer slot guards writes, and nothing can write an immutable value. So two containers may
+// hold one, and a callee that cannot tell an element from any other argument does not make it a
+// conflict.
+say sink = mut [];
+say other = mut [];
+fn keep(*v) { sink.push(v); }
+fn keep2(*v) { other.push(v); }
+keep("hi");
+keep2("hi");
+print(sink[0]); // expect: hi
+print(other[0]); // expect: hi
+
+// @split
+// The same for an instance, which is immutable unless it is built `mut`.
+type T { pub v; }
+say t = T { v: 1 };
+say sink = mut [];
+say other = mut [];
+fn keep(*v) { sink.push(v); }
+fn keep2(*v) { other.push(v); }
+keep(t);
+keep2(t);
+print(sink[0].v); // expect: 1
+print(other[0].v); // expect: 1
+
+// @split
+// A mutable one still takes the slot, which is what the gate must not let through.
+say sink = mut [];
+fn keep(*v) { sink.push(v); }
+say a = mut [mut [0]];
+keep(a[0]);
+a[0][0] = 1; // error: cannot write an element whose write-ownership moved to another container

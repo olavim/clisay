@@ -1,0 +1,3 @@
+// A marked return declaring no obligation admits none.
+type Taint { } obligation taint { witness Taint; discharge to use; }
+fn f(x: taint)! { return x; } // error: cannot return a value owing 'taint'

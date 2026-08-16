@@ -1,0 +1,5 @@
+// A helper declaring a different obligation cannot launder one into the other.
+type Taint { } obligation taint { witness Taint; discharge to use; }
+type Token { } obligation parsed { witness Token; discharge to use; }
+fn g(y: parsed)! { return y!; }
+fn f(x: taint) { g(x); } // error: cannot pass a value owing 'taint'

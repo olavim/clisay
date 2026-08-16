@@ -1,0 +1,51 @@
+// In a factory a bare field name is the field, unless a parameter shadows it. A destructuring
+// parameter shadows under every name its pattern binds, not just its slot's.
+type Src { pub item; }
+type T {
+    pub item;
+    pub other;
+    init(this, Src { item }) { this.item = 1; this.other = item; }
+}
+say t = T(Src { item: 7 });
+print(t.item);  // expect: 1
+print(t.other); // expect: 7
+
+// @split
+// The assignment order does not decide which `item` the body means.
+type Src { pub item; }
+type T {
+    pub item;
+    pub other;
+    init(this, Src { item }) { this.other = item; this.item = 1; }
+}
+say t = T(Src { item: 7 });
+print(t.other); // expect: 7
+
+// @split
+// A field the pattern does not bind is still the field.
+type Src { pub item; }
+type T {
+    pub item;
+    pub other;
+    init(this, Src { item }) { this.other = 2; this.item = other; }
+}
+print(T(Src { item: 7 }).item); // expect: 2
+
+// @split
+// `src @ p` binds the slot and the pattern's names both.
+type Src { pub item; }
+type T {
+    pub item;
+    init(this, src @ Src { item }) { this.item = item + src.item; }
+}
+print(T(Src { item: 3 }).item); // expect: 6
+
+// @split
+// A binder one level down shadows just as an outer one does.
+type Leaf { pub item; }
+type Src { pub inner; }
+type T {
+    pub item;
+    init(this, Src { inner: Leaf { item } }) { this.item = item; }
+}
+print(T(Src { inner: Leaf { item: 5 } }).item); // expect: 5

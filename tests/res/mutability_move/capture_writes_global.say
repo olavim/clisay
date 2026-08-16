@@ -1,0 +1,12 @@
+// A named function writing a top-level mutable is the one writer, and reading it stays open.
+say g = mut [0];
+fn f() { g[0] = 1; }
+f();
+print(g[0]); // expect: 1
+print(g.length()); // expect: 1
+
+// @split
+// Writing it from the top level as well would make a second writer.
+say g = mut [0];
+fn f() { g[0] = 1; }
+g[0] = 2; // error: cannot mutate a value whose write-ownership moved to function `f`

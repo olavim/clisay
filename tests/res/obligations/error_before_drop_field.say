@@ -1,0 +1,5 @@
+// A field never ends, so a debt parked in one could never come due.
+type Box {
+    r: fails; // error: A field cannot owe 'fails'
+    init(this, v) { this.r = v; }
+}

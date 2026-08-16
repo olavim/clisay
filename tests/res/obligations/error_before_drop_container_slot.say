@@ -1,0 +1,1 @@
+say a: [fails] = []; // error: A container cannot hold values owing 'fails'

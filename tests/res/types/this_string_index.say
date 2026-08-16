@@ -1,8 +1,8 @@
 // Inside a method, `this["x"]` resolves to the same member as `this.x` (statically).
 type Counter {
-    pub mut n = 0;
+    pub var n = 0;
 
-    pub fn bump() {
+    pub fn bump(mut this) {
         this["n"] = this["n"] + 1;
     }
 }

@@ -1,0 +1,100 @@
+// Spelling must not decide what a condition proves. These four are the same fact, so all four
+// discharge it.
+fn src(): fails { return Err("e"); }
+
+say a: fails = src();
+if (!(a is Err)) { say w = a; }
+say b: fails = src();
+if (!(b is Err) || !(b is Err)) { say x = b; }
+say c: fails = src();
+if (!((c is Err) && true)) { say y = c; }
+say d: fails = src();
+if (!(d is Err) && !(d is Err)) { say z = d; }
+print("ok"); // expect: ok
+
+// @split
+// A disjunction proves only what both sides prove, so sides that prove different things prove
+// nothing about either.
+fn src(): fails { return Err("e"); }
+
+say v: fails = src();
+if (!(v is Err) || (v != null)) {
+    say y = v; // error: cannot assign a value owing 'fails' to 'y'
+}
+
+// @split
+// A failed conjunction says only that one side failed, and an unknown side could be the one.
+fn src(): fails { return Err("e"); }
+fn other()! { return true; }
+
+say v: fails = src();
+if (!((v is Err) && other())) {
+    say y = v; // error: cannot assign a value owing 'fails' to 'y'
+}
+
+// @split
+// A side that never holds cannot be the side that did, so the other side carries the disjunction.
+fn src(): fails { return Err("e"); }
+
+say v: fails = src();
+if (!(v is Err) || false) { say y = v; }
+print("ok"); // expect: ok
+
+// @split
+// The same for a falsy literal, since only null and false are falsy.
+fn src(): fails { return Err("e"); }
+
+say v: fails = src();
+if (!(v is Err) || null) { say y = v; }
+print("ok"); // expect: ok
+
+// @split
+// A connective over known sides is known too, so a computed constant reads the same as a written
+// one. Only the boolean structure is folded; a condition that reads a value is not known here.
+fn src(): fails { return Err("e"); }
+
+say a: fails = src();
+if (!((a is Err) && !false)) { say w = a; }
+say b: fails = src();
+if (!((b is Err) && (true && true))) { say x = b; }
+say c: fails = src();
+if (!(c is Err) || !true) { say y = c; }
+print("ok"); // expect: ok
+
+// @split
+// A comparison is not folded, so the conjunct stays unknown and nothing is derived.
+fn src(): fails { return Err("e"); }
+
+say v: fails = src();
+if (!((v is Err) && (1 == 1))) {
+    say y = v; // error: cannot assign a value owing 'fails' to 'y'
+}
+
+// @split
+// Some expressions carry a known truth without computing one: a construction yields an instance,
+// and `mut` and an assignment pass their value along. A factory may not return a value, so a call
+// naming a type hands back `this` however it exits.
+type T { pub n; init(this) { this.n = 1; } }
+fn src(): fails { return Err("e"); }
+
+say a: fails = src();
+if (!((a is Err) && (T { n: 1 }))) { say w = a; }
+say b: fails = src();
+if (!((b is Err) && (mut [1]))) { say x = b; }
+say d: fails = src();
+if (!((d is Err) && T())) { say v = d; }
+say var flag = false;
+say c: fails = src();
+if (!((c is Err) && (flag = true))) { say y = c; }
+print("ok"); // expect: ok
+
+// @split
+// An assignment whose value is unknown leaves the conjunct unknown.
+fn other()! { return true; }
+fn src(): fails { return Err("e"); }
+
+say var flag = false;
+say v: fails = src();
+if (!((v is Err) && (flag = other()))) {
+    say y = v; // error: cannot assign a value owing 'fails' to 'y'
+}

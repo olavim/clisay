@@ -2,8 +2,8 @@
 // local lets it narrow too.
 type Node {
     pub next?;
-    pub mut prev?;
-    pub fn check()! {
+    pub var prev?;
+    pub fn check(this)! {
         if (this.next != null) {
             this.next.x;
         }

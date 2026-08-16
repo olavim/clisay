@@ -1,0 +1,15 @@
+// A `gives` forwarder proxies the delegated method, so it carries that method's own slot clauses.
+// Built with default clauses it is a void function returning a value, and refuses to compile.
+trait Powered { pub fn go(this): fails { return Err("e"); } }
+type Engine with Powered { init(this) {} }
+type Car { pub engine gives Powered; }
+say c = Car{engine: Engine{}};
+print(c.go() ?? "handled"); // expect: handled
+
+// @split
+// On the parameter side a default clause makes the forwarder narrower than the method it proxies.
+trait Powered { pub fn start(this, x?)! { return "v"; } }
+type Engine with Powered { init(this) {} }
+type Car { pub engine gives Powered; }
+print(Engine{}.start(null)); // expect: v
+print(Car{engine: Engine{}}.start(null)); // expect: v

@@ -1,12 +1,22 @@
 //! The intermediate representation: a flat stream of `Inst`s with symbolic
 //! jump `Label`s and a constant pool.
 
+use std::collections::HashSet;
 use anyhow::bail;
 use fnv::FnvHashMap;
 
-use crate::core::objects::ObjFn;
+use crate::core::objects::{BuiltinLayout, ObjFn};
+use crate::ast::BuiltinType;
+use crate::core::objects::TypeId;
 use crate::core::value::Value;
 use crate::frontend::lex::SourcePosition;
+
+/// How a store names the root its write reaches through.
+pub const WRITE_ROOT_NONE: u8 = 0;
+pub const WRITE_ROOT_LOCAL: u8 = 1;
+pub const WRITE_ROOT_UPVALUE: u8 = 2;
+pub const WRITE_ROOT_RECEIVER: u8 = 3;
+pub const WRITE_ROOT_RECEIVER_UP: u8 = 4;
 
 /// A symbolic jump target, resolved to a byte offset at assembly time.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -23,7 +33,7 @@ pub enum Inst {
     /// instance in place, 0 leaves it mutable (`mut K{..}`).
     Construct(u16, u8),
     /// Fused method call `recv.name(args)`.
-    Invoke(u8, u8),
+    Invoke(u8, u8, u8, u8),
     Jump(Label),
     JumpIfFalse(Label),
     JumpIfFalseOrPop(Label),
@@ -32,7 +42,7 @@ pub enum Inst {
     JumpIfNull(Label),
     JumpIfClean(Label),
     JumpIfBad(Label),
-    JumpIfIs(Label, u8),
+    JumpIfIs(Label, TypeId),
     JumpIfGe(Label),
     JumpIfGt(Label),
     JumpIfLe(Label),
@@ -52,17 +62,26 @@ pub enum Inst {
     PopTry,
     /// Aborts if the top of the stack is null, else leaves it.
     AssertNonNull,
+    AssertNoOtherWriter(u8),
+    AssertNoOtherWriterUp(u8),
+    /// The same barrier for a path whose root no binding names, compared against the stashed root.
+    AssertNoOtherWriterRoot,
+    AssertNoWriter,
+    AssertImmutable,
     /// Guards an unknown value at a destination: throws any registered witness the destination
     /// does not allow.
-    BarrierGuard(u16),
+    BarrierGuard(bool, u16),
     /// Asserts an opaque callee borrows the guarded argument positions. Operands are the argument
-    /// count (the callee's stack depth) and an index into the barrier's position list.
-    AssertBorrow(u8, u16),
-    /// Marks the listed argument positions borrowed for the call that follows. Operands are the
-    /// argument count and an index into the position list.
-    MarkBorrow(u8, u16),
-    /// Releases the last `count` marked borrows.
-    ReleaseBorrow(u8),
+    /// count, an index into the barrier's owed-obligation names, and an index into the barrier's
+    /// position list.
+    AssertNoRetain(u8, u16, u16),
+    TakeWriteOwnership(u8),
+    TransferWriteOwnership(u8),
+    TransferWriteOwnershipUp(u8),
+    /// The container is on the stack, this far below the element it is given.
+    TransferWriteOwnershipAt(u8),
+    ReleaseWriteOwnership(u8),
+    ReleaseWriteOwnershipAt(u8),
 
     // Stack / constants
     Pop,
@@ -74,6 +93,8 @@ pub enum Inst {
     PushFalse,
     PushClosure(u8),
     PushType(u8),
+    /// Builds a type from a template. Its capturing methods bind to the running frame.
+    BuildType(u8),
 
     // Variables and properties
     LoadGlobal(u8),
@@ -86,17 +107,18 @@ pub enum Inst {
     StoreUpvaluePop(u8),
     CloseUpvalue(u8),
     GetIndex,
-    SetIndex,
+    SetIndex(u8, u8),
     GetIndexOrNull(u8),
     /// Dynamic member access by name (`.name`).
     GetProperty,
-    SetProperty,
+    SetProperty(u8, u8),
     /// Instance member access by resolved layout id (`this.x`), skipping the name lookup.
     GetField(u8),
-    SetField(u8),
-    SetFieldPop(u8),
-    Array(u8),
-    Dict(u8),
+    SetField(u8, u8, u8),
+    SetFieldPop(u8, u8, u8),
+    /// Element count, then whether the literal seals itself immutable.
+    Array(u8, u8),
+    Dict(u8, u8),
     /// Clears the immutable bit on the object on top of the stack.
     Mut,
     /// Asserts every element of the immutable container on top of the stack is immutable, so a
@@ -130,23 +152,25 @@ pub enum Inst {
     LessThanEqual,
     GreaterThan,
     GreaterThanEqual,
-    Is(u8),
+    Is(TypeId),
     HasMember(u8),
+    /// Whether a member satisfies what its declaration admits.
+    MemberAdmits(u8, bool, u16),
     /// Replaces the top with whether it is a dict or instance, the values a shape can match.
     IsShaped,
     ArrayLen,
     /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
     ArrayMiddle(u8, u8),
-}
-
-/// A boundary barrier's data: whether the destination permits null, and the constant-pool indices
-/// of the witness names it allows.
-pub struct BarrierAllow {
-    pub null_allowed: bool,
-    pub names: Vec<u8>,
+    /// Replaces the array on top with one element, by an offset from the front or from the back.
+    ArrayElem(u8, u8),
 }
 
 pub struct Ir {
+    /// Each registered object witness name and its id.
+    witness_ids: Vec<(TypeId, u16)>,
+    builtin_layouts: [Option<BuiltinLayout>; BuiltinType::COUNT],
+    /// The witness ids each barrier allows.
+    witness_allows: Vec<Box<[u16]>>,
     code: Vec<Inst>,
     positions: Vec<SourcePosition>,
     constants: Vec<Value>,
@@ -156,14 +180,32 @@ pub struct Ir {
     fn_entries: Vec<(*mut ObjFn, Label)>,
     /// Brace-construction field-id lists.
     construct_fields: Vec<Vec<u8>>,
-    barrier_allows: Vec<BarrierAllow>,
     survive_positions: Vec<Vec<(u8, SourcePosition)>>,
-    witness_names: Vec<Value>,
+    /// The obligation a survive barrier's guarded position owes.
+    owed_names: Vec<Box<[(u8, Box<str>)]>>,
+    /// Instruction indices of the checks that check-forcing put back.
+    /// Empty unless check-forcing is on.
+    elisions: Vec<usize>,
+    /// Extra source positions an instruction needs, keyed by instruction index and role.
+    source_map: FnvHashMap<(usize, SourceRole), SourcePosition>,
+}
+
+/// Which part of an instruction an extra source position belongs to.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceRole {
+    /// The expression whose value a store writes.
+    StoredValue,
+    /// The same, where that expression is a bare name. Only then can a diagnostic quote it back as
+    /// a declaration to change.
+    StoredName,
 }
 
 impl Ir {
     pub fn new() -> Ir {
         Ir {
+            witness_ids: Vec::new(),
+            builtin_layouts: std::array::from_fn(|_| None),
+            witness_allows: Vec::new(),
             code: Vec::new(),
             positions: Vec::new(),
             constants: Vec::new(),
@@ -171,9 +213,10 @@ impl Ir {
             labels: Vec::new(),
             fn_entries: Vec::new(),
             construct_fields: Vec::new(),
-            barrier_allows: Vec::new(),
             survive_positions: Vec::new(),
-            witness_names: Vec::new(),
+            owed_names: Vec::new(),
+            elisions: Vec::new(),
+            source_map: FnvHashMap::default(),
         }
     }
 
@@ -202,27 +245,45 @@ impl Ir {
         &self.survive_positions[idx as usize]
     }
 
-    pub fn add_barrier_allow(&mut self, allow: BarrierAllow) -> Result<u16, anyhow::Error> {
-        if self.barrier_allows.len() >= u16::MAX as usize {
-            bail!("Too many boundary barriers");
+    /// Records the obligations a survive barrier's guarded positions owe.
+    pub fn add_owed_names(&mut self, owed: Box<[(u8, Box<str>)]>) -> Result<u16, anyhow::Error> {
+        if let Some(i) = self.owed_names.iter().position(|o| **o == *owed) {
+            return Ok(i as u16);
         }
-        self.barrier_allows.push(allow);
-        Ok((self.barrier_allows.len() - 1) as u16)
+        if self.owed_names.len() >= u16::MAX as usize {
+            bail!("Too many opaque-call barriers");
+        }
+        self.owed_names.push(owed);
+        Ok((self.owed_names.len() - 1) as u16)
     }
 
-    pub fn barrier_allow(&self, idx: u16) -> &BarrierAllow {
-        &self.barrier_allows[idx as usize]
+    pub fn owed_names(&self) -> &[Box<[(u8, Box<str>)]>] {
+        &self.owed_names
+    }
+
+    /// The index the next emitted instruction will take.
+    pub fn next_index(&self) -> usize {
+        self.code.len()
+    }
+
+    /// Marks every instruction emitted since `from` as a forced check.
+    pub fn mark_elisions_from(&mut self, from: usize) {
+        self.elisions.extend(from..self.code.len());
+    }
+
+    pub fn elisions(&self) -> &[usize] {
+        &self.elisions
+    }
+
+    pub fn map_source(&mut self, index: usize, role: SourceRole, pos: SourcePosition) {
+        self.source_map.insert((index, role), pos);
+    }
+
+    pub fn source_map(&self) -> &FnvHashMap<(usize, SourceRole), SourcePosition> {
+        &self.source_map
     }
 
     /// Records the program's object witness names for the VM's boundary-barrier registry.
-    pub fn set_witness_names(&mut self, names: Vec<Value>) {
-        self.witness_names = names;
-    }
-
-    pub fn witness_names(&self) -> &[Value] {
-        &self.witness_names
-    }
-
     pub fn emit(&mut self, inst: Inst, pos: &SourcePosition) {
         self.code.push(inst);
         self.positions.push(pos.clone());
@@ -249,6 +310,42 @@ impl Ir {
     }
 
     /// Interns a constant, returning its pool index. Equal values reuse one slot.
+    pub fn set_witness_ids(&mut self, ids: Vec<(TypeId, u16)>) {
+        self.witness_ids = ids;
+    }
+
+    pub fn set_builtin_layout(&mut self, builtin: BuiltinType, layout: BuiltinLayout) {
+        self.builtin_layouts[builtin.index()] = Some(layout);
+    }
+
+    pub fn builtin_layouts(&self) -> &[Option<BuiltinLayout>; BuiltinType::COUNT] {
+        &self.builtin_layouts
+    }
+
+    pub fn into_builtin_layouts(self) -> [Option<BuiltinLayout>; BuiltinType::COUNT] {
+        self.builtin_layouts
+    }
+
+    pub fn witness_ids(&self) -> &[(TypeId, u16)] {
+        &self.witness_ids
+    }
+
+    pub fn witness_allows(&self) -> &[Box<[u16]>] {
+        &self.witness_allows
+    }
+
+    /// Pools a barrier's allowed witness ids.
+    pub fn add_witness_allow(&mut self, allow: Box<[u16]>) -> Result<u16, anyhow::Error> {
+        if let Some(i) = self.witness_allows.iter().position(|a| **a == *allow) {
+            return Ok(i as u16);
+        }
+        if self.witness_allows.len() >= u16::MAX as usize {
+            bail!("Too many distinct barrier witness sets");
+        }
+        self.witness_allows.push(allow);
+        Ok((self.witness_allows.len() - 1) as u16)
+    }
+
     pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
         if let Some(&idx) = self.constant_indices.get(&value) {
             return Ok(idx);
@@ -289,9 +386,16 @@ impl Ir {
         let mut positions = Vec::with_capacity(self.code.len());
         let mut old_to_new = vec![0usize; self.code.len() + 1];
 
+        // Fusing a set of instructions leaves one instruction, so every jump into that set ends up
+        // pointing at it. That's correct for a jump to the run's first instruction, but not for a jump
+        // to a later one.
+        let targeted: HashSet<usize> = self.labels.iter().flatten().copied().collect();
+
         let mut i = 0;
         while i < self.code.len() {
-            let (inst, len) = fuse(&self.code, i).unwrap_or((self.code[i], 1));
+            let fused = fuse(&self.code, i)
+                .filter(|(_, len)| !(1..*len).any(|k| targeted.contains(&(i + k))));
+            let (inst, len) = fused.unwrap_or((self.code[i], 1));
             let new_idx = code.len();
             for k in 0..len {
                 old_to_new[i + k] = new_idx;
@@ -314,9 +418,14 @@ impl Ir {
             labels,
             fn_entries: self.fn_entries,
             construct_fields: self.construct_fields,
-            barrier_allows: self.barrier_allows,
             survive_positions: self.survive_positions,
-            witness_names: self.witness_names
+            owed_names: self.owed_names,
+            // A rewrite moves instructions, so each marked check follows its own index.
+            elisions: self.elisions.iter().map(|&idx| old_to_new[idx]).collect(),
+            source_map: self.source_map.iter().map(|(&(idx, role), pos)| ((old_to_new[idx], role), pos.clone())).collect(),
+            witness_ids: self.witness_ids,
+            builtin_layouts: self.builtin_layouts,
+            witness_allows: self.witness_allows,
         }
     }
 }

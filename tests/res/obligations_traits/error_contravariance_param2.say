@@ -1,9 +1,9 @@
 // Contravariance is checked per parameter; the diagnostic names the offending position.
 trait Sink {
-    req fn accept(a, b: opt);
+    req fn accept(this, a, b: opt);
 }
 type Db with Sink {
-    pub fn accept(a, b) { } // error: parameter rejects an obligation the trait passes
-    init() {}
+    pub fn accept(this, a, b) { } // error: parameter rejects an obligation the trait passes
+    init(this) {}
 }
 print("unreachable");

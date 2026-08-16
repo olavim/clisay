@@ -1,0 +1,11 @@
+type A {}
+say v = A();
+if v ~ has A & other { print("no"); }
+say done = 1;
+// error(full):
+// error: a bare name cannot be an operand of `&` or `|`
+//  --> and_or_bare_name.say:3:16
+//   |
+// 2 | say v = A();
+// 3 | if v ~ has A & other { print("no"); }
+//   |                ^^^^^

@@ -1,0 +1,95 @@
+// A callee that only calls a rebinder still reaches the binding. Reading a per-callee summary here
+// needs the call-graph fixpoint, so the answer comes from the set of names any body rebinds.
+type Box { pub value: opt; }
+fn run() {
+    say var b = Box { value: "v" };
+    fn wipe() { b = Box { value: null }; }
+    fn go() { wipe(); }
+    if (b.value == null) { return; }
+    go();
+    say y = b.value; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+run();
+
+// @split
+// A lambda is a leaf of its enclosing body's walk, so the enclosing function's own summary never
+// mentions the name its lambda rebinds.
+type Box { pub value: opt; }
+fn run() {
+    say var b = Box { value: "v" };
+    fn go() { say f = () => { b = Box { value: null }; return 1; }; f(); }
+    if (b.value == null) { return; }
+    go();
+    say y = b.value; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+run();
+
+// @split
+// A nested named function is walked for captures, not escapes, so its assignments reach no
+// enclosing summary either.
+type Box { pub value: opt; }
+fn run() {
+    say var b = Box { value: "v" };
+    fn go() { fn wipe() { b = Box { value: null }; } wipe(); }
+    if (b.value == null) { return; }
+    go();
+    say y = b.value; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+run();
+
+// @split
+// A declaration of the same name elsewhere in the body does not cancel the rebind. Which binding an
+// assignment names is decided by where it resolves, not by whether the name appears in a `say`.
+type Box { pub value: opt; }
+fn run() {
+    say var b = Box { value: "v" };
+    fn go() { fn helper() { say b = 1; print(b); } b = Box { value: null }; }
+    if (b.value == null) { return; }
+    go();
+    say y = b.value; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+run();
+
+// @split
+// A shadowing declaration inside the rebinding body itself does not cancel it either.
+type Box { pub value: opt; }
+fn run() {
+    say var b = Box { value: "v" };
+    say f = () => { if (1 == 2) { say b = 1; print(b); } b = Box { value: null }; return 1; };
+    if (b.value == null) { return; }
+    f();
+    say y = b.value; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+run();
+
+// @split
+// A body rebinding its own local reaches no caller, so the name stays narrowable.
+type Box { pub value: opt; }
+fn count()! { say var n = 0; n = n + 1; return n; }
+fn run() {
+    say var b = Box { value: "v" };
+    if (b.value == null) { return; }
+    count();
+    say y = b.value;
+    print(y); // expect: v
+}
+run();
+
+// @split
+// The same where the lambda's own local shares the narrowed binding's name. Which binding the
+// assignment names is what decides this, and the name it is spelled with says nothing.
+type T { pub value: opt; }
+fn run() {
+    say var x = T { value: "v" };
+    if (x.value == null) { return; }
+    say trippy = () => { say var x = 0; x = 1; return x; };
+    trippy();
+    say y = x.value;
+    print(y); // expect: v
+}
+run();

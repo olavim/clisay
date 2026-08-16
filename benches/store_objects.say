@@ -1,0 +1,6 @@
+say arr = mut [0, 0, 0, 0, 0, 0, 0, 0];
+say var i = 0;
+while i < 300000 {
+    arr[i & 7] = mut [i];
+    i = i + 1;
+}

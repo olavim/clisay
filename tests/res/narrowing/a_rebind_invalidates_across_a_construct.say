@@ -1,0 +1,53 @@
+// A construct's tail restore puts the pre-construct narrowings back. A rebind inside the construct
+// invalidated one, and that invalidation has to survive the restore. Each section null-derefs at
+// runtime if it does not.
+fn get(f)? { if (f) { return null; } return "abc"; }
+say var x? = get(false);
+if (x != null) {
+    match (1) { _ => { x = get(true); }, }
+    say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+
+// @split
+fn get(f)? { if (f) { return null; } return "abc"; }
+say var x? = get(false);
+say var i = 0;
+if (x != null) {
+    while (i < 1) { x = get(true); i = i + 1; }
+    say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+
+// @split
+fn get(f)? { if (f) { return null; } return "abc"; }
+say var x? = get(false);
+if (x != null) {
+    if (true) { x = get(true); } else { }
+    say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+
+// @split
+// A throw leaves the body anywhere, so the catch runs on the very state the body's narrowing said
+// was impossible.
+fn get(f)? { if (f) { return null; } return "abc"; }
+say x? = get(true);
+try {
+    if (x == null) { throw "boom"; }
+    print("nope");
+} catch (e) {
+    say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+
+// @split
+// A construct that rebinds nothing still hands its narrowing on.
+fn get(f)? { if (f) { return null; } return "abc"; }
+say var x? = get(false);
+say var i = 0;
+if (x != null) {
+    while (i < 1) { i = i + 1; }
+    say y = x;
+    print(y); // expect: abc
+}

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
-use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRule, ReqFn, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
+use crate::ast::{MatchArm, Ast, AstId, BuiltinType, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Receiver, ReqFn, ReqMember, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
 use crate::frontend::lex::{ContextualKeyword, Diagnostic, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -16,25 +16,69 @@ macro_rules! parse_error {
 enum Visibility { Pub, Inner, Private }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SlotKind { Local, Param, Field, Return }
+enum SlotKind { Local, Param, Receiver, Field, Member, Return }
 
 impl SlotKind {
     fn allows_void_clause(self) -> bool {
         self == SlotKind::Return
     }
 
-    /// Only parameters and return slots carry capability markers (like value mutability).
-    fn allows_capability(self) -> bool {
-        matches!(self, SlotKind::Param | SlotKind::Return)
+    fn allows_container(self) -> bool {
+        self != SlotKind::Receiver
     }
 
     fn label(self) -> &'static str {
         match self {
             SlotKind::Local => "local",
             SlotKind::Param => "parameter",
+            SlotKind::Receiver => "receiver",
             SlotKind::Field => "field",
+            SlotKind::Member => "required member",
             SlotKind::Return => "return",
         }
+    }
+}
+
+/// A name is a type or trait spelling when it begins with an uppercase ASCII letter. Casing is
+/// grammatical, so a bare matcher name classifies by case with no resolution.
+pub(super) fn spells_type(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_uppercase())
+}
+
+/// A declared name's kind, used to phrase its casing error and require the right case. An obligation
+/// is lowercase so a `:` clause never reads as a type annotation.
+#[derive(Clone, Copy)]
+pub(super) enum NameKind {
+    Type,
+    Trait,
+    Fn,
+    Variable,
+    Parameter,
+    Field,
+    Member,
+    Obligation,
+    Binder,
+}
+
+impl NameKind {
+    /// The article-and-noun phrase naming this kind in a diagnostic.
+    fn noun(self) -> &'static str {
+        match self {
+            NameKind::Type => "a type",
+            NameKind::Trait => "a trait",
+            NameKind::Fn => "an fn",
+            NameKind::Variable => "a variable",
+            NameKind::Parameter => "a parameter",
+            NameKind::Field => "a field",
+            NameKind::Member => "a member",
+            NameKind::Obligation => "an obligation",
+            NameKind::Binder => "a binder",
+        }
+    }
+
+    /// Types and traits are uppercase; every other kind is lowercase.
+    fn is_type(self) -> bool {
+        matches!(self, NameKind::Type | NameKind::Trait)
     }
 }
 
@@ -106,7 +150,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         };
 
         let pos = parser.tokens.peek(0).pos.clone();
-        let mut stmts: Vec<AstId<Stmt>> = Vec::new();
+
+        // A built-in is declared like any other type, ahead of the program.
+        let mut stmts: Vec<AstId<Stmt>> = vec![parser.declare_err(&pos)];
         while parser.tokens.has_next() {
             stmts.push(parser.parse_stmt()?);
         }
@@ -125,9 +171,22 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         anyhow!("{}", Diagnostic::new(message, pos.clone()).with_help(help))
     }
 
-    /// Consumes a leading `mut` modifier if present, reporting whether it was there.
-    fn parse_mut(&mut self) -> bool {
-        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
+    /// Enforces the casing convention at a declaration: a type or trait is uppercase-initial, every
+    /// other kind is lowercase- or `_`-initial.
+    fn check_name_case(&self, name: &str, kind: NameKind, pos: &SourcePosition) -> Result<(), anyhow::Error> {
+        let noun = kind.noun();
+        match (kind.is_type(), spells_type(name)) {
+            (true, false) => Err(self.error_help(format!("{noun} name must start with an uppercase letter"),
+                pos, format!("rename `{name}` to start with an uppercase letter"))),
+            (false, true) => Err(self.error_help(format!("{noun} name must start with a lowercase letter"),
+                pos, format!("rename `{name}` to start with a lowercase letter"))),
+            _ => Ok(()),
+        }
+    }
+
+    /// Consumes a leading modifier keyword if present, reporting whether it was there.
+    fn take_modifier(&mut self, word: ContextualKeyword) -> bool {
+        if self.tokens.peek(0).contextual() == Some(word) {
             self.tokens.next();
             return true;
         }

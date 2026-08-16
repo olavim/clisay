@@ -7,18 +7,41 @@ a["k"] = 2;
 print(a["k"]); // expect: 2
 
 // @split
-// A capture that mutates the value moves it, so the enclosing binding then goes dead.
+// A capture that mutates the value takes over the writing, not the value, so the enclosing binding
+// goes on reading it.
 say a = mut {};
 a["k"] = 1;
 say f = () => { a["k"] = 9; };
-print(a["k"]); // error: value used after it was moved into a closure
+print(a["k"]); // expect: 1
 
 // @split
-// A capture that persists the value moves it as well.
+// The enclosing binding is only a reader now, so writing through it is rejected.
+say a = mut {};
+say f = () => { a["k"] = 9; };
+a["k"] = 2; // error: cannot mutate a value whose write-ownership moved to a closure
+
+// @split
+// A reader cannot hand out a writing name either, so the value keeps its one writer.
+say a = mut {};
+say f = () => { a["k"] = 9; };
+say b = a;
+b["k"] = 2; // error: cannot mutate a value whose write-ownership moved to a closure
+
+// @split
+// Handing out a second reader takes nothing, so both go on reading.
+say a = mut {};
+a["k"] = 1;
+say f = () => { a["k"] = 9; };
+say b = a;
+print(a["k"]); // expect: 1
+print(b["k"]); // expect: 1
+
+// @split
+// A capture that persists the value leaves it readable too.
 say sink = mut [];
 say a = mut {};
 say f = () => { sink.push(a); };
-print(a["k"]); // error: value used after it was moved into a closure
+print(a["k"]); // expect: null
 
 // @split
 // Freezing before the capture leaves the value immutable, so it is freely aliasable.
