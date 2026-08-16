@@ -1,0 +1,36 @@
+// A clause states what the slot owes. The pattern beside it still tests, and the two are not the same question.
+type Old { } obligation stale { witness Old; discharge to use; }
+
+fn pattern_less(x: opt)! { return x ?? "none"; }
+fn witnessless(x: stale)! { return x ?? "none"; }
+
+print(pattern_less(null)); // expect: none
+print(witnessless(Old{})); // expect: none
+
+// @split
+type Node { pub n; init(this, *n) { this.n = n; } }
+
+fn both(x @ Node : opt) {
+    say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
+}
+
+// @split
+type Node { pub n; init(this, *n) { this.n = n; } }
+
+fn both(x @ Node : opt)! { return x ?? "none"; }
+try {
+    both(null);
+} catch (e) {
+    print(e); // expect: argument does not match `x @ Node : opt`
+}
+
+// @split
+type Node { pub var n; init(this, *n) { this.n = n; } }
+
+fn writes(mut (p @ Node)) { p.n = 5; }
+say a = mut Node(1);
+writes(a);
+print(a.n); // expect: 5
+
+// @split
+fn f(): opt mut { return null; } // error: Mutability must lead the ':' clause
