@@ -6,7 +6,7 @@ a[0][0] = 2; // error: cannot write an element another name already writes
 
 // @split
 // The same through a field.
-type T { pub var x; init(this, v: *mut) { this.x = v; } }
+type T { pub var x; init(this, *mut v) { this.x = v; } }
 say a = mut [mut [0]];
 say e = a[0];
 say t = mut T(e);

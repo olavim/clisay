@@ -1,5 +1,5 @@
-fn consumes(x: *mut) { }
-fn apply(cb, val: mut) {
+fn consumes(*mut x) { }
+fn apply(cb, mut val) {
   cb(val);
 }
 say v = mut {};
@@ -8,7 +8,7 @@ apply(consumes, v);
 // error: cannot pass a borrowed argument to a callee that retains it
 //  --> opaque_consume_barrier.say:3:6
 //   |
-// 2 | fn apply(cb, val: mut) {
+// 2 | fn apply(cb, mut val) {
 // 3 |   cb(val);
 //   |      ^^^ `val` is borrowed but the callee retains it
 //   |

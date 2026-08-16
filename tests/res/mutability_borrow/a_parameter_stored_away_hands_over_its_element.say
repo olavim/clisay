@@ -27,7 +27,7 @@ print(a[0][0]); // expect: 5
 // @split
 // The container may be the callee's own parameter. Its slot dies with the call, but the container
 // it named does not, so the claim it made stands.
-fn keep(c: mut, *v) { c.push(v); }
+fn keep(mut c, *v) { c.push(v); }
 say s1 = mut [];
 say a = mut [mut [0]];
 keep(s1, a[0]);

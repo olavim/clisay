@@ -1,6 +1,6 @@
 // A conditionally-escaped block-local does not definitely give the write-ownership back, so the
 // source does not write it again. Reading is unaffected.
-fn escape(x: *mut) {}
+fn escape(*mut x) {}
 say cond = true;
 say a = mut [1];
 { say b = a; if (cond) { escape(b); } }

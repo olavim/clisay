@@ -22,7 +22,7 @@ f(m);
 
 // @split
 // A taken value the callee passes to nothing is still nobody's, so a later write is refused.
-fn drop(c: *mut) { }
+fn drop(*mut c) { }
 fn get(x)! { return x; }
 say f = get;
 say keep = mut [];

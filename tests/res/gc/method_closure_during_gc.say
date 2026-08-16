@@ -5,7 +5,7 @@ type Counter {
     init(this) {
         this.n = 0;
     }
-    pub fn inc(this: mut) {
+    pub fn inc(mut this) {
         this.n = this.n + 1;
     }
 }

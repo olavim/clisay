@@ -11,7 +11,7 @@ print(a[0]); // expect: 1
 
 // @split
 // Through a constructor call.
-type Box { pub var item; init(this, x: *mut) { this.item = x; } }
+type Box { pub var item; init(this, *mut x) { this.item = x; } }
 say a = mut [1];
 { say b = mut Box(a); }
 print(a[0]); // expect: 1

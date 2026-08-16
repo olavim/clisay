@@ -70,7 +70,7 @@ fn param_forms_are_all_patterns() {
 
 #[test]
 fn param_pattern_carries_a_clause() {
-    let ast = parse("fn f(x @ Node { next } | null : mut) {}");
+    let ast = parse("fn f(mut (x @ Node { next } | null)) {}");
     let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
     assert_eq!(ast.text(param.binder(&ast).expect("no whole-value binder")), "x");
     assert_eq!(param.clause.capability, Capability::Mut);
@@ -81,10 +81,10 @@ fn param_pattern_carries_a_clause() {
     assert!(matches!(ast.get(&alternatives[1]), Matcher::Literal(MatchScalar::Null)));
 }
 
-/// The clause describes the slot, so it does not need the pattern to name the value.
+/// The marker describes the slot, so it does not need the pattern to name the value.
 #[test]
-fn unnamed_param_still_carries_a_clause() {
-    let ast = parse("fn f(_ : *mut, Node : mut opt) {}");
+fn unnamed_param_still_carries_a_capability() {
+    let ast = parse("fn f(*mut _, mut Node : opt) {}");
     let params = &nth_fn(&ast, &top_stmts(&ast), 0).params;
     assert!(params[0].binder(&ast).is_none());
     assert_eq!(params[0].clause.capability, Capability::MoveMut);
@@ -93,17 +93,20 @@ fn unnamed_param_still_carries_a_clause() {
     assert_eq!(ast.text(params[1].clause.names[0]), "opt");
 }
 
-/// The prefix and the clause fill the same field, so a reader downstream cannot tell them apart.
+/// The marker lands in the clause the rest of the pipeline reads, whichever form wrote it.
 #[test]
-fn capability_prefix_and_clause_agree() {
-    let ast = parse("fn f(a, mut b, *c, *mut d) {} fn g(a: mut, b: *mut) {} fn h(*mut e) {}");
+fn capability_prefix_fills_the_clause() {
+    let ast = parse("fn f(a, mut b, *c, *mut d) {} fn h(*mut e) {}");
     let stmts = top_stmts(&ast);
     let caps: Vec<Capability> = nth_fn(&ast, &stmts, 0).params.iter().map(|p| p.clause.capability).collect();
     assert_eq!(caps, vec![Capability::None, Capability::Mut, Capability::Move, Capability::MoveMut]);
 
-    let clause: Vec<Capability> = nth_fn(&ast, &stmts, 1).params.iter().map(|p| p.clause.capability).collect();
-    assert_eq!(clause, vec![Capability::Mut, Capability::MoveMut]);
-    assert_eq!(nth_fn(&ast, &stmts, 2).params[0].clause.capability, Capability::MoveMut);
+    assert_eq!(nth_fn(&ast, &stmts, 1).params[0].clause.capability, Capability::MoveMut);
+
+    // A parameter and a receiver take the marker ahead of the name, and nowhere else.
+    for src in ["fn f(x: mut) {}", "fn f(x: *mut) {}", "type T { pub fn m(this: mut) {} }"] {
+        assert!(try_parse(src).is_err(), "{src}");
+    }
 }
 
 /// A receiver has no pattern, so the prefix is the only place its capability can sit.
@@ -128,7 +131,7 @@ fn param_pattern_rejections() {
 #[test]
 fn param_capability_marker() {
     // `mut` / `*mut` lead the clause, ahead of the obligation atoms.
-    let ast = parse("fn f(a: mut, b: *mut, c: mut opt) {}");
+    let ast = parse("fn f(mut a, *mut b, mut c: opt) {}");
     let stmts = top_stmts(&ast);
     let params = &nth_fn(&ast, &stmts, 0).params;
     assert_eq!(params[0].clause.capability, Capability::Mut);
@@ -149,13 +152,13 @@ fn fn_return_capability_marker() {
 #[test]
 fn capability_marker_must_lead_the_clause() {
     // The capability leads, so `mut opt fails` is the only spelling of that clause.
-    let ast = parse("fn f(x: mut opt fails) {}");
-    let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
-    assert_eq!(param.clause.capability, Capability::Mut);
-    let names: Vec<&str> = param.clause.names.iter().map(|n| ast.text(*n)).collect();
+    let ast = parse("fn f(): mut opt fails {}");
+    let decl = nth_fn(&ast, &top_stmts(&ast), 0);
+    assert_eq!(decl.clause.capability, Capability::Mut);
+    let names: Vec<&str> = decl.clause.names.iter().map(|n| ast.text(*n)).collect();
     assert_eq!(names, vec!["opt", "fails"]);
 
-    for src in ["fn f(x: opt mut) {}", "fn f(x: opt *mut fails) {}", "fn f(x: [taint] mut) {}"] {
+    for src in ["fn f(): opt mut {}", "fn f(): opt *mut fails {}", "fn f(): [taint] mut {}"] {
         assert!(try_parse(src).is_err(), "{src}");
     }
 }
@@ -163,7 +166,7 @@ fn capability_marker_must_lead_the_clause() {
 #[test]
 fn obligation_atoms_stay_unordered() {
     // Only the capability's position is pinned. The obligations among themselves are a set.
-    for src in ["fn f(x: mut opt fails) {}", "fn f(x: mut fails opt) {}"] {
+    for src in ["fn f(mut x: opt fails) {}", "fn f(mut x: fails opt) {}"] {
         let ast = parse(src);
         let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
         let mut names: Vec<&str> = param.clause.names.iter().map(|n| ast.text(*n)).collect();
@@ -199,11 +202,11 @@ fn value_mut_wraps_any_operand_optimistically() {
 #[test]
 fn capability_marker_rejections() {
     // `*mut` is one token, so a space between `*` and `mut` is not the move marker.
-    assert!(try_parse("fn f(x: * mut) {}").is_err());
+    assert!(try_parse("fn f(): * mut {}").is_err());
     assert!(try_parse("say x: mut;").is_err());
     assert!(try_parse("type T { a: mut; }").is_err());
-    assert!(try_parse("fn f(x: mut mut) {}").is_err());
-    assert!(try_parse("fn f(x: mut *mut) {}").is_err());
+    assert!(try_parse("fn f(): mut mut {}").is_err());
+    assert!(try_parse("fn f(): mut *mut {}").is_err());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 // Rebinding gives the slot a value of its own, so the earlier call has nothing left to prove.
 type Box { pub var v; init(this) { this.v = 0; } }
-fn eats(x: *mut) { }
+fn eats(*mut x) { }
 say consume = eats;
 say var a = mut Box();
 consume(a);

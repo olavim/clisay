@@ -1,15 +1,15 @@
-type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.item = x; } }
+type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(mut this, x) { this.item = x; } }
 fn make(): mut { return mut {}; }
 say s = mut Sink();
 say m = make();
 s.keep(m);
 // error(full):
 // error: cannot retain a borrowed argument
-//  --> mutable_into_immutable_param.say:1:97
+//  --> mutable_into_immutable_param.say:1:96
 //   |
-// 1 | type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.item = x; } }
-//   |                                                                                -                ^ `x` is retained here
-//   |                                                                                |
-//   |                                                                                `x` is borrowed here
+// 1 | type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(mut this, x) { this.item = x; } }
+//   |                                                                               -                ^ `x` is retained here
+//   |                                                                               |
+//   |                                                                               `x` is borrowed here
 //   |
 //   = help: declare it `*x` to retain it, or freeze or copy it before persisting

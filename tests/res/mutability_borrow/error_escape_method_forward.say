@@ -1,6 +1,6 @@
 // A `this.method` call forwards to the resolved method, so the persist is caught in the body that
 // does the storing.
-type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.stash(x); } fn stash(this: mut, x) { this.item = x; } } // error: cannot retain a borrowed argument
+type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(mut this, x) { this.stash(x); } fn stash(mut this, x) { this.item = x; } } // error: cannot retain a borrowed argument
 say s = mut Sink();
 say m = mut [1, 2];
 s.keep(m);

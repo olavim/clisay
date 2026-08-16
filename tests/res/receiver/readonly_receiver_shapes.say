@@ -9,7 +9,7 @@ type T { pub arr; init(this) { this.arr = mut [0]; } pub fn f(this) { this.arr[0
 type T { pub arr; init(this) { this.arr = mut []; } pub fn f(this) { this.arr.push(1); } } // error: expected mutable receiver
 
 // @split
-fn take(a: mut) { a.push(1); }
+fn take(mut a) { a.push(1); }
 type T { pub arr; init(this) { this.arr = mut []; } pub fn f(this) { take(this.arr); } } // error: expected mutable argument
 
 // @split
@@ -19,19 +19,19 @@ type T { pub inner; init(this) { this.inner = mut I(); } pub fn f(this) { this.i
 // @split
 // Naming a member is not calling it. `t.set` is a dispatch site that resolves when it runs, so
 // taking it is allowed whatever the receiver is; only the call asks for a mutable receiver.
-type T { pub var x?; pub fn set(this: mut, *v) { this.x = v; } }
+type T { pub var x?; pub fn set(mut this, *v) { this.x = v; } }
 say t = T {};
 say f = t.set;
 print("named"); // expect: named
 
 // @split
 // The same program with a mutable receiver runs, so the rule refuses only what it should.
-fn take(a: mut) { a.push(1); }
+fn take(mut a) { a.push(1); }
 type I { pub var v; init(this) { this.v = 0; } }
 type T {
     pub var n; pub arr; pub inner;
     init(this) { this.n = 0; this.arr = mut [0]; this.inner = mut I(); }
-    pub fn f(this: mut) { this.n = 1; this.arr[0] = 2; this.arr.push(3); take(this.arr); this.inner.v = 4; }
+    pub fn f(mut this) { this.n = 1; this.arr[0] = 2; this.arr.push(3); take(this.arr); this.inner.v = 4; }
 }
 say t = mut T();
 t.f();

@@ -55,8 +55,15 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn parse_mut_marker(&mut self, clause: &mut SlotClause, slot: SlotKind) -> Result<(), anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
 
-        if !slot.allows_capability() {
-            return Err(self.error_help(format!("A {} cannot carry a mutability capability", slot.label()), &pos, "'mut' / '*mut' are parameter or return facts"));
+        match slot {
+            SlotKind::Return => {},
+            // A named slot puts the marker ahead of the name, which is the one spelling it has.
+            SlotKind::Param | SlotKind::Receiver => return Err(self.error_help(
+                "A capability leads the name, not the ':' clause", &pos,
+                format!("write it ahead of the {}, as in `mut x` or `*mut x`", slot.label()))),
+            SlotKind::Local | SlotKind::Field | SlotKind::Member => return Err(self.error_help(
+                format!("A {} cannot carry a mutability capability", slot.label()), &pos,
+                "'mut' / '*mut' lead a parameter's name, or ride a return's clause")),
         }
         if clause.capability != Capability::None {
             parse_error!(self, &pos, "Repeated mutability capability");

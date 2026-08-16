@@ -37,7 +37,7 @@ print(a[0][0][0]); // expect: 4
 // @split
 // A receiver writes its own fields wherever it lives. The path root is the receiver itself, so
 // there is no container between it and the write to disagree with.
-type Inner { pub var n; pub fn bump(this: mut) { this.n = this.n + 1; } }
+type Inner { pub var n; pub fn bump(mut this) { this.n = this.n + 1; } }
 type Outer { pub var i; }
 say o = mut Outer { i: mut Inner { n: 0 } };
 o.i.bump();
@@ -45,7 +45,7 @@ print(o.i.n); // expect: 1
 
 // @split
 // The same where the container is an array.
-type Inner { pub var n; pub fn bump(this: mut) { this.n = this.n + 1; } }
+type Inner { pub var n; pub fn bump(mut this) { this.n = this.n + 1; } }
 say list = mut [];
 list.push(mut Inner { n: 4 });
 list[0].bump();

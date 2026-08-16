@@ -883,7 +883,7 @@ impl<'a> Checker<'a> {
         }
         let method = self.fn_ctx.name.map_or("this method".to_string(), |s| format!("`{}`", self.hir.text(s)));
         self.error_help("cannot mutate through a read-only receiver".to_string(), target,
-            format!("declare {method}'s receiver `this: mut` to let it mutate the instance"))
+            format!("declare {method}'s receiver `mut this` to let it mutate the instance"))
     }
 
     /// Whether a place is reached from `this` rather than from a named value.
@@ -901,7 +901,7 @@ impl<'a> Checker<'a> {
         let name = self.qualified_field(decl, field);
         let method = self.fn_ctx.name.map_or("this method".to_string(), |s| format!("`{}`", self.hir.text(s)));
         self.error_help(format!("cannot assign `{name}` through a read-only receiver"), lhs,
-            format!("declare {method}'s receiver `this: mut` to let it mutate the instance"))
+            format!("declare {method}'s receiver `mut this` to let it mutate the instance"))
     }
 
     /// The declaration a field needs to become reassignable, such as `pub var value`.

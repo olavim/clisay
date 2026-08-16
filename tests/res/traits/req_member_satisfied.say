@@ -1,6 +1,6 @@
 trait Counter {
     req count;
-    pub fn inc(this: mut) { this.count = this.count + 1; }
+    pub fn inc(mut this) { this.count = this.count + 1; }
     pub fn get(this)! { return this.count; }
 }
 type Widget with Counter {

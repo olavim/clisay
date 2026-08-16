@@ -102,7 +102,7 @@ impl<'a> Compiler<'a> {
 
         let escape_mask = masks.retains | masks.escapes;
 
-        // A method declaring `this: mut` needs the call to prove its receiver is mutable.
+        // A method declaring `mut this` needs the call to prove its receiver is mutable.
         let mut_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_mut());
 
         let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, mut_receiver));

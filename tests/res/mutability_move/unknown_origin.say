@@ -31,7 +31,7 @@ b[0] = 2; // error: cannot write an element another name already writes
 type C {
     pub var v;
     init(this) { this.v = 0; }
-    pub fn go(this: mut) {
+    pub fn go(mut this) {
         say p = this;
         p.v = 1;
         this.v = 2; // error: cannot write an element another name already writes
@@ -83,7 +83,7 @@ print(a[0][0]); // expect: 3
 type C {
     pub var v;
     init(this) { this.v = 0; }
-    pub fn go(this: mut) { this.v = 1; this.v = 2; }
+    pub fn go(mut this) { this.v = 1; this.v = 2; }
 }
 say c = mut C();
 c.go();

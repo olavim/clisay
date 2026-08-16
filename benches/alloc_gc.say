@@ -8,8 +8,8 @@ type Box {
     }
 }
 
-say mut i = 0;
-say mut sum = 0;
+say var i = 0;
+say var sum = 0;
 while i < 300000 {
     say b = Box(i);
     sum = sum + b.v;
