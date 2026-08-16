@@ -1,6 +1,6 @@
 //! Local and upvalue placement: where each name lives at runtime.
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 
 use crate::core::objects::UpvalueLocation;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirMatcher, Symbol};
@@ -19,11 +19,10 @@ impl<'a> Resolver<'a> {
             self.type_index.remove(&gone.name);
         }
 
-        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
         let mut cleanups = Vec::new();
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
             if self.locals.last().unwrap().is_captured {
-                cleanups.push(super::Cleanup::CloseUpvalue((self.locals.len() - 1) as u8 - local_offset));
+                cleanups.push(super::Cleanup::CloseUpvalue(self.frame_slot(self.locals.len() - 1)));
             } else {
                 cleanups.push(super::Cleanup::Pop);
             }
@@ -43,23 +42,34 @@ impl<'a> Resolver<'a> {
     }
 
     /// Pushes a local and answers its absolute index. Every local is introduced through here.
-    fn push_local(&mut self, name: Option<Symbol>, decl: Option<usize>) -> Result<u8, anyhow::Error> {
-        if self.locals.len() >= u8::MAX as usize {
-            bail!("Too many variables in scope");
+    fn push_local(&mut self, name: Option<Symbol>, decl: Option<usize>) -> Result<usize, anyhow::Error> {
+        if self.locals.len() - self.local_offset() >= u8::MAX as usize {
+            return Err(self.too_many_locals());
         }
         self.locals.push(Local { name, depth: self.scope_depth, is_captured: false, decl });
-        Ok((self.locals.len() - 1) as u8)
+        Ok(self.locals.len() - 1)
+    }
+
+    fn too_many_locals(&self) -> anyhow::Error {
+        let Some(frame) = self.fn_frames.last() else {
+            return anyhow!("Too many variables in scope");
+        };
+        self.error(format!("Too many variables in '{}'", self.hir.text(frame.name)), &frame.body)
     }
 
     /// Records the frame slots live where a node begins.
     pub(super) fn record_depth<T: 'static>(&mut self, id: &HirId<T>) {
-        let depth = self.locals.len() as u8 - self.local_offset();
+        let depth = self.frame_slot(self.locals.len());
         self.bindings.depths.insert(id.index(), depth);
     }
 
     /// The index the current frame's slots are counted from.
-    fn local_offset(&self) -> u8 {
+    fn local_offset(&self) -> usize {
         self.fn_frames.last().map_or(0, |frame| frame.local_offset)
+    }
+
+    fn frame_slot(&self, index: usize) -> u8 {
+        (index - self.local_offset()) as u8
     }
 
     /// Declares a binding. `decl` is the node it comes from.
@@ -69,13 +79,13 @@ impl<'a> Resolver<'a> {
 
         // Duplicate-name collisions across the whole namespace are caught earlier, in `middle::names`.
         let index = self.push_local(Some(name), Some(decl))?;
-        Ok(index - self.local_offset())
+        Ok(self.frame_slot(index))
     }
 
     /// Reserves an unnamed stack slot, returning its frame-relative index.
     pub(super) fn declare_temp(&mut self) -> Result<u8, anyhow::Error> {
         let index = self.push_local(None, None)?;
-        Ok(index - self.local_offset())
+        Ok(self.frame_slot(index))
     }
 
     /// Declares a matcher's binders as locals, pairing each with the slot it stores into.
@@ -88,14 +98,13 @@ impl<'a> Resolver<'a> {
     }
 
     pub(super) fn resolve_local(&self, name: Symbol) -> Option<u8> {
-        let local_offset = self.fn_frames.last().map_or(0, |frame| frame.local_offset);
-        self.resolve_local_in_range(name, local_offset, self.locals.len() as u8)
+        self.resolve_local_in_range(name, self.local_offset(), self.locals.len())
     }
 
-    fn resolve_local_in_range(&self, name: Symbol, start: u8, end: u8) -> Option<u8> {
+    fn resolve_local_in_range(&self, name: Symbol, start: usize, end: usize) -> Option<u8> {
         for i in (start..end).rev() {
-            if self.locals[i as usize].name == Some(name) {
-                return Some(i - start);
+            if self.locals[i].name == Some(name) {
+                return Some((i - start) as u8);
             }
         }
         None
@@ -124,7 +133,7 @@ impl<'a> Resolver<'a> {
         let range_end = self.fn_frames[frame_idx].local_offset;
 
         if let Some(idx) = self.resolve_local_in_range(name, range_start, range_end) {
-            self.mark_captured((range_start + idx) as usize);
+            self.mark_captured(range_start + idx as usize);
             return Ok(Some(self.add_upvalue(idx, true, frame_idx)?));
         }
 
@@ -168,7 +177,7 @@ impl<'a> Resolver<'a> {
         } else if let Some(idx) = self.resolve_upvalue(name)? {
             Place::Upvalue(idx)
         } else {
-            self.deny_private(name, node)?;
+            self.deny_private_member(name, node)?;
             Place::Global(name)
         };
         Ok(place)
@@ -208,7 +217,7 @@ impl<'a> Resolver<'a> {
 
     /// Chains one upvalue per frame between the receiver's owner and the body naming it.
     fn capture_this(&mut self, owner: usize) -> Result<u8, anyhow::Error> {
-        self.mark_captured(self.fn_frames[owner].local_offset as usize);
+        self.mark_captured(self.fn_frames[owner].local_offset);
         let mut idx = self.add_upvalue(0, true, owner + 1)?;
         for frame in (owner + 2)..self.fn_frames.len() {
             idx = self.add_upvalue(idx, false, frame)?;
@@ -228,6 +237,7 @@ impl<'a> Resolver<'a> {
         let local_offset = self.push_local(self_name, None)?;
         self.fn_frames.push(FnFrame {
             upvalues: Vec::new(),
+            name: decl.name,
             local_offset,
             type_frame: self.type_frames.last().map(|_| self.type_frames.len() as u8 - 1),
             owns_receiver: !matches!(kind, FnKind::Function),
@@ -263,7 +273,7 @@ impl<'a> Resolver<'a> {
         let frame = self.fn_frames.pop().unwrap();
         self.scope_depth -= 1;
         // The frame's callee slot and params (the body's own locals are popped by its block scope).
-        self.locals.truncate(frame.local_offset as usize);
+        self.locals.truncate(frame.local_offset);
 
         self.bindings.upvalues.insert(frame.body, frame.upvalues);
         Ok(())

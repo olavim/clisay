@@ -15,8 +15,7 @@ use crate::middle::hir::{
 use super::{FnKind, MemberClause, Resolver, TypeFrame, TypeLayout};
 
 impl<'a> Resolver<'a> {
-    /// The per-trait renamed slot for `name` if it's a private member of the trait whose body is
-    /// currently being resolved. Handles implicit-`this` private lookup.
+    /// The per-trait renamed slot for `name`.
     fn private_member(&self, name: Symbol) -> Option<Symbol> {
         let trait_sym = self.current_trait?;
         let frame = self.type_frames.last()?;
@@ -29,21 +28,18 @@ impl<'a> Resolver<'a> {
         layout.resolve_id(self.private_member(name).unwrap_or(name))
     }
 
-    /// Reports a member that exists only inside some trait as private rather than missing.
-    pub(super) fn deny_private<T: 'static>(&self, name: Symbol, node: &HirId<T>) -> Result<(), anyhow::Error> {
+    pub(super) fn deny_private_member<T: 'static>(&self, name: Symbol, node: &HirId<T>) -> Result<(), anyhow::Error> {
         if self.type_frames.last().is_some_and(|f| f.private_names.contains(&name)) {
             compiler_error!(self, node, "Member '{}' is private", self.hir.text(name));
         }
         Ok(())
     }
 
-    /// Whether a declaration is one the VM supplies, whose layout no brace can reach.
     fn is_builtin_type(&self, decl: &HirId<HirStmt>) -> bool {
         matches!(self.hir.get(decl), HirStmt::Type(decl) if decl.builtin.is_some())
     }
 
-    /// Resolves and validates a brace construction `C { field: value, ... }`: the type must be
-    /// known, and each brace field must be a distinct `pub` field.
+    /// Resolves and validates a brace construction `C { field: value, ... }`.
     pub(super) fn construct(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
         self.expression(callee)?;
         for (_, v) in brace { self.expression(v)?; }
@@ -63,8 +59,7 @@ impl<'a> Resolver<'a> {
             compiler_error!(self, callee, "'{}' is not a type", self.hir.text(type_name));
         };
 
-        // A brace does not run the factory, so the factory's arity does not gate it. `args` is a
-        // retired combined-form slot, always empty at a brace.
+        // A brace does not run the factory, so the factory's arity does not gate it.
         let mut seen: HashSet<Symbol> = HashSet::new();
         let mut ids = Vec::with_capacity(brace.len());
         for (field, _) in brace {
@@ -86,29 +81,22 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// Resolves a `this` member access (`this.x`, `this["x"]`) to a member id.
     pub(super) fn this_member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, _is_store: bool) -> Result<(), anyhow::Error> {
         self.resolve_this(target)?;
         let target_type = self.current_type().clone();
 
-        // Members on `this` are statically known. A string-literal key names a member; a
-        // computed `this[expr]` has no statically-known member and is rejected.
         let member_name = match self.hir.get(member) {
             HirExpr::Literal(HirLiteral::String(name)) => self.hir.symbol_of(name),
             HirExpr::Literal(_) => compiler_error!(self, target, "Invalid index: only member names index an instance"),
             _ => compiler_error!(self, target, "Invalid index: 'this' has no computed member; member names are statically known"),
         };
 
-        // Inside a trait body, `this.x` for the trait's own private member resolves to its
-        // per-trait slot, otherwise the plain name.
-        let lookup = member_name.map(|name| self.private_member(name).unwrap_or(name));
-        if let Some(member_id) = lookup.and_then(|name| target_type.resolve_id(name)) {
-            self.bindings.members.insert(*target, member_id);
+        let private_member_name = member_name.map(|name| self.private_member(name).unwrap_or(name));
+        if let Some(private_member_id) = private_member_name.and_then(|name| target_type.resolve_id(name)) {
+            self.bindings.members.insert(*target, private_member_id);
             return Ok(());
         }
 
-        // While validating a standalone trait, an unresolved member is a self-containment
-        // violation: the trait reached something it does not declare.
         if self.validating_trait {
             if let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) {
                 compiler_error!(self, target, "Trait '{}' accesses undeclared member 'this.{}'; use `with`, `req`, or `req fn` to provide it",
@@ -116,10 +104,8 @@ impl<'a> Resolver<'a> {
             }
         }
 
-        // A name that resolved to nothing but is some trait's private member is reported as
-        // private (it exists, but only inside its declaring trait), not as missing.
         if let Some(name) = member_name {
-            self.deny_private(name, target)?;
+            self.deny_private_member(name, target)?;
         }
 
         let type_name = self.hir.text(target_type.name);
@@ -135,10 +121,7 @@ impl<'a> Resolver<'a> {
         &self.type_frames.last().unwrap().layout
     }
 
-    /// Builds a type's runtime [`TypeLayout`], assigning each member its id: own fields,
-    /// methods, then the factory.
-    fn build_layout(&self, decl: &HirTypeDecl) -> Result<TypeLayout, anyhow::Error> {
-        // Member ids are one byte, and one is reserved for the factory even when none is declared.
+    fn build_type_layout(&self, decl: &HirTypeDecl) -> Result<TypeLayout, anyhow::Error> {
         if decl.fields.len() + decl.methods.len() >= u8::MAX as usize {
             bail!("Too many members in type '{}'", self.hir.text(decl.name));
         }
@@ -169,18 +152,19 @@ impl<'a> Resolver<'a> {
             }
             next_member_id += 1;
         }
+
         for stmt_id in &decl.methods {
             let method = self.fn_decl(stmt_id);
             layout.members.insert(method.name, TypeMember::Method(next_member_id));
             if !decl.pub_members.contains(&method.name) {
                 layout.non_public.insert(next_member_id);
             }
-            // A method member's nullability is its return nullability.
             if method.ret == ReturnShape::Nullable {
                 layout.nullable.insert(next_member_id);
             }
             next_member_id += 1;
         }
+
         // A member id is reserved for the factory whether or not the type declares one.
         layout.factory_id = next_member_id;
         next_member_id += 1;
@@ -189,8 +173,6 @@ impl<'a> Resolver<'a> {
         Ok(layout)
     }
 
-    /// Pushes the type frame that method bodies resolve against, deriving the private-name set
-    /// (plain names of every trait's private members) from the declaration's per-trait map.
     fn push_type_frame(&mut self, layout: TypeLayout, decl: &HirTypeDecl) {
         let private_names = decl.trait_privates.values().flat_map(|m| m.keys().copied()).collect();
         self.type_frames.push(TypeFrame {
@@ -201,21 +183,19 @@ impl<'a> Resolver<'a> {
     }
 
     pub(super) fn type_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
-        // A built-in takes no slot, but still needs its layout, so only the slot is skipped.
         if decl.builtin.is_none() {
             let slot = self.resolve_local(decl.name).expect("type declarations are reserved by hoisting");
             self.bindings.slots.insert(*stmt, slot);
         }
+
         self.enter_scope();
 
-        let layout = self.build_layout(decl)?;
+        let layout = self.build_type_layout(decl)?;
         self.push_type_frame(layout.clone(), decl);
 
-        // Method bodies resolve under the declaring trait's private scope (host members: none).
-        // Save/restore around the whole type so a nested type declaration doesn't leak its scope.
+        // Method bodies resolve under the declaring trait's private scope.
         let outer_trait = self.current_trait.take();
 
-        // A factory-less type has no factory body to resolve.
         if let HirStmt::Fn(init) = self.hir.get(&decl.init) {
             self.function(init, FnKind::Factory)?;
         }
@@ -231,24 +211,18 @@ impl<'a> Resolver<'a> {
         self.exit_scope(stmt);
 
         self.bindings.types.insert(*stmt, layout);
-        self.record_surface(stmt, &decl.pub_members);
+        self.record_public_members(stmt, &decl.pub_members);
         Ok(())
     }
 
-    /// Records a type/trait's public member names for the `x has T` surface form. Codegen emits one
-    /// membership check per name in this order, so it is the declaration order the set was built in.
-    fn record_surface(&mut self, stmt: &HirId<HirStmt>, members: &IndexSet<Symbol>) {
+    fn record_public_members(&mut self, stmt: &HirId<HirStmt>, members: &IndexSet<Symbol>) {
         self.bindings.surfaces.insert(*stmt, members.iter().copied().collect());
     }
 
-    /// Validates a standalone `trait`: resolves its method bodies against a layout built from its
-    /// declared `surface`, so a `this.x` outside the surface is a self-containment error. If a
-    /// trait fails self-containment validation, it will emit compile errors even if the trait is
-    /// never used.
+    /// Validates a standalone `trait`.
     pub(super) fn trait_declaration(&mut self, stmt: &HirId<HirStmt>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         self.enter_scope();
 
-        // A validation layout: every surface name (and every renamed private slot) resolves to a throwaway id.
         let mut layout = TypeLayout::empty(decl.name);
         let mut id: u8 = 0;
         for name in &decl.surface {
@@ -274,7 +248,7 @@ impl<'a> Resolver<'a> {
 
         self.type_frames.pop();
         self.exit_scope(stmt);
-        self.record_surface(stmt, &decl.surface);
+        self.record_public_members(stmt, &decl.surface);
         Ok(())
     }
 

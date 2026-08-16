@@ -1,0 +1,77 @@
+// A frame's local budget is its own, so an enclosing frame's variables do not spend it.
+say a0 = 0; say a1 = 1; say a2 = 2; say a3 = 3; say a4 = 4; say a5 = 5; say a6 = 6; say a7 = 7;
+say a8 = 8; say a9 = 9; say a10 = 10; say a11 = 11; say a12 = 12; say a13 = 13; say a14 = 14; say a15 = 15;
+say a16 = 16; say a17 = 17; say a18 = 18; say a19 = 19; say a20 = 20; say a21 = 21; say a22 = 22; say a23 = 23;
+say a24 = 24; say a25 = 25; say a26 = 26; say a27 = 27; say a28 = 28; say a29 = 29; say a30 = 30; say a31 = 31;
+say a32 = 32; say a33 = 33; say a34 = 34; say a35 = 35; say a36 = 36; say a37 = 37; say a38 = 38; say a39 = 39;
+say a40 = 40; say a41 = 41; say a42 = 42; say a43 = 43; say a44 = 44; say a45 = 45; say a46 = 46; say a47 = 47;
+say a48 = 48; say a49 = 49; say a50 = 50; say a51 = 51; say a52 = 52; say a53 = 53; say a54 = 54; say a55 = 55;
+say a56 = 56; say a57 = 57; say a58 = 58; say a59 = 59; say a60 = 60; say a61 = 61; say a62 = 62; say a63 = 63;
+say a64 = 64; say a65 = 65; say a66 = 66; say a67 = 67; say a68 = 68; say a69 = 69; say a70 = 70; say a71 = 71;
+say a72 = 72; say a73 = 73; say a74 = 74; say a75 = 75; say a76 = 76; say a77 = 77; say a78 = 78; say a79 = 79;
+say a80 = 80; say a81 = 81; say a82 = 82; say a83 = 83; say a84 = 84; say a85 = 85; say a86 = 86; say a87 = 87;
+say a88 = 88; say a89 = 89; say a90 = 90; say a91 = 91; say a92 = 92; say a93 = 93; say a94 = 94; say a95 = 95;
+say a96 = 96; say a97 = 97; say a98 = 98; say a99 = 99; say a100 = 100; say a101 = 101; say a102 = 102; say a103 = 103;
+say a104 = 104; say a105 = 105; say a106 = 106; say a107 = 107; say a108 = 108; say a109 = 109; say a110 = 110; say a111 = 111;
+say a112 = 112; say a113 = 113; say a114 = 114; say a115 = 115; say a116 = 116; say a117 = 117; say a118 = 118; say a119 = 119;
+say a120 = 120; say a121 = 121; say a122 = 122; say a123 = 123; say a124 = 124; say a125 = 125; say a126 = 126; say a127 = 127;
+say a128 = 128; say a129 = 129; say a130 = 130; say a131 = 131; say a132 = 132; say a133 = 133; say a134 = 134; say a135 = 135;
+say a136 = 136; say a137 = 137; say a138 = 138; say a139 = 139; say a140 = 140; say a141 = 141; say a142 = 142; say a143 = 143;
+say a144 = 144; say a145 = 145; say a146 = 146; say a147 = 147; say a148 = 148; say a149 = 149; say a150 = 150; say a151 = 151;
+say a152 = 152; say a153 = 153; say a154 = 154; say a155 = 155; say a156 = 156; say a157 = 157; say a158 = 158; say a159 = 159;
+say a160 = 160; say a161 = 161; say a162 = 162; say a163 = 163; say a164 = 164; say a165 = 165; say a166 = 166; say a167 = 167;
+say a168 = 168; say a169 = 169; say a170 = 170; say a171 = 171; say a172 = 172; say a173 = 173; say a174 = 174; say a175 = 175;
+say a176 = 176; say a177 = 177; say a178 = 178; say a179 = 179; say a180 = 180; say a181 = 181; say a182 = 182; say a183 = 183;
+say a184 = 184; say a185 = 185; say a186 = 186; say a187 = 187; say a188 = 188; say a189 = 189; say a190 = 190; say a191 = 191;
+say a192 = 192; say a193 = 193; say a194 = 194; say a195 = 195; say a196 = 196; say a197 = 197; say a198 = 198; say a199 = 199;
+fn f() {
+    say w0 = 0; say w1 = 1; say w2 = 2; say w3 = 3; say w4 = 4; say w5 = 5; say w6 = 6; say w7 = 7;
+    say w8 = 8; say w9 = 9; say w10 = 10; say w11 = 11; say w12 = 12; say w13 = 13; say w14 = 14; say w15 = 15;
+    say w16 = 16; say w17 = 17; say w18 = 18; say w19 = 19; say w20 = 20; say w21 = 21; say w22 = 22; say w23 = 23;
+    say w24 = 24; say w25 = 25; say w26 = 26; say w27 = 27; say w28 = 28; say w29 = 29; say w30 = 30; say w31 = 31;
+    say w32 = 32; say w33 = 33; say w34 = 34; say w35 = 35; say w36 = 36; say w37 = 37; say w38 = 38; say w39 = 39;
+    say w40 = 40; say w41 = 41; say w42 = 42; say w43 = 43; say w44 = 44; say w45 = 45; say w46 = 46; say w47 = 47;
+    say w48 = 48; say w49 = 49; say w50 = 50; say w51 = 51; say w52 = 52; say w53 = 53; say w54 = 54; say w55 = 55;
+    say w56 = 56; say w57 = 57; say w58 = 58; say w59 = 59;
+    print(w59); // expect: 59
+}
+f();
+
+// @split
+fn f() { // error: Too many variables in 'f'
+    say w0 = 0; say w1 = 1; say w2 = 2; say w3 = 3; say w4 = 4; say w5 = 5; say w6 = 6; say w7 = 7;
+    say w8 = 8; say w9 = 9; say w10 = 10; say w11 = 11; say w12 = 12; say w13 = 13; say w14 = 14; say w15 = 15;
+    say w16 = 16; say w17 = 17; say w18 = 18; say w19 = 19; say w20 = 20; say w21 = 21; say w22 = 22; say w23 = 23;
+    say w24 = 24; say w25 = 25; say w26 = 26; say w27 = 27; say w28 = 28; say w29 = 29; say w30 = 30; say w31 = 31;
+    say w32 = 32; say w33 = 33; say w34 = 34; say w35 = 35; say w36 = 36; say w37 = 37; say w38 = 38; say w39 = 39;
+    say w40 = 40; say w41 = 41; say w42 = 42; say w43 = 43; say w44 = 44; say w45 = 45; say w46 = 46; say w47 = 47;
+    say w48 = 48; say w49 = 49; say w50 = 50; say w51 = 51; say w52 = 52; say w53 = 53; say w54 = 54; say w55 = 55;
+    say w56 = 56; say w57 = 57; say w58 = 58; say w59 = 59; say w60 = 60; say w61 = 61; say w62 = 62; say w63 = 63;
+    say w64 = 64; say w65 = 65; say w66 = 66; say w67 = 67; say w68 = 68; say w69 = 69; say w70 = 70; say w71 = 71;
+    say w72 = 72; say w73 = 73; say w74 = 74; say w75 = 75; say w76 = 76; say w77 = 77; say w78 = 78; say w79 = 79;
+    say w80 = 80; say w81 = 81; say w82 = 82; say w83 = 83; say w84 = 84; say w85 = 85; say w86 = 86; say w87 = 87;
+    say w88 = 88; say w89 = 89; say w90 = 90; say w91 = 91; say w92 = 92; say w93 = 93; say w94 = 94; say w95 = 95;
+    say w96 = 96; say w97 = 97; say w98 = 98; say w99 = 99; say w100 = 100; say w101 = 101; say w102 = 102; say w103 = 103;
+    say w104 = 104; say w105 = 105; say w106 = 106; say w107 = 107; say w108 = 108; say w109 = 109; say w110 = 110; say w111 = 111;
+    say w112 = 112; say w113 = 113; say w114 = 114; say w115 = 115; say w116 = 116; say w117 = 117; say w118 = 118; say w119 = 119;
+    say w120 = 120; say w121 = 121; say w122 = 122; say w123 = 123; say w124 = 124; say w125 = 125; say w126 = 126; say w127 = 127;
+    say w128 = 128; say w129 = 129; say w130 = 130; say w131 = 131; say w132 = 132; say w133 = 133; say w134 = 134; say w135 = 135;
+    say w136 = 136; say w137 = 137; say w138 = 138; say w139 = 139; say w140 = 140; say w141 = 141; say w142 = 142; say w143 = 143;
+    say w144 = 144; say w145 = 145; say w146 = 146; say w147 = 147; say w148 = 148; say w149 = 149; say w150 = 150; say w151 = 151;
+    say w152 = 152; say w153 = 153; say w154 = 154; say w155 = 155; say w156 = 156; say w157 = 157; say w158 = 158; say w159 = 159;
+    say w160 = 160; say w161 = 161; say w162 = 162; say w163 = 163; say w164 = 164; say w165 = 165; say w166 = 166; say w167 = 167;
+    say w168 = 168; say w169 = 169; say w170 = 170; say w171 = 171; say w172 = 172; say w173 = 173; say w174 = 174; say w175 = 175;
+    say w176 = 176; say w177 = 177; say w178 = 178; say w179 = 179; say w180 = 180; say w181 = 181; say w182 = 182; say w183 = 183;
+    say w184 = 184; say w185 = 185; say w186 = 186; say w187 = 187; say w188 = 188; say w189 = 189; say w190 = 190; say w191 = 191;
+    say w192 = 192; say w193 = 193; say w194 = 194; say w195 = 195; say w196 = 196; say w197 = 197; say w198 = 198; say w199 = 199;
+    say w200 = 200; say w201 = 201; say w202 = 202; say w203 = 203; say w204 = 204; say w205 = 205; say w206 = 206; say w207 = 207;
+    say w208 = 208; say w209 = 209; say w210 = 210; say w211 = 211; say w212 = 212; say w213 = 213; say w214 = 214; say w215 = 215;
+    say w216 = 216; say w217 = 217; say w218 = 218; say w219 = 219; say w220 = 220; say w221 = 221; say w222 = 222; say w223 = 223;
+    say w224 = 224; say w225 = 225; say w226 = 226; say w227 = 227; say w228 = 228; say w229 = 229; say w230 = 230; say w231 = 231;
+    say w232 = 232; say w233 = 233; say w234 = 234; say w235 = 235; say w236 = 236; say w237 = 237; say w238 = 238; say w239 = 239;
+    say w240 = 240; say w241 = 241; say w242 = 242; say w243 = 243; say w244 = 244; say w245 = 245; say w246 = 246; say w247 = 247;
+    say w248 = 248; say w249 = 249; say w250 = 250; say w251 = 251; say w252 = 252; say w253 = 253; say w254 = 254; say w255 = 255;
+    say w256 = 256; say w257 = 257; say w258 = 258; say w259 = 259;
+    print(w0);
+}
+f();

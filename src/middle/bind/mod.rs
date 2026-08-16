@@ -299,7 +299,9 @@ struct TypeInScope {
 
 struct FnFrame {
     upvalues: Vec<UpvalueLocation>,
-    local_offset: u8,
+    name: Symbol,
+    /// Where this frame's slots start in `locals`.
+    local_offset: usize,
     type_frame: Option<u8>,
     /// Whether slot 0 of this frame is the receiver.
     owns_receiver: bool,
@@ -308,11 +310,9 @@ struct FnFrame {
 
 struct TypeFrame {
     layout: TypeLayout,
-    /// Per trait, its private members' plain name -> renamed slot name (from the HIR). The
-    /// resolver scopes a trait body's accesses to its own trait's entry. See `lower::traits`.
+    /// Trait's private members' plain name -> renamed slot name.
     trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
-    /// The plain names of every trait private member (any trait) for diagnostics: an access
-    /// that misses but names one of these is reported as private rather than missing.
+    /// The plain names of every trait private member.
     private_names: HashSet<Symbol>,
 }
 
