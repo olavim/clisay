@@ -1,6 +1,6 @@
 // Pushing a parameter into a container keeps it past the call, which the callee may not do with a
 // value it borrowed.
-fn stash(bin: mut, item) { bin.push(item); } // error: cannot retain a borrowed argument
+fn stash(mut bin, item) { bin.push(item); } // error: cannot retain a borrowed argument
 say sink = mut [];
 say m = mut [1, 2];
 stash(sink, m);

@@ -3,7 +3,7 @@
 type Box {
     pub var item;
     init(this) { this.item = 0; }
-    pub fn consume(this: *mut) { this.item = 1; }
+    pub fn consume(*mut this) { this.item = 1; }
     pub fn peek(this)! { return this.item; }
 }
 

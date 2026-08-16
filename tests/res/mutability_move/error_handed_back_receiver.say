@@ -2,7 +2,7 @@
 type C {
     pub var v;
     init(this) { this.v = 0; }
-    pub fn set(this: mut, *n)! { this.v = n; return this; }
+    pub fn set(mut this, *n)! { this.v = n; return this; }
 }
 say a = mut C();
 say b = a.set(1);

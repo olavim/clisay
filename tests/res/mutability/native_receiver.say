@@ -14,7 +14,7 @@ f(a);
 
 // @split
 // A `mut` parameter can.
-fn f(x: mut) { x.push(1); }
+fn f(mut x) { x.push(1); }
 say a = mut [0];
 f(a);
 print(a.length()); // expect: 2

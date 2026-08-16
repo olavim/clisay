@@ -1,5 +1,5 @@
 // A bracket write fails when the callee turned out to retain the argument.
-fn eats(x: *mut) { }
+fn eats(*mut x) { }
 say consume = eats;
 say a = mut [0];
 consume(a);

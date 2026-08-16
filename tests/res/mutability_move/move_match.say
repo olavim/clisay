@@ -13,7 +13,7 @@ print(build(0)[0]); // expect: 1
 
 // @split
 // A give in a fall-through arm still counts after the match, so the name no longer writes it.
-fn consume(xs: *mut) {}
+fn consume(*mut xs) {}
 say a = mut [1, 2];
 match a[0] {
   1 => { consume(a); },

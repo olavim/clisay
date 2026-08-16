@@ -1,6 +1,6 @@
 // A loop's next turn hands the same binding over again, and the second retain is what fails.
 type Box { pub var v; init(this) { this.v = 0; } }
-fn eats(x: *mut) { }
+fn eats(*mut x) { }
 say consume = eats;
 say a = mut Box();
 say var i = 0;

@@ -1,9 +1,9 @@
 // A borrow hole is satisfied by either a borrow or a consuming param.
 trait Sink {
-    req fn accept(this, x: mut);
+    req fn accept(this, mut x);
 }
 type Db with Sink {
-    pub fn accept(this, x: mut) { }
+    pub fn accept(this, mut x) { }
     init(this) {}
 }
 say d = Db();
@@ -11,10 +11,10 @@ print("ok"); // expect: ok
 
 // @split
 trait Sink {
-    req fn accept(this, x: mut);
+    req fn accept(this, mut x);
 }
 type Db with Sink {
-    pub fn accept(this, x: *mut) { }
+    pub fn accept(this, *mut x) { }
     init(this) {}
 }
 say d = Db();

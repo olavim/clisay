@@ -118,7 +118,7 @@ impl<'a> Shape<'a> {
                     return Err(self.error_ctx_help("parameter asks more than the trait declares",
                         &sat_param.pos, format!("`{type_name}.{name}` needs {param} mutable"),
                         &hole.pos, format!("`{trait_name}.{name}` only lends {param}"),
-                        format!("drop `mut` from {param}, or declare the hole `{param}: mut`")));
+                        format!("drop `mut` from {param}, or declare the hole `mut {param}`")));
                 }
 
                 // A satisfier may widen a pattern but not narrow it.

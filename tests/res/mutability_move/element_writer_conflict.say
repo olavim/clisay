@@ -80,7 +80,7 @@ b[0] = 2; // error: cannot write an element another name already writes
 // @split
 // Recursion reaching the same element twice through the same site.
 say arr = mut [mut [0]];
-fn down(a: mut, n) { say e = a[n - n]; e[0] = n; if (n > 0) { down(a, n - 1); } } // error: cannot write an element another name already writes
+fn down(mut a, n) { say e = a[n - n]; e[0] = n; if (n > 0) { down(a, n - 1); } } // error: cannot write an element another name already writes
 down(arr, 1);
 
 // @split

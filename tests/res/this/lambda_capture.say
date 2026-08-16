@@ -6,7 +6,7 @@ type Counter {
 
     pub fn show(this) { say f = () => print(this.n); f(); }
     pub fn nested(this) { say f = () => { say g = () => print(this.n); g(); }; f(); }
-    pub fn bump(this: mut) { say f = () => { this.n = this.n + 1; }; f(); }
+    pub fn bump(mut this) { say f = () => { this.n = this.n + 1; }; f(); }
     pub fn reader(this)! { return () => this.n; }
 }
 

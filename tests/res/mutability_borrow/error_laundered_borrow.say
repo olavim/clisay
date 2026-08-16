@@ -1,5 +1,5 @@
 // A borrow handed back through a return stays visible, so persisting the result is caught here
 // rather than left to the runtime.
 type Box { pub var v; init(this) { this.v = 0; } }
-fn hand(z: mut)!: mut { return z; }
-fn outer(w: mut, sink: mut) { sink.v = hand(w); } // error: cannot retain a borrowed argument
+fn hand(mut z)!: mut { return z; }
+fn outer(mut w, mut sink) { sink.v = hand(w); } // error: cannot retain a borrowed argument

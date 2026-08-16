@@ -37,7 +37,7 @@ f(m);
 // @split
 // The declaration is what governs, so a `mut` parameter is written through a capture just as it is
 // written directly.
-fn f(x: mut) { say cb = () => { x[0] = 5; return x[0]; }; print(cb()); } // expect: 5
+fn f(mut x) { say cb = () => { x[0] = 5; return x[0]; }; print(cb()); } // expect: 5
 say m = mut [1];
 f(m);
 
@@ -106,7 +106,7 @@ say n = [1];
 type T {
     pub var n;
     init(this) { this.n = mut [7]; }
-    pub fn bump(this: mut) { n[0] = 5; print(n[0]); }
+    pub fn bump(mut this) { n[0] = 5; print(n[0]); }
 }
 say t = mut T();
 t.bump(); // expect: 5
@@ -114,7 +114,7 @@ t.bump(); // expect: 5
 // @split
 // The same where the shadowed name is a read-only parameter rather than a global.
 fn outer(n) {
-    type T { pub var n; init(this) { this.n = mut [7]; } pub fn bump(this: mut) { n[0] = 5; print(n[0]); } }
+    type T { pub var n; init(this) { this.n = mut [7]; } pub fn bump(mut this) { n[0] = 5; print(n[0]); } }
     say t = mut T();
     t.bump();
 }

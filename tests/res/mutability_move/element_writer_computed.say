@@ -41,7 +41,7 @@ print(arr[0][0]); // expect: 2
 // @split
 // A `return` past the scope that took the slot still gives it back.
 say arr = mut [mut [0]];
-fn touch(a: mut, k) { say e = a[k]; e[0] = 1; return; }
+fn touch(mut a, k) { say e = a[k]; e[0] = 1; return; }
 say var i = 0;
 touch(arr, i);
 touch(arr, i);
@@ -50,7 +50,7 @@ print(arr[0][0]); // expect: 1
 // @split
 // So does an unwind.
 say arr = mut [mut [0]];
-fn touch(a: mut, k) { say e = a[k]; e[0] = 1; throw "up"; }
+fn touch(mut a, k) { say e = a[k]; e[0] = 1; throw "up"; }
 say var i = 0;
 try { touch(arr, i); } catch (e) { print("caught"); } // expect: caught
 try { touch(arr, i); } catch (e) { print("caught"); } // expect: caught

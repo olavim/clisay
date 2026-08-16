@@ -3,12 +3,12 @@ trait Sink {
 }
 type Bin with Sink {
     init(this) { }
-    pub fn take(this, x: mut) { x.push(1); } // error: parameter asks more than the trait declares
+    pub fn take(this, mut x) { x.push(1); } // error: parameter asks more than the trait declares
 }
 
 // @split
 trait Sink {
-    req fn take(this, x: mut);
+    req fn take(this, mut x);
 }
 type Bin with Sink {
     init(this) { }
@@ -19,11 +19,11 @@ print(b.take(mut [4])); // expect: 4
 
 // @split
 trait Sink {
-    req fn take(this, x: mut);
+    req fn take(this, mut x);
 }
 type Bin with Sink {
     init(this) { }
-    pub fn take(this, x: mut) { x.push(1); }
+    pub fn take(this, mut x) { x.push(1); }
 }
 say m = mut [0];
 Bin().take(m);

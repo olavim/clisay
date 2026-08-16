@@ -12,7 +12,7 @@ print(arr[0][0]); // expect: 3
 // @split
 // An explicit `return`, which jumps past the body's release.
 say arr = mut [mut [0]];
-fn touch(a: mut, k) { say e = a[k]; e[0] = 1; return; }
+fn touch(mut a, k) { say e = a[k]; e[0] = 1; return; }
 say var i = 0;
 touch(arr, i);
 touch(arr, i);
@@ -21,7 +21,7 @@ print(arr[0][0]); // expect: 1
 // @split
 // Falling off the end of a function body.
 say arr = mut [mut [0]];
-fn touch(a: mut, k) { say e = a[k]; e[0] = 2; }
+fn touch(mut a, k) { say e = a[k]; e[0] = 2; }
 say var i = 0;
 touch(arr, i);
 touch(arr, i);
@@ -30,7 +30,7 @@ print(arr[0][0]); // expect: 2
 // @split
 // A `return` from inside a loop inside the body.
 say arr = mut [mut [0]];
-fn touch(a: mut, k) { say var n = 0; while (n < 3) { say e = a[k]; e[0] = 3; return; } }
+fn touch(mut a, k) { say var n = 0; while (n < 3) { say e = a[k]; e[0] = 3; return; } }
 say var i = 0;
 touch(arr, i);
 touch(arr, i);
@@ -39,7 +39,7 @@ print(arr[0][0]); // expect: 3
 // @split
 // An unwind, which skips the release outright.
 say arr = mut [mut [0]];
-fn touch(a: mut, k) { say e = a[k]; e[0] = 4; throw "up"; }
+fn touch(mut a, k) { say e = a[k]; e[0] = 4; throw "up"; }
 say var i = 0;
 try { touch(arr, i); } catch (e) { }
 try { touch(arr, i); } catch (e) { }
@@ -49,7 +49,7 @@ print(arr[0][0]); // expect: 4
 // An unwind from a call nested below the one holding the slot.
 say arr = mut [mut [0]];
 fn inner() { throw "up"; }
-fn touch(a: mut, k) { say e = a[k]; e[0] = 5; inner(); }
+fn touch(mut a, k) { say e = a[k]; e[0] = 5; inner(); }
 say var i = 0;
 try { touch(arr, i); } catch (e) { }
 try { touch(arr, i); } catch (e) { }
@@ -58,7 +58,7 @@ print(arr[0][0]); // expect: 5
 // @split
 // A `finally` on the way out.
 say arr = mut [mut [0]];
-fn touch(a: mut, k) { try { say e = a[k]; e[0] = 6; return; } finally { } }
+fn touch(mut a, k) { try { say e = a[k]; e[0] = 6; return; } finally { } }
 say var i = 0;
 touch(arr, i);
 touch(arr, i);
@@ -66,7 +66,7 @@ print(arr[0][0]); // expect: 6
 
 // @split
 // A factory body, which returns through `RETURN_FAC` rather than `RETURN`.
-type H { pub var v; init(this, a: mut, k) { say e = a[k]; e[0] = 7; this.v = 0; } }
+type H { pub var v; init(this, mut a, k) { say e = a[k]; e[0] = 7; this.v = 0; } }
 say arr = mut [mut [0]];
 say var i = 0;
 say h1 = mut H(arr, i);
@@ -75,7 +75,7 @@ print(arr[0][0]); // expect: 7
 
 // @split
 // A method body.
-type H { init(this) { } pub fn touch(this, a: mut, k) { say e = a[k]; e[0] = 8; } }
+type H { init(this) { } pub fn touch(this, mut a, k) { say e = a[k]; e[0] = 8; } }
 say arr = mut [mut [0]];
 say h = H();
 say var i = 0;
@@ -86,7 +86,7 @@ print(arr[0][0]); // expect: 8
 // @split
 // A call through a value, where the callee is not known at the call site.
 say arr = mut [mut [0]];
-fn touch(a: mut, k) { say e = a[k]; e[0] = 9; }
+fn touch(mut a, k) { say e = a[k]; e[0] = 9; }
 say f = touch;
 say var i = 0;
 f(arr, i);
@@ -96,7 +96,7 @@ print(arr[0][0]); // expect: 9
 // @split
 // Recursion, where each level takes the slot its caller still holds.
 say arr = mut [mut [0], mut [0]];
-fn down(a: mut, n) { say e = a[n - n]; e[0] = n; if (n > 0) { down(a, n - 1); } }
+fn down(mut a, n) { say e = a[n - n]; e[0] = n; if (n > 0) { down(a, n - 1); } }
 down(arr, 0);
 down(arr, 0);
 print(arr[0][0]); // expect: 0

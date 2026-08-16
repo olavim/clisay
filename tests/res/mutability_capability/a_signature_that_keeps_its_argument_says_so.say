@@ -33,6 +33,6 @@ print(b.v[0]); // expect: 1
 
 // @split
 // Storing into a receiver is a different case, since the receiver is not what the call hands back.
-type Box { pub var v; init(this) { this.v = 0; } pub fn keep(this: mut, x) { this.v = x; } } // error: cannot retain a borrowed argument
+type Box { pub var v; init(this) { this.v = 0; } pub fn keep(mut this, x) { this.v = x; } } // error: cannot retain a borrowed argument
 say b = mut Box();
 b.keep([1]);

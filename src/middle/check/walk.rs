@@ -825,7 +825,7 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
         if receiver_typed.writable == Mutability::Immutable {
-            return Err(self.immutable_receiver_error(callee, receiver, "declares `this: mut`"));
+            return Err(self.immutable_receiver_error(callee, receiver, "declares `mut this`"));
         }
         self.claim_receiver_write(receiver)?;
         if marker.is_retain() {

@@ -530,7 +530,7 @@ pub struct ObjFn {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
     pub arity: u8,
-    /// Whether the method declared `this: mut`, so a call has to prove its receiver is mutable.
+    /// Whether the method declared `mut this`, so a call has to prove its receiver is mutable.
     pub mut_receiver: bool,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>,

@@ -6,7 +6,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 fn wide(n: usize) -> String {
     let mut src = String::from("type Box { pub mut v; init(this) { this.v = 0; } }\n");
     for i in 0..n {
-        src.push_str(&format!("fn f{i}(x: mut) {{ x.v = {i}; }}\n"));
+        src.push_str(&format!("fn f{i}(mut x) {{ x.v = {i}; }}\n"));
     }
     src
 }
@@ -14,9 +14,9 @@ fn wide(n: usize) -> String {
 /// A linear chain f0 -> f1 -> ... -> fN. Acyclic, so the ordering alone settles it.
 fn chain(n: usize) -> String {
     let mut src = String::from("type Box { pub mut v; init(this) { this.v = 0; } }\n");
-    src.push_str(&format!("fn f{}(x: mut) {{ x.v = 1; }}\n", n - 1));
+    src.push_str(&format!("fn f{}(mut x) {{ x.v = 1; }}\n", n - 1));
     for i in (0..n - 1).rev() {
-        src.push_str(&format!("fn f{i}(x: mut) {{ f{}(x); }}\n", i + 1));
+        src.push_str(&format!("fn f{i}(mut x) {{ f{}(x); }}\n", i + 1));
     }
     src
 }
@@ -27,7 +27,7 @@ fn cycle(k: usize) -> String {
     let mut src = String::from("type Box { pub mut v; init(this) { this.v = 0; } }\n");
     for i in 0..k {
         src.push_str(&format!(
-            "fn f{i}(x: mut, n) {{ if (n > 0) {{ f{}(x, n - 1); }} }}\n",
+            "fn f{i}(mut x, n) {{ if (n > 0) {{ f{}(x, n - 1); }} }}\n",
             (i + 1) % k
         ));
     }
@@ -45,7 +45,7 @@ fn cycle_propagating(k: usize) -> String {
             true => "sink.k = x; if (n > 0) { f0(x, n - 1); }".to_string(),
             false => format!("if (n > 0) {{ f{}(x, n - 1); }}", i + 1),
         };
-        src.push_str(&format!("fn f{i}(x: mut, n) {{ {body} }}\n"));
+        src.push_str(&format!("fn f{i}(mut x, n) {{ {body} }}\n"));
     }
     src
 }
@@ -54,8 +54,8 @@ fn cycle_propagating(k: usize) -> String {
 fn small_cycles(m: usize) -> String {
     let mut src = String::from("type Box { pub mut v; init(this) { this.v = 0; } }\n");
     for i in 0..m {
-        src.push_str(&format!("fn p{i}(x: mut, n) {{ if (n > 0) {{ q{i}(x, n - 1); }} }}\n"));
-        src.push_str(&format!("fn q{i}(x: mut, n) {{ if (n > 0) {{ p{i}(x, n - 1); }} }}\n"));
+        src.push_str(&format!("fn p{i}(mut x, n) {{ if (n > 0) {{ q{i}(x, n - 1); }} }}\n"));
+        src.push_str(&format!("fn q{i}(mut x, n) {{ if (n > 0) {{ p{i}(x, n - 1); }} }}\n"));
     }
     src
 }

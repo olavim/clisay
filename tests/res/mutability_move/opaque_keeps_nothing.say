@@ -16,7 +16,7 @@ say s = noop(b);
 print(b.v);   // expect: 2
 
 // A callee that borrows and writes is equally fine.
-fn bump(x: mut) { x.v = x.v + 5; }
+fn bump(mut x) { x.v = x.v + 5; }
 say lend = bump;
 say c = mut Box();
 lend(c);

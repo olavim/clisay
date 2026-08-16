@@ -27,7 +27,7 @@ sink.push(2); // error: cannot mutate a value whose write-ownership moved to fun
 
 // @split
 // And a mutating method on the same binding is refused for the same reason.
-type C { pub var n; init(this) { this.n = 0; } pub fn bump(this: mut) { this.n = 1; } }
+type C { pub var n; init(this) { this.n = 0; } pub fn bump(mut this) { this.n = 1; } }
 say c = mut C();
 fn touch() { c.bump(); }
 touch();

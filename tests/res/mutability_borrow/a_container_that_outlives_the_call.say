@@ -1,7 +1,7 @@
 // The same stores, into containers the call does not take with it. A local container is safe
 // because it dies; returning it or reaching an outer one is what stops it dying.
 say a = mut [];
-fn f(x: mut) { a.push(x); } // error: cannot retain a borrowed argument
+fn f(mut x) { a.push(x); } // error: cannot retain a borrowed argument
 say m = mut [1];
 f(m);
 
@@ -14,19 +14,19 @@ f(m);
 
 // @split
 // The container leaves by return, so the borrow inside it leaves with it.
-fn f(x: mut)! { say a = mut [x]; return a; } // error: cannot retain a borrowed argument
+fn f(mut x)! { say a = mut [x]; return a; } // error: cannot retain a borrowed argument
 say m = mut [1];
 say r = f(m);
 
 // @split
 // The same, written inline. Returning `x` itself would be fine, and wrapping it is not.
-fn f(x: mut)! { return mut [x]; } // error: cannot retain a borrowed argument
+fn f(mut x)! { return mut [x]; } // error: cannot retain a borrowed argument
 say m = mut [1];
 say r = f(m);
 
 // @split
 // A local container that is itself persisted takes what it holds along.
 say out = mut [];
-fn f(x: mut) { say a = mut [x]; out.push(a); } // error: cannot retain a borrowed argument
+fn f(mut x) { say a = mut [x]; out.push(a); } // error: cannot retain a borrowed argument
 say m = mut [1];
 f(m);

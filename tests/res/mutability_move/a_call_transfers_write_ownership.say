@@ -1,6 +1,6 @@
 // The call performs the `*mut` hand-off, so a write through the source is refused even where the
 // callee is opaque and codegen placed nothing.
-fn take(x: *mut) { }
+fn take(*mut x) { }
 say fns = mut [take];
 say arr = mut [0];
 fns[0](arr);
@@ -8,7 +8,7 @@ arr[0] = 1; // error: cannot write a value whose write-ownership was given away
 
 // @split
 // The same through a method, which reaches the callee by a different path.
-type T { pub fn m(this, x: *mut) { } }
+type T { pub fn m(this, *mut x) { } }
 say holder = mut [T()];
 say arr = mut [0];
 holder[0].m(arr);
@@ -16,7 +16,7 @@ arr[0] = 1; // error: cannot write a value whose write-ownership was given away
 
 // @split
 // Reading through the source is still fine. Only writing it is refused.
-fn take(x: *mut) { }
+fn take(*mut x) { }
 say fns = mut [take];
 say arr = mut [7];
 fns[0](arr);
@@ -24,14 +24,14 @@ print(arr[0]); // expect: 7
 
 // @split
 // A taker that stores the value leaves the container writing it, so nothing is retired.
-type T { pub var x; init(this, v: *mut) { this.x = v; } }
+type T { pub var x; init(this, *mut v) { this.x = v; } }
 say t = mut T(mut [0]);
 t.x[0] = 5;
 print(t.x[0]); // expect: 5
 
 // @split
 // A taker that hands the value straight back leaves the new name writing it.
-fn id(c: *mut)! { return c; }
+fn id(*mut c)! { return c; }
 say fns = mut [id];
 say a = mut [0];
 say b = fns[0](a);

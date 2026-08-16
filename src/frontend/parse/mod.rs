@@ -23,11 +23,6 @@ impl SlotKind {
         self == SlotKind::Return
     }
 
-    /// Only parameters and return slots carry capability markers (like value mutability).
-    fn allows_capability(self) -> bool {
-        matches!(self, SlotKind::Param | SlotKind::Receiver | SlotKind::Return)
-    }
-
     fn allows_container(self) -> bool {
         self != SlotKind::Receiver
     }

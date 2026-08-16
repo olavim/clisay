@@ -546,10 +546,10 @@ impl Vm {
         self.raise(diagnostic)
     }
 
-    /// Traps a call whose receiver cannot satisfy the method's declared `this: mut`.
+    /// Traps a call whose receiver cannot satisfy the method's declared `mut this`.
     pub(super) fn error_readonly_receiver(&self, name: *mut ObjString, target: Value) -> Result<(), anyhow::Error> {
         let method = unsafe { &(*name).value };
-        let mut diagnostic = Diagnostic::new(format!("`{method}` declares `this: mut`, but its receiver is immutable"),
+        let mut diagnostic = Diagnostic::new(format!("`{method}` declares `mut this`, but its receiver is immutable"),
             self.get_source_position().clone())
             .with_label("this receiver cannot be mutated");
         if let Some(origin) = target.as_object().immutable_origin() {
@@ -559,7 +559,7 @@ impl Vm {
         self.raise(diagnostic)
     }
 
-    /// Whether a receiver fails a method's declared `this: mut`.
+    /// Whether a receiver fails a method's declared `mut this`.
     #[inline]
     pub(super) fn receiver_rejects_mut(&self, target: Value) -> bool {
         matches!(target.kind(), ValueKind::Object(_)) && target.as_object().is_immutable()

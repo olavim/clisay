@@ -6,7 +6,7 @@ a[0][0] = 1; // error: cannot write an element whose write-ownership moved to an
 
 // @split
 // Thrown from a callee, so it passes a frame teardown as well as a scope exit.
-fn boom(c: *mut) { throw c; }
+fn boom(*mut c) { throw c; }
 say a = mut [mut [0]];
 say var kept? = null;
 try { say c = mut []; c.push(a[0]); boom(c); } catch (e) { kept = e; }
@@ -14,7 +14,7 @@ a[0][0] = 1; // error: cannot write an element whose write-ownership moved to an
 
 // @split
 // A `finally` runs on the way out and does not change who holds it.
-fn boom(c: *mut) { throw c; }
+fn boom(*mut c) { throw c; }
 say a = mut [mut [0]];
 say var kept? = null;
 try { say c = mut []; c.push(a[0]); boom(c); } catch (e) { kept = e; } finally { print("out"); }

@@ -1,5 +1,5 @@
-say mut i = 0;
-say mut x = 0;
+say var i = 0;
+say var x = 0;
 while i < 2000000 {
     x = x + i;
     i = i + 1;

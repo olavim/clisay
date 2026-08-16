@@ -1,6 +1,6 @@
 // A `*mut` callee that hands the value straight back leaves the new name writing it. A transfer
 // recorded at the call must not outlive the call and collide with that write.
-fn id(c: *mut)! { return c; }
+fn id(*mut c)! { return c; }
 say a = mut [];
 say b = id(a);
 b.push(1);

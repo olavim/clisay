@@ -1,6 +1,6 @@
 // A directly-minted `mut` value handed to a parameter that persists it is refused in the callee,
 // which is the body that stores what it borrowed.
-type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(this: mut, x) { this.item = x; } } // error: cannot retain a borrowed argument
+type Sink { pub var item; init(this) { this.item = 0; } pub fn keep(mut this, x) { this.item = x; } } // error: cannot retain a borrowed argument
 say s = mut Sink();
 say m = mut {};
 s.keep(m);

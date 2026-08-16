@@ -16,7 +16,7 @@ print(sink[0].inner); // expect: 5
 // @split
 // A `*mut` receiver is given away, so storing it is the point and the caller loses the name.
 say sink = mut [];
-type Box { pub var inner; pub fn hide(this: *mut) { sink.push(this); } }
+type Box { pub var inner; pub fn hide(*mut this) { sink.push(this); } }
 say c = mut Box { inner: 5 };
 c.hide();
 print(sink[0].inner); // expect: 5
@@ -30,7 +30,7 @@ print(r()); // expect: 1
 
 // @split
 // Nor is handing it back, which is what a builder does.
-type B { pub var n; init(this) { this.n = 0; } pub fn set(this: mut, *x)! { this.n = x; return this; } }
+type B { pub var n; init(this) { this.n = 0; } pub fn set(mut this, *x)! { this.n = x; return this; } }
 say b = mut B();
 b.set(1).set(2);
 print(b.n); // expect: 2

@@ -107,7 +107,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let prefix = self.parse_capability_prefix();
         self.tokens.expect(TokenType::This)?;
         let mut clause = self.parse_slot_clause(SlotKind::Receiver)?;
-        self.merge_capability_prefix(prefix, &mut clause, &start)?;
+        clause.capability = prefix;
         let pos = start.to(&self.tokens.previous().pos);
         Ok(Some(Receiver { pos, clause }))
     }
@@ -137,19 +137,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
     }
 
-    /// Folds a prefix marker into the slot clause.
-    fn merge_capability_prefix(&self, prefix: Capability, clause: &mut SlotClause, at: &SourcePosition) -> Result<(), anyhow::Error> {
-        if prefix == Capability::None {
-            return Ok(());
-        }
-        if clause.capability != Capability::None {
-            return Err(self.error_help("Repeated mutability capability", at,
-                "a slot declares its capability once, either ahead of the name or in the ':' clause"));
-        }
-        clause.capability = prefix;
-        Ok(())
-    }
-
     fn pattern_takes_prefix(&self, pattern: &AstId<Matcher>) -> bool {
         !matches!(self.ast.get(pattern), Matcher::As(..) | Matcher::Or(_) | Matcher::And(_))
     }
@@ -170,7 +157,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
         let nullable = self.parse_nullable();
         let mut clause = self.parse_slot_clause(SlotKind::Param)?;
-        self.merge_capability_prefix(prefix, &mut clause, &start)?;
+        clause.capability = prefix;
         let pos = start.to(&self.tokens.previous().pos);
         Ok(Param { pattern, pos, nullable, reassignable: false, clause })
     }

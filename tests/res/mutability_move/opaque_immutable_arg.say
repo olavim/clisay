@@ -1,6 +1,6 @@
 // Only a mutable argument has an owner to lose, so an immutable one is untouched by the rule.
 type Box { pub v; init(this, *n) { this.v = n; } }
-fn eats(x: *mut) { }
+fn eats(*mut x) { }
 say consume = eats;
 say noop = (x) => 0;
 

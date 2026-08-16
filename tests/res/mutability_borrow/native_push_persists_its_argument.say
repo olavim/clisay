@@ -13,7 +13,7 @@ print(m[0]); // expect: 1
 
 // @split
 // A native that only mutates the receiver keeps no argument either.
-fn drop1(bin: mut) { bin.remove("a"); }
+fn drop1(mut bin) { bin.remove("a"); }
 say d = mut { a: 1, b: 2 };
 drop1(d);
 print(d.size()); // expect: 1

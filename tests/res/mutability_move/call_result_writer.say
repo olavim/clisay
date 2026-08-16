@@ -85,7 +85,7 @@ g[0] = 5; // error: cannot write `g`, which gave its write-ownership away
 
 // @split
 // A function returning a name it did not take from an outer scope moves nothing.
-fn id(x: mut)! { return x; }
+fn id(mut x)! { return x; }
 say m = mut [0];
 say a = id(m);
 a[0] = 1;
