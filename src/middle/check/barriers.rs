@@ -40,8 +40,6 @@ pub enum Guard {
     StoreIntoContainer,
     /// A value entering an immutable construction.
     Immutable,
-    /// A write through a name, which takes the element's write-ownership.
-    WriteThroughName,
 }
 
 /// What a call does to its arguments.

@@ -163,12 +163,6 @@ impl<'a> Compiler<'a> {
                 None => {},
             },
             Guard::Immutable => self.emit(Inst::AssertImmutable, node),
-            // The slot rides the name, so the same name writing again is not a second writer. The
-            // store makes the same claim from its own root operand, so this is the faster spelling
-            // of a claim the runtime would make anyway.
-            Guard::WriteThroughName => if let Place::Local(slot) = self.place(node) {
-                self.emit(Inst::TakeWriteOwnership(slot), node);
-            },
         }
         Ok(())
     }

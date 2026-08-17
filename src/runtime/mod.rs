@@ -112,8 +112,6 @@ pub struct CallFrame {
 pub enum WriteOwnershipHolder {
     Name(*mut Value),
     Container(Value),
-    /// A container gc found unreachable.
-    Dead,
     /// A `*mut` parameter whose frame is gone. The write-ownership was handed over and the taker
     /// never handed it on, so it belongs to nobody.
     Retired,
@@ -122,12 +120,15 @@ pub enum WriteOwnershipHolder {
 /// The root used to reach a target.
 #[derive(Clone, Copy)]
 pub enum WriteRoot {
-    /// A binding identified by its location. The flag indicates if the path includes a receiver.
+    /// The write reaches its target through a binding, named by where it lives, as in `a[0] = 1`.
+    /// The flag marks a path through the receiver.
     Named(*mut Value, bool),
-    /// A root without a name, stored in the root stash.
+    /// The write targets an element of an unnamed value, such as `get()[0][0] = 1`. The stash
+    /// holds the container the element came from.
     Stashed(Value),
-    /// Reaching the target through nothing is not the same as an unnamed root.
-    Rootless,
+    /// The write targets an unnamed value directly, such as `get()[0] = 1`. This value has no name
+    /// or container. There is nothing to compare a second writer against.
+    NoRoot,
 }
 
 /// Write-ownership of one element, held by a name or by a container.
@@ -735,13 +736,16 @@ impl Vm {
     fn prune_write_ownerships(&mut self) {
         #[cfg(debug_assertions)]
         assert!(self.gc.marks_valid(), "a claim pruned outside the window where marks say what survived");
-        self.write_ownerships.retain_mut(|held| {
+        self.write_ownerships.retain(|held| {
             if !held.value.is_object() || !held.value.as_object().is_marked() {
                 return false;
             }
+            // A container not reached by the trace no longer holds the value. Clearing the bit
+            // allows subsequent writes to proceed without re-verifying.
             if let WriteOwnershipHolder::Container(container) = held.holder {
                 if !container.is_object() || !container.as_object().is_marked() {
-                    held.holder = WriteOwnershipHolder::Dead;
+                    held.value.as_object().set_write_owned(false);
+                    return false;
                 }
             }
             true

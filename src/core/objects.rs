@@ -100,12 +100,6 @@ pub enum RecordedHolder {
     Nobody,
 }
 
-pub fn held_by_aggregate(value: Value) -> bool {
-    let owner = value.as_object().container_write_owner();
-    owner.is_object()
-        && matches!(owner.kind(), ValueKind::Object(ObjectKind::Array | ObjectKind::Dict | ObjectKind::Instance))
-}
-
 /// Who the value says writes it, if anyone.
 pub fn recorded_holder(value: Value) -> RecordedHolder {
     match value.as_object().container_write_owner() {
@@ -131,8 +125,7 @@ fn give_container_write_ownership(container: Value, value: Value) -> Result<(), 
 /// Whether `root` write-owns `value`, directly or through the containers between them. A false
 /// says nothing about whether `root` contains it, only about who may write it.
 pub fn write_ownership_reaches(value: Value, root: Value) -> bool {
-    // A path that starts at its own target reached through nothing, so there is no container
-    // between them to disagree with.
+    // The root is the target. No intermediate container exists to cause a conflict.
     if value == root {
         return true;
     }

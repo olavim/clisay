@@ -78,7 +78,6 @@ pub enum Inst {
     /// count, an index into the barrier's owed-obligation names, and an index into the barrier's
     /// position list.
     AssertNoRetain(u8, u16, u16),
-    TakeWriteOwnership(u8),
     TransferWriteOwnership(u8),
     TransferWriteOwnershipUp(u8),
     /// The container is on the stack, this far below the element it is given.

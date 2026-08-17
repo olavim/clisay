@@ -120,7 +120,6 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::STASH_ROOT => vm.op_stash_root(),
         opcode::BARRIER_GUARD => vm.op_barrier_guard()?,
         opcode::ASSERT_NO_RETAIN => vm.op_assert_no_retain()?,
-        opcode::TAKE_WRITE_OWNERSHIP => vm.op_take_write_ownership()?,
         opcode::TRANSFER_WRITE_OWNERSHIP => vm.op_transfer_write_ownership()?,
         opcode::TRANSFER_WRITE_OWNERSHIP_UP => vm.op_transfer_write_ownership_up()?,
         opcode::TRANSFER_WRITE_OWNERSHIP_AT => vm.op_transfer_write_ownership_at()?,

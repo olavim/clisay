@@ -82,7 +82,7 @@ impl Vm {
             if self.receiver_rejects_mut(target) {
                 return self.error_readonly_receiver(name, target);
             }
-            self.ensure_writer_is_root(target, root)?;
+            self.ensure_writable(target, root)?;
         }
         if arg_count != arity as usize {
             let text = unsafe { &(*name).value };
@@ -132,7 +132,7 @@ impl Vm {
         let instance_ref = receiver.as_object().as_instance_ptr();
         let callable = self.get_property_by_id(instance_ref, member_id);
         if self.callable_writes_receiver(callable) {
-            self.ensure_writer_is_root(receiver, root)?;
+            self.claim_write_ownership_through(receiver, root)?;
         }
         self.stack.set(arg_count, callable);
         self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
@@ -159,7 +159,7 @@ impl Vm {
         // The callable takes the receiver's slot, which is where a call reads it from.
         let callable = self.stack.pop();
         if self.callable_writes_receiver(callable) {
-            self.ensure_writer_is_root(receiver, root)?;
+            self.claim_write_ownership_through(receiver, root)?;
         }
         self.stack.set(arg_count, callable);
         self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
@@ -293,7 +293,7 @@ impl Vm {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         }
         self.ensure_mutable(target)?;
-        self.ensure_writer_is_root(target, root)?;
+        self.claim_write_ownership_through(target, root)?;
 
         let value = self.stack.pop();
         self.ensure_borrowed_does_not_persist(value, root_kind, root_operand)?;
@@ -420,7 +420,7 @@ impl Vm {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.ensure_writer_is_root(target, root)?;
+        self.claim_write_ownership_through(target, root)?;
         let stored = self.stack.peek(0);
         self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
 
@@ -494,7 +494,7 @@ impl Vm {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.ensure_writer_is_root(target, root)?;
+        self.claim_write_ownership_through(target, root)?;
         let stored = self.stack.peek(0);
         self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
 
@@ -659,7 +659,7 @@ impl Vm {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
         self.ensure_mutable(value)?;
-        self.ensure_writer_is_root(value, root)?;
+        self.claim_write_ownership_through(value, root)?;
 
         let instance_ref = value.as_object().as_instance_ptr();
         let stored = self.stack.peek(0);

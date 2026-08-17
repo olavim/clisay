@@ -47,8 +47,7 @@ impl Leaving {
 /// Whether two records name the same holder.
 fn same_holder(a: WriteOwnershipHolder, b: WriteOwnershipHolder) -> bool {
     match (a, b) {
-        (WriteOwnershipHolder::Dead | WriteOwnershipHolder::Retired, _)
-        | (_, WriteOwnershipHolder::Dead | WriteOwnershipHolder::Retired) => false,
+        (WriteOwnershipHolder::Retired, _) | (_, WriteOwnershipHolder::Retired) => false,
         (WriteOwnershipHolder::Name(x), WriteOwnershipHolder::Name(y)) => x == y,
         (WriteOwnershipHolder::Container(x), WriteOwnershipHolder::Container(y)) => x == y,
         (WriteOwnershipHolder::Name(addr), WriteOwnershipHolder::Container(c))
@@ -188,41 +187,89 @@ impl Vm {
                 WriteRoot::Named(unsafe { (*self.get_upvalue(operand as usize)).location }, true)
             },
             // An empty stash means the store was assembled without the push that feeds it.
-            // Rootless forces the store to ask if anything holds the target.
+            // NoRoot then makes the store ask who holds the target, rather than trust a root
+            // it never received.
             ir::WRITE_ROOT_STASH => {
                 debug_assert!(!self.root_stash.is_empty(), "a store named a stashed root and nothing stashed one");
-                self.root_stash.pop().map_or(WriteRoot::Rootless, WriteRoot::Stashed)
+                self.root_stash.pop().map_or(WriteRoot::NoRoot, WriteRoot::Stashed)
             },
-            _ => WriteRoot::Rootless,
+            _ => WriteRoot::NoRoot,
         }
     }
 
-    /// Makes sure the root of a `target` value has write-ownership of the target.
-    /// The root of e.g. `a[i]` is `a`. The root of a local or upvalue is itself.
-    pub(super) fn ensure_writer_is_root(&mut self, target: Value, root: WriteRoot) -> Result<(), anyhow::Error> {
-        let (holder, root_value, receiver) = match root {
+    /// Refuses a write if something other than the target's own root already writes the target.
+    /// A target nothing can write is not an error here.
+    pub(super) fn ensure_writable(&mut self, target: Value, root: WriteRoot) -> Result<(), anyhow::Error> {
+        self.settle_write_ownership(target, root)?;
+        Ok(())
+    }
+
+    /// The same refusal occurs, and then the write's own root becomes the writer. `invoke_method`
+    /// uses `ensure_writable` instead because the writes in the method body name their own writers.
+    pub(super) fn claim_write_ownership_through(&mut self, target: Value, root: WriteRoot) -> Result<(), anyhow::Error> {
+        if let Some(holder) = self.settle_write_ownership(target, root)? {
+            self.record_write_ownership(target, holder, WriteOwnershipSource::Bound);
+        }
+        Ok(())
+    }
+
+    /// Settles the one-writer rule. It returns the holder this write makes the writer, or None if
+    /// no writer is made.
+    fn settle_write_ownership(&mut self, target: Value, root: WriteRoot) -> Result<Option<WriteOwnershipHolder>, anyhow::Error> {
+        // Only a mutable container has write-ownership. A program that writes anything else is
+        // refused by the store that asked.
+        if !objects::is_mutable_container(target) {
+            return Ok(None);
+        }
+
+        let (holder, root_value, root_is_receiver) = match root {
             WriteRoot::Named(addr, receiver) => (WriteOwnershipHolder::Name(addr), unsafe { *addr }, receiver),
-            WriteRoot::Stashed(value) if target.is_object() => (WriteOwnershipHolder::Container(value), value, false),
-            WriteRoot::Stashed(_) => return Ok(()),
-            // The write is only allowed if no one holds the target.
-            WriteRoot::Rootless => return match target.is_object() && target.as_object().is_write_owned() {
-                true => self.refuse_unless_holder_is_gone(target),
-                false => Ok(()),
+            WriteRoot::Stashed(container) => (WriteOwnershipHolder::Container(container), container, false),
+            // The write targets an unnamed value. There is no root to check and no name to become
+            // the writer.
+            WriteRoot::NoRoot => {
+                self.refuse_unless_only_a_name_holds_it(target)?;
+                return Ok(None);
             },
         };
+
         self.assert_no_other_write_owner(target, root_value)?;
 
-        if !receiver && target == root_value && objects::held_by_aggregate(target) {
-            return self.claim_write_of(target, holder, WriteOwnershipSource::Bound);
+        // A path through `this` shows what the frame claimed. The caller's claim on the lent
+        // receiver does not affect this write.
+        if root_is_receiver && !self.claimed_within_frame(target) {
+            return Ok(None);
         }
-        if receiver && !self.claimed_within_frame(target) {
-            return Ok(());
+
+        // One answer settles both halves. Anything else holding the target must give way before
+        // the write stands. A holder that already has the target keeps it.
+        let already_holds_it = match self.write_owner_of(target) {
+            Some(held) if same_holder(held, holder) => true,
+            Some(_) => {
+                self.refuse_unless_holder_is_gone(target)?;
+                false
+            },
+            None => false,
+        };
+
+        // The write is valid. Writing through the root's name makes that name the writer. Writes
+        // further down the path do not name a writer.
+        match !root_is_receiver && target == root_value && !already_holds_it {
+            true => Ok(Some(holder)),
+            false => Ok(None),
         }
+    }
+
+    /// Rules for writing to unnamed values. A container holding the value counts as a second
+    /// writer. A name holding the value does not.
+    fn refuse_unless_only_a_name_holds_it(&mut self, target: Value) -> Result<(), anyhow::Error> {
         if !target.as_object().is_write_owned() {
             return Ok(());
         }
-        if self.holds_write_ownership(target, holder) {
-            return Ok(());
+        if let Some(WriteOwnershipHolder::Name(addr)) = self.write_owner_of(target) {
+            if unsafe { *addr } == target {
+                return Ok(());
+            }
         }
         self.refuse_unless_holder_is_gone(target)
     }
@@ -237,21 +284,19 @@ impl Vm {
     /// knows which. Ask it here rather than refusing a write that is really free.
     fn refuse_unless_holder_is_gone(&mut self, value: Value) -> Result<(), anyhow::Error> {
         match self.write_owner_of(value) {
-            // The bit and the record are set together and cleared together. Arriving here with the
-            // bit and no record means one of the two moved without the other.
-            None => unreachable!("a write-owned value has no record of who holds it"),
+            None => Ok(()),
             Some(WriteOwnershipHolder::Name(_)) => Err(self.second_writer_error(value)),
             Some(WriteOwnershipHolder::Retired) => Err(self.wrote_transferred_element_error()),
-            Some(WriteOwnershipHolder::Dead) => Ok(self.forget_claim(value)),
             Some(WriteOwnershipHolder::Container(_)) => {
                 // Collecting here rather than on the next allocation is what keeps the answer the
                 // same under `CLISAY_GC_STRESS`. The written value is on the stack, so it survives.
                 self.start_gc();
                 match self.write_owner_of(value) {
+                    // Pruning removes a claim if the trace did not reach its container. Finding no
+                    // holder means the holder is gone and the write is valid.
+                    None => Ok(()),
                     Some(WriteOwnershipHolder::Container(_)) => Err(self.second_writer_error(value)),
-                    Some(WriteOwnershipHolder::Dead) => Ok(self.forget_claim(value)),
-                    Some(WriteOwnershipHolder::Name(_) | WriteOwnershipHolder::Retired) => unreachable!("a prune clears a container, it never hands a claim to a name or retires one"),
-                    None => unreachable!("the written value is a stack root, so the prune keeps its record"),
+                    Some(WriteOwnershipHolder::Name(_) | WriteOwnershipHolder::Retired) => unreachable!("a prune drops a container claim, it never hands one to a name or retires it"),
                 }
             },
         }
@@ -271,13 +316,6 @@ impl Vm {
 
     fn write_owner_of(&self, value: Value) -> Option<WriteOwnershipHolder> {
         self.write_ownerships.iter().rev().find(|held| held.value == value).map(|held| held.holder)
-    }
-
-    /// Forgets a claim whose holder is gone. The element is writable from here on, so no later write
-    /// pays for the collection this one asked for.
-    fn forget_claim(&mut self, value: Value) {
-        self.write_ownerships.retain(|held| held.value != value);
-        self.release_write_ownership(value);
     }
 
     /// The opaque-call mode barrier. An argument the caller must keep alive may not be handed to a
@@ -310,19 +348,12 @@ impl Vm {
             .map(|(_, name)| &**name)
     }
 
-    /// Takes the writer slot for an element the compiler could not name. A literal key is settled
-    /// statically, so only a computed one reaches here.
-    pub(super) fn op_take_write_ownership(&mut self) -> Result<(), anyhow::Error> {
-        let slot = self.read_next() as usize;
-        self.take_write_ownership(slot, WriteOwnershipSource::Bound)
-    }
-
     /// A container taking the writer slot for an element it is given. The slot names the container
     /// rather than holding it yet, since a construction takes its elements before it is assigned.
     pub(super) fn op_transfer_write_ownership(&mut self) -> Result<(), anyhow::Error> {
         let slot = self.read_next() as usize;
         let holder = WriteOwnershipHolder::Name(self.slot_addr(slot));
-        self.claim_write(holder, WriteOwnershipSource::Given)
+        self.claim_write_ownership(holder, WriteOwnershipSource::Given)
     }
 
     /// A container taking the writer slot for an element it is given, for a container the body
@@ -330,7 +361,7 @@ impl Vm {
     pub(super) fn op_transfer_write_ownership_up(&mut self) -> Result<(), anyhow::Error> {
         let idx = self.read_next() as usize;
         let container = unsafe { *(*self.get_upvalue(idx)).location };
-        self.claim_write(WriteOwnershipHolder::Container(container), WriteOwnershipSource::Given)
+        self.claim_write_ownership(WriteOwnershipHolder::Container(container), WriteOwnershipSource::Given)
     }
 
     /// A container taking the writer slot for an element it is given, where no binding names the
@@ -338,28 +369,22 @@ impl Vm {
     pub(super) fn op_transfer_write_ownership_at(&mut self) -> Result<(), anyhow::Error> {
         let depth = self.read_next() as usize;
         let container = self.stack.peek(depth);
-        self.claim_write(WriteOwnershipHolder::Container(container), WriteOwnershipSource::Given)
-    }
-
-    /// Takes the writer slot for the value on top in the name of a local. The holder may take it
-    /// again as often as it likes, so only a different holder is a second writer.
-    fn take_write_ownership(&mut self, slot: usize, how: WriteOwnershipSource) -> Result<(), anyhow::Error> {
-        let holder = WriteOwnershipHolder::Name(self.slot_addr(slot));
-        self.claim_write(holder, how)
+        self.claim_write_ownership(WriteOwnershipHolder::Container(container), WriteOwnershipSource::Given)
     }
 
     /// Records `holder` as the one name that may write the value on top.
-    fn claim_write(&mut self, holder: WriteOwnershipHolder, how: WriteOwnershipSource) -> Result<(), anyhow::Error> {
-        self.claim_write_of(self.stack.peek(0), holder, how)
+    fn claim_write_ownership(&mut self, holder: WriteOwnershipHolder, how: WriteOwnershipSource) -> Result<(), anyhow::Error> {
+        self.claim_write_ownership_of(self.stack.peek(0), holder, how)
     }
 
-    fn claim_write_of(&mut self, value: Value, holder: WriteOwnershipHolder, how: WriteOwnershipSource) -> Result<(), anyhow::Error> {
+    /// Determines the writer for `value` and records it.
+    fn claim_write_ownership_of(&mut self, value: Value, holder: WriteOwnershipHolder, how: WriteOwnershipSource) -> Result<(), anyhow::Error> {
         // Nothing can write an immutable value or a primitive.
         if !objects::is_mutable_container(value) {
             return Ok(());
         }
         if value.as_object().is_write_owned() {
-            if self.holds_write_ownership(value, holder) {
+            if self.holds_write_ownership(holder, value) {
                 return Ok(());
             }
             // A parameter that retained its argument took the write-ownership and may hand it on,
@@ -386,7 +411,7 @@ impl Vm {
             WriteOwnershipHolder::Container(_) => WriteOwnershipSource::Given,
             _ => WriteOwnershipSource::Bound,
         };
-        self.claim_write_of(value, holder, how)
+        self.claim_write_ownership_of(value, holder, how)
     }
 
     /// Who holds a value stored through an upvalue. A closed upvalue keeps the slot inside itself,
@@ -406,6 +431,8 @@ impl Vm {
     }
 
     fn record_write_ownership(&mut self, value: Value, holder: WriteOwnershipHolder, how: WriteOwnershipSource) {
+        #[cfg(debug_assertions)]
+        assert!(objects::is_mutable_container(value), "a value nothing can write took a write-ownership record");
         #[cfg(debug_assertions)]
         assert!(!self.write_ownerships.iter().any(|held| held.value == value), "a value took a second write-ownership record");
         value.as_object().set_write_owned(true);
@@ -455,7 +482,7 @@ impl Vm {
         }
         value.as_object().set_borrowed(false);
         let holder = WriteOwnershipHolder::Name(addr);
-        if self.holds_write_ownership(value, holder) {
+        if self.holds_write_ownership(holder, value) {
             return Ok(());
         }
         self.blank_claims_on(value);
@@ -496,7 +523,7 @@ impl Vm {
     }
 
     /// Whether this holder is the one already holding the value's writer slot.
-    fn holds_write_ownership(&self, value: Value, holder: WriteOwnershipHolder) -> bool {
+    fn holds_write_ownership(&self, holder: WriteOwnershipHolder, value: Value) -> bool {
         self.write_ownerships.iter().rev().find(|held| held.value == value)
             .is_some_and(|held| same_holder(held.holder, holder))
     }

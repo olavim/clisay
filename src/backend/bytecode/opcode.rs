@@ -111,7 +111,6 @@ opcodes! {
     StashRoot => STASH_ROOT,
     BarrierGuard => BARRIER_GUARD(Byte, Pool),
     AssertNoRetain => ASSERT_NO_RETAIN(Byte, Pool, List),
-    TakeWriteOwnership => TAKE_WRITE_OWNERSHIP(Byte),
     TransferWriteOwnership => TRANSFER_WRITE_OWNERSHIP(Byte),
     TransferWriteOwnershipUp => TRANSFER_WRITE_OWNERSHIP_UP(Byte),
     TransferWriteOwnershipAt => TRANSFER_WRITE_OWNERSHIP_AT(Byte),

@@ -467,9 +467,6 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn claim_write_ownership_at_runtime(&mut self, local: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        // Every write takes the slot, not just the first. A write the checker sees is not always a
-        // write that runs, so keying the take to one of them would leave the others unchecked.
-        self.record_guard(node, Guard::WriteThroughName);
         self.locals[local].alias.slot_taken = true;
         self.locals[local].alias.wrote_at.get_or_insert(*node);
         Ok(())
