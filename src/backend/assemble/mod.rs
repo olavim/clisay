@@ -127,6 +127,11 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | ReleaseWriteOwnershipAt(b)
         | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
 
+        PopScope(count, depth) => {
+            chunk.write(count, pos);
+            chunk.write(depth, pos);
+        }
+
         Is(id) => write_u16(chunk, id, pos),
 
         Jump(l)

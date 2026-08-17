@@ -85,6 +85,10 @@ pub enum Inst {
     TransferWriteOwnershipAt(u8),
     ReleaseWriteOwnership(u8),
     ReleaseWriteOwnershipAt(u8),
+    /// Closes a scope: releases the write-ownership its locals hold, closes the upvalues over
+    /// them, and drops them. The second operand is how many slots the frame should hold as the
+    /// scope leaves, which a debug build checks against the stack it actually finds.
+    PopScope(u8, u8),
 
     // Stack / constants
     Pop,

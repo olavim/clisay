@@ -530,6 +530,25 @@ impl Vm {
         self.retire_slots(0, |addr| addr >= floor, None);
     }
 
+    pub(super) fn op_pop_scope(&mut self) {
+        let count = self.read_next() as usize;
+        let expected_slot_count = self.read_next() as usize;
+        let base = unsafe { self.stack.top().sub(count) };
+        debug_assert_eq!(self.frame_slot_count(), expected_slot_count, "a scope left a stack its compiler did not expect");
+        self.close_upvalues(base);
+        self.retire_slots(0, |addr| addr >= base, None);
+        self.stack.set_top(base);
+    }
+
+    fn frame_slot_count(&self) -> usize {
+        let frame = self.frames.top();
+        if frame.is_null() {
+            return self.stack.len();
+        }
+        let start = unsafe { (*frame).stack_start };
+        (self.stack.top() as usize - start as usize) / std::mem::size_of::<Value>()
+    }
+
     /// Retires the write-ownerships from index `depth` on whose slot the predicate says is dying.
     fn retire_slots(&mut self, depth: usize, dying: impl Fn(*mut Value) -> bool, leaving: Option<Leaving>) {
         let mut kept = depth;

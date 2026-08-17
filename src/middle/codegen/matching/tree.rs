@@ -171,7 +171,7 @@ impl<'a> Compiler<'a> {
         }
 
         self.ir.bind(end);
-        self.exit_scope(stmt_id);
+        self.exit_scope(stmt_id)?;
         Ok(())
     }
 

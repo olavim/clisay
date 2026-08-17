@@ -6,7 +6,7 @@ use crate::frontend::lex::Diagnostic;
 use crate::core::gc::Gc;
 use crate::middle::hir::TypeId;
 use crate::middle::ir::{Inst, Ir, Label, SourceRole};
-use crate::middle::bind::{Bindings, Cleanup, FnKind, Place};
+use crate::middle::bind::{Bindings, FnKind, Place};
 use crate::middle::check::Barriers;
 use crate::middle::signatures::Signatures;
 use crate::middle::hir::Hir;
@@ -204,20 +204,14 @@ impl<'a> Compiler<'a> {
         Ok(target)
     }
 
-    fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
-        let cleanups = self.bindings.cleanup(node_id).to_vec();
-        // Writer slots go back before the locals holding them are popped. The count is how many
-        // values to look at, not how many were taken.
-        if self.barriers.releases_write_ownership(node_id) {
-            self.emit(Inst::ReleaseWriteOwnership(cleanups.len() as u8), node_id);
+    fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) -> Result<(), anyhow::Error> {
+        let count = self.bindings.cleanup(node_id);
+        if count == 0 {
+            return Ok(());
         }
-        for cleanup in cleanups {
-            let inst = match cleanup {
-                Cleanup::Pop => Inst::Pop,
-                Cleanup::CloseUpvalue(slot) => Inst::CloseUpvalue(slot),
-            };
-            self.emit(inst, node_id);
-        }
+        let depth = self.bindings.depth_at(node_id);
+        self.emit(Inst::PopScope(count, depth), node_id);
+        Ok(())
     }
 
     fn fn_decl(&self, stmt: &HirId<HirStmt>) -> &'a HirFnDecl {

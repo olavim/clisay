@@ -13,23 +13,21 @@ impl<'a> Resolver<'a> {
     }
 
     pub(super) fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
+        // Recorded before the locals go, so codegen can hand the runtime the depth to expect.
+        self.record_depth(node_id);
         self.scope_depth -= 1;
         while self.type_scope.last().is_some_and(|t| t.depth > self.scope_depth) {
             let gone = self.type_scope.pop().expect("just checked");
             self.type_index.remove(&gone.name);
         }
 
-        let mut cleanups = Vec::new();
+        let mut dying = 0;
         while !self.locals.is_empty() && self.locals.last().unwrap().depth > self.scope_depth {
-            if self.locals.last().unwrap().is_captured {
-                cleanups.push(super::Cleanup::CloseUpvalue(self.frame_slot(self.locals.len() - 1)));
-            } else {
-                cleanups.push(super::Cleanup::Pop);
-            }
+            dying += 1;
             self.locals.pop();
         }
-        if !cleanups.is_empty() {
-            self.bindings.cleanups.insert(node_id.index(), cleanups);
+        if dying > 0 {
+            self.bindings.cleanups.insert(node_id.index(), dying);
         }
     }
 

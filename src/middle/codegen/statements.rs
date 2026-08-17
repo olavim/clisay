@@ -178,18 +178,18 @@ impl<'a> Compiler<'a> {
         self.expression_stmt(then)?;
         match otherwise {
             Some(otherwise) => {
-                self.exit_scope(cond);
+                self.exit_scope(cond)?;
                 let end = self.ir.new_label();
                 self.emit(Inst::Jump(end), stmt_id);
                 self.ir.bind(else_target);
-                self.exit_scope(cond);
+                self.exit_scope(cond)?;
                 self.statement(otherwise)?;
                 self.ir.bind(end);
             },
             // Both paths converge before the single cleanup.
             None => {
                 self.ir.bind(else_target);
-                self.exit_scope(cond);
+                self.exit_scope(cond)?;
             },
         }
         Ok(())
@@ -204,10 +204,10 @@ impl<'a> Compiler<'a> {
         let exit = self.ir.new_label();
         self.emit(Inst::JumpIfFalse(exit), stmt_id);
         self.expression_stmt(body)?;
-        self.exit_scope(cond);
+        self.exit_scope(cond)?;
         self.emit(Inst::Jump(loop_start), stmt_id);
         self.ir.bind(exit);
-        self.exit_scope(cond);
+        self.exit_scope(cond)?;
         Ok(())
     }
 
@@ -228,7 +228,7 @@ impl<'a> Compiler<'a> {
 
     pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<HirId<HirStmt>>, node_id: &HirId<T>) -> Result<(), anyhow::Error> {
         self.statement_body(body)?;
-        self.exit_scope(node_id);
+        self.exit_scope(node_id)?;
         Ok(())
     }
 
@@ -244,7 +244,7 @@ impl<'a> Compiler<'a> {
         self.try_frames[idx].position = TryCatchPosition::Catch;
 
         self.inline_block(&catch.body)?;
-        self.exit_scope(&catch.body);
+        self.exit_scope(&catch.body)?;
         Ok(())
     }
 

@@ -39,13 +39,6 @@ pub enum Receiver {
     Upvalue(u8),
 }
 
-/// A local cleanup emitted when a scope exits, top of stack first.
-#[derive(Clone, Copy)]
-pub enum Cleanup {
-    Pop,
-    CloseUpvalue(u8),
-}
-
 #[derive(Clone, Copy)]
 pub enum FnKind {
     Function,
@@ -161,8 +154,8 @@ pub struct Bindings {
     surfaces: FnvHashMap<HirId<HirStmt>, Vec<Symbol>>,
     /// Statements and function bodies (by HIR node index) => frame slots live at that point.
     depths: FnvHashMap<usize, u8>,
-    /// Scope nodes (by HIR node index) => locals to clean up on exit.
-    cleanups: FnvHashMap<usize, Vec<Cleanup>>,
+    /// Scope nodes (by HIR node index) => how many locals die on exit.
+    cleanups: FnvHashMap<usize, u8>,
     /// Declaration nodes whose binding some nested body captures. A binding absent here is named by
     /// nothing but its own frame.
     captured: FnvHashSet<usize>,
@@ -254,8 +247,9 @@ impl Bindings {
         self.expr_types.get(id).copied()
     }
 
-    pub fn cleanup<T>(&self, scope: &HirId<T>) -> &[Cleanup] {
-        self.cleanups.get(&scope.index()).map_or(&[], Vec::as_slice)
+    /// How many locals a scope drops on the way out.
+    pub fn cleanup<T>(&self, scope: &HirId<T>) -> u8 {
+        self.cleanups.get(&scope.index()).copied().unwrap_or(0)
     }
 
     pub fn construct_fields(&self, id: &HirId<HirExpr>) -> &[u8] {

@@ -117,6 +117,7 @@ opcodes! {
     TransferWriteOwnershipAt => TRANSFER_WRITE_OWNERSHIP_AT(Byte),
     ReleaseWriteOwnership => RELEASE_WRITE_OWNERSHIP(Byte),
     ReleaseWriteOwnershipAt => RELEASE_WRITE_OWNERSHIP_AT(Byte),
+    PopScope => POP_SCOPE(Byte, Byte),
 
     // Explicit stack manipulation
     Pop => POP,
