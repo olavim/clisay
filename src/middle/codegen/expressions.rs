@@ -18,10 +18,10 @@ enum IndexOp {
 
 impl<'a> Compiler<'a> {
     pub (super) fn expression(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let before = self.depth;
+        let before = self.frame_slot_count;
         self.expression_inner(expr)?;
         // An expression leaves exactly one value.
-        self.depth = before + 1;
+        self.frame_slot_count = before + 1;
         Ok(())
     }
 
@@ -277,7 +277,7 @@ impl<'a> Compiler<'a> {
     fn handle(&mut self, node: &HirId<HirExpr>, left: &HirId<HirExpr>, handler: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(left)?;
-        let operand_slot = self.operand_count(self.depth - 1, "a frame", "slots", node)?;
+        let operand_slot = self.operand_count(self.frame_slot_count - 1, "a frame", "slots", node)?;
         self.emit_clean_jump(node, left, end)?;
         self.handle_binder_slots.push((self.bindings.handle_binder(node), operand_slot));
         let compiled = self.expression(handler);

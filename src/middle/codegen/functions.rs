@@ -89,14 +89,14 @@ impl<'a> Compiler<'a> {
         let body = self.ir.new_label();
         self.ir.bind(body);
 
-        let caller_depth = self.depth;
+        let caller_frame_slot_count = self.frame_slot_count;
         // A binder names a slot of the frame that made it, so a nested body starts with none.
         let caller_binders = std::mem::take(&mut self.handle_binder_slots);
         self.compile_entry_steps(&decl.params)?;
-        self.depth = self.bindings.depth_at(&decl.body) as usize;
+        self.frame_slot_count = self.bindings.frame_slot_count_at(&decl.body) as usize;
         self.expression(&decl.body)?;
         self.exit_function(&decl.body, kind);
-        self.depth = caller_depth;
+        self.frame_slot_count = caller_frame_slot_count;
         self.handle_binder_slots = caller_binders;
         self.ir.bind(skip);
 

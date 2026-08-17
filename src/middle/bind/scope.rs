@@ -13,8 +13,8 @@ impl<'a> Resolver<'a> {
     }
 
     pub(super) fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
-        // Recorded before the locals go, so codegen can hand the runtime the depth to expect.
-        self.record_depth(node_id);
+        // Recorded before the locals go, so codegen can hand the runtime the slot count to expect.
+        self.record_exit_frame_slot_count(node_id);
         self.scope_depth -= 1;
         while self.type_scope.last().is_some_and(|t| t.depth > self.scope_depth) {
             let gone = self.type_scope.pop().expect("just checked");
@@ -55,10 +55,14 @@ impl<'a> Resolver<'a> {
         self.error(format!("Too many variables in '{}'", self.hir.text(frame.name)), &frame.body)
     }
 
-    /// Records the frame slots live where a node begins.
-    pub(super) fn record_depth<T: 'static>(&mut self, id: &HirId<T>) {
-        let depth = self.frame_slot(self.locals.len());
-        self.bindings.depths.insert(id.index(), depth);
+    pub(super) fn record_frame_slot_count<T: 'static>(&mut self, id: &HirId<T>) {
+        let count = self.frame_slot(self.locals.len());
+        self.bindings.frame_slot_counts.insert(id.index(), count);
+    }
+
+    fn record_exit_frame_slot_count<T: 'static>(&mut self, scope: &HirId<T>) {
+        let count = self.frame_slot(self.locals.len());
+        self.bindings.exit_frame_slot_counts.insert(scope.index(), count);
     }
 
     /// The index the current frame's slots are counted from.
@@ -265,7 +269,7 @@ impl<'a> Resolver<'a> {
             self.bindings.match_binders.insert(param.name, binders);
         }
 
-        self.record_depth(&decl.body);
+        self.record_frame_slot_count(&decl.body);
         self.expression(&decl.body)?;
 
         let frame = self.fn_frames.pop().unwrap();

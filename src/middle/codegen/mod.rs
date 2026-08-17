@@ -78,7 +78,7 @@ pub struct Compiler<'a> {
     /// Each live `??` binder: the slot bind gave its name, and the slot its operand landed in.
     handle_binder_slots: Vec<(u8, u8)>,
     /// How many slots the frame being emitted holds.
-    depth: usize,
+    frame_slot_count: usize,
 }
 
 #[macro_export]
@@ -105,7 +105,7 @@ impl<'a> Compiler<'a> {
             fn_kinds: Vec::new(),
             try_frames: Vec::new(),
             witness_ids: FnvHashMap::default(),
-            depth: 0,
+            frame_slot_count: 0,
             handle_binder_slots: Vec::new(),
         };
 
@@ -173,11 +173,11 @@ impl<'a> Compiler<'a> {
 
     fn emit<T: 'static>(&mut self, inst: Inst, node_id: &HirId<T>) {
         match inst {
-            Inst::PushNull => self.depth += 1,
+            Inst::PushNull => self.frame_slot_count += 1,
             Inst::Pop
                 | Inst::JumpIfFalseOrPop(_)
                 | Inst::JumpIfTrueOrPop(_)
-                | Inst::JumpIfNotNullOrPop(_) => self.depth = self.depth.saturating_sub(1),
+                | Inst::JumpIfNotNullOrPop(_) => self.frame_slot_count = self.frame_slot_count.saturating_sub(1),
             _ => {},
         }
         let pos = self.hir.pos(node_id);
@@ -209,8 +209,8 @@ impl<'a> Compiler<'a> {
         if count == 0 {
             return Ok(());
         }
-        let depth = self.bindings.depth_at(node_id);
-        self.emit(Inst::PopScope(count, depth), node_id);
+        let slot_count = self.bindings.exit_frame_slot_count_at(node_id);
+        self.emit(Inst::PopScope(count, slot_count), node_id);
         Ok(())
     }
 

@@ -152,8 +152,10 @@ pub struct Bindings {
     /// Type/trait declaration => its public member names, for the `x has T` surface form. A type
     /// contributes its public members; a trait its declared surface.
     surfaces: FnvHashMap<HirId<HirStmt>, Vec<Symbol>>,
-    /// Statements and function bodies (by HIR node index) => frame slots live at that point.
-    depths: FnvHashMap<usize, u8>,
+    /// Statements and function bodies (by HIR node index) => frame slots live where they begin.
+    frame_slot_counts: FnvHashMap<usize, u8>,
+    /// Scope nodes (by HIR node index) => frame slots live where they end.
+    exit_frame_slot_counts: FnvHashMap<usize, u8>,
     /// Scope nodes (by HIR node index) => how many locals die on exit.
     cleanups: FnvHashMap<usize, u8>,
     /// Declaration nodes whose binding some nested body captures. A binding absent here is named by
@@ -268,11 +270,13 @@ impl Bindings {
         self.handle_binders[id]
     }
 
-    /// Frame slots live where this node begins.
-    pub fn depth_at<T: 'static>(&self, id: &HirId<T>) -> u8 {
-        self.depths[&id.index()]
+    pub fn frame_slot_count_at<T: 'static>(&self, id: &HirId<T>) -> u8 {
+        self.frame_slot_counts[&id.index()]
     }
 
+    pub fn exit_frame_slot_count_at<T: 'static>(&self, scope: &HirId<T>) -> u8 {
+        self.exit_frame_slot_counts[&scope.index()]
+    }
 }
 
 struct Local {
@@ -352,7 +356,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn statement(&mut self, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
-        self.record_depth(stmt_id);
+        self.record_frame_slot_count(stmt_id);
         match self.hir.get(stmt_id) {
             HirStmt::Return(expr) => {
                 if let Some(expr) = expr {
