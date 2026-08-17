@@ -115,8 +115,9 @@ impl<'a> Compiler<'a> {
 
         // A method declaring `mut this` needs the call to prove its receiver is mutable.
         let mut_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_mut());
+        let retain_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_retain());
 
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, mut_receiver));
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, mut_receiver, retain_receiver));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))

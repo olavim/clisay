@@ -413,7 +413,12 @@ impl Vm {
     }
 
     /// Hands each retained argument's write-ownership to the parameter slot about to take it.
-    pub(crate) fn transfer_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, stack_start: *mut Value, arity: usize) -> Result<(), anyhow::Error> {
+    pub(crate) fn transfer_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, stack_start: *mut Value, arity: usize, retain_receiver: bool) -> Result<(), anyhow::Error> {
+        // A retaining receiver is handed over the way a `*` parameter is. Slot zero is where a
+        // method's receiver lives. A borrowing one stays with the caller, which still names it.
+        if retain_receiver {
+            self.retain_slot(stack_start)?;
+        }
         for position in 0..arity.min(64) {
             // Slot zero holds the receiver, so a parameter sits one above its position.
             let addr = unsafe { stack_start.add(position + 1) };
@@ -431,20 +436,30 @@ impl Vm {
                 continue;
             }
             // This parameter retains its argument.
-            if value.as_object().is_borrowed() {
-                return Err(self.retained_borrow_error());
-            }
-            if value.as_object().is_write_retired() {
-                return Err(self.retained_twice_error());
-            }
-            value.as_object().set_borrowed(false);
-            let holder = WriteOwnershipHolder::Name(addr);
-            if self.holds_write_ownership(value, holder) {
-                continue;
-            }
-            self.blank_claims_on(value);
-            self.record_write_ownership(value, holder, WriteOwnershipSource::Taken);
+            self.retain_slot(addr)?;
         }
+        Ok(())
+    }
+
+    /// Hands the write-ownership of what a slot holds to that slot, for a `*` marker.
+    fn retain_slot(&mut self, addr: *mut Value) -> Result<(), anyhow::Error> {
+        let value = unsafe { *addr };
+        if !objects::is_mutable_container(value) {
+            return Ok(());
+        }
+        if value.as_object().is_borrowed() {
+            return Err(self.retained_borrow_error());
+        }
+        if value.as_object().is_write_retired() {
+            return Err(self.retained_twice_error());
+        }
+        value.as_object().set_borrowed(false);
+        let holder = WriteOwnershipHolder::Name(addr);
+        if self.holds_write_ownership(value, holder) {
+            return Ok(());
+        }
+        self.blank_claims_on(value);
+        self.record_write_ownership(value, holder, WriteOwnershipSource::Taken);
         Ok(())
     }
 
@@ -790,7 +805,7 @@ impl Vm {
         check_arity!(self, arg_count, closure.arity, closure.name);
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-        self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count)?;
+        self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count, false)?;
         Ok(())
     }
 
@@ -807,7 +822,7 @@ impl Vm {
                 check_arity!(self, arg_count, closure.arity, closure.name);
                 let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count)?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count, closure.retain_receiver)?;
             },
             objects::TAG_NATIVE_FUNCTION => {
                 self.stack.set(arg_count, Value::from(bound_method.target));
@@ -900,7 +915,7 @@ impl Vm {
                 self.stack.pop();
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure.as_closure_ptr(), stack_start, factory.ip_start, seal)?;
-                self.transfer_argument_write_ownership(factory.retain_mask, factory.escape_mask, stack_start, arg_count)?;
+                self.transfer_argument_write_ownership(factory.retain_mask, factory.escape_mask, stack_start, arg_count, false)?;
                 Ok(())
             },
             objects::TAG_CLOSURE => {
@@ -911,7 +926,7 @@ impl Vm {
                 let instance = self.alloc(ObjInstance::new(type_ptr));
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count)?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count, false)?;
                 Ok(())
             },
             // A native factory receives the fresh instance as its target and fills its fields. The

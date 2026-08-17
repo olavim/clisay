@@ -67,14 +67,14 @@ impl Vm {
         // A capturing method is already a closure bound to the frame that declared its type. Any
         // other method captures nothing and is closed here.
         let is_bound = method.tag() == objects::TAG_CLOSURE;
-        let (name, arity, ip_start, mut_receiver) = match is_bound {
+        let (name, arity, ip_start, mut_receiver, retain_receiver) = match is_bound {
             true => {
                 let closure = unsafe { &*method.as_closure_ptr() };
-                (closure.name, closure.arity, closure.ip_start, closure.mut_receiver)
+                (closure.name, closure.arity, closure.ip_start, closure.mut_receiver, closure.retain_receiver)
             },
             false => {
                 let func = unsafe { &*method.as_function_ptr() };
-                (func.name, func.arity, func.ip_start, func.mut_receiver)
+                (func.name, func.arity, func.ip_start, func.mut_receiver, func.retain_receiver)
             },
         };
         if mut_receiver {
@@ -95,7 +95,7 @@ impl Vm {
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, ip_start, true)?;
         let (retain_mask, escape_mask) = unsafe { ((*closure_ptr).retain_mask, (*closure_ptr).escape_mask) };
-        self.transfer_argument_write_ownership(retain_mask, escape_mask, stack_start, arg_count)?;
+        self.transfer_argument_write_ownership(retain_mask, escape_mask, stack_start, arg_count, retain_receiver)?;
         Ok(())
     }
 

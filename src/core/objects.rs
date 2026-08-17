@@ -532,6 +532,9 @@ pub struct ObjFn {
     pub arity: u8,
     /// Whether the method declared `mut this`, so a call has to prove its receiver is mutable.
     pub mut_receiver: bool,
+    /// Whether the method declared `*this` or `*mut this`, so the call hands the receiver's
+    /// write-ownership over rather than lending it.
+    pub retain_receiver: bool,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>,
     /// One bit per parameter that lets its argument out of the caller's sole reach: it retains it,
@@ -549,12 +552,13 @@ impl ObjFn {
         position < 64 && self.escape_mask & (1u64 << position) != 0
     }
 
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, mut_receiver: bool) -> ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, mut_receiver: bool, retain_receiver: bool) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
             arity,
             mut_receiver,
+            retain_receiver,
             ip_start,
             upvalues,
             escape_mask,
@@ -636,6 +640,7 @@ pub struct ObjClosure {
     pub arity: u8,
     pub upvalue_count: u8,
     pub mut_receiver: bool,
+    pub retain_receiver: bool,
     pub ip_start: usize,
     pub escape_mask: u64,
     pub retain_mask: u64

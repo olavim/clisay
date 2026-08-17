@@ -563,7 +563,7 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
             true => unsafe { (*closure).escape_mask },
             false => 0,
         };
-        vm.transfer_argument_write_ownership(retain_mask, escape_mask, stack_start, arg_count)?;
+        vm.transfer_argument_write_ownership(retain_mask, escape_mask, stack_start, arg_count, false)?;
     }
     become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
 }

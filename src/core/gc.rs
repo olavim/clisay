@@ -125,7 +125,8 @@ impl Gc {
         upvalues: &[*mut ObjUpvalue],
         escape_mask: u64,
         retain_mask: u64,
-        mut_receiver: bool
+        mut_receiver: bool,
+        retain_receiver: bool
     ) -> *mut ObjClosure {
         let count = upvalues.len();
         let size = ObjClosure::alloc_size(count);
@@ -139,6 +140,7 @@ impl Gc {
                 arity,
                 upvalue_count: count as u8,
                 mut_receiver,
+                retain_receiver,
                 ip_start,
                 escape_mask,
                 retain_mask
