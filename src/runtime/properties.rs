@@ -43,6 +43,7 @@ impl Vm {
         let arg_count = self.read_next() as usize;
         let root_kind = self.read_next();
         let root_operand = self.read_next();
+        let is_dot = self.read_next() != 0;
         let name = self.chunk.constants[name_idx].as_object().as_string_ptr();
         let receiver = self.stack.peek(arg_count);
 
@@ -56,11 +57,13 @@ impl Vm {
             }
         }
 
-        self.invoke_member_slow(name, arg_count, root_kind, root_operand)
+        self.invoke_member_slow(name, arg_count, root_kind, root_operand, is_dot)
     }
 
     /// Pushes a frame for an instance method without allocating a bound method.
     fn invoke_method(&mut self, method: Object, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
+        let root = self.take_write_root(root_kind, root_operand);
+
         // A capturing method is already a closure bound to the frame that declared its type. Any
         // other method captures nothing and is closed here.
         let is_bound = method.tag() == objects::TAG_CLOSURE;
@@ -79,7 +82,7 @@ impl Vm {
             if self.receiver_rejects_mut(target) {
                 return self.error_readonly_receiver(name, target);
             }
-            self.ensure_writer_is_root(target, root_kind, root_operand)?;
+            self.ensure_writer_is_root(target, root)?;
         }
         if arg_count != arity as usize {
             let text = unsafe { &(*name).value };
@@ -96,20 +99,67 @@ impl Vm {
         Ok(())
     }
 
-    fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
+    /// Invokes `this.name(args)`.
+    pub(super) fn op_invoke_this(&mut self) -> Result<(), anyhow::Error> {
+        let member_id = self.read_next();
+        let arg_count = self.read_next() as usize;
+        let root_kind = self.read_next();
+        let root_operand = self.read_next();
+        let receiver = self.stack.peek(arg_count);
+        let ValueKind::Object(ObjectKind::Instance) = receiver.kind() else {
+            return self.error(format!("Invalid property access: {}", receiver.fmt()));
+        };
+
+        // Fields are numbered before methods, so the id says which kind this is without reading
+        // the value. Only a function or a closure takes a frame. Anything else is called as a value.
+        let ty = unsafe { &*(*receiver.as_object().as_instance_ptr()).ty };
+        if member_id >= ty.field_count {
+            if let Some(method) = ty.methods.get(&member_id).copied() {
+                if matches!(method.tag(), objects::TAG_FUNCTION | objects::TAG_CLOSURE) {
+                    return self.invoke_method(method, arg_count, root_kind, root_operand);
+                }
+            }
+        }
+
+        self.invoke_this_field(receiver, member_id, arg_count, root_kind, root_operand)
+    }
+
+    /// Calls a field that holds a callable, such as `this.cb()`. The call does not
+    /// bind a receiver. The value is called as it is. A bound method still carries
+    /// its original receiver.
+    fn invoke_this_field(&mut self, receiver: Value, member_id: u8, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
+        let root = self.take_write_root(root_kind, root_operand);
+        let instance_ref = receiver.as_object().as_instance_ptr();
+        let callable = self.get_property_by_id(instance_ref, member_id);
+        if self.callable_writes_receiver(callable) {
+            self.ensure_writer_is_root(receiver, root)?;
+        }
+        self.stack.set(arg_count, callable);
+        self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
+        let called = self.call(arg_count, callable, true);
+        self.native_receiver_is_frame_local = false;
+        called
+    }
+
+    fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize, root_kind: u8, root_operand: u8, is_dot: bool) -> Result<(), anyhow::Error> {
+        let root = self.take_write_root(root_kind, root_operand);
+
         // Resolving the property allocates a bound method, which can collect. The arguments stay
         // on the stack across it, since a copy held anywhere else would not be a root.
         let receiver = self.stack.peek(arg_count);
         self.stack.push(receiver);
         self.stack.push(Value::from(name));
 
-        // INVOKE is always a `recv.name(args)`.
-        self.op_get_property()?;
+        // The two reads agree everywhere except for dict, where `.` is the method surface and `[]` is the data.
+        match is_dot {
+            true => self.op_get_property()?,
+            false => self.op_get_index()?,
+        }
 
         // The callable takes the receiver's slot, which is where a call reads it from.
         let callable = self.stack.pop();
         if self.callable_writes_receiver(callable) {
-            self.ensure_writer_is_root(receiver, root_kind, root_operand)?;
+            self.ensure_writer_is_root(receiver, root)?;
         }
         self.stack.set(arg_count, callable);
         self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
@@ -237,12 +287,13 @@ impl Vm {
         let member_id = self.read_next();
         let root_kind = self.read_next();
         let root_operand = self.read_next();
+        let root = self.take_write_root(root_kind, root_operand);
         let target = self.stack.pop();
         if !matches!(target.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         }
         self.ensure_mutable(target)?;
-        self.ensure_writer_is_root(target, root_kind, root_operand)?;
+        self.ensure_writer_is_root(target, root)?;
 
         let value = self.stack.pop();
         self.ensure_borrowed_does_not_persist(value, root_kind, root_operand)?;
@@ -362,13 +413,14 @@ impl Vm {
     pub(super) fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
         let root_kind = self.read_next();
         let root_operand = self.read_next();
+        let root = self.take_write_root(root_kind, root_operand);
         let prop = self.stack.pop();
         let target = self.stack.pop();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.ensure_writer_is_root(target, root_kind, root_operand)?;
+        self.ensure_writer_is_root(target, root)?;
         let stored = self.stack.peek(0);
         self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
 
@@ -435,13 +487,14 @@ impl Vm {
     pub(super) fn op_set_property(&mut self) -> Result<(), anyhow::Error> {
         let root_kind = self.read_next();
         let root_operand = self.read_next();
+        let root = self.take_write_root(root_kind, root_operand);
         let prop = self.stack.pop();
         let target = self.stack.pop();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.ensure_writer_is_root(target, root_kind, root_operand)?;
+        self.ensure_writer_is_root(target, root)?;
         let stored = self.stack.peek(0);
         self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
 
@@ -600,12 +653,13 @@ impl Vm {
         let member_id = self.read_next();
         let root_kind = self.read_next();
         let root_operand = self.read_next();
+        let root = self.take_write_root(root_kind, root_operand);
         let value = self.stack.pop();
         if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
         self.ensure_mutable(value)?;
-        self.ensure_writer_is_root(value, root_kind, root_operand)?;
+        self.ensure_writer_is_root(value, root)?;
 
         let instance_ref = value.as_object().as_instance_ptr();
         let stored = self.stack.peek(0);

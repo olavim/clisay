@@ -122,6 +122,7 @@ impl Vm {
         let frame = self.try_frames.pop().unwrap();
         // Restore borrows marked since the `try` began, whose frame exits the unwind skips.
         self.restore_borrows(frame.borrow_depth);
+        self.root_stash.truncate(frame.stash_depth);
         self.frames.set_top(frame.origin);
         self.unwind_to(frame.stack_start, frame.write_depth, value)?;
         self.ip = frame.handler_ip;
@@ -136,7 +137,8 @@ impl Vm {
             handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
             stack_start: self.stack.top(),
             borrow_depth: self.borrows.len(),
-            write_depth: self.write_ownerships.len()
+            write_depth: self.write_ownerships.len(),
+            stash_depth: self.root_stash.len()
         });
     }
 

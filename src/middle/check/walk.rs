@@ -834,7 +834,7 @@ impl<'a> Checker<'a> {
                 if receiver_typed.writable == Mutability::Immutable {
                     return Err(self.immutable_receiver_error(callee, receiver, "mutates its receiver"));
                 }
-                self.claim_receiver_write(receiver)?;
+                self.claim_receiver_write_ownership(receiver)?;
             }
             self.check_native_args(callee, &sig, arg_types, args)?;
             if sig.container == Container::Preserves {
@@ -866,7 +866,7 @@ impl<'a> Checker<'a> {
         if receiver_typed.writable == Mutability::Immutable {
             return Err(self.immutable_receiver_error(callee, receiver, "declares `mut this`"));
         }
-        self.claim_receiver_write(receiver)?;
+        self.claim_receiver_write_ownership(receiver)?;
         if marker.is_retain() {
             // A borrow cannot be given away, so it may not feed a consuming receiver.
             if self.arg_is_borrowed(receiver) {
@@ -984,11 +984,6 @@ impl<'a> Checker<'a> {
     pub(super) fn assign_index(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_dot: bool, value: &Debt, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // `this.field = ...` and `this["field"] = ...` both assign a field of the enclosing type.
         if matches!(self.ctx.hir.get(target), HirExpr::This) {
-            // A factory's `this` has not been built yet and the seal keeps it from escaping, so
-            // nothing can hold it there and the epilogue needs no guard.
-            if !self.checking_factory {
-                self.check_path_write(target)?;
-            }
             if let Some(field) = self.ctx.string_member(member) {
                 self.assign_field_this(field, value, lhs, rhs)?;
             }
@@ -1025,9 +1020,11 @@ impl<'a> Checker<'a> {
         match slot {
             Some(i) => {
                 self.settle_unknown_transfer(i, target);
-                self.claim_element_write(i, target)?;
+                self.claim_element_write_ownership(i, target)?;
             },
-            None => self.check_path_write(target)?,
+            // A claim is recorded against a frame-local, and this target is not one. The store
+            // carries its root, so it asks the question for itself.
+            None => {},
         }
 
         // A bracket index `obj[expr] = ...` is the dynamic data path. It bypasses the field rules,

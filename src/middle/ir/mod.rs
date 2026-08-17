@@ -17,6 +17,8 @@ pub const WRITE_ROOT_LOCAL: u8 = 1;
 pub const WRITE_ROOT_UPVALUE: u8 = 2;
 pub const WRITE_ROOT_RECEIVER: u8 = 3;
 pub const WRITE_ROOT_RECEIVER_UP: u8 = 4;
+/// A root without a binding name. `StashRoot` puts it on the stash for the store to use.
+pub const WRITE_ROOT_STASH: u8 = 5;
 
 /// A symbolic jump target, resolved to a byte offset at assembly time.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -32,8 +34,11 @@ pub enum Inst {
     /// Brace construction `C { f: v, ... }`. The second operand is the seal flag: 1 freezes the
     /// instance in place, 0 leaves it mutable (`mut K{..}`).
     Construct(u16, u8),
-    /// Fused method call `recv.name(args)`.
-    Invoke(u8, u8, u8, u8),
+    /// Fused method call `recv.name(args)`. The last operand is 1 for a `.` access and 0 for a
+    /// `[]` one.
+    Invoke(u8, u8, u8, u8, u8),
+    /// Fused `this.name(args)` where the member is known at compile time.
+    InvokeThis(u8, u8, u8, u8),
     Jump(Label),
     JumpIfFalse(Label),
     JumpIfFalseOrPop(Label),
@@ -62,12 +67,10 @@ pub enum Inst {
     PopTry,
     /// Aborts if the top of the stack is null, else leaves it.
     AssertNonNull,
-    AssertNoOtherWriter(u8),
-    AssertNoOtherWriterUp(u8),
-    /// The same barrier for a path whose root no binding names, compared against the stashed root.
-    AssertNoOtherWriterRoot,
-    AssertNoWriter,
     AssertImmutable,
+    /// Puts the root on top of the stash for a root no binding can name. The
+    /// stack is left alone. The path builds over the root as if no barrier existed.
+    StashRoot,
     /// Guards an unknown value at a destination: throws any registered witness the destination
     /// does not allow.
     BarrierGuard(bool, u16),

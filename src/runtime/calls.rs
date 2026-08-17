@@ -123,45 +123,6 @@ impl Vm {
             .with_help("an immutable value is immutable all the way down; freeze this value, or mark the construction `mut`"))
     }
 
-    /// The path-write barrier. A write through a path has no binding denoting the element it
-    /// reaches, so it takes no writer slot of its own. It fails only when one is already held by
-    /// something other than its own root.
-    pub(super) fn op_assert_no_other_writer(&mut self) -> Result<(), anyhow::Error> {
-        let slot = self.read_next() as usize;
-        let root = self.slot_addr(slot);
-        self.assert_no_other_writer(WriteOwnershipHolder::Name(root))
-    }
-
-    /// The same barrier for a path rooted in a binding the body reaches as an upvalue.
-    pub(super) fn op_assert_no_other_writer_up(&mut self) -> Result<(), anyhow::Error> {
-        let idx = self.read_next() as usize;
-        let root = unsafe { (*self.get_upvalue(idx)).location };
-        self.assert_no_other_writer(WriteOwnershipHolder::Name(root))
-    }
-
-    /// Lets the write through when the path's own root is what holds the element.
-    fn assert_no_other_writer(&mut self, root: WriteOwnershipHolder) -> Result<(), anyhow::Error> {
-        let value = self.stack.peek(0);
-        if !value.is_object() {
-            return Ok(());
-        }
-        let root_value = match root {
-            WriteOwnershipHolder::Name(addr) => unsafe { *addr },
-            WriteOwnershipHolder::Container(container) => container,
-            WriteOwnershipHolder::Dead | WriteOwnershipHolder::Retired => Value::NULL,
-        };
-        self.assert_no_other_write_owner(value, root_value)?;
-        if !value.as_object().is_write_owned() {
-            return Ok(());
-        }
-        // A container that took an element writes it through its own paths. Only a path rooted
-        // somewhere else is a second writer.
-        if self.holds_write_ownership(value, root) {
-            return Ok(());
-        }
-        self.refuse_unless_holder_is_gone(value)
-    }
-
     fn assert_no_other_write_owner(&mut self, value: Value, root: Value) -> Result<(), anyhow::Error> {
         if no_other_write_owner(value, root) {
             return Ok(());
@@ -200,14 +161,6 @@ impl Vm {
             .unwrap_err()
     }
 
-    /// The path-write barrier for a root no binding names, such as a call result.
-    pub(super) fn op_assert_no_other_writer_root(&mut self) -> Result<(), anyhow::Error> {
-        let value = self.stack.pop();
-        let root = self.stack.pop();
-        self.stack.push(value);
-        self.assert_no_other_writer(WriteOwnershipHolder::Container(root))
-    }
-
     /// Whether calling this writes its receiver, which is what makes a call ask the
     /// write-ownership question.
     pub(super) fn callable_writes_receiver(&self, callable: Value) -> bool {
@@ -223,25 +176,44 @@ impl Vm {
         }
     }
 
+    /// Consumes the root a store writes through.
+    pub(super) fn take_write_root(&mut self, kind: u8, operand: u8) -> WriteRoot {
+        match kind {
+            ir::WRITE_ROOT_LOCAL => WriteRoot::Named(self.slot_addr(operand as usize), false),
+            ir::WRITE_ROOT_RECEIVER => WriteRoot::Named(self.slot_addr(operand as usize), true),
+            ir::WRITE_ROOT_UPVALUE => {
+                WriteRoot::Named(unsafe { (*self.get_upvalue(operand as usize)).location }, false)
+            },
+            ir::WRITE_ROOT_RECEIVER_UP => {
+                WriteRoot::Named(unsafe { (*self.get_upvalue(operand as usize)).location }, true)
+            },
+            // An empty stash means the store was assembled without the push that feeds it.
+            // Rootless forces the store to ask if anything holds the target.
+            ir::WRITE_ROOT_STASH => {
+                debug_assert!(!self.root_stash.is_empty(), "a store named a stashed root and nothing stashed one");
+                self.root_stash.pop().map_or(WriteRoot::Rootless, WriteRoot::Stashed)
+            },
+            _ => WriteRoot::Rootless,
+        }
+    }
+
     /// Makes sure the root of a `target` value has write-ownership of the target.
     /// The root of e.g. `a[i]` is `a`. The root of a local or upvalue is itself.
-    pub(super) fn ensure_writer_is_root(&mut self, target: Value, kind: u8, operand: u8) -> Result<(), anyhow::Error> {
-        let root = match kind {
-            ir::WRITE_ROOT_LOCAL | ir::WRITE_ROOT_RECEIVER => {
-                WriteOwnershipHolder::Name(self.slot_addr(operand as usize))
+    pub(super) fn ensure_writer_is_root(&mut self, target: Value, root: WriteRoot) -> Result<(), anyhow::Error> {
+        let (holder, root_value, receiver) = match root {
+            WriteRoot::Named(addr, receiver) => (WriteOwnershipHolder::Name(addr), unsafe { *addr }, receiver),
+            WriteRoot::Stashed(value) if target.is_object() => (WriteOwnershipHolder::Container(value), value, false),
+            WriteRoot::Stashed(_) => return Ok(()),
+            // The write is only allowed if no one holds the target.
+            WriteRoot::Rootless => return match target.is_object() && target.as_object().is_write_owned() {
+                true => self.refuse_unless_holder_is_gone(target),
+                false => Ok(()),
             },
-            ir::WRITE_ROOT_UPVALUE | ir::WRITE_ROOT_RECEIVER_UP => {
-                WriteOwnershipHolder::Name(unsafe { (*self.get_upvalue(operand as usize)).location })
-            },
-            _ => return Ok(()),
         };
-        let WriteOwnershipHolder::Name(addr) = root else { return Ok(()) };
-        let root_value = unsafe { *addr };
         self.assert_no_other_write_owner(target, root_value)?;
 
-        let receiver = matches!(kind, ir::WRITE_ROOT_RECEIVER | ir::WRITE_ROOT_RECEIVER_UP);
         if !receiver && target == root_value && objects::held_by_aggregate(target) {
-            return self.claim_write_of(target, root, WriteOwnershipSource::Bound);
+            return self.claim_write_of(target, holder, WriteOwnershipSource::Bound);
         }
         if receiver && !self.claimed_within_frame(target) {
             return Ok(());
@@ -249,19 +221,15 @@ impl Vm {
         if !target.as_object().is_write_owned() {
             return Ok(());
         }
-        if self.holds_write_ownership(target, root) {
+        if self.holds_write_ownership(target, holder) {
             return Ok(());
         }
         self.refuse_unless_holder_is_gone(target)
     }
 
-    /// Assert that nothing is holding the write-ownership of the value on top.
-    pub(super) fn op_assert_no_writer(&mut self) -> Result<(), anyhow::Error> {
-        let value = self.stack.peek(0);
-        if !value.is_object() || !value.as_object().is_write_owned() {
-            return Ok(());
-        }
-        self.refuse_unless_holder_is_gone(value)
+    /// Copies the top stack root onto the stash.
+    pub(super) fn op_stash_root(&mut self) {
+        self.root_stash.push(self.stack.peek(0));
     }
 
     /// The last question before refusing a write. A claim keyed to a container outlives every name

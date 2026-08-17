@@ -104,9 +104,8 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Throw
         | PopTry
         | AssertNonNull
-        | AssertNoWriter
-        | AssertNoOtherWriterRoot
         | AssertImmutable
+        | StashRoot
         | Pop | Dup
         | PushNull | PushTrue | PushFalse
         | GetIndex
@@ -124,7 +123,6 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | GetField(b)
         | TakeWriteOwnership(b)
         | TransferWriteOwnership(b) | TransferWriteOwnershipUp(b) | TransferWriteOwnershipAt(b)
-        | AssertNoOtherWriter(b) | AssertNoOtherWriterUp(b)
         | ReleaseWriteOwnership(b)
         | ReleaseWriteOwnershipAt(b)
         | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
@@ -171,11 +169,19 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             write_positions(ir, chunk, idx, pos);
         }
 
-        Invoke(name, arg_count, kind, operand) => {
-            chunk.write(name, pos);
+        InvokeThis(member, arg_count, kind, operand) => {
+            chunk.write(member, pos);
             chunk.write(arg_count, pos);
             chunk.write(kind, pos);
             chunk.write(operand, pos);
+        }
+
+        Invoke(member, arg_count, kind, operand, is_dot) => {
+            chunk.write(member, pos);
+            chunk.write(arg_count, pos);
+            chunk.write(kind, pos);
+            chunk.write(operand, pos);
+            chunk.write(is_dot, pos);
         }
 
         Construct(fields_idx, seal) => {

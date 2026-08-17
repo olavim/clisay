@@ -38,8 +38,6 @@ pub enum Guard {
     NonNull,
     /// A store handing an element to a container, which takes its write-ownership.
     StoreIntoContainer,
-    /// A write through a path, which takes no write-ownership and so must find nothing holding it.
-    WriteThroughPath,
     /// A value entering an immutable construction.
     Immutable,
     /// A write through a name, which takes the element's write-ownership.

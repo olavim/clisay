@@ -72,7 +72,7 @@ pub struct Compiler<'a> {
     /// handed to it takes its writer slot in that slot's name.
     receiving_slot: Option<WriteOwnershipHolderPlace>,
     /// The root node of a path whose write barrier compares against it.
-    dup_root: Option<HirId<HirExpr>>,
+    stash_root: Option<HirId<HirExpr>>,
     /// Whether to drop every placed guard.
     floor_only: bool,
     /// Each live `??` binder: the slot bind gave its name, and the slot its operand landed in.
@@ -94,7 +94,7 @@ impl<'a> Compiler<'a> {
     pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures, floor_only: bool) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
             receiving_slot: None,
-            dup_root: None,
+            stash_root: None,
             floor_only,
             ir: Ir::new(),
             hir,

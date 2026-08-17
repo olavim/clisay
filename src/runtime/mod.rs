@@ -119,6 +119,17 @@ pub enum WriteOwnershipHolder {
     Retired,
 }
 
+/// The root used to reach a target.
+#[derive(Clone, Copy)]
+pub enum WriteRoot {
+    /// A binding identified by its location. The flag indicates if the path includes a receiver.
+    Named(*mut Value, bool),
+    /// A root without a name, stored in the root stash.
+    Stashed(Value),
+    /// Reaching the target through nothing is not the same as an unnamed root.
+    Rootless,
+}
+
 /// Write-ownership of one element, held by a name or by a container.
 #[derive(Clone, Copy)]
 pub struct WriteOwnership {
@@ -147,7 +158,9 @@ pub struct TryFrame {
     stack_start: *mut Value,
     /// The borrow-stack depth when the `try` began, restored on an unwind to this handler.
     borrow_depth: usize,
-    write_depth: usize
+    write_depth: usize,
+    /// The stash depth at the start of the try block.
+    stash_depth: usize
 }
 
 /// An argument a resolved call said it only borrows, watched for as long as that call runs.
@@ -202,6 +215,7 @@ pub struct Vm {
     borrows: Vec<(Value, bool)>,
     /// Values whose element writer slot is held, innermost last.
     write_ownerships: Vec<WriteOwnership>,
+    root_stash: Vec<Value>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     index_cache: Box<[IndexCache]>,
@@ -333,6 +347,7 @@ impl Vm {
             try_frames: Vec::new(),
             borrows: Vec::new(),
             write_ownerships: Vec::new(),
+            root_stash: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
             index_cache: vec![IndexCache::empty(); INDEX_CACHE_SIZE].into_boxed_slice(),
@@ -664,6 +679,10 @@ impl Vm {
         }
 
         for (value, _) in &self.borrows {
+            value.mark(&mut self.gc);
+        }
+
+        for value in &self.root_stash {
             value.mark(&mut self.gc);
         }
 

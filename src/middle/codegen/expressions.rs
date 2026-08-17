@@ -1,7 +1,7 @@
 use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, TypeId, UnOp};
-use crate::middle::ir::{Inst, Label, WRITE_ROOT_LOCAL, WRITE_ROOT_NONE, WRITE_ROOT_RECEIVER, WRITE_ROOT_RECEIVER_UP, WRITE_ROOT_UPVALUE};
+use crate::middle::ir::{Inst, Label, WRITE_ROOT_LOCAL, WRITE_ROOT_NONE, WRITE_ROOT_RECEIVER, WRITE_ROOT_RECEIVER_UP, WRITE_ROOT_STASH, WRITE_ROOT_UPVALUE};
 use crate::middle::bind::{FnKind, Place, Receiver};
 use crate::middle::check::{Barrier, Guard, WitnessSet};
 
@@ -26,21 +26,6 @@ impl<'a> Compiler<'a> {
     }
 
     fn expression_inner(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        // A barrier compares the element against the root it was reached through, and fires once
-        // the path is built, by which point indexing has consumed that root. So a root no binding
-        // can name is marked here and copied by the node that produces it.
-        if self.barriers.guards(expr).contains(&Guard::WriteThroughPath) {
-            let (root, kind) = self.path_root(expr);
-            // A node that is its own root would be compared against itself, and the move rule keeps
-            // a container from ever holding itself, so that could only fail. Copying it is waste.
-            if kind == PathRoot::Unnamed && root != *expr {
-                // The root is the first thing the path compiles, so a previous mark is always taken
-                // before the next one is made. One still pending means a mark found no node.
-                debug_assert!(self.dup_root.is_none(), "a path root was marked for copying and never copied");
-                self.dup_root = Some(root);
-            }
-        }
-
         match self.hir.get(expr) {
             HirExpr::Block(stmts) => self.scoped_body(stmts, expr)?,
             HirExpr::Unary(op, operand) => self.unary_expression(*op, operand)?,
@@ -72,10 +57,10 @@ impl<'a> Compiler<'a> {
             HirExpr::Assert(operand) => self.assert(expr, operand)?,
         };
 
-        // The copy rides the stack, so a nested path write before the barrier cannot disturb it.
-        if self.dup_root == Some(*expr) {
-            self.dup_root = None;
-            self.emit(Inst::Dup, expr);
+        // Indexing consumes the root. The store receives the root while it is still on the stack.
+        if self.stash_root == Some(*expr) {
+            self.stash_root = None;
+            self.emit(Inst::StashRoot, expr);
         }
 
         // Each runtime check this node carries, in the order the check pass put them in.
@@ -90,6 +75,18 @@ impl<'a> Compiler<'a> {
             self.ir.mark_elisions_from(at);
         }
         Ok(())
+    }
+
+    /// Marks a write root to be sent to the store when no binding names it. The root is
+    /// the first part of the path compiled. A mark is always taken before the next one.
+    fn mark_path_root(&mut self, target: &HirId<HirExpr>) {
+        let (root, kind) = self.path_root(target);
+        // A node that is its own root would be compared against itself. The move rule keeps a
+        // container from ever holding itself, so the store asks a different question for it.
+        if kind == PathRoot::Unnamed && root != *target {
+            debug_assert!(self.stash_root.is_none(), "a path root was marked and never stashed");
+            self.stash_root = Some(root);
+        }
     }
 
     /// The node a path is rooted in, and how a barrier can name it. `this` names a place like any
@@ -138,6 +135,9 @@ impl<'a> Compiler<'a> {
             PathRoot::Upvalue(idx) if receiver => (WRITE_ROOT_RECEIVER_UP, idx),
             PathRoot::Local(slot) => (WRITE_ROOT_LOCAL, slot),
             PathRoot::Upvalue(idx) => (WRITE_ROOT_UPVALUE, idx),
+            // The path consumed a root and it is on the stash. A path that is its own root
+            // reaches the target directly.
+            PathRoot::Unnamed if root != *node => (WRITE_ROOT_STASH, 0),
             PathRoot::Unnamed => (WRITE_ROOT_NONE, 0),
         }
     }
@@ -161,14 +161,6 @@ impl<'a> Compiler<'a> {
                 Some(WriteOwnershipHolderPlace::Upvalue(idx)) => self.emit(Inst::TransferWriteOwnershipUp(idx), node),
                 Some(WriteOwnershipHolderPlace::Stack(depth)) => self.emit(Inst::TransferWriteOwnershipAt(depth), node),
                 None => {},
-            },
-            // A root no binding names was copied while the path was built. A path that is its own
-            // root was reached through nothing, so it asks instead that nothing holds the element.
-            Guard::WriteThroughPath => match self.path_root(node) {
-                (_, PathRoot::Local(slot)) => self.emit(Inst::AssertNoOtherWriter(slot), node),
-                (_, PathRoot::Upvalue(idx)) => self.emit(Inst::AssertNoOtherWriterUp(idx), node),
-                (root, PathRoot::Unnamed) if root != *node => self.emit(Inst::AssertNoOtherWriterRoot, node),
-                (_, PathRoot::Unnamed) => self.emit(Inst::AssertNoWriter, node),
             },
             Guard::Immutable => self.emit(Inst::AssertImmutable, node),
             // The slot rides the name, so the same name writing again is not a second writer. The
@@ -496,6 +488,7 @@ impl<'a> Compiler<'a> {
             },
             IndexOp::Store { rhs, discarded } => {
                 self.expression(&rhs)?;
+                self.mark_path_root(target);
                 self.expression(target)?;
                 self.expression(member_expr_id)?;
                 let (root_kind, root_operand) = self.write_root_operands(target);
@@ -521,6 +514,7 @@ impl<'a> Compiler<'a> {
             },
             IndexOp::Store { rhs, discarded } => {
                 self.expression(&rhs)?;
+                self.mark_path_root(target_expr);
                 self.expression(target_expr)?;
                 let (kind, operand) = self.write_root_operands(target_expr);
                 self.emit_store_inst(match discarded {
@@ -533,14 +527,29 @@ impl<'a> Compiler<'a> {
     }
 
     fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], mutable: bool) -> Result<(), anyhow::Error> {
-        // Fuse `recv.name(args)` into a single INVOKE when the receiver is an
-        // arbitrary expression (not `this`/`super`, which have their own member
-        // resolution) and the member is a literal name.
-        if let Some((target, name)) = self.as_method_invoke(callee) {
+        // `this.m()` resolves its member here. It carries a root that a plain call cannot.
+        if let Some(target) = self.as_this_invoke(callee) {
+            let member_id = self.bindings.member(&target);
             self.expression(&target)?;
-            // The receiver is the container an argument it keeps is handed to, so it takes the
-            // writer slot for that argument. A receiver no binding names is still on the stack,
-            // one past the arguments pushed so far, so it is reached by depth instead.
+            let holder = self.root_holder(&target);
+            let saved = std::mem::replace(&mut self.receiving_slot, holder);
+            let compiled = args.iter().try_for_each(|arg| self.expression(arg));
+            self.receiving_slot = saved;
+            compiled?;
+            let (kind, operand) = self.write_root_operands(&target);
+            self.emit(Inst::InvokeThis(member_id, args.len() as u8, kind, operand), callee);
+            return Ok(());
+        }
+
+        // Fuse `recv.name(args)` into a single INVOKE when the receiver is an
+        // arbitrary expression and the member is a literal name.
+        if let Some((target, name, is_dot)) = self.as_method_invoke(callee) {
+            self.mark_path_root(&target);
+            self.expression(&target)?;
+
+            // An argument the callee stores into its receiver hands write-ownership over at the
+            // call, by a transfer emitted while that argument compiles. Point it at the receiver.
+            // An unnamed receiver is on the stack, one slot deeper per argument already pushed.
             let receiver = self.root_holder(&target);
             let saved = std::mem::replace(&mut self.receiving_slot, receiver);
             let compiled = args.iter().enumerate().try_for_each(|(i, arg)| {
@@ -549,13 +558,15 @@ impl<'a> Compiler<'a> {
                 }
                 self.expression(arg)
             });
+
             self.receiving_slot = saved;
             compiled?;
+
             let name_ref = self.gc.intern(name);
             let idx = self.ir.add_constant(Value::from(name_ref))?;
             // A method that writes its receiver asks the write-ownership question.
             let (kind, operand) = self.write_root_operands(&target);
-            self.emit(Inst::Invoke(idx, args.len() as u8, kind, operand), callee);
+            self.emit(Inst::Invoke(idx, args.len() as u8, kind, operand, is_dot as u8), callee);
             return Ok(());
         }
 
@@ -585,19 +596,21 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// If `callee` is `recv.name` where `recv` is not `this` and `name` is
-    /// a literal, returns the receiver expression and the member name.
-    fn as_method_invoke(&self, callee: &HirId<HirExpr>) -> Option<(HirId<HirExpr>, String)> {
+    /// The `this` target for a `this.name(args)` call. The layout resolves the member
+    /// the same way it resolves a read or a store.
+    fn as_this_invoke(&self, callee: &HirId<HirExpr>) -> Option<HirId<HirExpr>> {
+        let HirExpr::Index(target, _, _) = self.hir.get(callee) else { return None };
+        matches!(self.hir.get(target), HirExpr::This).then_some(*target)
+    }
+
+    /// The receiver and member of a `recv.name(args)` or `recv["name"](args)`, with which access it was.
+    fn as_method_invoke(&self, callee: &HirId<HirExpr>) -> Option<(HirId<HirExpr>, String, bool)> {
         let HirExpr::Index(target, member, is_dot) = self.hir.get(callee) else { return None };
-        // Only `recv.name(args)` is a method invoke.
-        if !is_dot {
-            return None;
-        }
         if matches!(self.hir.get(target), HirExpr::This) {
             return None;
         }
         let HirExpr::Literal(HirLiteral::String(name)) = self.hir.get(member) else { return None };
-        Some((*target, name.clone()))
+        Some((*target, name.clone(), *is_dot))
     }
 
     fn lambda(&mut self, expr: &HirId<HirExpr>, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {

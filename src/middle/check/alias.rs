@@ -437,14 +437,12 @@ impl<'a> Checker<'a> {
         self.local_of(expr).is_some_and(|i| self.locals[i].alias.confined)
     }
 
-    /// Takes the one writer slot for the element this binding reads, so a second writer for the
-    /// same element is rejected. A binding that is not an extraction writes whatever it owns.
-    pub(super) fn claim_element_write(&mut self, i: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    pub(super) fn claim_element_write_ownership(&mut self, i: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let origins = self.locals[i].alias.extracted_from.clone();
         if origins.is_empty() {
             // A value from somewhere unproven has no element to name, but still needs the slot.
             return match self.locals[i].alias.shared_origin {
-                true => self.claim_at_runtime(i, node),
+                true => self.claim_write_ownership_at_runtime(i, node),
                 false => Ok(()),
             };
         }
@@ -458,7 +456,7 @@ impl<'a> Checker<'a> {
             }
         }
 
-        self.claim_at_runtime(i, node)
+        self.claim_write_ownership_at_runtime(i, node)
     }
 
     /// Whether a binding already holds the writer slot for this element of this aggregate.
@@ -468,10 +466,7 @@ impl<'a> Checker<'a> {
                 .any(|(c, k)| *c == container && k.is_some_and(|k| self.ctx.is_same_key(&k, key)))
     }
 
-    /// Takes the runtime writer slot, whether or not this pass could name the element. Leaving it
-    /// to the named half alone would let a named and an unnamed key for one element miss each
-    /// other, since neither sees the other's record.
-    pub(super) fn claim_at_runtime(&mut self, local: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    pub(super) fn claim_write_ownership_at_runtime(&mut self, local: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // Every write takes the slot, not just the first. A write the checker sees is not always a
         // write that runs, so keying the take to one of them would leave the others unchecked.
         self.record_guard(node, Guard::WriteThroughName);
@@ -646,17 +641,13 @@ impl<'a> Checker<'a> {
         Ok(self.transfer_write_ownership_as(node, WriteOwnershipTransfer::Transferred))
     }
 
-    /// Takes the element writer slot for a receiver a mutating call writes.
-    pub(super) fn claim_receiver_write(&mut self, receiver: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let Some(i) = self.local_of(receiver) else { return self.check_path_write(receiver) };
-        self.claim_element_write(i, receiver)
-    }
-
-    /// `a[0][0] = 1` reaches its element through a path, so no binding denotes that element and
-    /// there is nothing to record as its holder. Such a write takes no writer slot.
-    pub(super) fn check_path_write(&mut self, target: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        self.record_guard(target, Guard::WriteThroughPath);
-        Ok(())
+    pub(super) fn claim_receiver_write_ownership(&mut self, receiver: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Some(i) = self.local_of(receiver) else {
+            // A claim is recorded against a frame-local. The receiver is reached through a path,
+            // or its base lives outside this frame. In either case, nothing records one for it.
+            return Ok(())
+        };
+        self.claim_element_write_ownership(i, receiver)
     }
 
     /// The mutable-value sources a value reaches.
