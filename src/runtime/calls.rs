@@ -235,9 +235,7 @@ impl Vm {
 
         self.assert_no_other_write_owner(target, root_value)?;
 
-        // A path through `this` shows what the frame claimed. The caller's claim on the lent
-        // receiver does not affect this write.
-        if root_is_receiver && !self.claimed_within_frame(target) {
+        if self.is_borrowed_from_an_outer_write_owner(target) {
             return Ok(None);
         }
 
@@ -246,7 +244,7 @@ impl Vm {
         let already_holds_it = match self.write_owner_of(target) {
             Some(held) if same_holder(held, holder) => true,
             Some(_) => {
-                self.refuse_unless_holder_is_gone(target)?;
+                self.refuse_unless_write_owner_is_gone(target)?;
                 false
             },
             None => false,
@@ -271,7 +269,7 @@ impl Vm {
                 return Ok(());
             }
         }
-        self.refuse_unless_holder_is_gone(target)
+        self.refuse_unless_write_owner_is_gone(target)
     }
 
     /// Copies the top stack root onto the stash.
@@ -279,15 +277,20 @@ impl Vm {
         self.root_stash.push(self.stack.peek(0));
     }
 
-    /// The last question before refusing a write. A claim keyed to a container outlives every name
-    /// that reached it, so it can name a container nothing holds any more, and only the collector
-    /// knows which. Ask it here rather than refusing a write that is really free.
-    fn refuse_unless_holder_is_gone(&mut self, value: Value) -> Result<(), anyhow::Error> {
-        match self.write_owner_of(value) {
-            None => Ok(()),
-            Some(WriteOwnershipHolder::Name(_)) => Err(self.second_writer_error(value)),
-            Some(WriteOwnershipHolder::Retired) => Err(self.wrote_transferred_element_error()),
-            Some(WriteOwnershipHolder::Container(_)) => {
+    /// The last question before refusing a write. A claim can name a slot holding something else
+    /// now, or a container nothing reaches any more.
+    fn refuse_unless_write_owner_is_gone(&mut self, value: Value) -> Result<(), anyhow::Error> {
+        let Some(at) = self.write_ownership_index_of(value) else {
+            return Ok(());
+        };
+        match self.write_ownerships[at].holder {
+            WriteOwnershipHolder::Name(_) if self.name_write_owner_holds_another_value(at) => {
+                self.drop_write_ownership(at);
+                self.refuse_unless_write_owner_is_gone(value)
+            },
+            WriteOwnershipHolder::Name(_) => Err(self.second_writer_error(value)),
+            WriteOwnershipHolder::Retired => Err(self.wrote_transferred_element_error()),
+            WriteOwnershipHolder::Container(_) => {
                 // Collecting here rather than on the next allocation is what keeps the answer the
                 // same under `CLISAY_GC_STRESS`. The written value is on the stack, so it survives.
                 self.start_gc();
@@ -300,6 +303,20 @@ impl Vm {
                 }
             },
         }
+    }
+
+    /// Whether the running frame borrows this value from a write owner outside it. The lender is
+    /// suspended, so its write-ownership does not refuse a write here and the borrowing name takes
+    /// none of its own.
+    fn is_borrowed_from_an_outer_write_owner(&self, target: Value) -> bool {
+        if !target.as_object().is_borrowed() {
+            return false;
+        }
+        if self.claimed_within_frame(target) {
+            return false;
+        }
+        self.write_ownership_index_of(target)
+            .is_some_and(|at| self.name_write_owner(at).is_some())
     }
 
     /// Whether the claim on `value` was made by the frame now running, rather than by something
@@ -315,7 +332,35 @@ impl Vm {
     }
 
     fn write_owner_of(&self, value: Value) -> Option<WriteOwnershipHolder> {
-        self.write_ownerships.iter().rev().find(|held| held.value == value).map(|held| held.holder)
+        self.write_ownership_index_of(value).map(|at| self.write_ownerships[at].holder)
+    }
+
+    fn write_ownership_index_of(&self, value: Value) -> Option<usize> {
+        self.write_ownerships.iter().rposition(|held| held.value == value)
+    }
+
+    /// The slot a value's write owner is, when the write owner is a name on the value itself. A
+    /// given write-ownership is held by the name of the container the value went into.
+    fn name_write_owner(&self, at: usize) -> Option<*mut Value> {
+        let held = self.write_ownerships[at];
+        match held.holder {
+            WriteOwnershipHolder::Name(addr) if held.how != WriteOwnershipSource::Given => Some(addr),
+            _ => None,
+        }
+    }
+
+    /// Whether the name that write-owns this value holds another value now.
+    fn name_write_owner_holds_another_value(&self, at: usize) -> bool {
+        self.name_write_owner(at)
+            .is_some_and(|addr| unsafe { *addr } != self.write_ownerships[at].value)
+    }
+
+    /// Lets go of a write-ownership whose name holds another value now. The value is spoken for by
+    /// nobody again, so the next write through a name takes it.
+    fn drop_write_ownership(&mut self, at: usize) {
+        let value = self.write_ownerships[at].value;
+        self.release_write_ownership(value);
+        self.write_ownerships.remove(at);
     }
 
     /// The opaque-call mode barrier. An argument the caller must keep alive may not be handed to a
@@ -392,7 +437,7 @@ impl Vm {
             if self.took_write_ownership_by_retain(value) {
                 self.blank_claims_on(value);
             } else {
-                self.refuse_unless_holder_is_gone(value)?;
+                self.refuse_unless_write_owner_is_gone(value)?;
             }
         }
         self.record_write_ownership(value, holder, how);
@@ -440,24 +485,22 @@ impl Vm {
     }
 
     /// Hands each retained argument's write-ownership to the parameter slot about to take it.
-    pub(crate) fn transfer_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, stack_start: *mut Value, arity: usize, retain_receiver: bool) -> Result<(), anyhow::Error> {
-        // A retaining receiver is handed over the way a `*` parameter is. Slot zero is where a
-        // method's receiver lives. A borrowing one stays with the caller, which still names it.
-        if retain_receiver {
-            self.retain_slot(stack_start)?;
+    pub(crate) fn transfer_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, stack_start: *mut Value, arity: usize, receiver: ReceiverSlot) -> Result<(), anyhow::Error> {
+        // Slot zero is where a method's receiver lives. It takes the marker its declaration gave
+        // it, the way a parameter takes its own.
+        match receiver {
+            ReceiverSlot::Retained => self.retain_slot(stack_start)?,
+            ReceiverSlot::Borrowed => self.borrow_slot(stack_start),
+            ReceiverSlot::Callee => {},
         }
         for position in 0..arity.min(64) {
             // Slot zero holds the receiver, so a parameter sits one above its position.
             let addr = unsafe { stack_start.add(position + 1) };
             let value = unsafe { *addr };
-            if !objects::is_mutable_container(value) {
-                continue;
-            }
             // A parameter that does not retain its argument borrows it.
             if retain_mask & (1u64 << position) == 0 {
-                self.borrows.push((value, value.as_object().is_borrowed()));
-                value.as_object().set_borrowed(true);
-                if self.forced && escape_mask & (1u64 << position) == 0 {
+                self.borrow_slot(addr);
+                if self.forced && objects::is_mutable_container(value) && escape_mask & (1u64 << position) == 0 {
                     self.watch_borrow_claim(value, position as u8, stack_start);
                 }
                 continue;
@@ -468,14 +511,30 @@ impl Vm {
         Ok(())
     }
 
+    /// Marks what a slot holds as lent for the call, so the body may not let it outlive the call.
+    /// A frozen value is marked too, because the declaration is what lends it, not its mutability.
+    fn borrow_slot(&mut self, addr: *mut Value) {
+        let value = unsafe { *addr };
+        if !objects::is_container(value) {
+            return;
+        }
+        self.borrows.push((value, value.as_object().is_borrowed()));
+        value.as_object().set_borrowed(true);
+    }
+
     /// Hands the write-ownership of what a slot holds to that slot, for a `*` marker.
     fn retain_slot(&mut self, addr: *mut Value) -> Result<(), anyhow::Error> {
         let value = unsafe { *addr };
-        if !objects::is_mutable_container(value) {
+        if !objects::is_container(value) {
             return Ok(());
         }
+        // A lend the caller has not taken back may not be handed on, frozen or not.
         if value.as_object().is_borrowed() {
             return Err(self.retained_borrow_error());
+        }
+        // Only a mutable value has write-ownership for the slot to take.
+        if !objects::is_mutable_container(value) {
+            return Ok(());
         }
         if value.as_object().is_write_retired() {
             return Err(self.retained_twice_error());
@@ -556,13 +615,6 @@ impl Vm {
             false => "one element has one writer; let the other name go out of scope first, or only read through this one",
         };
         self.raise(diagnostic.with_help(help)).unwrap_err()
-    }
-
-    /// Gives back the slot a local holds, where its value is about to change.
-    pub(super) fn op_release_write_ownership_at(&mut self) {
-        let slot = self.read_next() as usize;
-        let holder = self.slot_addr(slot);
-        self.retire_slots(0, |addr| addr == holder, None);
     }
 
     /// Gives back whatever the scope's own `count` values still hold.
@@ -832,7 +884,7 @@ impl Vm {
         check_arity!(self, arg_count, closure.arity, closure.name);
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-        self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count, false)?;
+        self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count, ReceiverSlot::Callee)?;
         Ok(())
     }
 
@@ -849,7 +901,7 @@ impl Vm {
                 check_arity!(self, arg_count, closure.arity, closure.name);
                 let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count, closure.retain_receiver)?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count, ReceiverSlot::declared(closure.retain_receiver))?;
             },
             objects::TAG_NATIVE_FUNCTION => {
                 self.stack.set(arg_count, Value::from(bound_method.target));
@@ -942,7 +994,7 @@ impl Vm {
                 self.stack.pop();
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure.as_closure_ptr(), stack_start, factory.ip_start, seal)?;
-                self.transfer_argument_write_ownership(factory.retain_mask, factory.escape_mask, stack_start, arg_count, false)?;
+                self.transfer_argument_write_ownership(factory.retain_mask, factory.escape_mask, stack_start, arg_count, ReceiverSlot::Borrowed)?;
                 Ok(())
             },
             objects::TAG_CLOSURE => {
@@ -953,7 +1005,7 @@ impl Vm {
                 let instance = self.alloc(ObjInstance::new(type_ptr));
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count, false)?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, stack_start, arg_count, ReceiverSlot::Borrowed)?;
                 Ok(())
             },
             // A native factory receives the fresh instance as its target and fills its fields. The

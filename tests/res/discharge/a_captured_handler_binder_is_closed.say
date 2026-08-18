@@ -40,7 +40,18 @@ f();
 type W { pub d; init(this, *d) { this.d = d; } }
 obligation warned { witness W; discharge to use; }
 
-fn f(x: warned)! { return x ?? e => (() => e.d); }
+// A handler binder names the value the parameter carried, so a closure over it keeps the
+// argument. The parameter has to take it for the closure to outlive the call.
+fn f(*x: warned)! { return x ?? e => (() => e.d); }
 
 say g = f(W(7));
 print(g()); // expect: 7
+
+// @split
+type W { pub d; init(this, *d) { this.d = d; } }
+obligation warned { witness W; discharge to use; }
+
+fn f(x: warned)! { return x ?? e => (() => e.d); } // error: cannot persist a borrowed value
+
+say g = f(W(7));
+print(g());

@@ -10,15 +10,15 @@ type Box {
     }
 }
 
-fn makeBox(*v)! {
-    return Box(v);
+fn makeBox(*v)!: mut {
+    return mut Box(v);
 }
 
 fn describe(b?)! {
     return "a box";
 }
 
-say b = mut makeBox(10);
+say b = makeBox(10);
 b.value = 20;
 print(b.get()); // expect: 20
 print(describe(b)); // expect: a box

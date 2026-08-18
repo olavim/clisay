@@ -421,10 +421,6 @@ impl<'a> Compiler<'a> {
         match self.hir.get(lhs) {
             HirExpr::Identifier(_) => {
                 let place = self.place(lhs);
-                // The slot goes back while the name still holds the value that took it.
-                if let (true, Place::Local(slot)) = (self.barriers.releases_on_rebind(lhs), place) {
-                    self.emit(Inst::ReleaseWriteOwnershipAt(slot), lhs);
-                }
                 self.expression(rhs)?;
                 self.emit_store(place, discarded, lhs, rhs)?;
                 Ok(())

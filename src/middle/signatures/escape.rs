@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::middle::bind::Place;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol};
+use crate::middle::hir::{HirCatchClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol};
 use crate::middle::native;
 
 use super::{Collector, ParamFact};
@@ -290,7 +290,7 @@ impl<'a> Collector<'a> {
                 facts.bound.extend(self.hir.get(pattern).binders(self.hir));
             }
         }
-        self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Capture, None);
+        self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Capture, None, false);
         facts.direct.drop_names(&facts.bound);
         facts.direct
     }
@@ -344,7 +344,7 @@ impl<'a> Collector<'a> {
         let params = self.escape_params(decl);
         let owner = self.sigs.method_owner.get(&func).copied();
         let mut facts = EscapeFacts::default();
-        self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Escape, owner);
+        self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Escape, owner, false);
         resolve_stores(&params, self.this, &mut facts);
         let carriers = Carriers::of(&params, &facts.aliases);
         FnAnalysis { func, params, carriers, facts }
@@ -518,7 +518,7 @@ impl<'a> Collector<'a> {
             let HirExpr::Literal(HirLiteral::Lambda(decl)) = self.hir.get(&id) else { continue };
             let params: Vec<Symbol> = decl.params.iter().map(|p| self.param_sym(&p.name)).collect();
             let mut facts = EscapeFacts::default();
-            self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Escape, None);
+            self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Escape, None, false);
             resolve_stores(&params, self.this, &mut facts);
 
             let carriers = Carriers::of(&params, &facts.aliases);
@@ -720,7 +720,7 @@ impl<'a> Collector<'a> {
     /// field or container, or a forward to a callee) records the name. A nested function or lambda is
     /// walked in `Capture` mode, where every reference records the name, since a capture persists it.
     /// `owner` is the enclosing type of a method body, so a `this.method` call resolves.
-    fn walk_escapes(&self, expr: &HirId<HirExpr>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<HirId<HirStmt>>) {
+    fn walk_escapes(&self, expr: &HirId<HirExpr>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<HirId<HirStmt>>, caught: bool) {
         // Record what this node contributes, then recurse through the shared child structure.
         match self.hir.get(expr) {
             // A closure captures what it reads from an enclosing frame. A name it binds itself is
@@ -766,8 +766,8 @@ impl<'a> Collector<'a> {
         }
         for child in walk::children_of_expr(self.hir, expr) {
             match child {
-                Child::Expr(e) => self.walk_escapes(&e, facts, mode, owner),
-                Child::Stmt(s) => self.walk_escapes_stmt(&s, facts, mode, owner),
+                Child::Expr(e) => self.walk_escapes(&e, facts, mode, owner, caught),
+                Child::Stmt(s) => self.walk_escapes_stmt(&s, facts, mode, owner, caught),
             }
         }
     }
@@ -783,7 +783,7 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn walk_escapes_stmt(&self, stmt: &HirId<HirStmt>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<HirId<HirStmt>>) {
+    fn walk_escapes_stmt(&self, stmt: &HirId<HirStmt>, facts: &mut EscapeFacts, mode: EscapeCollectMode, owner: Option<HirId<HirStmt>>, caught: bool) {
         match self.hir.get(stmt) {
             HirStmt::Return(Some(e)) => if mode == EscapeCollectMode::Escape {
                 for (name, kind, _) in self.reachable_kinds(e) {
@@ -791,6 +791,11 @@ impl<'a> Collector<'a> {
                         AliasKind::Identity => facts.returned.note(name, *e),
                         AliasKind::Containment => facts.direct.note(name, *e),
                     };
+                }
+            },
+            HirStmt::Throw(e) => if mode == EscapeCollectMode::Escape && !caught {
+                for (name, _, _) in self.reachable_kinds(e) {
+                    facts.direct.note(name, *e);
                 }
             },
             HirStmt::Say(field) => {
@@ -802,7 +807,7 @@ impl<'a> Collector<'a> {
                 }
             },
             // A nested function is a closure bound to a name. What it captures leaves only as far
-            // as that name does, which is how a lambda's captures are already read.
+            // as that name does.
             HirStmt::Fn(decl) if mode == EscapeCollectMode::Escape => {
                 facts.bound.insert(decl.name);
                 for source in self.captures_of(decl).into_names() {
@@ -816,8 +821,20 @@ impl<'a> Collector<'a> {
             HirStmt::Match(_, arms) => for arm in arms {
                 facts.bound.extend(self.hir.get(&arm.matcher).binders(self.hir));
             },
-            HirStmt::Try(_, Some(catch), _) => if let Some(param) = catch.param {
-                if let HirExpr::Identifier(name) = self.hir.get(&param) { facts.bound.insert(*name); }
+            HirStmt::Try(body, catch, finally) => {
+                if let Some(HirCatchClause { param: Some(param), .. }) = catch {
+                    if let HirExpr::Identifier(name) = self.hir.get(&param) {
+                        facts.bound.insert(*name);
+                    }
+                }
+                self.walk_escapes(body, facts, mode, owner, caught || catch.is_some());
+                if let Some(catch) = catch {
+                    self.walk_escapes(&catch.body, facts, mode, owner, caught);
+                }
+                if let Some(finally) = finally {
+                    self.walk_escapes(finally, facts, mode, owner, caught);
+                }
+                return;
             },
             HirStmt::While(cond, _) => facts.bound.extend(self.hir.condition_binders(cond)),
             HirStmt::If(cond, ..) => facts.bound.extend(self.hir.condition_binders(cond)),
@@ -825,8 +842,8 @@ impl<'a> Collector<'a> {
         }
         for child in walk::children_of_stmt(self.hir, stmt) {
             match child {
-                Child::Expr(e) => self.walk_escapes(&e, facts, mode, owner),
-                Child::Stmt(s) => self.walk_escapes_stmt(&s, facts, mode, owner),
+                Child::Expr(e) => self.walk_escapes(&e, facts, mode, owner, caught),
+                Child::Stmt(s) => self.walk_escapes_stmt(&s, facts, mode, owner, caught),
             }
         }
     }

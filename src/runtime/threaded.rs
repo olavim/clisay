@@ -125,7 +125,6 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::TRANSFER_WRITE_OWNERSHIP_AT => vm.op_transfer_write_ownership_at()?,
         opcode::RELEASE_WRITE_OWNERSHIP => vm.op_release_write_ownership(),
         opcode::POP_SCOPE => vm.op_pop_scope(),
-        opcode::RELEASE_WRITE_OWNERSHIP_AT => vm.op_release_write_ownership_at(),
         opcode::CLOSE_UPVALUE => vm.op_close_upvalue(),
         opcode::CLOSE_SLOT_UPVALUE => vm.op_close_slot_upvalue(),
         opcode::ARRAY => vm.op_array()?,
@@ -562,7 +561,7 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
             true => unsafe { (*closure).escape_mask },
             false => 0,
         };
-        vm.transfer_argument_write_ownership(retain_mask, escape_mask, stack_start, arg_count, false)?;
+        vm.transfer_argument_write_ownership(retain_mask, escape_mask, stack_start, arg_count, ReceiverSlot::Callee)?;
     }
     become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
 }

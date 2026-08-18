@@ -695,11 +695,15 @@ impl<'a> Checker<'a> {
             // A `mut` receiver is lent for the call, so a body that captures it into a value
             // outliving the call keeps writing through a borrow the caller has taken back.
             let cap = decl.receiver.as_ref().map_or(Capability::None, |r| r.capability);
-            if cap.is_mut() && !cap.is_retain() && self.ctx.sigs.escapes_beyond_return_at(&stmt, decl.params.len()) {
+            if decl.receiver.is_some() && !cap.is_retain() && self.ctx.sigs.escapes_beyond_return_at(&stmt, decl.params.len()) {
+                let own = match cap.is_mut() {
+                    true => "*mut this",
+                    false => "*this",
+                };
                 return Err(self.error_help(
-                    "a `mut` receiver borrows the instance and cannot let it escape".to_string(),
+                    "a borrowing receiver cannot let the instance escape".to_string(),
                     &decl.body,
-                    "take the receiver by `*mut` to own it, or capture the values it holds instead of `this`"));
+                    format!("take the receiver by `{own}` to own it, or capture the values it holds instead of `this`")));
             }
         }
         self.ctx.reject_receiver_witnessed_obligations(decl)?;
@@ -939,7 +943,6 @@ impl<'a> Checker<'a> {
                     // drops a held slot has to give it back where the value changes.
                     if self.locals[i].alias.wrote_at.take().is_some() {
                         self.locals[i].alias.slot_taken = false;
-                        self.record_rebind_release(lhs);
                     }
                     self.reset_narrowing(i, matches!(state.debt, Debt::Clean));
                 } else if self.ctx.sigs.is_type(name) {

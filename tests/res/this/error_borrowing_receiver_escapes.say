@@ -1,0 +1,24 @@
+// A borrowing receiver is lent for the call. A closure holding it outlives the lend, so returning
+// one is refused even though calling it in place is fine.
+type Counter {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn leak(mut this)! { return () => { this.n = 1; }; } // error: a borrowing receiver cannot let the instance escape
+}
+
+// @split
+type Counter {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn leak(this)! { return () => this.n; } // error: a borrowing receiver cannot let the instance escape
+}
+
+// @split
+type Counter {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn leak(*this)! { return () => this.n; }
+}
+say c = Counter();
+say r = c.leak();
+print(r()); // expect: 0

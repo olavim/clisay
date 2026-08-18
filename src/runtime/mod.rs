@@ -117,6 +117,26 @@ pub enum WriteOwnershipHolder {
     Retired,
 }
 
+/// What a call puts in slot zero.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ReceiverSlot {
+    /// The slot holds the callee, so the call has no receiver.
+    Callee,
+    /// The caller lends its receiver for the call and gets it back.
+    Borrowed,
+    /// The receiver is handed over, the way a `*` parameter takes its argument.
+    Retained,
+}
+
+impl ReceiverSlot {
+    pub fn declared(retain: bool) -> ReceiverSlot {
+        match retain {
+            true => ReceiverSlot::Retained,
+            false => ReceiverSlot::Borrowed,
+        }
+    }
+}
+
 /// The root used to reach a target.
 #[derive(Clone, Copy)]
 pub enum WriteRoot {

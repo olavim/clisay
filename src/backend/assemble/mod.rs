@@ -123,7 +123,6 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | GetField(b)
         | TransferWriteOwnership(b) | TransferWriteOwnershipUp(b) | TransferWriteOwnershipAt(b)
         | ReleaseWriteOwnership(b)
-        | ReleaseWriteOwnershipAt(b)
         | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
 
         PopScope(count, depth) => {

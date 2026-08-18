@@ -1,7 +1,0 @@
-// A `mut` receiver is lent for the call. A closure holding it is a new value that outlives the
-// lend, so returning one is refused even though calling it in place is fine.
-type Counter {
-    pub var n;
-    init(this) { this.n = 0; }
-    pub fn leak(mut this)! { return () => { this.n = 1; }; } // error: a `mut` receiver borrows the instance and cannot let it escape
-}

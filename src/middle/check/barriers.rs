@@ -73,9 +73,6 @@ pub struct Barriers {
     pub(super) seal_checks: HashSet<HirId<HirExpr>>,
     /// Paren-construction `Call` nodes (`K(args)`).
     pub(super) constructions: HashSet<HirId<HirExpr>>,
-    /// Rebinds of a name that holds an element writer slot, which give the slot back before the
-    /// new value lands. Keyed on the assignment's left side.
-    pub(super) rebind_releases: HashSet<HirId<HirExpr>>,
     /// Scopes holding an element writer slot, by node index. A scope gives back whatever its own
     /// locals still hold.
     pub(super) write_scopes: HashSet<usize>,
@@ -120,11 +117,6 @@ impl Barriers {
     /// Whether this `Call` node is a paren construction `K(args)`.
     pub fn is_construction(&self, node: &HirId<HirExpr>) -> bool {
         self.constructions.contains(node)
-    }
-
-    /// Whether this rebind gives back the writer slot the name held.
-    pub fn releases_on_rebind(&self, lhs: &HirId<HirExpr>) -> bool {
-        self.rebind_releases.contains(lhs)
     }
 
     /// Whether this scope has to give back element writer slots on the way out.
@@ -178,11 +170,6 @@ impl<'a> Checker<'a> {
     /// Marks a `Call` node as a paren construction `K(args)`.
     pub(super) fn record_construction(&mut self, node: &HirId<HirExpr>) {
         self.out.constructions.insert(*node);
-    }
-
-    /// Marks a rebind that gives back the writer slot its name held.
-    pub(super) fn record_rebind_release(&mut self, lhs: &HirId<HirExpr>) {
-        self.out.rebind_releases.insert(*lhs);
     }
 
     /// Marks a scope that has to give back element writer slots.

@@ -39,8 +39,13 @@ pub const RETAINED_TWICE: &str = "cannot retain a value whose write-ownership wa
 /// Whether a value is a mutable container. Only Array, Dict, and Instance carry the immutable bit;
 /// every other object kind and every primitive is always an immutable value.
 pub fn is_mutable_container(value: Value) -> bool {
+    is_container(value) && !value.as_object().is_immutable()
+}
+
+/// Whether a value has an identity two names can share. A primitive is copied, so lending one
+/// hands the callee nothing the caller keeps.
+pub fn is_container(value: Value) -> bool {
     matches!(value.kind(), ValueKind::Object(ObjectKind::Array | ObjectKind::Dict | ObjectKind::Instance))
-        && !value.as_object().is_immutable()
 }
 
 /// Whether a value's kind can hold write-ownership over another value, and so needs the marks a
