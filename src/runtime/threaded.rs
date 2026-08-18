@@ -223,7 +223,7 @@ fn store_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Val
     let mut ip = ip;
     let idx = rb!(ip) as usize;
     let value = peek!(top, 0);
-    // A captured variable outlives the lending call, so a borrowed value may not be stored into one.
+    // A captured variable outlives the call that borrowed the value, so it may not be stored into one.
     if objects::carries_borrow(value) {
         vm.stack.set_top(top);
         vm.ip = ip;
@@ -576,7 +576,7 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
             true => unsafe { (*closure).escape_mask },
             false => 0,
         };
-        vm.transfer_argument_write_ownership(CallMasks { retain_mask, escape_mask, needs_borrow_mark }, stack_start, arg_count, ReceiverSlot::Callee)?;
+        vm.transfer_argument_write_ownership(retain_mask, escape_mask, needs_borrow_mark, stack_start, arg_count, ReceiverSlot::Callee)?;
     }
     become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
 }
@@ -587,14 +587,22 @@ fn halt(vm: &mut Vm, _ip: *const OpCode, _top: *mut Value, _base: *mut Value) ->
 }
 
 fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R {
-    // The top-level ends in HALT, so every RETURN has a caller frame to pop. A live lend sends the
+    // The top-level ends in HALT, so every RETURN has a caller frame to pop. A live borrow sends the
     // return down the slow path, which is where the borrow floor asks what the value holds.
     if vm.open_upvalues.is_empty() && vm.write_ownerships.is_empty() && vm.borrows.is_empty() {
         let frame = vm.frames.pop();
         let value = unsafe { *top.sub(1) };
-        // The result lands in the callee slot, which the call may have marked lent.
+        // Handing a borrowed value back does not end the borrow.
+        let returned_from = unsafe { top.sub(1) };
+        let handed_back_borrow = returned_from < vm.stack.borrowed_end()
+            && !value.is_object()
+            && vm.stack.is_borrowed(returned_from);
+        // The result lands in the callee slot, which the call may have marked borrowed.
         vm.stack.prune_borrowed(frame.stack_start);
         unsafe { *frame.stack_start = value };
+        if handed_back_borrow {
+            vm.stack.mark_borrowed(frame.stack_start);
+        }
         let top = unsafe { frame.stack_start.add(1) };
         let base = unsafe { (*vm.frames.top()).stack_start };
         become dispatch(vm, frame.return_ip, top, base);

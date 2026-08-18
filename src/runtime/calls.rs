@@ -485,8 +485,7 @@ impl Vm {
     }
 
     /// Hands each retained argument's write-ownership to the parameter slot about to take it.
-    pub(crate) fn transfer_argument_write_ownership(&mut self, masks: CallMasks, stack_start: *mut Value, arity: usize, receiver: ReceiverSlot) -> Result<(), anyhow::Error> {
-        let CallMasks { retain_mask, escape_mask, needs_borrow_mark } = masks;
+    pub(crate) fn transfer_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, needs_borrow_mark: u64, stack_start: *mut Value, arity: usize, receiver: ReceiverSlot) -> Result<(), anyhow::Error> {
         // Slot zero is where a method's receiver lives. It takes the marker its declaration gave
         // it, the way a parameter takes its own.
         match receiver {
@@ -494,18 +493,29 @@ impl Vm {
             ReceiverSlot::Borrowed => self.borrow_slot(stack_start, true),
             ReceiverSlot::Callee => {},
         }
+        // A position needs to be looked at if it takes its argument, if the body may hand it to a call
+        // that takes it, or if the run is putting its claims on trial. Anything else is only worth
+        // a visit when the argument has a header to record on.
+        let wanted = match self.forced {
+            true => u64::MAX,
+            false => retain_mask | needs_borrow_mark,
+        };
         for position in 0..arity.min(64) {
             // Slot zero holds the receiver, so a parameter sits one above its position.
             let addr = unsafe { stack_start.add(position + 1) };
             let value = unsafe { *addr };
+            let bit = 1u64 << position;
+            if wanted & bit == 0 && !objects::is_container(value) {
+                continue;
+            }
             #[cfg(debug_assertions)]
             self.assert_borrow_marks_agree(addr);
             // A parameter that does not retain its argument borrows it.
-            if retain_mask & (1u64 << position) == 0 {
+            if retain_mask & bit == 0 {
                 // A slot only needs the mark where the body hands it to a call that might retain it.
-                let marks_slot = self.forced || needs_borrow_mark & (1u64 << position) != 0;
+                let marks_slot = self.forced || needs_borrow_mark & bit != 0;
                 self.borrow_slot(addr, marks_slot);
-                if self.forced && objects::is_mutable_container(value) && escape_mask & (1u64 << position) == 0 {
+                if self.forced && objects::is_mutable_container(value) && escape_mask & bit == 0 {
                     self.watch_borrow_claim(value, position as u8, stack_start);
                 }
                 continue;
@@ -919,7 +929,7 @@ impl Vm {
         check_arity!(self, arg_count, closure.arity, closure.name);
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-        self.transfer_argument_write_ownership(closure.call_masks(), stack_start, arg_count, ReceiverSlot::Callee)?;
+        self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::Callee)?;
         Ok(())
     }
 
@@ -936,7 +946,7 @@ impl Vm {
                 check_arity!(self, arg_count, closure.arity, closure.name);
                 let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.call_masks(), stack_start, arg_count, ReceiverSlot::declared(closure.retain_receiver))?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(closure.retain_receiver))?;
             },
             objects::TAG_NATIVE_FUNCTION => {
                 self.stack.set(arg_count, Value::from(bound_method.target));
@@ -1029,7 +1039,7 @@ impl Vm {
                 self.stack.pop();
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure.as_closure_ptr(), stack_start, factory.ip_start, seal)?;
-                self.transfer_argument_write_ownership(factory.call_masks(), stack_start, arg_count, ReceiverSlot::Borrowed)?;
+                self.transfer_argument_write_ownership(factory.retain_mask, factory.escape_mask, factory.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::Borrowed)?;
                 Ok(())
             },
             objects::TAG_CLOSURE => {
@@ -1040,7 +1050,7 @@ impl Vm {
                 let instance = self.alloc(ObjInstance::new(type_ptr));
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.call_masks(), stack_start, arg_count, ReceiverSlot::Borrowed)?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::Borrowed)?;
                 Ok(())
             },
             // A native factory receives the fresh instance as its target and fills its fields. The

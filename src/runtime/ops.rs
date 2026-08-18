@@ -74,12 +74,18 @@ impl Vm {
         let frame = self.frames.pop();
         self.ip = frame.return_ip;
 
+        // Handing a borrowed value back does not end the borrow.
+        let handed_back_borrow = !self.stack.peek(0).is_object()
+            && self.stack.is_borrowed(self.stack.offset(0));
         let value = self.stack.pop();
         // The value outlives this frame, so the scope releases below must not let go of it.
         objects::record_escape(value);
         self.restore_borrows(frame.borrow_depth);
         self.unwind_to(frame.stack_start, frame.write_depth, value)?;
         self.stack.push(value);
+        if handed_back_borrow {
+            self.stack.mark_borrowed(self.stack.offset(0));
+        }
         Ok(true)
     }
 

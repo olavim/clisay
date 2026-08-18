@@ -75,6 +75,14 @@ name = "strings"
 harness = false
 
 [[bench]]
+name = "element_stores"
+harness = false
+
+[[bench]]
+name = "field_stores"
+harness = false
+
+[[bench]]
 name = "arrays"
 harness = false
 
