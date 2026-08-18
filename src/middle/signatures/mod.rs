@@ -31,6 +31,8 @@ pub(crate) struct ParamFact {
     pub hands_back_itself: bool,
     /// The body stores it where a second name can write it.
     pub stored_away: bool,
+    /// The param is borrowed and the body might hand it to a call that retains it.
+    pub needs_borrow_mark: bool,
     pub escape_site: Option<HirId<HirExpr>>,
 }
 
@@ -221,6 +223,10 @@ impl Signatures {
 
     pub(crate) fn param_stored_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
         self.param_fact(func, param).stored_away
+    }
+
+    pub(crate) fn param_needs_borrow_mark_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
+        self.param_fact(func, param).needs_borrow_mark
     }
 
     pub(crate) fn escapes_beyond_return_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {

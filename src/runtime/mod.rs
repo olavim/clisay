@@ -6,7 +6,7 @@ use rustc_hash::FxHasher;
 use smallvec::SmallVec;
 
 use crate::Output;
-use crate::core::objects::{ObjBoundMethod, ObjInstance};
+use crate::core::objects::{CallMasks, ObjBoundMethod, ObjInstance};
 use fnv::FnvHashSet;
 use crate::core::value::ValueKind;
 use crate::frontend::lex::{Diagnostic, SourcePosition};
@@ -50,8 +50,8 @@ struct CallCache {
     callee: Value,
     closure: *mut ObjClosure,
     ip_start: usize,
-    /// The callee's `*mut` positions.
-    retain_mask: u64
+    retain_mask: u64,
+    needs_borrow_mark: u64
 }
 
 /// A site no instruction pointer can be, which is how an entry says it answers nothing.
@@ -66,7 +66,7 @@ impl IndexCache {
 impl CallCache {
     /// An entry naming nothing. A collection resets to this, since what it named may be freed.
     const fn empty() -> CallCache {
-        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0, retain_mask: 0 }
+        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0, retain_mask: 0, needs_borrow_mark: u64::MAX }
     }
 }
 

@@ -104,6 +104,9 @@ struct EscapeFacts {
     call_writes: HashSet<Symbol>,
     /// Forwarding edges to known callees, whose persist depends on the callee's own summary.
     forwards: Vec<EscapeForward>,
+    /// Borrowed names this body hands to a call that might retain them. An unresolvable callee counts,
+    /// since nothing here knows what it does with an argument.
+    needs_borrow_mark: HashSet<Symbol>,
     /// What each local is tied to, from `say` and assignment.
     aliases: Vec<Alias>,
     /// `(container, value, site)` from a store into a name the body may own.
@@ -353,26 +356,31 @@ impl<'a> Collector<'a> {
     /// Folds one body's facts into a row of one entry per parameter. A forwarded argument undergoes
     /// whatever its callee does to it, which the visit order has already settled.
     fn fold_facts(&self, params: &[Symbol], carriers: &Carriers, facts: &EscapeFacts) -> Vec<ParamFact> {
-        let mut row = vec![ParamFact::default(); params.len()];
+        let mut param_facts = vec![ParamFact::default(); params.len()];
+        for name in &facts.needs_borrow_mark {
+            for p in carriers.held(name) {
+                param_facts[param_position(params, *p)].needs_borrow_mark = true;
+            }
+        }
         // A directly persisted or mutated argument is kept whatever any callee does.
         for (name, at) in facts.direct.iter() {
             for p in carriers.held(name) {
-                let fact = &mut row[param_position(params, *p)];
+                let fact = &mut param_facts[param_position(params, *p)];
                 fact.escapes = true;
                 fact.escapes_beyond_return = true;
                 note_site(&mut fact.escape_site, *at);
             }
         }
         for name in &facts.mutates {
-            for p in carriers.held(name) { row[param_position(params, *p)].mutates = true; }
+            for p in carriers.held(name) { param_facts[param_position(params, *p)].mutates = true; }
         }
         for name in &facts.stored_away {
-            for p in carriers.held(name) { row[param_position(params, *p)].stored_away = true; }
+            for p in carriers.held(name) { param_facts[param_position(params, *p)].stored_away = true; }
         }
         for forward in &facts.forwards {
             let callee_fact = self.sigs.param_fact(&forward.callee, forward.callee_param);
             for p in carriers.held(&forward.arg) {
-                let fact = &mut row[param_position(params, *p)];
+                let fact = &mut param_facts[param_position(params, *p)];
                 // A callee that only hands the argument back has not let it out of this body. Where
                 // the result then goes is the value walk's answer, not the edge's, and it reads the
                 // call through the same `hands_back` fact.
@@ -385,7 +393,7 @@ impl<'a> Collector<'a> {
                 fact.stored_away |= callee_fact.stored_away;
             }
         }
-        row
+        param_facts
     }
 
     /// Writes one function's row, answering whether it gained a bit. The row is rebuilt rather than
@@ -638,9 +646,20 @@ impl<'a> Collector<'a> {
 
     /// Records an edge from each argument to the matching parameter of the callee's declaration.
     fn forward_call_args(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], facts: &mut EscapeFacts, owner: Option<HirId<HirStmt>>) {
-        let Some(target) = self.call_target(callee, owner) else { return };
+        let Some(target) = self.call_target(callee, owner) else {
+            // Nothing is known about what this call takes, so every argument might be retained.
+            for arg in args {
+                facts.needs_borrow_mark.extend(self.reachable_names(arg));
+            }
+            return;
+        };
+        let markers = self.sigs.fns.get(&target).map(|sig| sig.param_markers.as_slice()).unwrap_or(&[]);
         for (callee_param, arg) in args.iter().enumerate() {
+            let taken = markers.get(callee_param).is_some_and(|m| m.is_retain());
             for arg_name in self.reachable_names(arg) {
+                if taken {
+                    facts.needs_borrow_mark.insert(arg_name);
+                }
                 facts.forwards.push(EscapeForward { callee: target, callee_param, arg: arg_name, at: *arg });
             }
         }

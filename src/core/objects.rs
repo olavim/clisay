@@ -540,7 +540,11 @@ pub struct ObjFn {
     pub escape_mask: u64,
     /// One bit per parameter that retains its argument (`*`), so the call can transfer each one's
     /// write-ownership without codegen naming the positions.
-    pub retain_mask: u64
+    pub retain_mask: u64,
+    /// The parameters whose slots a call marks borrowed. Every parameter without `*` is borrowed,
+    /// but not all params need the mark. If this body hands a borrowed param to a call that might
+    /// retain it (we know it does statically, or it's a dynamic-boundary call), then it needs the mark.
+    pub needs_borrow_mark: u64
 }
 
 impl ObjFn {
@@ -550,7 +554,12 @@ impl ObjFn {
         position < 64 && self.escape_mask & (1u64 << position) != 0
     }
 
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, mut_receiver: bool, retain_receiver: bool) -> ObjFn {
+    pub fn call_masks(&self) -> CallMasks {
+        CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark }
+    }
+
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, needs_borrow_mark: u64, mut_receiver: bool, retain_receiver: bool) -> ObjFn {
+        debug_assert_eq!(needs_borrow_mark & retain_mask, 0, "a taken parameter asked for a borrow mark");
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
@@ -560,7 +569,8 @@ impl ObjFn {
             ip_start,
             upvalues,
             escape_mask,
-            retain_mask
+            retain_mask,
+            needs_borrow_mark
         }
     }
 }
@@ -641,10 +651,23 @@ pub struct ObjClosure {
     pub retain_receiver: bool,
     pub ip_start: usize,
     pub escape_mask: u64,
-    pub retain_mask: u64
+    pub retain_mask: u64,
+    pub needs_borrow_mark: u64
+}
+
+/// The three per-parameter masks a call reads.
+#[derive(Clone, Copy)]
+pub struct CallMasks {
+    pub retain_mask: u64,
+    pub escape_mask: u64,
+    pub needs_borrow_mark: u64,
 }
 
 impl ObjClosure {
+    pub fn call_masks(&self) -> CallMasks {
+        CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark }
+    }
+
     /// Byte offset of the trailing upvalue array.
     const UPVALUES_OFFSET: usize = mem::size_of::<ObjClosure>();
 

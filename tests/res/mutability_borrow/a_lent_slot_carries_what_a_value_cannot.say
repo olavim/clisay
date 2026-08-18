@@ -1,0 +1,33 @@
+// A borrowed binding may not be handed to a callee that takes it, whatever it holds. A number has
+// no identity to carry the lend on, so the slot it sits in carries it instead.
+fn take(*v) {}
+fn give(cb, val) { cb(val); } // error: cannot pass a borrowed argument to a callee that retains it
+give(take, 7);
+
+// @split
+// A binding of the lend is the lend.
+fn take(*v) {}
+fn give(cb, val) { say n = val; cb(n); } // error: cannot pass a borrowed argument to a callee that retains it
+give(take, 7);
+
+// @split
+// A value the frame made itself is not the lend, however equal the two look.
+fn take(*v) {}
+fn give(cb, val) { cb(7); print(val); }
+give(take, 7); // expect: 7
+
+// @split
+fn take(*v) {}
+fn give(cb, val) { cb(val + 1); print(val); }
+give(take, 7); // expect: 7
+
+// @split
+fn take(*v) {}
+fn give(cb, val) { say n = 7; cb(n); print(val); }
+give(take, 7); // expect: 7
+
+// @split
+// A container reaches the same answer, and by a second route, since its own bit says it too.
+fn take(*v) {}
+fn give(cb, val) { cb(val); } // error: cannot pass a borrowed argument to a callee that retains it
+give(take, mut [1]);

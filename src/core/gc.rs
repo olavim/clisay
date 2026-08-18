@@ -125,6 +125,7 @@ impl Gc {
         upvalues: &[*mut ObjUpvalue],
         escape_mask: u64,
         retain_mask: u64,
+        needs_borrow_mark: u64,
         mut_receiver: bool,
         retain_receiver: bool
     ) -> *mut ObjClosure {
@@ -143,7 +144,8 @@ impl Gc {
                 retain_receiver,
                 ip_start,
                 escape_mask,
-                retain_mask
+                retain_mask,
+                needs_borrow_mark
             });
             std::ptr::copy_nonoverlapping(
                 upvalues.as_ptr(),
