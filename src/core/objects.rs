@@ -544,7 +544,9 @@ pub struct ObjFn {
     /// The parameters whose slots a call marks borrowed. Every parameter without `*` is borrowed,
     /// but not all params need the mark. If this body hands a borrowed param to a call that might
     /// retain it (we know it does statically, or it's a dynamic-boundary call), then it needs the mark.
-    pub needs_borrow_mark: u64
+    pub needs_borrow_mark: u64,
+    /// Whether a call has to record its borrow of the receiver.
+    pub receiver_needs_borrow: bool
 }
 
 impl ObjFn {
@@ -558,7 +560,7 @@ impl ObjFn {
         CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark }
     }
 
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, needs_borrow_mark: u64, mut_receiver: bool, retain_receiver: bool) -> ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, needs_borrow_mark: u64, mut_receiver: bool, retain_receiver: bool, receiver_needs_borrow: bool) -> ObjFn {
         debug_assert_eq!(needs_borrow_mark & retain_mask, 0, "a taken parameter asked for a borrow mark");
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
@@ -570,7 +572,8 @@ impl ObjFn {
             upvalues,
             escape_mask,
             retain_mask,
-            needs_borrow_mark
+            needs_borrow_mark,
+            receiver_needs_borrow
         }
     }
 }
@@ -652,7 +655,8 @@ pub struct ObjClosure {
     pub ip_start: usize,
     pub escape_mask: u64,
     pub retain_mask: u64,
-    pub needs_borrow_mark: u64
+    pub needs_borrow_mark: u64,
+    pub receiver_needs_borrow: bool
 }
 
 /// The three per-parameter masks a call reads.

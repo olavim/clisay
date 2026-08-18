@@ -27,6 +27,8 @@ pub(super) struct ParamMasks {
     pub escapes: u64,
     /// The borrowed arguments the body hands to a call that might retain them.
     pub needs_borrow_mark: u64,
+    /// Whether the body may hand `this` to a call that retains it.
+    pub receiver_needs_borrow: bool,
 }
 
 impl<'a> Compiler<'a> {
@@ -36,7 +38,10 @@ impl<'a> Compiler<'a> {
         let handed_on = param_bits((0..decl.params.len()).map(|i| self.sigs.param_needs_borrow_mark_at(stmt, i)));
         // A taken parameter is not borrowed, so it never wants the mark that says it is.
         let retains = declared_retains(decl);
-        ParamMasks { retains, escapes, needs_borrow_mark: handed_on & !retains }
+        // The escape row carries the receiver one past the declared positions.
+        let receiver_needs_borrow = decl.receiver.is_some()
+            && self.sigs.param_needs_borrow_mark_at(stmt, decl.params.len());
+        ParamMasks { retains, escapes, needs_borrow_mark: handed_on & !retains, receiver_needs_borrow }
     }
 
     pub(super) fn lambda_masks(&self, expr: &HirId<HirExpr>, decl: &HirFnDecl) -> ParamMasks {
@@ -46,7 +51,7 @@ impl<'a> Compiler<'a> {
             .unwrap_or_else(|| if arity >= 64 { u64::MAX } else { (1u64 << arity) - 1 });
         // A lambda publishes no row of its own, so every one of its parameters may be handed over.
         let retains = declared_retains(decl) | escapes;
-        ParamMasks { retains, escapes, needs_borrow_mark: !retains }
+        ParamMasks { retains, escapes, needs_borrow_mark: !retains, receiver_needs_borrow: true }
     }
 
     /// Matches each pattern parameter against its slot on entry, publishing the pattern's binders
@@ -124,7 +129,7 @@ impl<'a> Compiler<'a> {
         let mut_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_mut());
         let retain_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_retain());
 
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, masks.needs_borrow_mark, mut_receiver, retain_receiver));
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, masks.needs_borrow_mark, mut_receiver, retain_receiver, masks.receiver_needs_borrow));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))

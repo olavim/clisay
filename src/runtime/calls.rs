@@ -489,9 +489,11 @@ impl Vm {
         // Slot zero is where a method's receiver lives. It takes the marker its declaration gave
         // it, the way a parameter takes its own.
         match receiver {
-            ReceiverSlot::Retained => self.retain_slot(stack_start)?,
-            ReceiverSlot::Borrowed => self.borrow_slot(stack_start, true),
+            // Most calls have no receiver at all, so that answer comes first.
             ReceiverSlot::Callee => {},
+            ReceiverSlot::Retained => self.retain_slot(stack_start)?,
+            ReceiverSlot::BorrowedRecorded => self.borrow_slot(stack_start, true),
+            ReceiverSlot::Borrowed => if self.forced { self.borrow_slot(stack_start, true) },
         }
         // A position needs to be looked at if it takes its argument, if the body may hand it to a call
         // that takes it, or if the run is putting its claims on trial. Anything else is only worth
@@ -946,7 +948,7 @@ impl Vm {
                 check_arity!(self, arg_count, closure.arity, closure.name);
                 let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(closure.retain_receiver))?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(closure.retain_receiver, closure.receiver_needs_borrow))?;
             },
             objects::TAG_NATIVE_FUNCTION => {
                 self.stack.set(arg_count, Value::from(bound_method.target));
@@ -1039,7 +1041,7 @@ impl Vm {
                 self.stack.pop();
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure.as_closure_ptr(), stack_start, factory.ip_start, seal)?;
-                self.transfer_argument_write_ownership(factory.retain_mask, factory.escape_mask, factory.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::Borrowed)?;
+                self.transfer_argument_write_ownership(factory.retain_mask, factory.escape_mask, factory.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(false, factory.receiver_needs_borrow))?;
                 Ok(())
             },
             objects::TAG_CLOSURE => {
@@ -1050,7 +1052,7 @@ impl Vm {
                 let instance = self.alloc(ObjInstance::new(type_ptr));
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::Borrowed)?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(false, closure.receiver_needs_borrow))?;
                 Ok(())
             },
             // A native factory receives the fresh instance as its target and fills its fields. The

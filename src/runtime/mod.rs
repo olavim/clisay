@@ -6,7 +6,7 @@ use rustc_hash::FxHasher;
 use smallvec::SmallVec;
 
 use crate::Output;
-use crate::core::objects::{CallMasks, ObjBoundMethod, ObjInstance};
+use crate::core::objects::{ObjBoundMethod, ObjInstance};
 use fnv::FnvHashSet;
 use crate::core::value::ValueKind;
 use crate::frontend::lex::{Diagnostic, SourcePosition};
@@ -122,17 +122,19 @@ pub enum WriteOwnershipHolder {
 pub enum ReceiverSlot {
     /// The slot holds the callee, so the call has no receiver.
     Callee,
-    /// The caller lends its receiver for the call and gets it back.
+    /// The caller lends its receiver for the call and gets it back, and the body may hand `this`
+    /// on, so the borrow is written down where such a call can read it.
+    BorrowedRecorded,
     Borrowed,
-    /// The receiver is handed over, the way a `*` parameter takes its argument.
     Retained,
 }
 
 impl ReceiverSlot {
-    pub fn declared(retain: bool) -> ReceiverSlot {
-        match retain {
-            true => ReceiverSlot::Retained,
-            false => ReceiverSlot::Borrowed,
+    pub fn declared(retain: bool, records: bool) -> ReceiverSlot {
+        match (retain, records) {
+            (true, _) => ReceiverSlot::Retained,
+            (false, true) => ReceiverSlot::BorrowedRecorded,
+            (false, false) => ReceiverSlot::Borrowed,
         }
     }
 }

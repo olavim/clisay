@@ -95,7 +95,7 @@ impl Vm {
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, ip_start, true)?;
         let m = unsafe { (*closure_ptr).call_masks() };
-        self.transfer_argument_write_ownership(m.retain_mask, m.escape_mask, m.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(retain_receiver))?;
+        self.transfer_argument_write_ownership(m.retain_mask, m.escape_mask, m.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(retain_receiver, unsafe { (*closure_ptr).receiver_needs_borrow }))?;
         Ok(())
     }
 
