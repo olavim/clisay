@@ -422,6 +422,8 @@ impl<'a> Checker<'a> {
         local.alias.provenance = provenance;
         local.alias.extracted_from = value.and_then(|v| self.extraction_of(&v)).into_iter().collect();
         local.alias.shared_origin = value.is_some_and(|v| self.shared_origin(&v));
+        local.alias.may_be_shared = local.alias.shared_origin || local.alias.borrowed
+            || !local.alias.extracted_from.is_empty() || value.is_none();
         self.locals.push(local);
         Ok(())
     }
@@ -451,10 +453,18 @@ impl<'a> Checker<'a> {
     pub(super) fn identifier(&mut self, name: Symbol, expr: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let Some(i) = self.frame_index_of(name) else {
             // A read that resolves to an enclosing frame is a closure capture.
+            if let Some(j) = self.enclosing_index(name) {
+                self.value_may_have_escaped(j);
+            }
             self.reject_capture_escape(name, expr)?;
             self.capture_enclosing(name, expr);
             return Ok(self.captured_read(name));
         };
+
+        // Every read but a path base hands the value somewhere this pass does not follow.
+        if self.path_base.take() != Some(*expr) {
+            self.value_may_have_escaped(i);
+        }
 
         if self.locals[i].func.is_some() {
             return Ok(ValueState::unknown());
@@ -481,7 +491,9 @@ impl<'a> Checker<'a> {
     /// Member or data access `target.member` / `target[member]`. Resolves a field on a known-type
     /// receiver to its declared nullability; any other access is a dynamic-boundary read.
     pub(super) fn member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
+        self.path_base = Some(*target);
         let receiver = self.receiver(target)?;
+        self.path_base = None;
         let Some(name) = self.ctx.member_display_name(member) else {
             self.expr(member)?;
             // Reading a container yields a pending element. Presence is tracked, not depth, so the
@@ -939,6 +951,10 @@ impl<'a> Checker<'a> {
                     self.locals[i].alias.provenance = self.provenance_of(rhs);
                     self.locals[i].alias.extracted_from = self.extraction_of(rhs).into_iter().collect();
                     self.locals[i].alias.shared_origin = self.shared_origin(rhs);
+                    // A rebind does not undo where the old value already went, so the flag only
+                    // ever gains reasons to be set.
+                    self.locals[i].alias.may_be_shared |= self.locals[i].alias.shared_origin
+                        || self.locals[i].alias.borrowed || !self.locals[i].alias.extracted_from.is_empty();
                     // The old value keeps its runtime slot until told otherwise, so a rebind that
                     // drops a held slot has to give it back where the value changes.
                     if self.locals[i].alias.wrote_at.take().is_some() {
@@ -1024,6 +1040,7 @@ impl<'a> Checker<'a> {
             Some(i) => {
                 self.settle_unknown_transfer(i, target);
                 self.claim_element_write_ownership(i, target)?;
+                self.record_sole_write(i, target);
             },
             // A claim is recorded against a frame-local, and this target is not one. The store
             // carries its root, so it asks the question for itself.
@@ -1044,7 +1061,9 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
 
+        self.path_base = Some(*target);
         let receiver = self.receiver(target)?;
+        self.path_base = None;
         let Some(field) = self.ctx.string_member(member) else { return Ok(()) };
         if let TypeTag::Concrete(decl) = &receiver.tag {
             self.assign_field_external(&decl.clone(), field, value, lhs, rhs)?;

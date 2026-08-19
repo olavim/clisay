@@ -135,7 +135,7 @@ impl Local {
     /// A binding with every fact at its neutral default. Each named constructor overrides only the
     /// fields that distinguish it, so a new field is added here once.
     fn base(name: Symbol) -> Local {
-        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal::default(), unknown: false }
+        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal { may_be_shared: true, ..AliasLocal::default() }, unknown: false }
     }
 
     fn param(name: Symbol, owed: Obligations, reassignable: bool) -> Local {
@@ -283,6 +283,9 @@ struct Checker<'a> {
     ctx: Ctx<'a>,
     /// What the pass hands to codegen.
     out: Barriers,
+    /// The identifier a member access is about to read as its path base. That read cannot hand the
+    /// value anywhere, so it is the one read that leaves a sole-writer proof standing.
+    path_base: Option<HirId<HirExpr>>,
     locals: Vec<Local>,
     /// The start index in `locals` of the current function frame. Value reads only see
     /// bindings at or above this, so a closure does not read an enclosing local's flow state.
@@ -329,6 +332,7 @@ impl<'a> Checker<'a> {
             current_trait_surface: None,
             fn_ctx: FnContext::default(),
             out: Barriers::default(),
+            path_base: None,
             mut_construction: false,
         }
     }

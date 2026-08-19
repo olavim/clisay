@@ -95,6 +95,7 @@ impl<'a> Checker<'a> {
 
     /// Drops every local a scope introduced.
     pub(super) fn truncate_locals(&mut self, mark: usize) {
+        self.settle_sole_writes(mark);
         self.reclaim_scoped_write_ownership(mark);
         self.reroot_provenance(mark);
         self.drop_dead_extractions(mark);
@@ -110,6 +111,7 @@ impl<'a> Checker<'a> {
             local.alias.extracted_from = scope.sources.get(&name).map(|&source| (source, None)).into_iter().collect();
             local.alias.mutability = scope.mutability;
             local.unknown = scope.unknown.contains(&name);
+            debug_assert!(local.alias.may_be_shared, "a binder names a value the matched value also names");
             self.locals.push(local);
         }
     }

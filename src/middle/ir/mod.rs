@@ -19,6 +19,9 @@ pub const WRITE_ROOT_RECEIVER: u8 = 3;
 pub const WRITE_ROOT_RECEIVER_UP: u8 = 4;
 /// A root without a binding name. `StashRoot` puts it on the stash for the store to use.
 pub const WRITE_ROOT_STASH: u8 = 5;
+/// Set on a store's root kind where one name is proven to reach the target. The store then skips
+/// the one-writer arbitration that every other store runs.
+pub const WRITE_ROOT_UNSHARED: u8 = 0x80;
 
 /// A symbolic jump target, resolved to a byte offset at assembly time.
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -76,9 +76,17 @@ pub struct Barriers {
     /// Scopes holding an element writer slot, by node index. A scope gives back whatever its own
     /// locals still hold.
     pub(super) write_scopes: HashSet<usize>,
+    /// Store targets one name is proven to reach. Their stores skip the one-writer arbitration
+    /// that every other store runs.
+    pub(super) unshared_stores: HashSet<HirId<HirExpr>>,
 }
 
 impl Barriers {
+    /// Whether one name is proven to reach this store's target, so the store needs no arbitration.
+    pub fn store_is_unshared(&self, target: &HirId<HirExpr>) -> bool {
+        self.unshared_stores.contains(target)
+    }
+
     /// Every runtime check this node carries, in emission order.
     pub fn guards(&self, node: &HirId<HirExpr>) -> &[Guard] {
         self.guards.get(node).map_or(&[], Vec::as_slice)

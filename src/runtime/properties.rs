@@ -287,13 +287,12 @@ impl Vm {
         let member_id = self.read_next();
         let root_kind = self.read_next();
         let root_operand = self.read_next();
-        let root = self.take_write_root(root_kind, root_operand);
         let target = self.stack.pop();
         if !matches!(target.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         }
         self.ensure_mutable(target)?;
-        self.claim_write_ownership_through(target, root)?;
+        self.arbitrate_write(target, root_kind, root_operand)?;
 
         let value = self.stack.pop();
         self.ensure_borrowed_does_not_persist(value, root_kind, root_operand)?;
@@ -395,7 +394,20 @@ impl Vm {
     }
 
     pub(super) fn root_is_frame_local(&self, kind: u8, operand: u8) -> bool {
-        kind == ir::WRITE_ROOT_LOCAL && self.frame_arity().is_some_and(|arity| operand as usize > arity)
+        kind & !ir::WRITE_ROOT_UNSHARED == ir::WRITE_ROOT_LOCAL
+            && self.frame_arity().is_some_and(|arity| operand as usize > arity)
+    }
+
+    /// Settles the one-writer rule for a store, unless the check pass proved one name reaches the
+    /// target. The proof rides the root kind, so the store reads it without a second operand.
+    fn arbitrate_write(&mut self, target: Value, kind: u8, operand: u8) -> Result<(), anyhow::Error> {
+        if kind & ir::WRITE_ROOT_UNSHARED != 0 {
+            debug_assert!(kind & !ir::WRITE_ROOT_UNSHARED != ir::WRITE_ROOT_STASH,
+                "a stashed root is popped by the store, so it can never be proven unshared");
+            return Ok(());
+        }
+        let root = self.take_write_root(kind, operand);
+        self.claim_write_ownership_through(target, root)
     }
 
     fn frame_arity(&self) -> Option<usize> {
@@ -413,14 +425,13 @@ impl Vm {
     pub(super) fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
         let root_kind = self.read_next();
         let root_operand = self.read_next();
-        let root = self.take_write_root(root_kind, root_operand);
         let prop = self.stack.pop();
         let target = self.stack.pop();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.claim_write_ownership_through(target, root)?;
+        self.arbitrate_write(target, root_kind, root_operand)?;
         let stored = self.stack.peek(0);
         self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
 
@@ -487,14 +498,13 @@ impl Vm {
     pub(super) fn op_set_property(&mut self) -> Result<(), anyhow::Error> {
         let root_kind = self.read_next();
         let root_operand = self.read_next();
-        let root = self.take_write_root(root_kind, root_operand);
         let prop = self.stack.pop();
         let target = self.stack.pop();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.claim_write_ownership_through(target, root)?;
+        self.arbitrate_write(target, root_kind, root_operand)?;
         let stored = self.stack.peek(0);
         self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
 
@@ -653,13 +663,12 @@ impl Vm {
         let member_id = self.read_next();
         let root_kind = self.read_next();
         let root_operand = self.read_next();
-        let root = self.take_write_root(root_kind, root_operand);
         let value = self.stack.pop();
         if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", value.fmt()));
         }
         self.ensure_mutable(value)?;
-        self.claim_write_ownership_through(value, root)?;
+        self.arbitrate_write(value, root_kind, root_operand)?;
 
         let instance_ref = value.as_object().as_instance_ptr();
         let stored = self.stack.peek(0);

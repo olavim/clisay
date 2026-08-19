@@ -71,6 +71,12 @@ pub(super) struct AliasLocal {
     pub(super) unproven_borrow: bool,
     /// Whether the value cannot leave the call, so anything it's stored into can't leave either.
     pub(super) confined: bool,
+    /// Whether anything besides this name may reach the value. A use that could let the value out
+    /// sets it, and nothing clears it, so the answer does not depend on branch order.
+    pub(super) may_be_shared: bool,
+    /// The stores made through this name while it was the only one reaching the value. They are
+    /// settled when the binding dies, so a use below a store can still take its proof away.
+    pub(super) sole_writes: Vec<HirId<HirExpr>>,
 }
 
 /// Where a value lives: the thing a path starts from, and each element read out of it. Two places
@@ -464,6 +470,37 @@ impl<'a> Checker<'a> {
         self.locals[local].alias.wrote_at.is_some()
             && self.locals[local].alias.extracted_from.iter()
                 .any(|(c, k)| *c == container && k.is_some_and(|k| self.ctx.is_same_key(&k, key)))
+    }
+
+    /// A use that could let the value out. The name is no longer the only one that may reach it,
+    /// so every store it has made goes back to asking who writes.
+    pub(super) fn value_may_have_escaped(&mut self, i: usize) {
+        self.locals[i].alias.may_be_shared = true;
+    }
+
+    /// Notes a store made while this name is the only one that reaches the value. The proof is not
+    /// settled until the binding dies, since a use after the store still takes it away.
+    pub(super) fn record_sole_write(&mut self, i: usize, target: &HirId<HirExpr>) {
+        let local = &mut self.locals[i];
+        if local.param || local.alias.may_be_shared || local.alias.writing_captor.is_some() {
+            return;
+        }
+        local.alias.sole_writes.push(*target);
+    }
+
+    /// Hands codegen the stores of every dying binding nothing else ever reached.
+    pub(super) fn settle_sole_writes(&mut self, mark: usize) {
+        // Forcing puts the arbitrating store back everywhere, so the proof is not recorded at all.
+        if self.ctx.force_checks {
+            return;
+        }
+        let from = mark.min(self.locals.len());
+        for local in &mut self.locals[from..] {
+            if local.alias.may_be_shared {
+                continue;
+            }
+            self.out.unshared_stores.extend(local.alias.sole_writes.drain(..));
+        }
     }
 
     pub(super) fn claim_write_ownership_at_runtime(&mut self, local: usize, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {

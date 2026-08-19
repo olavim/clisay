@@ -484,8 +484,26 @@ impl Vm {
         self.write_ownerships.push(WriteOwnership { value, holder, at: self.current_pos_index(), how });
     }
 
+    /// Whether a call has nothing to record about its arguments. No parameter takes its argument
+    /// or hands it on, so only a container argument is left with anything to record.
+    #[inline]
+    fn arguments_record_nothing(&self, wanted: u64, stack_start: *mut Value, arity: usize) -> bool {
+        wanted == 0 && !self.forced
+            && (0..arity).all(|i| !objects::is_container(unsafe { *stack_start.add(i + 1) }))
+    }
+
     /// Hands each retained argument's write-ownership to the parameter slot about to take it.
+    #[inline]
     pub(crate) fn transfer_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, needs_borrow_mark: u64, stack_start: *mut Value, arity: usize, receiver: ReceiverSlot) -> Result<(), anyhow::Error> {
+        // The two receiver kinds that record nothing, so the arguments are the whole question.
+        if matches!(receiver, ReceiverSlot::Callee | ReceiverSlot::Borrowed)
+            && self.arguments_record_nothing(retain_mask | needs_borrow_mark, stack_start, arity) {
+            return Ok(());
+        }
+        self.record_argument_write_ownership(retain_mask, escape_mask, needs_borrow_mark, stack_start, arity, receiver)
+    }
+
+    fn record_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, needs_borrow_mark: u64, stack_start: *mut Value, arity: usize, receiver: ReceiverSlot) -> Result<(), anyhow::Error> {
         // Slot zero is where a method's receiver lives. It takes the marker its declaration gave
         // it, the way a parameter takes its own.
         match receiver {

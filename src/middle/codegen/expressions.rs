@@ -1,7 +1,7 @@
 use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, TypeId, UnOp};
-use crate::middle::ir::{Inst, Label, WRITE_ROOT_LOCAL, WRITE_ROOT_NONE, WRITE_ROOT_RECEIVER, WRITE_ROOT_RECEIVER_UP, WRITE_ROOT_STASH, WRITE_ROOT_UPVALUE};
+use crate::middle::ir::{Inst, Label, WRITE_ROOT_LOCAL, WRITE_ROOT_NONE, WRITE_ROOT_RECEIVER, WRITE_ROOT_RECEIVER_UP, WRITE_ROOT_STASH, WRITE_ROOT_UNSHARED, WRITE_ROOT_UPVALUE};
 use crate::middle::bind::{FnKind, Place, Receiver};
 use crate::middle::check::{Barrier, Guard, WitnessSet};
 
@@ -127,6 +127,14 @@ impl<'a> Compiler<'a> {
     /// The root a store names, encoded for the store's own operands. A root no binding names is
     /// left to the path barrier, which codegen already emits for every one of those writes.
     fn write_root_operands(&self, node: &HirId<HirExpr>) -> (u8, u8) {
+        let (kind, operand) = self.root_operands(node);
+        match self.barriers.store_is_unshared(node) {
+            true => (kind | WRITE_ROOT_UNSHARED, operand),
+            false => (kind, operand),
+        }
+    }
+
+    fn root_operands(&self, node: &HirId<HirExpr>) -> (u8, u8) {
         let (root, place) = self.path_root(node);
         // A path rooted in `this` reaches through the receiver.
         let receiver = matches!(self.hir.get(&root), HirExpr::This);
