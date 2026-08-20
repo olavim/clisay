@@ -42,7 +42,7 @@ pub mod internals {
     pub use crate::core::objects::TypeMember;
     pub use crate::middle::bind::{Bindings, TypeLayout};
     pub use crate::middle::check::Barriers;
-    pub use crate::middle::check::scope::{intersect_narrowings, merge_flow, LocalFlow};
+    pub use crate::middle::check::scope::{intersect_narrowings, merge_local_flow, LocalFlow};
     pub use crate::middle::check::alias::{ElementKey, WriteOwnershipTransfer, TransferSite};
     pub use crate::middle::obligations::Obligations;
     pub use crate::middle::signatures::{Mutability, TypeTag};

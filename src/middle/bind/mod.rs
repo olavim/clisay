@@ -423,7 +423,7 @@ impl<'a> Resolver<'a> {
                 // the next arm reuse the same slots.
                 let block_base = self.locals.len();
                 let binder_slots = arms.iter()
-                    .map(|a| self.hir.get(&a.matcher).binders(self.hir).len() + a.guard.as_ref().map_or(0, |g| self.hir.condition_binders(g).len()))
+                    .map(|a| self.hir.get(&a.matcher).binders(self.hir).len() + a.guard.as_ref().map_or(0, |g| self.hir.condition_pattern_binders(g).len()))
                     .max().unwrap_or(0);
 
                 let mut arm_binders = Vec::with_capacity(arms.len());
@@ -491,7 +491,7 @@ impl<'a> Resolver<'a> {
                 // Both sides bind the identical set only when the union is non-empty. Then each
                 // side stores into the shared slots, so record its match binders. Otherwise the
                 // sides bind nothing usable, so resolve them only for their scrutinees.
-                let union = self.hir.condition_binders(cond);
+                let union = self.hir.condition_pattern_binders(cond);
                 let record_sides = record && !union.is_empty();
                 let mark = self.locals.len();
                 self.resolve_condition(left, record_sides, decl)?;

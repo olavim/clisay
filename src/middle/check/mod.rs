@@ -281,36 +281,22 @@ impl<'a> Ctx<'a> {
 
 struct Checker<'a> {
     ctx: Ctx<'a>,
-    /// What the pass hands to codegen.
     out: Barriers,
-    /// The identifier a member access is about to read as its path base. That read cannot hand the
-    /// value anywhere, so it is the one read that leaves a sole-writer proof standing.
+    /// The identifier a member access is about to read as its path base.
     path_base: Option<HirId<HirExpr>>,
     locals: Vec<Local>,
-    /// The start index in `locals` of the current function frame. Value reads only see
-    /// bindings at or above this, so a closure does not read an enclosing local's flow state.
     frame_start: usize,
-    /// The enclosing type's name while checking its methods, for `this` typing and field layout.
     current_type: Option<HirId<HirStmt>>,
-    /// While checking a factory body, where writing a field the type did not declare `var` is its
-    /// initialization, not a reassignment.
     checking_factory: bool,
-    /// Each resolved call site's callee, keyed by the callee node. A later walk of the same value
-    /// reads it rather than resolving a receiver's type again.
     resolved_callees: HashMap<HirId<HirExpr>, HirId<HirStmt>>,
-    /// The obligations discharged per `this` field on the current path. Keyed by name rather than
-    /// by slot, so it is scoped to the frame instead of to a local.
     this_narrowed: HashMap<Symbol, Obligations>,
     current_trait_surface: Option<IndexSet<Symbol>>,
-    /// The function currently being checked.
     fn_ctx: FnContext<'a>,
-    /// Set while descending into a `mut` construction.
     pub(super) mut_construction: bool,
-    /// Locals a call in the expression being walked may have rebound. Read once, where a condition
-    /// turns into the facts it proves.
+    /// Locals a call in the expression being walked may have rebound.
     rebound_in_expr: HashSet<usize>,
     /// How many times an element's write-ownership has been handed to a container.
-    elements_handed_over: usize,
+    element_write_ownerships_transferred: usize,
 }
 
 impl<'a> Diagnose for Checker<'a> {
@@ -323,7 +309,7 @@ impl<'a> Checker<'a> {
             ctx: Ctx { hir, bindings, sigs, force_checks },
             resolved_callees: HashMap::new(),
             rebound_in_expr: HashSet::new(),
-            elements_handed_over: 0,
+            element_write_ownerships_transferred: 0,
             locals: Vec::new(),
             frame_start: 0,
             current_type: None,
@@ -337,7 +323,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The init of the type a callee names.
     fn this_tag(&self) -> TypeTag {
         if self.current_trait_surface.is_some() {
             TypeTag::SelfType
@@ -346,7 +331,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn this_typed(&self) -> ValueState {
+    fn this_valuestate(&self) -> ValueState {
         let receiver = &self.fn_ctx.receiver;
         let debt = if receiver.owed.is_empty() {
             Debt::Clean

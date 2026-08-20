@@ -1,34 +1,26 @@
 #![feature(variant_count)]
 
 //! Tests `merge_flow` on its own, not through a program that happens to reach it.
-//!
-//! Each field of `LocalFlow` gets a list of the values the merge can tell apart. Those lists are
-//! crossed to make the test values.
 
 use std::collections::HashMap;
 
 use clisay::internals::{
-    intersect_narrowings, merge_flow, symbol, ElementKey, LocalFlow, WriteOwnershipTransfer, TransferSite,
+    intersect_narrowings, merge_local_flow, symbol, ElementKey, LocalFlow, WriteOwnershipTransfer, TransferSite,
     Mutability, Obligations, Symbol, TypeTag, HirId,
 };
 
-// Two obligations the local owes, and one it does not. The merge drops anything from `handled` that
-// is not owed, and `UNOWED` is here to test that.
+// Two obligations the local owes, and one it does not.
 const OWED_A: u32 = 1;
 const OWED_B: u32 = 2;
 const UNOWED: u32 = 3;
 
-// Field names. These are the keys of `field_discharged`. They use different numbers from the
-// obligations above, so the two are easy to tell apart.
+// Field names.
 const FIELD_A: u32 = 10;
 const FIELD_B: u32 = 11;
 
-// How many values `each_rule_is_decided_by_its_own_field_alone` takes from each side of a pair. It
-// is the only law that walks the whole cross, and every pair of that would be far too many.
 const SAMPLE: usize = 120;
 
-// Node and slot numbers. The merge only asks whether two of them are equal, so the numbers
-// themselves do not matter.
+// Node and slot numbers.
 const TYPE_A: usize = 0;
 const TYPE_B: usize = 1;
 const TRANSFER_SITE_A: usize = 0;
@@ -43,7 +35,6 @@ fn obligations(ids: &[u32]) -> Obligations {
     ids.iter().map(|&id| symbol(id)).collect()
 }
 
-/// What every local here owes. The merge filters `handled` against this.
 fn owed() -> Obligations {
     obligations(&[OWED_A, OWED_B])
 }
@@ -52,8 +43,6 @@ fn narrowings(entries: &[(u32, &[u32])]) -> HashMap<Symbol, Obligations> {
     entries.iter().map(|(field, obs)| (symbol(*field), obligations(obs))).collect()
 }
 
-// One list per field. The full cross and the smaller sets below both use these, so they cannot
-// drift apart.
 fn tags() -> Vec<TypeTag> {
     vec![
         TypeTag::Unknown,
@@ -67,8 +56,6 @@ fn mutabilities() -> Vec<Mutability> {
     vec![Mutability::Mutable, Mutability::Immutable, Mutability::Unknown]
 }
 
-/// Both causes, because they mean different things. `check_moved` refuses a read after a `Value`
-/// move but clears an `Opaque` one.
 fn moves() -> Vec<Option<TransferSite>> {
     vec![
         None,
@@ -78,9 +65,6 @@ fn moves() -> Vec<Option<TransferSite>> {
     ]
 }
 
-/// Every `ElementKey` variant. If a rule ever reads the key, the values are already here, instead
-/// of waiting for someone to remember to add them. The last entry names two origins, which is what
-/// a join produces when the branches read out of different aggregates.
 fn extractions() -> Vec<Vec<(usize, Option<ElementKey>)>> {
     vec![
         vec![],
@@ -93,8 +77,6 @@ fn extractions() -> Vec<Vec<(usize, Option<ElementKey>)>> {
     ]
 }
 
-/// The slots a branch may name as where the value came from. The last entry names two, which is
-/// what a join produces when the branches took the value out of different slots.
 fn provenances() -> Vec<Vec<usize>> {
     vec![
         vec![],
@@ -136,9 +118,6 @@ fn base() -> LocalFlow {
     }
 }
 
-/// The full cross. Only `each_rule_is_decided_by_its_own_field_alone` needs it, because that law is
-/// about what happens when the other fields change. Every other law reads a few fields, and uses one
-/// of the smaller sets below.
 fn domain() -> Vec<LocalFlow> {
     let mut out = Vec::new();
     for assigned in [true, false] {
@@ -171,8 +150,6 @@ fn domain() -> Vec<LocalFlow> {
     out
 }
 
-/// The two fields the merge reads together. `handled` is decided from `discharged` as well, so a
-/// law about either one needs both.
 fn coupled_domain() -> Vec<LocalFlow> {
     let mut out = Vec::new();
     for handled in &sets() {
@@ -183,9 +160,6 @@ fn coupled_domain() -> Vec<LocalFlow> {
     out
 }
 
-/// The base, plus every value that differs from it in one field. Crossing this covers each field
-/// rule over its own values, which is all such a rule can read. That the rules really are per-field
-/// is checked by `each_rule_is_decided_by_its_own_field_alone`.
 fn one_field_apart() -> Vec<LocalFlow> {
     let mut out = vec![base()];
     out.push(LocalFlow { assigned: false, ..base() });
@@ -200,11 +174,9 @@ fn one_field_apart() -> Vec<LocalFlow> {
     out
 }
 
-/// One field turned into a string, so a law can compare that field on its own.
+/// One field turned into a string.
 type Key = fn(&LocalFlow) -> String;
 
-/// Every field the merge decides from that field alone. `handled` is left out on purpose: it is the
-/// one field decided from two, and `coupled_key` covers it.
 const FIELD_KEYS: [(&str, Key); 8] = [
     ("assigned", |f| format!("{}", f.assigned)),
     ("tag", |f| match &f.tag { TypeTag::Concrete(id) => format!("c{}", id.index()), _ => "other".into() }),
@@ -229,7 +201,6 @@ const FIELD_KEYS: [(&str, Key); 8] = [
     }),
 ];
 
-/// One origin as a string, so a set of them has an order that does not depend on how it was built.
 fn origin_key(origin: &(usize, Option<ElementKey>)) -> String {
     let key = match origin.1 {
         None => "any".to_string(),
@@ -245,19 +216,16 @@ fn set_key(set: &Obligations) -> String {
     set.iter().map(|s| s.index().to_string()).collect::<Vec<_>>().join(",")
 }
 
-/// The two fields together. `handled` is filtered on whether each side resolved, and working that
-/// out reads `discharged` too.
 fn coupled_key(flow: &LocalFlow) -> String {
     format!("{}/{}", set_key(&flow.handled), set_key(&flow.discharged))
 }
 
 fn merged(a: &LocalFlow, b: &LocalFlow) -> LocalFlow {
     let mut out = a.clone();
-    merge_flow(&mut out, &owed(), b);
+    merge_local_flow(&mut out, &owed(), b);
     out
 }
 
-/// What the local has settled: an obligation it handled, or that a path proved it's not a witness.
 fn resolved(flow: &LocalFlow) -> Vec<Symbol> {
     owed().iter().copied()
         .filter(|ob| flow.handled.contains(ob) || flow.discharged.contains(ob))
@@ -266,14 +234,10 @@ fn resolved(flow: &LocalFlow) -> Vec<Symbol> {
 
 #[test]
 fn merging_an_outcome_with_itself_settles_nothing_new() {
-    // Not the same value back. A join moves what both sides discharged into `handled`, and drops
-    // anything the local does not owe. So it settles after one merge, not zero.
     for a in domain() {
         let once = merged(&a, &a);
         assert!(resolved(&once) == resolved(&a), "merging an outcome into itself changed what it settled");
         assert!(merged(&once, &a) == once, "merging an outcome into itself is not a fixed point");
-        // Only the obligation fields may move, and only because of that promotion. Every other field
-        // has to come back untouched, whatever it holds.
         let mut untouched = a.clone();
         untouched.handled = once.handled.clone();
         untouched.discharged = once.discharged.clone();
@@ -283,8 +247,6 @@ fn merging_an_outcome_with_itself_settles_nothing_new() {
 
 #[test]
 fn a_merge_resolves_only_what_both_outcomes_resolved() {
-    // `resolved` reads `handled` and `discharged` and nothing else. So the coupled set is the whole
-    // space this law has, and every pair of it fits.
     let domain = coupled_domain();
     for a in domain.iter() {
         for b in domain.iter() {
@@ -299,15 +261,11 @@ fn a_merge_resolves_only_what_both_outcomes_resolved() {
 
 #[test]
 fn merging_is_commutative() {
-    // All fields except `extracted_from`, which still merges with `or` and keeps the left one when
-    // both sides are set.
     let mut domain = one_field_apart();
     domain.extend(coupled_domain());
     for a in domain.iter() {
         for b in domain.iter() {
             let (mut ab, mut ba) = (merged(a, b), merged(b, a));
-            // Each union is built by pushing, so the two orders hold the same entries in a
-            // different order. The set is what the rule means, so compare it as one.
             ab.extracted_from.sort_by_key(origin_key);
             ba.extracted_from.sort_by_key(origin_key);
             ab.provenance.sort();
@@ -411,8 +369,6 @@ fn field_narrowings_intersect() {
 
 #[test]
 fn the_sample_covers_every_value() {
-    // A sample that missed a value would make the law above stop testing that value without saying
-    // so. This catches that, and it fails if `SAMPLE` is set too low to reach every one.
     let full = domain();
     let distinct = |flows: &[&LocalFlow], key: Key| -> usize {
         flows.iter().map(|f| key(f)).collect::<std::collections::HashSet<_>>().len()
@@ -428,9 +384,6 @@ fn the_sample_covers_every_value() {
 
 #[test]
 fn each_rule_is_decided_by_its_own_field_alone() {
-    // The laws over three values cross only `handled` and `discharged`, because every other rule
-    // reads its own field and nothing else. That is an assumption about `merge_flow`, and this turns
-    // it into a check. A rule that starts reading a second field fails here, and names the field.
     let full = domain();
     let sample = spread(&full, SAMPLE);
     let pairs: Vec<(&LocalFlow, &LocalFlow)> = sample.iter()
@@ -464,7 +417,6 @@ fn each_rule_is_decided_by_its_own_field_alone() {
 }
 
 
-/// Every variant of every enum in the domain has to appear in it.
 #[test]
 fn the_domain_carries_every_variant() {
     use std::mem::{discriminant, variant_count, Discriminant};
@@ -490,9 +442,6 @@ fn the_domain_carries_every_variant() {
         "the domain carries {mutabilities} of {} `Mutability` variants", variant_count::<Mutability>());
 }
 
-/// Takes `count` values spread across `all`. The step starts at the even spacing, `len / count`,
-/// so the picks cover the whole range, and it is nudged up until it shares no factor with the
-/// length, so it cannot line up with the loops in `domain` and hold a field at one value.
 fn spread(all: &[LocalFlow], count: usize) -> Vec<&LocalFlow> {
     let len = all.len();
     let mut step = (len / count.max(1)).max(1);
@@ -508,7 +457,6 @@ fn gcd(a: usize, b: usize) -> usize {
 
 #[test]
 fn a_merge_reports_assigned_only_when_both_outcomes_did() {
-    // A binding assigned on one path only is not assigned after the join.
     let domain = one_field_apart();
     for a in domain.iter() {
         for b in domain.iter() {

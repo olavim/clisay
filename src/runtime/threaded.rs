@@ -108,7 +108,7 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     match op {
         opcode::CONSTRUCT => vm.op_construct()?,
         opcode::CALL_MUT => vm.op_call_mut()?,
-        opcode::RETURN_FAC => vm.op_return_fac()?,
+        opcode::RETURN_FAC => vm.op_return_factory()?,
         opcode::THROW => vm.op_throw()?,
         opcode::PUSH_TRY => vm.op_push_try(),
         opcode::POP_TRY => vm.op_pop_try(),
@@ -184,6 +184,9 @@ fn load_local(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value)
     debug_assert!(!vm.stack.is_borrowed(top), "a push destination carried a stale borrow mark");
     if vm.stack.is_borrowed(from) {
         vm.stack.mark_borrowed(top);
+        if vm.forced {
+            vm.carry_watched_mark(from, top);
+        }
     }
     push!(vm, ip, top, unsafe { *from });
     become dispatch(vm, ip, top, base)
@@ -602,6 +605,9 @@ fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R 
         unsafe { *frame.stack_start = value };
         if handed_back_borrow {
             vm.stack.mark_borrowed(frame.stack_start);
+            if vm.forced {
+                vm.carry_watched_mark(returned_from, frame.stack_start);
+            }
         }
         let top = unsafe { frame.stack_start.add(1) };
         let base = unsafe { (*vm.frames.top()).stack_start };

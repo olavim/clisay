@@ -509,12 +509,10 @@ impl Hir {
         Hir { nodes: Vec::new(), ident_ids, ident_texts, obligations: HashMap::new(), type_info: HashMap::new() }
     }
 
-    /// Records what a declaration id stands for.
     pub(crate) fn declare_type(&mut self, id: TypeId, name: Symbol, is_trait: bool) {
         self.type_info.insert(id, TypeInfo { name, is_trait });
     }
 
-    /// What a declaration id stands for.
     pub fn type_info(&self, id: TypeId) -> Option<&TypeInfo> {
         self.type_info.get(&id)
     }
@@ -527,17 +525,14 @@ impl Hir {
         self.obligations.insert(name, ObligationDecl { witness, rules });
     }
 
-    /// Every user-declared obligation, keyed by name.
     pub fn obligations(&self) -> impl Iterator<Item = (Symbol, &ObligationDecl)> {
         self.obligations.iter().map(|(name, decl)| (*name, decl))
     }
 
-    /// The text of an interned symbol.
     pub fn text(&self, symbol: Symbol) -> &str {
         &self.ident_texts[symbol.index()]
     }
 
-    /// The symbol for `text` if it was ever interned, else `None`.
     pub fn symbol_of(&self, text: &str) -> Option<Symbol> {
         self.ident_ids.get(text).copied().map(Symbol::from_raw)
     }
@@ -556,8 +551,6 @@ impl Hir {
         T::unwrap(&self.nodes[id.id].kind)
     }
 
-    /// The symbol an identifier node names. Only call it where the grammar guarantees one, such
-    /// as a parameter name.
     pub fn ident_sym(&self, id: &HirId<HirExpr>) -> Symbol {
         match self.get(id) {
             HirExpr::Identifier(sym) => *sym,
@@ -573,7 +566,6 @@ impl Hir {
         HirId { id: self.nodes.len() - 1, _marker: PhantomData }
     }
 
-    /// Every lambda literal's expression id.
     pub(crate) fn lambda_ids(&self) -> Vec<HirId<HirExpr>> {
         self.nodes.iter().enumerate()
             .filter(|(_, n)| matches!(&n.kind, HirNodeKind::Expr(HirExpr::Literal(HirLiteral::Lambda(_)))))
@@ -581,38 +573,34 @@ impl Hir {
             .collect()
     }
 
-    /// Each binder a condition introduces, paired with the value it was destructured out of. A
-    /// binder names part of its scrutinee, so that scrutinee is where its element comes from.
-    pub fn condition_binder_sources(&self, cond: &HirId<HirExpr>) -> Vec<(Symbol, HirId<HirExpr>)> {
+    pub fn condition_pattern_binder_sources(&self, cond: &HirId<HirExpr>) -> Vec<(Symbol, HirId<HirExpr>)> {
         match self.get(cond) {
             HirExpr::Match(scrutinee, matcher) => self.get(matcher).binders(self).into_iter().map(|n| (n, *scrutinee)).collect(),
             HirExpr::Binary(BinOp::And, left, right) => {
-                let mut out = self.condition_binder_sources(left);
-                out.extend(self.condition_binder_sources(right));
+                let mut out = self.condition_pattern_binder_sources(left);
+                out.extend(self.condition_pattern_binder_sources(right));
                 out
             },
             // An `or` binds the same names on both sides, so either side names their sources.
-            HirExpr::Binary(BinOp::Or, left, _) => match self.condition_binders(cond).is_empty() {
+            HirExpr::Binary(BinOp::Or, left, _) => match self.condition_pattern_binders(cond).is_empty() {
                 true => Vec::new(),
-                false => self.condition_binder_sources(left),
+                false => self.condition_pattern_binder_sources(left),
             },
             _ => Vec::new(),
         }
     }
 
-    /// The binder names a condition makes live in its true branch, in store order. `&&` unions
-    /// both sides. An `||` contributes a name only when both sides bind the identical set.
-    pub fn condition_binders(&self, cond: &HirId<HirExpr>) -> Vec<Symbol> {
+    pub fn condition_pattern_binders(&self, cond: &HirId<HirExpr>) -> Vec<Symbol> {
         match self.get(cond) {
             HirExpr::Match(_, matcher) => self.get(matcher).binders(self),
             HirExpr::Binary(BinOp::And, left, right) => {
-                let mut out = self.condition_binders(left);
-                out.extend(self.condition_binders(right));
+                let mut out = self.condition_pattern_binders(left);
+                out.extend(self.condition_pattern_binders(right));
                 out
             },
             HirExpr::Binary(BinOp::Or, left, right) => {
-                let left = self.condition_binders(left);
-                let right = self.condition_binders(right);
+                let left = self.condition_pattern_binders(left);
+                let right = self.condition_pattern_binders(right);
                 let same = left.len() == right.len() && left.iter().all(|name| right.contains(name));
                 if same { left } else { Vec::new() }
             },
@@ -631,7 +619,6 @@ impl Hir {
         }
     }
 
-    /// Whether every path through a function body ends in a `return` or `throw`.
     pub(crate) fn definitely_returns(&self, body: &HirId<HirExpr>) -> bool {
         match self.get(body) {
             HirExpr::Block(stmts) => stmts.iter().any(|s| self.stmt_returns(s)),

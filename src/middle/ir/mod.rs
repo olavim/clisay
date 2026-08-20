@@ -23,6 +23,10 @@ pub const WRITE_ROOT_STASH: u8 = 5;
 /// the one-writer arbitration that every other store runs.
 pub const WRITE_ROOT_UNSHARED: u8 = 0x80;
 
+pub const fn write_root_kind(kind: u8) -> u8 {
+    kind & !WRITE_ROOT_UNSHARED
+}
+
 /// A symbolic jump target, resolved to a byte offset at assembly time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Label(usize);

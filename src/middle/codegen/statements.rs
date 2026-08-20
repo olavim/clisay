@@ -125,7 +125,7 @@ impl<'a> Compiler<'a> {
                 self.expression_stmt(expr)?;
             },
             HirStmt::While(cond, body) => {
-                let binders = self.hir.condition_binders(cond);
+                let binders = self.hir.condition_pattern_binders(cond);
                 if !binders.is_empty() {
                     return self.compile_binding_while(cond, body, binders.len(), stmt_id);
                 }
@@ -140,7 +140,7 @@ impl<'a> Compiler<'a> {
                 self.ir.bind(exit);
             },
             HirStmt::If(cond, then, otherwise) => {
-                let binders = self.hir.condition_binders(cond);
+                let binders = self.hir.condition_pattern_binders(cond);
                 if !binders.is_empty() {
                     return self.compile_binding_if(cond, then, otherwise, binders.len(), stmt_id);
                 }
@@ -209,7 +209,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Pushes `count` null placeholders to reserve a slot for each live binder.
     pub(super) fn reserve_slots<T: 'static>(&mut self, count: usize, node: &HirId<T>) {
         for _ in 0..count {
             self.emit(Inst::PushNull, node);
@@ -230,8 +229,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles the statements of a `HirExpr::Block` body directly into the current
-    /// scope, without its own cleanup.
     fn inline_block(&mut self, body: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let HirExpr::Block(stmts) = self.hir.get(body) else { unreachable!() };
         self.statement_body(stmts)
@@ -252,9 +249,6 @@ impl<'a> Compiler<'a> {
         self.expression_stmt(finally)
     }
 
-    /// Emit a `PUSH_NULL` placeholder for every `fn`/`type` declared directly in
-    /// `body`, holding its (resolver-assigned) slot until the declaration is
-    /// compiled into it - which is what lets forward references resolve.
     fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
             let reserves = match self.hir.get(stmt_id) {

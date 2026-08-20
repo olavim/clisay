@@ -80,7 +80,7 @@ impl Vm {
         if mut_receiver {
             let target = self.stack.peek(arg_count);
             if self.receiver_rejects_mut(target) {
-                return self.error_readonly_receiver(name, target);
+                return self.readonly_receiver_error(name, target);
             }
             self.ensure_writable(target, root)?;
         }
@@ -341,7 +341,7 @@ impl Vm {
             return Ok(());
         }
         if target.as_object().is_immutable() {
-            return self.error_immutable(target);
+            return self.immutable_error(target);
         }
         if target.as_object().is_write_retired() {
             let label = format!("`{}` is written here", self.get_source_position().snippet());
@@ -394,15 +394,14 @@ impl Vm {
     }
 
     pub(super) fn root_is_frame_local(&self, kind: u8, operand: u8) -> bool {
-        kind & !ir::WRITE_ROOT_UNSHARED == ir::WRITE_ROOT_LOCAL
+        ir::write_root_kind(kind) == ir::WRITE_ROOT_LOCAL
             && self.frame_arity().is_some_and(|arity| operand as usize > arity)
     }
 
-    /// Settles the one-writer rule for a store, unless the check pass proved one name reaches the
-    /// target. The proof rides the root kind, so the store reads it without a second operand.
+    /// Settles the one-writer rule for a store.
     fn arbitrate_write(&mut self, target: Value, kind: u8, operand: u8) -> Result<(), anyhow::Error> {
         if kind & ir::WRITE_ROOT_UNSHARED != 0 {
-            debug_assert!(kind & !ir::WRITE_ROOT_UNSHARED != ir::WRITE_ROOT_STASH,
+            debug_assert!(ir::write_root_kind(kind) != ir::WRITE_ROOT_STASH,
                 "a stashed root is popped by the store, so it can never be proven unshared");
             return Ok(());
         }
@@ -614,7 +613,6 @@ impl Vm {
         self.stack.push(Value::from(len));
     }
 
-    /// Resolves `dict.name` to a bound method of the `dict` method surface.
     fn get_dict_method(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let dict_type = unsafe { &*self.native_types.dict };
         if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
@@ -628,7 +626,6 @@ impl Vm {
         self.error(format!("Invalid dict property: {}", prop.fmt()))
     }
 
-    /// Reads `dict[key]` by value key. A missing key yields `null`.
     fn get_dict_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let dict = unsafe { &*target.as_object().as_dict_ptr() };
         let value = dict.entries.get(&DictKey(prop)).copied().unwrap_or(Value::NULL);
@@ -636,8 +633,6 @@ impl Vm {
         Ok(())
     }
 
-    /// Writes `dict[key] = value`. The rhs is on the stack top; it stays there as
-    /// the assignment expression's result (mirrors the array/native setter path).
     fn set_dict_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let value = self.stack.peek(0);
         let dict = unsafe { &mut *target.as_object().as_dict_ptr() };
@@ -684,8 +679,6 @@ impl Vm {
     }
 }
 
-/// A static member id reaching a write must name a field. Fields are numbered before methods, so a
-/// higher id means the check pass let a write into a method slot through.
 #[cfg(debug_assertions)]
 fn assert_field_slot(instance: &ObjInstance, member_id: u8) {
     let ty = unsafe { &*instance.ty };

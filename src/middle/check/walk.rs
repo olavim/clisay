@@ -114,7 +114,7 @@ impl<'a> Checker<'a> {
             HirStmt::Throw(e) => { self.expr(e)?; },
             HirStmt::While(cond, body) => {
                 let (body_narrow, _) = self.condition_narrowings(cond)?;
-                let scope = self.condition_scope(cond)?;
+                let scope = self.condition_pattern_binders(cond)?;
                 let pre = self.snapshot();
                 // Check the body twice. The second pass sees the first pass's moves, so a value the
                 // body reads after moving it is caught as a cross-iteration use. A rebind before the
@@ -123,7 +123,7 @@ impl<'a> Checker<'a> {
                     self.apply_narrowings(&body_narrow);
                     self.with_binders(&scope, body, |c| c.expr(body))?;
                     let after_body = self.snapshot();
-                    self.restore_keeping_moves(&pre);
+                    self.restore_flow_keeping_write_ownership_transfers(&pre);
                     // The body may have run, so a narrowing a rebind inside it invalidated stays
                     // invalidated after the loop.
                     self.restore_narrowings(&after_body);
@@ -131,7 +131,7 @@ impl<'a> Checker<'a> {
             },
             HirStmt::If(cond, then, otherwise) => {
                 let (then_narrow, else_narrow) = self.condition_narrowings(cond)?;
-                let scope = self.condition_scope(cond)?;
+                let scope = self.condition_pattern_binders(cond)?;
                 let then_snap = self.narrow_branch(&then_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
                     c.with_binders(&scope, then, |c| c.expr(then))?;
                     Ok(c.snapshot())
@@ -149,9 +149,9 @@ impl<'a> Checker<'a> {
                 let else_diverges = otherwise.as_ref().is_some_and(|o| self.ctx.hir.stmt_returns(o));
                 match (then_diverges, else_diverges) {
                     // Joining two branches is restoring one and folding the other into it.
-                    (false, false) => { self.restore(&then_snap); self.join_in(&else_snap); },
-                    (true, false) => self.restore(&else_snap),
-                    (false, true) => self.restore(&then_snap),
+                    (false, false) => { self.restore_flow(&then_snap); self.merge_flow_into_current(&else_snap); },
+                    (true, false) => self.restore_flow(&else_snap),
+                    (false, true) => self.restore_flow(&then_snap),
                     (true, true) => {},
                 }
             },
@@ -194,8 +194,8 @@ impl<'a> Checker<'a> {
                 let mut fallthrough: Vec<FlowSnapshot> = Vec::new();
                 let mut exhaustive = false;
                 for arm in arms {
-                    self.restore(&baseline);
-                    let scope = self.arm_scope(arm, &remaining, stmt, scrutinee)?;
+                    self.restore_flow(&baseline);
+                    let scope = self.match_arm_binders(arm, &remaining, stmt, scrutinee)?;
                     self.with_binders(&scope, &arm.body, |c| -> Result<(), anyhow::Error> {
                         if let Some(guard) = &arm.guard { c.expr(guard)?; }
                         c.expr(&arm.body)?;
@@ -223,11 +223,11 @@ impl<'a> Checker<'a> {
 
                 match outcomes.split_first() {
                     Some((first, rest)) => {
-                        self.restore(first);
-                        for snap in rest { self.join_in(snap); }
+                        self.restore_flow(first);
+                        for snap in rest { self.merge_flow_into_current(snap); }
                         self.restore_narrowings(&baseline);
                     },
-                    None => self.restore(&baseline),
+                    None => self.restore_flow(&baseline),
                 }
 
                 // After the join, since restoring the arms' snapshots would undo it. The match
@@ -248,7 +248,7 @@ impl<'a> Checker<'a> {
                 ValueState::nonnull().with_mutability(Mutability::Immutable)
             },
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
-            HirExpr::This => self.this_typed(),
+            HirExpr::This => self.this_valuestate(),
             HirExpr::Assign(lhs, rhs) => self.assign(lhs, rhs)?,
             HirExpr::Call(callee, args) => {
                 let state = self.call(expr, callee, args)?;
@@ -261,9 +261,9 @@ impl<'a> Checker<'a> {
                 let tag = self.ctx.construct_tag(callee);
                 for (name, v) in brace {
                     let state = self.expr(v)?;
-                    self.check_construct_field(immutable, &state, v)?;
+                    self.check_construct_field_mutability(immutable, &state, v)?;
                     if !immutable {
-                        self.check_stored_element(v)?;
+                        self.store_into_container_guard(v)?;
                     }
                     if let TypeTag::Concrete(decl) = &tag {
                         self.check_into_brace_field(&decl.clone(), *name, &state.debt, v)?;
@@ -308,7 +308,7 @@ impl<'a> Checker<'a> {
             },
             HirExpr::Block(stmts) => {
                 let mark = self.locals.len();
-                let handed_over = self.elements_handed_over;
+                let handed_over = self.element_write_ownerships_transferred;
                 for s in stmts { self.stmt(s)?; }
                 let dropped = self.check_dropped(mark, expr);
                 if self.scope_holds_write_ownership(mark, handed_over) {
@@ -416,32 +416,28 @@ impl<'a> Checker<'a> {
         local.site = *value;
         local.decl = Some(decl);
         local.alias.mutability = mutability;
-        local.alias.unproven_borrow = value.is_some_and(|v| self.holds_unproven_borrow(&v));
+        local.alias.borrowed_maybe_mutable = value.is_some_and(|v| self.holds_borrowed_maybe_mutable(&v));
         local.alias.confined = value.is_some_and(|v| self.value_is_confined(&v));
         local.alias.borrowed = value.is_some_and(|v| self.arg_is_borrowed(&v));
-        local.alias.provenance = provenance;
+        local.alias.mutable_provenance = provenance;
         local.alias.extracted_from = value.and_then(|v| self.extraction_of(&v)).into_iter().collect();
         local.alias.shared_origin = value.is_some_and(|v| self.shared_origin(&v));
-        local.alias.may_be_shared = local.alias.shared_origin || local.alias.borrowed
-            || !local.alias.extracted_from.is_empty() || value.is_none();
+        local.alias.may_be_shared = local.alias.reached_from_elsewhere() || value.is_none();
         self.locals.push(local);
         Ok(())
     }
 
-    /// Checks a literal's children. `immutable` is set for a plain container literal: an immutable
-    /// container is immutable all the way down, so a mutable element is rejected, and an element of
-    /// unknown capability records a runtime seal-check.
     pub(super) fn literal_children(&mut self, lit: &HirLiteral, node: &HirId<HirExpr>, immutable: bool) -> Result<(), anyhow::Error> {
         match lit {
             HirLiteral::Array(elems) => for e in elems {
                 let t = self.expr(e)?;
-                self.check_container_element(immutable, &t, e, node)?;
+                self.check_container_element_mutability(immutable, &t, e, node)?;
                 self.store_into_container(&t.debt, e)?;
             },
             HirLiteral::Dict(pairs) => for (k, v) in pairs {
                 self.expr(k)?;
                 let t = self.expr(v)?;
-                self.check_container_element(immutable, &t, v, node)?;
+                self.check_container_element_mutability(immutable, &t, v, node)?;
                 self.store_into_container(&t.debt, v)?;
             },
             HirLiteral::Lambda(decl) => self.lambda(decl, node)?,
@@ -453,17 +449,17 @@ impl<'a> Checker<'a> {
     pub(super) fn identifier(&mut self, name: Symbol, expr: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let Some(i) = self.frame_index_of(name) else {
             // A read that resolves to an enclosing frame is a closure capture.
-            if let Some(j) = self.enclosing_index(name) {
-                self.value_may_have_escaped(j);
+            if let Some(j) = self.upvalue_index(name) {
+                self.locals[j].alias.may_be_shared = true;
             }
-            self.reject_capture_escape(name, expr)?;
+            self.escape_via_capture_error(name, expr)?;
             self.capture_enclosing(name, expr);
             return Ok(self.captured_read(name));
         };
 
         // Every read but a path base hands the value somewhere this pass does not follow.
         if self.path_base.take() != Some(*expr) {
-            self.value_may_have_escaped(i);
+            self.locals[i].alias.may_be_shared = true;
         }
 
         if self.locals[i].func.is_some() {
@@ -488,12 +484,9 @@ impl<'a> Checker<'a> {
             .with_writable(self.write_permission(i)))
     }
 
-    /// Member or data access `target.member` / `target[member]`. Resolves a field on a known-type
-    /// receiver to its declared nullability; any other access is a dynamic-boundary read.
+    /// Member or data access `target.member` / `target[member]`.
     pub(super) fn member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
-        self.path_base = Some(*target);
-        let receiver = self.receiver(target)?;
-        self.path_base = None;
+        let receiver = self.path_base_receiver(target)?;
         let Some(name) = self.ctx.member_display_name(member) else {
             self.expr(member)?;
             // Reading a container yields a pending element. Presence is tracked, not depth, so the
@@ -541,10 +534,16 @@ impl<'a> Checker<'a> {
         Ok(ValueState::unknown())
     }
 
-    /// Evaluates a receiver, requiring it to be non-null.
+    pub(super) fn path_base_receiver(&mut self, target: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
+        self.path_base = Some(*target);
+        let read = self.receiver(target);
+        self.path_base = None;
+        read
+    }
+
     pub(super) fn receiver(&mut self, receiver: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let state = match self.ctx.hir.get(receiver) {
-            HirExpr::This => self.this_typed(),
+            HirExpr::This => self.this_valuestate(),
             _ => self.expr(receiver)?,
         };
         // A value confirmed to be a witness it owes is usable by that type, even while it owes.
@@ -561,8 +560,7 @@ impl<'a> Checker<'a> {
 
     pub(super) fn binary(&mut self, op: BinOp, l: &HirId<HirExpr>, r: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         match op {
-            // Short-circuit operators narrow their left operand into the right operand. `and`
-            // narrows where the left holds (true), `or` where it fails (false).
+            // Short-circuit operators narrow their left operand into the right operand.
             BinOp::And | BinOp::Or => {
                 self.expr(l)?;
                 let runs_when = matches!(op, BinOp::And);
@@ -577,7 +575,6 @@ impl<'a> Checker<'a> {
                 }
                 Ok(ValueState::nonnull())
             },
-            // Equality is a boolean context; a possibly-null operand is fine.
             BinOp::Equal | BinOp::NotEqual => {
                 self.expr(l)?;
                 self.expr(r)?;
@@ -586,8 +583,6 @@ impl<'a> Checker<'a> {
             _ => {
                 let ln = self.expr(l)?;
                 let rn = self.expr(r)?;
-                // A confirmed-witness operand makes the operation invalid whatever the other side
-                // is, so name both operand types like the runtime's operand error does.
                 if self.ctx.is_obligation_witness(&ln) || self.ctx.is_obligation_witness(&rn) {
                     return Err(self.ctx.invalid_operands_error(op, l, &ln, r, &rn));
                 }
@@ -600,7 +595,6 @@ impl<'a> Checker<'a> {
 
     pub(super) fn unary(&mut self, op: UnOp, x: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let state = self.expr(x)?;
-        // `!` is a boolean context; negation and bitwise-not require a value.
         if matches!(op, UnOp::Negate | UnOp::BitNot) {
             if let Some(witness) = self.ctx.obligation_witness_name(&state) {
                 return Err(self.ctx.witness_use_error(format!("invalid operand of `{op}`: {witness}"), x, witness));
@@ -610,11 +604,8 @@ impl<'a> Checker<'a> {
         Ok(ValueState::nonnull())
     }
 
-    /// A read of a binding from an enclosing frame. Capturing a value discharges nothing, so the
-    /// binding keeps what it was declared owing. A flow fact travels with it only from an immutable
-    /// slot, which cannot be rebound, so the value tested is the value the nested body sees.
     pub(super) fn captured_read(&self, name: Symbol) -> ValueState {
-        let Some(i) = self.enclosing_index(name) else {
+        let Some(i) = self.upvalue_index(name) else {
             return ValueState::unknown();
         };
         let local = &self.locals[i];
@@ -622,8 +613,6 @@ impl<'a> Checker<'a> {
             return ValueState::unknown();
         }
 
-        // A mutable binding may have been written since the narrowing, which the enclosing frame
-        // cannot see, so only an immutable one keeps what was proved about it.
         let owed: Obligations = match local.reassignable {
             true => local.owed.clone(),
             false => local.owed.difference(&local.discharged).copied().collect(),
@@ -631,8 +620,6 @@ impl<'a> Checker<'a> {
 
         let debt = local.read_debt(owed);
 
-        // A rebindable slot may hold a different value by then, so only an immutable one carries its
-        // type and mutability in.
         match local.reassignable {
             true => ValueState::of(debt, TypeTag::Unknown),
             false => ValueState::of(debt, local.tag.clone()).with_mutability(local.alias.mutability),
@@ -665,7 +652,7 @@ impl<'a> Checker<'a> {
 
     pub(super) fn function(&mut self, stmt: Option<HirId<HirStmt>>, writes: Option<&'a HashSet<Symbol>>, confined: Vec<bool>, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
         // An unmarked return is inferred whole from the body. When it can both finish with no value
-        // and return a bad value, the mixed shape must be named, not inferred.
+        // and return a bad value, the mixed shape must be declared.
         let unmarked = decl.is_unmarked();
         if unmarked {
             if let Some(ret) = stmt.and_then(|s| self.ctx.sigs.fns.get(&s))
@@ -675,8 +662,6 @@ impl<'a> Checker<'a> {
             }
         }
 
-        // A `mut` parameter borrows its argument, so it may not persist it. `*mut` takes the
-        // argument's write-ownership and may persist it.
         if let Some(stmt) = stmt {
             for (i, param) in decl.params.iter().enumerate() {
                 let cap = param.clause.capability;
@@ -704,8 +689,6 @@ impl<'a> Checker<'a> {
                 }
             }
 
-            // A `mut` receiver is lent for the call, so a body that captures it into a value
-            // outliving the call keeps writing through a borrow the caller has taken back.
             let cap = decl.receiver.as_ref().map_or(Capability::None, |r| r.capability);
             if decl.receiver.is_some() && !cap.is_retain() && self.ctx.sigs.escapes_beyond_return_at(&stmt, decl.params.len()) {
                 let own = match cap.is_mut() {
@@ -719,7 +702,7 @@ impl<'a> Checker<'a> {
             }
         }
         self.ctx.reject_receiver_witnessed_obligations(decl)?;
-        // A lambda's shape is inferred, so it is not checked against a declaration.
+
         let ctx = FnContext {
             receiver: self.receiver_facts(decl),
             return_shape: decl.ret,
@@ -733,7 +716,9 @@ impl<'a> Checker<'a> {
             param_confined: confined,
             writes,
         };
+
         let saved = std::mem::replace(&mut self.fn_ctx, ctx);
+
         let result = self.with_frame(&decl.params, &decl.body, |c| {
             c.expr(&decl.body)?;
             // A non-null return must be produced on every path.
@@ -742,6 +727,7 @@ impl<'a> Checker<'a> {
             }
             Ok(())
         });
+
         self.fn_ctx = saved;
         result
     }
@@ -754,13 +740,11 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Checks a lambda body.
     pub(super) fn lambda(&mut self, decl: &HirFnDecl, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let confined = self.ctx.lambda_confined(node, decl.params.len());
         self.function(None, self.ctx.sigs.lambda_writes.get(node), confined, decl)
     }
 
-    /// What the declared `this` says about the receiver.
     pub(super) fn receiver_facts(&self, decl: &HirFnDecl) -> ReceiverFacts {
         match &decl.receiver {
             Some(_) if self.checking_factory => ReceiverFacts::default(),
@@ -792,9 +776,9 @@ impl<'a> Checker<'a> {
                         self.check_call_args(callee, init, &arg_types, args)?;
                         for (i, (state, arg)) in arg_types.iter().zip(args).enumerate() {
                             if self.ctx.sigs.param_escapes_at(&init, i) {
-                                self.check_construct_field(immutable, state, arg)?;
+                                self.check_construct_field_mutability(immutable, state, arg)?;
                                 if !immutable {
-                                    self.check_stored_element(arg)?;
+                                    self.store_into_container_guard(arg)?;
                                 }
                             }
                         }
@@ -829,8 +813,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// A method call `receiver.name(args)`. Resolves against the receiver's type when it is
-    /// known, then falls back to a native-type method, and finally to a dynamic boundary.
     pub(super) fn method_call(&mut self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>, member: &HirId<HirExpr>, arg_types: &[ValueState], args: &[HirId<HirExpr>]) -> Result<ValueState, anyhow::Error> {
         let Some(name) = self.ctx.member_display_name(member) else { return self.indirect_call(callee) };
         let receiver_typed = self.receiver(receiver)?;
@@ -857,16 +839,13 @@ impl<'a> Checker<'a> {
                 for (state, arg) in arg_types.iter().zip(args) {
                     self.store_into_container(&state.debt, arg)?;
                 }
-                self.preserve_into_receiver(receiver, arg_types);
+                self.transfer_obligations_into_receiver(receiver, arg_types);
             }
             return Ok(ValueState::of(self.ctx.native_ret_debt(sig.ret), TypeTag::Unknown));
         }
         Ok(ValueState::unknown())
     }
 
-    /// Matches the receiver against the capability the method declares on its `this`, the way an
-    /// argument is matched against its parameter marker. A `mut` receiver is borrowed for the call;
-    /// a `*mut` one is consumed by it.
     pub(super) fn check_receiver(&mut self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>, callee_fn: HirId<HirStmt>, receiver_typed: &ValueState) -> Result<(), anyhow::Error> {
         let Some(sig) = self.ctx.sigs.fns.get(&callee_fn) else { return Ok(()) };
         let (marker, params) = (sig.receiver_marker, sig.param_markers.len());
@@ -893,7 +872,6 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Checks a user call's arguments against the resolved function's declared parameters.
     pub(super) fn check_call_args(&mut self, callee: &HirId<HirExpr>, callee_fn: HirId<HirStmt>, arg_types: &[ValueState], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         self.resolved_callees.insert(*callee, callee_fn);
         // Read the params through the shared signatures borrow so the later check can take &mut self.
@@ -906,7 +884,7 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// A call through a value: the callee must be non-null and its result is a dynamic boundary.
+    /// A call through a value whose declaration is not visible here.
     pub(super) fn indirect_call(&mut self, callee: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let callee_typed = self.expr(callee)?;
         if let Some(witness) = self.ctx.obligation_witness_name(&callee_typed) {
@@ -918,15 +896,13 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
-        // A factory's epilogue copies each field-local onto `this` with `this.<field> = $<field>`.
-        // When the factory forgets a field, that local is never assigned, so report the copy as the
-        // missing field rather than the synthetic local used before assignment.
         if self.checking_factory {
             if let Some(field) = self.never_initialized_factory_field(lhs, rhs) {
                 return Err(self.error_help(format!("Non-null field '{}' is never initialized", self.ctx.hir.text(field)), lhs,
                     "assign it in the factory, or give the field a default"));
             }
         }
+
         let state = self.expr(rhs)?;
         match self.ctx.hir.get(lhs) {
             HirExpr::Identifier(name) => {
@@ -939,7 +915,7 @@ impl<'a> Checker<'a> {
                     self.locals[i].tag = state.tag.clone();
                     // The mutability follows the value, so a rebind takes the new value's.
                     self.locals[i].alias.mutability = state.mutability;
-                    self.locals[i].alias.unproven_borrow = self.holds_unproven_borrow(rhs);
+                    self.locals[i].alias.borrowed_maybe_mutable = self.holds_borrowed_maybe_mutable(rhs);
                     self.locals[i].alias.confined = self.value_is_confined(rhs);
                     self.locals[i].alias.borrowed = self.arg_is_borrowed(rhs);
                     // The old value is dropped here, so whatever lent it gets its write-ownership back.
@@ -948,24 +924,23 @@ impl<'a> Checker<'a> {
                     self.locals[i].alias.transfer_site = None;
                     // The slot takes on whatever sources the new value reaches, and names whatever
                     // element the new value came out of. Any writer slot the old value held is let go.
-                    self.locals[i].alias.provenance = self.provenance_of(rhs);
+                    self.locals[i].alias.mutable_provenance = self.provenance_of(rhs);
                     self.locals[i].alias.extracted_from = self.extraction_of(rhs).into_iter().collect();
                     self.locals[i].alias.shared_origin = self.shared_origin(rhs);
                     // A rebind does not undo where the old value already went, so the flag only
                     // ever gains reasons to be set.
-                    self.locals[i].alias.may_be_shared |= self.locals[i].alias.shared_origin
-                        || self.locals[i].alias.borrowed || !self.locals[i].alias.extracted_from.is_empty();
+                    self.locals[i].alias.may_be_shared |= self.locals[i].alias.reached_from_elsewhere();
                     // The old value keeps its runtime slot until told otherwise, so a rebind that
                     // drops a held slot has to give it back where the value changes.
-                    if self.locals[i].alias.wrote_at.take().is_some() {
-                        self.locals[i].alias.slot_taken = false;
+                    if self.locals[i].alias.first_written_at.take().is_some() {
+                        self.locals[i].alias.holds_write_ownership = false;
                     }
                     self.reset_narrowing(i, matches!(state.debt, Debt::Clean));
                 } else if self.ctx.sigs.is_type(name) {
                     // A type binding names a declaration, not a reassignable slot.
                     return Err(self.error(format!("Cannot reassign `{}`; it names a type", self.ctx.hir.text(name)), lhs));
                 } else if matches!(self.ctx.bindings.place_of(lhs), Some(Place::Upvalue(_))) {
-                    if let Some(i) = self.enclosing_index(name) {
+                    if let Some(i) = self.upvalue_index(name) {
                         self.check_reassignable(i, name, lhs)?;
                     }
                 } else {
@@ -981,8 +956,6 @@ impl<'a> Checker<'a> {
         Ok(state)
     }
 
-    /// Refuses a rebind of a binding that was not declared reassignable. A slot with no value yet
-    /// is being initialized rather than reassigned, which every binding permits once.
     fn check_reassignable(&self, i: usize, name: Symbol, lhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let text = self.ctx.hir.text(name);
         if self.locals[i].func.is_some() {
@@ -999,7 +972,7 @@ impl<'a> Checker<'a> {
             format!("you can make `{text}` reassignable by declaring it as `say var {text}`")))
     }
 
-    /// Checks an assignment `target.member = value`.
+    /// Checks an assignment `target.member = value` or `target["member"] = value`.
     pub(super) fn assign_index(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_dot: bool, value: &Debt, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // `this.field = ...` and `this["field"] = ...` both assign a field of the enclosing type.
         if matches!(self.ctx.hir.get(target), HirExpr::This) {
@@ -1023,7 +996,7 @@ impl<'a> Checker<'a> {
 
         // A captured name is written through an upvalue.
         if slot.is_none() {
-            let captured = self.enclosing_of(target)
+            let captured = self.upvalue_binding_of(target)
                 .filter(|&i| self.locals[i].alias.mutability == Mutability::Immutable);
             if let Some(i) = captured {
                 return Err(self.immutable_mutation_error(target, i));
@@ -1031,8 +1004,8 @@ impl<'a> Checker<'a> {
         }
 
         // An immutable base seals every place under it, so `this.arr[0] = 1` in a read-only method is refused.
-        if slot.is_none() && self.sealed_base(target) {
-            return Err(self.sealed_write_error(target));
+        if slot.is_none() && self.is_readonly(target) {
+            return Err(self.readonly_write_error(target));
         }
 
         // Writing through an index is a use of the target, so a moved binding is a use after move.
@@ -1040,7 +1013,7 @@ impl<'a> Checker<'a> {
             Some(i) => {
                 self.settle_unknown_transfer(i, target);
                 self.claim_element_write_ownership(i, target)?;
-                self.record_sole_write(i, target);
+                self.record_unshared_store(i, target);
             },
             // A claim is recorded against a frame-local, and this target is not one. The store
             // carries its root, so it asks the question for itself.
@@ -1061,9 +1034,7 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
 
-        self.path_base = Some(*target);
-        let receiver = self.receiver(target)?;
-        self.path_base = None;
+        let receiver = self.path_base_receiver(target)?;
         let Some(field) = self.ctx.string_member(member) else { return Ok(()) };
         if let TypeTag::Concrete(decl) = &receiver.tag {
             self.assign_field_external(&decl.clone(), field, value, lhs, rhs)?;
@@ -1092,7 +1063,7 @@ impl<'a> Checker<'a> {
         }
 
         // Writing a field is a use of the receiver, so an owing `this` has to be discharged first.
-        let this = self.this_typed();
+        let this = self.this_valuestate();
         self.ctx.require_usable_value(&this, lhs)?;
 
         // Mutating a field is mutating the receiver, so the method has to have asked for one.

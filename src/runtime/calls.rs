@@ -9,8 +9,6 @@ macro_rules! check_arity {
     }
 }
 
-/// Whether the element is free of any container but the one the path started from. Both the fast
-/// answer and the one after a collection ask this, so it is named once.
 fn no_other_write_owner(value: Value, root: Value) -> bool {
     match objects::recorded_holder(value) {
         objects::RecordedHolder::Nobody => true,
@@ -20,9 +18,7 @@ fn no_other_write_owner(value: Value, root: Value) -> bool {
 
 /// What a scope exit does with one write-ownership claim.
 enum WriteOwnershipDisposition {
-    /// Write-ownership was dropped, and whatever release it needed has already happened.
     Dropped,
-    /// Write-ownership stays, under a holder that outlives the slot it named.
     Held(WriteOwnershipHolder),
 }
 
@@ -55,10 +51,20 @@ fn same_holder(a: WriteOwnershipHolder, b: WriteOwnershipHolder) -> bool {
     }
 }
 
+/// Forcing is debug-only, so a release build compiles no oracle. The empty bodies fold away at
+/// every call site.
+#[cfg(not(debug_assertions))]
 impl Vm {
-    /// The stack-overflow error, kept off the hot call path. `#[cold]` +
-    /// `#[inline(never)]` so the bulky error/trace formatting isn't inlined into
-    /// the dispatch loop's `CALL` arm (which would bloat the hot loop body).
+    fn drop_dead_watches(&mut self) {}
+    fn watch_mark(&mut self, _addr: *mut Value, _position: Option<u8>) {}
+    fn watch_receiver_borrow(&mut self, _addr: *mut Value) {}
+    fn stop_watching_mark(&mut self, _addr: *mut Value) {}
+    pub(super) fn carry_watched_mark(&mut self, _from: *mut Value, _into: *mut Value) {}
+    fn refute_watched_mark(&mut self, _addr: *mut Value) -> Result<(), anyhow::Error> { Ok(()) }
+    fn refute_watched_receiver(&mut self, _receiver: Value) -> Result<(), anyhow::Error> { Ok(()) }
+}
+
+impl Vm {
     #[cold]
     #[inline(never)]
     pub(super) fn stack_overflow(&mut self) -> anyhow::Error {
@@ -113,7 +119,7 @@ impl Vm {
             return Ok(());
         }
         if forced {
-            return self.refuted_elision("a value proven immutable is mutable");
+            return self.refuted_elision_error("a value proven immutable is mutable");
         }
         let position = self.get_source_position().clone();
         let label = format!("`{}` is mutable", position.snippet());
@@ -175,9 +181,15 @@ impl Vm {
         }
     }
 
+    /// The call site the running frame was entered from, which is what a watch is blamed to.
+    #[cfg(debug_assertions)]
+    fn calling_site(&self) -> usize {
+        self.code_index_at(unsafe { (*self.frames.top()).return_ip })
+    }
+
     /// Consumes the root a store writes through.
     pub(super) fn take_write_root(&mut self, kind: u8, operand: u8) -> WriteRoot {
-        match kind {
+        match ir::write_root_kind(kind) {
             ir::WRITE_ROOT_LOCAL => WriteRoot::Named(self.slot_addr(operand as usize), false),
             ir::WRITE_ROOT_RECEIVER => WriteRoot::Named(self.slot_addr(operand as usize), true),
             ir::WRITE_ROOT_UPVALUE => {
@@ -435,7 +447,7 @@ impl Vm {
             // A parameter that retained its argument took the write-ownership and may hand it on,
             // so a store out of it continues the transfer rather than making a second writer.
             if self.took_write_ownership_by_retain(value) {
-                self.blank_claims_on(value);
+                self.remove_write_ownership_claims_from(value);
             } else {
                 self.refuse_unless_write_owner_is_gone(value)?;
             }
@@ -445,8 +457,8 @@ impl Vm {
     }
 
     pub(super) fn hand_write_ownership_to_upvalue(&mut self, idx: usize, value: Value) -> Result<(), anyhow::Error> {
-        if !self.borrow_claims.is_empty() {
-            self.note_claimed_upvalue_store(idx, value)?;
+        if !self.borrow_watches.is_empty() {
+            self.check_watches_on_upvalue_store(idx, value)?;
         }
         if !self.took_write_ownership_by_retain(value) {
             return Ok(());
@@ -487,8 +499,8 @@ impl Vm {
     /// Whether a call has nothing to record about its arguments. No parameter takes its argument
     /// or hands it on, so only a container argument is left with anything to record.
     #[inline]
-    fn arguments_record_nothing(&self, wanted: u64, stack_start: *mut Value, arity: usize) -> bool {
-        wanted == 0 && !self.forced
+    fn arguments_record_nothing(&self, asked_by_row: u64, stack_start: *mut Value, arity: usize) -> bool {
+        asked_by_row == 0 && !self.forced
             && (0..arity).all(|i| !objects::is_container(unsafe { *stack_start.add(i + 1) }))
     }
 
@@ -503,7 +515,10 @@ impl Vm {
         self.record_argument_write_ownership(retain_mask, escape_mask, needs_borrow_mark, stack_start, arity, receiver)
     }
 
-    fn record_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, needs_borrow_mark: u64, stack_start: *mut Value, arity: usize, receiver: ReceiverSlot) -> Result<(), anyhow::Error> {
+    fn record_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, needs_borrow_mark_mask: u64, stack_start: *mut Value, arity: usize, receiver: ReceiverSlot) -> Result<(), anyhow::Error> {
+        if self.forced {
+            self.drop_dead_watches();
+        }
         // Slot zero is where a method's receiver lives. It takes the marker its declaration gave
         // it, the way a parameter takes its own.
         match receiver {
@@ -511,32 +526,51 @@ impl Vm {
             ReceiverSlot::Callee => {},
             ReceiverSlot::Retained => self.retain_slot(stack_start)?,
             ReceiverSlot::BorrowedRecorded => self.borrow_slot(stack_start, true),
-            ReceiverSlot::Borrowed => if self.forced { self.borrow_slot(stack_start, true) },
+            ReceiverSlot::Borrowed => if self.forced {
+                let receiver = unsafe { *stack_start };
+                let standing = self.stack.is_borrowed(stack_start)
+                    || (receiver.is_object() && receiver.as_object().is_borrowed());
+                self.borrow_slot(stack_start, true);
+                if !standing { self.watch_receiver_borrow(stack_start); }
+            },
         }
-        // A position needs to be looked at if it takes its argument, if the body may hand it to a call
-        // that takes it, or if the run is putting its claims on trial. Anything else is only worth
-        // a visit when the argument has a header to record on.
-        let wanted = match self.forced {
+
+        // The positions the callee's row asks about, whatever the arguments turn out to be.
+        // Forcing asks about every one.
+        let asked_by_row = match self.forced {
             true => u64::MAX,
-            false => retain_mask | needs_borrow_mark,
+            false => retain_mask | needs_borrow_mark_mask,
         };
+
         for position in 0..arity.min(64) {
             // Slot zero holds the receiver, so a parameter sits one above its position.
             let addr = unsafe { stack_start.add(position + 1) };
             let value = unsafe { *addr };
-            let bit = 1u64 << position;
-            if wanted & bit == 0 && !objects::is_container(value) {
+
+            let records_nothing = !objects::mask_holds(asked_by_row, position) && !objects::is_container(value);
+            if records_nothing {
                 continue;
             }
+
             #[cfg(debug_assertions)]
             self.assert_borrow_marks_agree(addr);
-            // A parameter that does not retain its argument borrows it.
-            if retain_mask & bit == 0 {
-                // A slot only needs the mark where the body hands it to a call that might retain it.
-                let marks_slot = self.forced || needs_borrow_mark & bit != 0;
+            let retains_argument = objects::mask_holds(retain_mask, position);
+            if !retains_argument {
+                let needs_borrow_mark = objects::mask_holds(needs_borrow_mark_mask, position);
+                let marks_slot = self.forced || needs_borrow_mark;
+                let recorded_anyway = needs_borrow_mark || objects::is_container(value);
+                // Read before the mark is taken, since taking it would answer this itself.
+                let mark_already_stood = self.stack.is_borrowed(addr);
                 self.borrow_slot(addr, marks_slot);
-                if self.forced && objects::is_mutable_container(value) && escape_mask & bit == 0 {
-                    self.watch_borrow_claim(value, position as u8, stack_start);
+                if self.forced && !recorded_anyway && !mark_already_stood {
+                    self.watch_mark(addr, Some(position as u8));
+                // A mark this call did not make keeps whatever watch already stands on it.
+                } else if self.forced && recorded_anyway {
+                    self.stop_watching_mark(addr);
+                }
+                let may_escape = objects::mask_holds(escape_mask, position);
+                if self.forced && objects::is_mutable_container(value) && !may_escape {
+                    self.watch_borrow(value, position as u8, stack_start);
                 }
                 continue;
             }
@@ -573,10 +607,99 @@ impl Vm {
             true => self.stack.mark_borrowed(into),
             false => self.stack.clear_borrowed(into),
         }
+        if self.forced {
+            self.carry_watched_mark(from, into);
+        }
     }
 
-    /// A slot marked as borrowed holds a value some call borrowed, so an object in it carries the borrow bit
-    /// too. The two are recorded by different mechanisms, and this is where they have to agree.
+    #[cfg(debug_assertions)]
+    fn watch_receiver_borrow(&mut self, addr: *mut Value) {
+        self.watch_mark(addr, None);
+        self.marks_watched += 1;
+        let (receiver, site) = (unsafe { *addr }, self.calling_site());
+        self.watched_receivers.retain(|(held, _, _)| *held != receiver);
+        self.watched_receivers.push((receiver, site, self.frames.len()));
+    }
+
+    #[cfg(debug_assertions)]
+    fn watch_mark(&mut self, addr: *mut Value, position: Option<u8>) {
+        let site = self.calling_site();
+        self.marks_watched += 1;
+        self.stop_watching_mark(addr);
+        self.mark_watches.push(MarkWatch { slot: addr, position, site });
+    }
+
+    #[cfg(debug_assertions)]
+    fn stop_watching_mark(&mut self, addr: *mut Value) {
+        self.mark_watches.retain(|held| held.slot != addr);
+    }
+
+    #[cfg(debug_assertions)]
+    fn watch_on(&self, addr: *mut Value) -> Option<(Option<u8>, usize)> {
+        self.mark_watches.iter().find(|held| held.slot == addr).map(|held| (held.position, held.site))
+    }
+
+    #[cfg(debug_assertions)]
+    fn drop_dead_watches(&mut self) {
+        self.mark_watches.retain(|held| self.stack.is_borrowed(held.slot));
+        let depth = self.frames.len();
+        self.watched_receivers.retain(|(value, _, made_at)| {
+            *made_at <= depth && value.is_object() && value.as_object().is_borrowed()
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn carry_watched_mark(&mut self, from: *mut Value, into: *mut Value) {
+        match self.watch_on(from) {
+            Some((position, site)) => self.watch_carried_mark(into, position, site),
+            None => self.stop_watching_mark(into),
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn watch_carried_mark(&mut self, addr: *mut Value, position: Option<u8>, site: usize) {
+        self.stop_watching_mark(addr);
+        self.mark_watches.push(MarkWatch { slot: addr, position, site });
+    }
+
+    #[cfg(debug_assertions)]
+    fn refute_watched_mark(&mut self, addr: *mut Value) -> Result<(), anyhow::Error> {
+        let Some((position, site)) = self.forced.then(|| self.watch_on(addr)).flatten() else {
+            return Ok(());
+        };
+        self.marks_read += 1;
+        Err(self.refuted_mark_error(position, site))
+    }
+
+    #[cfg(debug_assertions)]
+    fn refute_watched_receiver(&mut self, receiver: Value) -> Result<(), anyhow::Error> {
+        if !self.forced {
+            return Ok(());
+        }
+        let Some(&(_, site, _)) = self.watched_receivers.iter().find(|(held, _, _)| *held == receiver) else {
+            return Ok(());
+        };
+        self.marks_read += 1;
+        Err(self.refuted_mark_error(None, site))
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[cfg(debug_assertions)]
+    fn refuted_mark_error(&mut self, position: Option<u8>, site: usize) -> anyhow::Error {
+        let pos = self.chunk.code_pos[site].clone();
+        let subject = match position {
+            Some(position) => format!("argument {}", position + 1),
+            None => "the receiver".to_string(),
+        };
+        let read = self.get_source_position().clone();
+        self.raise(Diagnostic::new("unsound claim: a borrow mark said to be unnecessary is read", pos)
+            .with_label(format!("{subject} was said to need no borrow mark"))
+            .with_span(read, "the borrow is read here, and refuses")
+            .with_help("the borrow forcing recorded is what refused the retain, so the shipped build would have allowed it"))
+            .unwrap_err()
+    }
+
     #[cfg(debug_assertions)]
     fn assert_borrow_marks_agree(&self, addr: *mut Value) {
         let value = unsafe { *addr };
@@ -585,9 +708,9 @@ impl Vm {
         }
     }
 
-    /// Hands the write-ownership of what a slot holds to that slot, for a `*` marker.
     fn retain_slot(&mut self, addr: *mut Value) -> Result<(), anyhow::Error> {
         if self.stack.is_borrowed(addr) {
+            self.refute_watched_mark(addr)?;
             return Err(self.retained_borrow_error());
         }
         let value = unsafe { *addr };
@@ -595,6 +718,7 @@ impl Vm {
             return Ok(());
         }
         if value.as_object().is_borrowed() {
+            self.refute_watched_receiver(value)?;
             return Err(self.retained_borrow_error());
         }
         // Only a mutable value has write-ownership for the slot to take.
@@ -609,12 +733,11 @@ impl Vm {
         if self.holds_write_ownership(holder, value) {
             return Ok(());
         }
-        self.blank_claims_on(value);
+        self.remove_write_ownership_claims_from(value);
         self.record_write_ownership(value, holder, WriteOwnershipSource::Taken);
         Ok(())
     }
 
-    /// A retain of a value an earlier retain already took the write-ownership of.
     #[cold]
     #[inline(never)]
     fn retained_twice_error(&self) -> anyhow::Error {
@@ -623,7 +746,6 @@ impl Vm {
             .unwrap_err()
     }
 
-    /// A retain that would carry a borrowed value past the frame that lent it.
     #[cold]
     #[inline(never)]
     fn retained_borrow_error(&self) -> anyhow::Error {
@@ -632,8 +754,7 @@ impl Vm {
             .unwrap_err()
     }
 
-    /// Blanks every claim over a value.
-    fn blank_claims_on(&mut self, value: Value) {
+    fn remove_write_ownership_claims_from(&mut self, value: Value) {
         for held in self.write_ownerships.iter_mut() {
             if held.value == value {
                 held.value = Value::NULL;
@@ -641,18 +762,15 @@ impl Vm {
         }
     }
 
-    /// The address of a local in the running frame, which is what identifies a holder.
     pub(super) fn slot_addr(&self, slot: usize) -> *mut Value {
         unsafe { (*self.frames.top()).stack_start.add(slot) }
     }
 
-    /// Whether this holder is the one already holding the value's writer slot.
     fn holds_write_ownership(&self, holder: WriteOwnershipHolder, value: Value) -> bool {
         self.write_ownerships.iter().rev().find(|held| held.value == value)
             .is_some_and(|held| same_holder(held.holder, holder))
     }
 
-    /// The trap for a second name taking the writer slot for one element.
     #[cold]
     #[inline(never)]
     fn second_writer_error(&mut self, value: Value) -> anyhow::Error {
@@ -682,11 +800,10 @@ impl Vm {
         self.raise(diagnostic.with_help(help)).unwrap_err()
     }
 
-    /// Gives back whatever the scope's own `count` values still hold.
     pub(super) fn op_release_write_ownership(&mut self) {
         let count = self.read_next() as usize;
         let floor = unsafe { self.stack.top().sub(count) };
-        self.retire_slots(0, |addr| addr >= floor, None);
+        self.retire_write_ownerships(0, |addr| addr >= floor, None);
     }
 
     pub(super) fn op_pop_scope(&mut self) {
@@ -695,7 +812,7 @@ impl Vm {
         let base = unsafe { self.stack.top().sub(count) };
         debug_assert_eq!(self.frame_slot_count(), expected_slot_count, "a scope left a stack its compiler did not expect");
         self.close_upvalues(base);
-        self.retire_slots(0, |addr| addr >= base, None);
+        self.retire_write_ownerships(0, |addr| addr >= base, None);
         self.stack.set_top(base);
     }
 
@@ -708,8 +825,7 @@ impl Vm {
         (self.stack.top() as usize - start as usize) / std::mem::size_of::<Value>()
     }
 
-    /// Retires the write-ownerships from index `depth` on whose slot the predicate says is dying.
-    fn retire_slots(&mut self, depth: usize, dying: impl Fn(*mut Value) -> bool, leaving: Option<Leaving>) {
+    fn retire_write_ownerships(&mut self, depth: usize, dying: impl Fn(*mut Value) -> bool, leaving: Option<Leaving>) {
         let mut kept = depth;
         for i in depth..self.write_ownerships.len() {
             let mut write_ownership = self.write_ownerships[i];
@@ -774,10 +890,6 @@ impl Vm {
             && !self.named_by_a_surviving_slot(container, dying)
     }
 
-    /// Releases the write-ownership `container` held over `element`, because the container went
-    /// away with its scope. The element is not leaving the container, which died still holding it.
-    /// What ends is the claim, so the element is spoken for by nobody again. The container is
-    /// recorded so the next collection can refute the claim that it was gone.
     fn release_write_ownership_from(&mut self, element: Value, container: Value) {
         self.release_write_ownership(element);
         if element.is_object() && element.as_object().container_write_owner() == container {
@@ -788,7 +900,6 @@ impl Vm {
         self.predicted_write_ownership_release_sites.insert(site);
     }
 
-    /// Whether a slot that outlives this scope exit still names the container.
     fn named_by_a_surviving_slot(&self, container: Value, dying: &impl Fn(*mut Value) -> bool) -> bool {
         let mut slot = self.stack.bottom();
         let top = self.stack.top();
@@ -801,12 +912,11 @@ impl Vm {
         false
     }
 
-    /// Starts watching an argument the call said it only borrows.
-    fn watch_borrow_claim(&mut self, value: Value, position: u8, stack_start: *mut Value) {
+    fn watch_borrow(&mut self, value: Value, position: u8, stack_start: *mut Value) {
         // The frame is already pushed here, so its saved return address is what names the call.
         let site = self.code_index_at(unsafe { (*self.frames.top()).return_ip });
-        self.claims_made += 1;
-        self.borrow_claims.push(BorrowClaim {
+        self.watches_made += 1;
+        self.borrow_watches.push(BorrowWatch {
             value,
             into: Vec::new(),
             depth: self.frames.len(),
@@ -816,51 +926,45 @@ impl Vm {
         });
     }
 
-    /// Notes a container a watched argument was put into. Nothing is watched unless the run forces
-    /// its claims, so this is a load and a branch on an ordinary store.
     #[inline]
-    pub(super) fn note_claimed_containment(&mut self, container: Value, value: Value) {
-        for claim in self.borrow_claims.iter_mut() {
-            if claim.value == value && !claim.into.contains(&container) {
-                claim.into.push(container);
+    pub(super) fn note_container_took_watched_value(&mut self, container: Value, value: Value) {
+        for watch in self.borrow_watches.iter_mut() {
+            if watch.value == value && !watch.into.contains(&container) {
+                watch.into.push(container);
             }
         }
     }
 
-    /// What a store through an upvalue does to a watched argument. A closed upvalue is a container
-    /// like any other, so the closure is recorded. An open one names a slot, and a slot below the
-    /// call's own frame belongs to a frame that outlives it, which refutes the claim on the spot.
-    fn note_claimed_upvalue_store(&mut self, idx: usize, value: Value) -> Result<(), anyhow::Error> {
+    fn check_watches_on_upvalue_store(&mut self, idx: usize, value: Value) -> Result<(), anyhow::Error> {
         let slot = match self.upvalue_holder(idx) {
             WriteOwnershipHolder::Container(closure) => {
-                self.note_claimed_containment(closure, value);
+                self.note_container_took_watched_value(closure, value);
                 return Ok(());
             },
             WriteOwnershipHolder::Name(slot) => slot,
             _ => return Ok(()),
         };
-        if let Some(claim) = self.borrow_claims.iter().find(|claim| claim.value == value && slot < claim.stack_start) {
-            return Err(self.refuted_claim("is stored where an outer frame keeps it", claim.position, claim.site));
+        if let Some(watch) = self.borrow_watches.iter().find(|watch| watch.value == value && slot < watch.stack_start) {
+            return Err(self.refuted_claim_error("is stored where an outer frame keeps it", watch.position, watch.site));
         }
         Ok(())
     }
 
-    /// Settles every claim whose call has just ended.
-    pub(super) fn settle_borrow_claims(&mut self, leaving: Value) -> Result<(), anyhow::Error> {
-        if self.borrow_claims.is_empty() {
+    pub(super) fn settle_borrow_watches(&mut self, leaving: Value) -> Result<(), anyhow::Error> {
+        if self.borrow_watches.is_empty() {
             return Ok(());
         }
         let depth = self.frames.len();
-        let ended: Vec<BorrowClaim> = self.borrow_claims.extract_if(.., |claim| claim.depth > depth).collect();
+        let ended: Vec<BorrowWatch> = self.borrow_watches.extract_if(.., |watch| watch.depth > depth).collect();
         // Handing the argument back keeps it as surely as storing it does.
-        for claim in &ended {
-            if claim.value == leaving {
-                return Err(self.refuted_claim("is handed back to the caller", claim.position, claim.site));
+        for watch in &ended {
+            if watch.value == leaving {
+                return Err(self.refuted_claim_error("is handed back to the caller", watch.position, watch.site));
             }
         }
-        self.claims_settled += ended.iter().filter(|claim| !claim.into.is_empty()).count();
+        self.watches_settled += ended.iter().filter(|watch| !watch.into.is_empty()).count();
         self.settling_containments = ended.iter()
-            .flat_map(|claim| claim.into.iter().map(|&container| (container, claim.position, claim.site)))
+            .flat_map(|watch| watch.into.iter().map(|&container| (container, watch.position, watch.site)))
             .collect();
         if self.settling_containments.is_empty() {
             return Ok(());
@@ -873,14 +977,14 @@ impl Vm {
         let refuted = self.settling_containments.pop();
         self.settling_containments.clear();
         match refuted {
-            Some((_, position, site)) => Err(self.refuted_claim("outlives the call it was lent to", position, site)),
+            Some((_, position, site)) => Err(self.refuted_claim_error("outlives the call it was lent to", position, site)),
             None => Ok(()),
         }
     }
 
     #[cold]
     #[inline(never)]
-    fn refuted_claim(&self, what: &str, position: u8, site: usize) -> anyhow::Error {
+    fn refuted_claim_error(&self, what: &str, position: u8, site: usize) -> anyhow::Error {
         let pos = self.chunk.code_pos[site].clone();
         self.raise(Diagnostic::new("unsound claim: a borrowed argument was kept", pos)
             .with_label(format!("argument {} {}", position + 1, what))
@@ -888,17 +992,14 @@ impl Vm {
             .unwrap_err()
     }
 
-    /// Clears one value's writer slot. A value that holds none is left alone.
     fn release_write_ownership(&self, value: Value) {
         if value.is_object() && value.as_object().is_write_owned() {
             value.as_object().set_write_owned(false);
         }
     }
 
-    /// Retires the claims a dying frame's own slots hold, for an exit that skips the scope releases.
-    /// Every slot at or above the frame's start dies with it.
     pub(super) fn release_write_ownership_above(&mut self, depth: usize, stack_start: *mut Value, returning: Value) {
-        self.retire_slots(depth, |addr| addr >= stack_start, Some(Leaving::new(returning, stack_start)));
+        self.retire_write_ownerships(depth, |addr| addr >= stack_start, Some(Leaving::new(returning, stack_start)));
         #[cfg(debug_assertions)]
         for held in &self.write_ownerships[depth..] {
             if let WriteOwnershipHolder::Name(addr) = held.holder {
@@ -907,7 +1008,6 @@ impl Vm {
         }
     }
 
-    /// Whether a callable lets its argument at `position` escape, as opposed to borrowing it.
     fn callee_escapes(&self, callee: Value, position: usize) -> bool {
         if !callee.is_callable() {
             return false;
@@ -961,7 +1061,7 @@ impl Vm {
                 let closure_ptr = method.as_closure_ptr();
                 let closure = unsafe { &*closure_ptr };
                 if closure.mut_receiver && self.receiver_rejects_mut(bound_method.target) {
-                    return self.error_readonly_receiver(closure.name, bound_method.target);
+                    return self.readonly_receiver_error(closure.name, bound_method.target);
                 }
                 check_arity!(self, arg_count, closure.arity, closure.name);
                 let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
@@ -977,9 +1077,7 @@ impl Vm {
         Ok(())
     }
 
-    /// Brace construction `C { f: v, ... }`. Reads the brace field ids, allocates the instance,
-    /// sets the brace fields from the stack, then verifies `gives`. The stack holds
-    /// `[C, brace values..]` in source order.
+    /// Brace construction `C { f: v, ... }`.
     pub(super) fn op_construct(&mut self) -> Result<(), anyhow::Error> {
         let field_count = self.read_next() as usize;
         let mut field_ids = [0u8; u8::MAX as usize + 1];
@@ -1004,7 +1102,7 @@ impl Vm {
             let value = self.stack.peek(field_count - 1 - j);
             // A frozen instance is immutable all the way down.
             if seal && objects::is_mutable_container(value) {
-                return self.error_seal();
+                return self.mutable_in_immutable_error();
             }
             // A construction is fresh, so nothing outside reaches it yet. The store that takes it
             // out is what asks, and this record is what lets that store answer.
@@ -1091,7 +1189,6 @@ impl Vm {
     }
 }
 
-/// Whether a callable persists the argument at `position`.
 fn callable_escapes(obj: Object, position: usize) -> bool {
     match obj.tag() {
         objects::TAG_FUNCTION => unsafe { &*obj.as_function_ptr() }.escapes(position),

@@ -36,6 +36,13 @@ pub const GAVE_TRANSFERRED_ELEMENT: &str = "cannot give away a value whose write
 /// A call that would retain a value an earlier retain already took the write-ownership of.
 pub const RETAINED_TWICE: &str = "cannot retain a value whose write-ownership was already taken";
 
+/// Whether a per-parameter mask holds at a position. A call row records one bit per parameter, so
+/// a position past 63 is outside what the row says.
+#[inline]
+pub fn mask_holds(mask: u64, position: usize) -> bool {
+    position < 64 && mask & (1u64 << position) != 0
+}
+
 /// Whether a value is a mutable container. Only Array, Dict, and Instance carry the immutable bit;
 /// every other object kind and every primitive is always an immutable value.
 pub fn is_mutable_container(value: Value) -> bool {
@@ -553,7 +560,7 @@ impl ObjFn {
     /// Whether the parameter at `position` lets its argument escape, as opposed to borrowing it.
     #[inline]
     pub fn escapes(&self, position: usize) -> bool {
-        position < 64 && self.escape_mask & (1u64 << position) != 0
+        mask_holds(self.escape_mask, position)
     }
 
     pub fn call_masks(&self) -> CallMasks {
@@ -678,7 +685,7 @@ impl ObjClosure {
     /// Whether the parameter at `position` lets its argument escape, as opposed to borrowing it.
     #[inline]
     pub fn escapes(&self, position: usize) -> bool {
-        position < 64 && self.escape_mask & (1u64 << position) != 0
+        mask_holds(self.escape_mask, position)
     }
 
     #[inline]

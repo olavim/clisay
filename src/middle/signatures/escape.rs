@@ -855,8 +855,8 @@ impl<'a> Collector<'a> {
                 }
                 return;
             },
-            HirStmt::While(cond, _) => facts.bound.extend(self.hir.condition_binders(cond)),
-            HirStmt::If(cond, ..) => facts.bound.extend(self.hir.condition_binders(cond)),
+            HirStmt::While(cond, _) => facts.bound.extend(self.hir.condition_pattern_binders(cond)),
+            HirStmt::If(cond, ..) => facts.bound.extend(self.hir.condition_pattern_binders(cond)),
             _ => {},
         }
         for child in walk::children_of_stmt(self.hir, stmt) {

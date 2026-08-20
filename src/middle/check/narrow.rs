@@ -526,13 +526,13 @@ impl<'a> Checker<'a> {
 
     /// Applies flow facts, runs `f` under them, then restores the prior flow state.
     pub(super) fn narrow_branch<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> (R, Vec<Obligations>) {
-        self.narrow_under(facts, f, Checker::restore)
+        self.narrow_under(facts, f, Checker::restore_flow)
     }
 
     /// Applies flow facts, runs `f` under them, then restores the prior flow state but keeps each
     /// local's move site and give-back sources.
     pub(super) fn narrow_branch_keeping_moves<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> (R, Vec<Obligations>) {
-        self.narrow_under(facts, f, Checker::restore_keeping_moves)
+        self.narrow_under(facts, f, Checker::restore_flow_keeping_write_ownership_transfers)
     }
 
     fn narrow_under<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R,
