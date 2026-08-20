@@ -342,7 +342,11 @@ impl<'a> Checker<'a> {
             HirExpr::SafeCall(callee_id, args) => {
                 let callee = self.expr(callee_id)?;
                 self.ctx.require_witnessed_operand(&callee.debt, callee_id)?;
-                for a in args { self.expr(a)?; }
+                let immutable = !std::mem::take(&mut self.mut_construction);
+                let arg_types: Vec<ValueState> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
+                if self.resolved_call(expr, callee_id, args, &arg_types, immutable)?.is_none() {
+                    self.note_opaque_call_args(callee_id, args, &arg_types);
+                }
                 self.invalidate_rebound_fields(callee_id);
                 self.chain_result(&callee.debt, expr)
             },
@@ -759,6 +763,20 @@ impl<'a> Checker<'a> {
     pub(super) fn call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<ValueState, anyhow::Error> {
         let immutable = !std::mem::take(&mut self.mut_construction);
         let arg_types: Vec<ValueState> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
+
+        match self.resolved_call(expr, callee, args, &arg_types, immutable)? {
+            Some(state) => Ok(state),
+            None => {
+                self.note_opaque_call_args(callee, args, &arg_types);
+                self.indirect_call(callee)
+            },
+        }
+    }
+
+    /// The checks for a callee this pass can resolve, with the arguments already walked. `None`
+    /// means it resolved nothing, which leaves validating the callee to the form that called it:
+    /// a plain call requires a usable value, a `?` call tolerates a null one.
+    fn resolved_call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[ValueState], immutable: bool) -> Result<Option<ValueState>, anyhow::Error> {
         match self.ctx.hir.get(callee) {
             HirExpr::Identifier(name) => {
                 let name = *name;
@@ -773,7 +791,7 @@ impl<'a> Checker<'a> {
                     }
 
                     if let Some(init) = self.ctx.constructor_init(callee) {
-                        self.check_call_args(callee, init, &arg_types, args)?;
+                        self.check_call_args(callee, init, arg_types, args)?;
                         for (i, (state, arg)) in arg_types.iter().zip(args).enumerate() {
                             if self.ctx.sigs.param_escapes_at(&init, i) {
                                 self.check_construct_field_mutability(immutable, state, arg)?;
@@ -786,30 +804,30 @@ impl<'a> Checker<'a> {
 
                     // Record the construction so codegen tells `mut K(..)` (CALL_MUT) from `mut f()`.
                     self.record_construction(expr);
-                    return Ok(ValueState::of(self.ctx.construction_debt(&decl), TypeTag::Concrete(decl)).with_mutability(Mutability::Immutable));
+                    return Ok(Some(ValueState::of(self.ctx.construction_debt(&decl), TypeTag::Concrete(decl)).with_mutability(Mutability::Immutable)));
                 }
                 if let Some(stmt) = self.func_of(name) {
-                    self.check_call_args(callee, stmt, &arg_types, args)?;
-                    return Ok(self.ctx.call_result(stmt, &TypeTag::Unknown));
+                    self.check_call_args(callee, stmt, arg_types, args)?;
+                    return Ok(Some(self.ctx.call_result(stmt, &TypeTag::Unknown)));
                 }
                 // A built-in global resolves by name when no local or function shadows it.
                 if self.frame_index_of(name).is_none() {
                     if let Some(sig) = native::builtin(self.ctx.hir.text(name)) {
-                        self.check_native_args(callee, &sig, &arg_types, args)?;
+                        self.check_native_args(callee, &sig, arg_types, args)?;
                         let result = ValueState::of(self.ctx.native_ret_debt(sig.ret), TypeTag::Unknown);
                         // `freeze(x)` also discharges the mutation capability, handing its
                         // argument back immutable.
                         if self.ctx.hir.text(name) == "freeze" {
                             if let Some(arg) = args.first() { self.discharge_freeze(arg); }
-                            return Ok(result.with_mutability(Mutability::Immutable));
+                            return Ok(Some(result.with_mutability(Mutability::Immutable)));
                         }
-                        return Ok(result);
+                        return Ok(Some(result));
                     }
                 }
-                self.check_opaque_call(callee, args, &arg_types)
+                Ok(None)
             },
-            HirExpr::Index(receiver, member, _) => self.method_call(callee, receiver, member, &arg_types, args),
-            _ => self.check_opaque_call(callee, args, &arg_types),
+            HirExpr::Index(receiver, member, _) => Ok(Some(self.method_call(callee, receiver, member, arg_types, args)?)),
+            _ => Ok(None),
         }
     }
 

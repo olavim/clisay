@@ -680,7 +680,7 @@ impl<'a> Checker<'a> {
         self.ctx.reject_outliving(&Debt::Owed { obligations: owed, definite: false, container: false }, Site::Capture, node)
     }
 
-    pub(super) fn check_opaque_call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[ValueState]) -> Result<ValueState, anyhow::Error> {
+    pub(super) fn note_opaque_call_args(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[ValueState]) {
         let mut survive = Vec::new();
         for (i, state) in arg_types.iter().enumerate() {
             if let Some(owed) = self.ctx.obligation_preventing_escape(&state.debt) {
@@ -701,7 +701,6 @@ impl<'a> Checker<'a> {
         if !survive.is_empty() {
             self.record_survive_barrier(callee, survive);
         }
-        self.indirect_call(callee)
     }
 
     pub(super) fn check_arg_mutability(&self, callee: &HirId<HirExpr>, markers: &[Capability], arg_types: &[ValueState], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
