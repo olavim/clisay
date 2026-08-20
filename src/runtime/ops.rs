@@ -46,14 +46,14 @@ impl Vm {
         Ok(())
     }
 
-    fn restore_borrows(&mut self, depth: usize) {
+    pub(super) fn restore_borrows(&mut self, depth: usize) {
         while self.borrows.len() > depth {
             let (value, prev) = self.borrows.pop().unwrap();
             if value.is_object() { value.as_object().set_borrowed(prev); }
         }
     }
 
-    fn ensure_not_holding_borrow(&self, value: Value) -> Result<(), anyhow::Error> {
+    pub(super) fn ensure_not_holding_borrow(&self, value: Value) -> Result<(), anyhow::Error> {
         if value.is_object() && value.as_object().holds_borrow() {
             let label = format!("`{}` holds a value borrowed from the caller", self.get_source_position().snippet());
             return self.error_labeled(objects::PERSISTED_BORROW, label);
@@ -88,6 +88,40 @@ impl Vm {
             }
         }
         Ok(true)
+    }
+
+    /// A return whose frame only needs to end borrows.
+    pub(super) fn return_ending_borrows(&mut self) -> Result<(), anyhow::Error> {
+        let value = self.stack.peek(0);
+        self.ensure_not_holding_borrow(value)?;
+
+        // Handing a borrowed value back does not end the borrow.
+        let handed_back_from = self.stack.offset(0);
+        let handed_back_borrow = !value.is_object() && self.stack.is_borrowed(handed_back_from);
+
+        let frame = self.frames.pop();
+        self.ip = frame.return_ip;
+
+        // The value outlives this frame, so a later scope release must not let go of it.
+        objects::record_escape(value);
+        self.restore_borrows(frame.borrow_depth);
+        self.stack.set_top(frame.stack_start);
+
+        if self.forced {
+            self.settle_borrow_watches(value)?;
+        }
+
+        self.stack.push(value);
+
+        if handed_back_borrow {
+            let into = self.stack.offset(0);
+            self.stack.mark_borrowed(into);
+            if self.forced {
+                self.carry_watched_mark(handed_back_from, into);
+            }
+        }
+
+        Ok(())
     }
 
     pub(super) fn op_return_factory(&mut self) -> Result<(), anyhow::Error> {

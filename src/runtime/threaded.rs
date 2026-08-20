@@ -590,9 +590,9 @@ fn halt(vm: &mut Vm, _ip: *const OpCode, _top: *mut Value, _base: *mut Value) ->
 }
 
 fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R {
-    // The top-level ends in HALT, so every RETURN has a caller frame to pop. A live borrow sends the
-    // return down the slow path, which is where the borrow floor asks what the value holds.
-    if vm.open_upvalues.is_empty() && vm.write_ownerships.is_empty() && vm.borrows.is_empty() {
+    // The top-level ends in HALT, so every RETURN has a caller frame to pop.
+    let nothing_to_unwind = vm.open_upvalues.is_empty() && vm.write_ownerships.is_empty();
+    if nothing_to_unwind && vm.borrows.is_empty() {
         let frame = vm.frames.pop();
         let value = unsafe { *top.sub(1) };
         // Handing a borrowed value back does not end the borrow.
@@ -616,7 +616,12 @@ fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R 
 
     vm.stack.set_top(top);
     vm.ip = ip;
-    vm.op_return()?;
+
+    match nothing_to_unwind {
+        true => vm.return_ending_borrows()?,
+        false => { vm.op_return()?; },
+    }
+
     let top = vm.stack.top();
     let base = unsafe { (*vm.frames.top()).stack_start };
     become dispatch(vm, vm.ip, top, base)

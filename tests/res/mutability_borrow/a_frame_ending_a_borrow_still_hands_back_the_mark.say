@@ -1,0 +1,14 @@
+fn nothing(x) { }
+fn keeps(*v)! { return v; }
+fn hand(n, a, g)! { g(n); a[0]; return n; }
+say arr = mut [1];
+say f = keeps;
+f(hand(5, arr, nothing)); // error: cannot pass a borrowed argument to a callee that retains it
+
+// @split
+fn nothing(x) { }
+fn reads(v)! { return v; }
+fn hand(n, a, g)! { g(n); a[0]; return n; }
+say arr = mut [1];
+say f = reads;
+print(f(hand(5, arr, nothing))); // expect: 5
