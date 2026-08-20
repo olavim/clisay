@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use anyhow::anyhow;
 
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{Capability, HirExpr, HirId, HirLiteral, HirStmt, Symbol};
+use crate::middle::hir::{Capability, HirExpr, HirId, HirLiteral, HirStmt, Symbol, ValueSource};
 
 use super::{BinderSource, Checker, Ctx, Debt, Guard, Mutability, Site, ValueState};
 
@@ -554,18 +554,18 @@ impl<'a> Checker<'a> {
 
 
     pub(super) fn reachable_sources(&self, node: &HirId<HirExpr>, out: &mut Vec<(usize, HirId<HirExpr>)>) {
-        match self.ctx.hir.get(node) {
-            HirExpr::Identifier(name) => {
-                if let Some(i) = self.frame_index_of(*name) {
+        match self.ctx.hir.value_source(node) {
+            ValueSource::Name(name) => {
+                if let Some(i) = self.frame_index_of(name) {
                     if self.holds_mutable(i) {
                         out.push((i, *node));
                     }
                 }
             },
-            // A brace also persists its field values into the new instance, so each escapes.
-            HirExpr::Construct(_, brace) => for (_, v) in brace { self.reachable_sources(v, out); },
-            HirExpr::Call(callee, args) => self.reachable_call_args(callee, args, out),
-            _ => for c in self.ctx.hir.ownership_children(node) { self.reachable_sources(&c, out); },
+            ValueSource::Call(callee, args) => self.reachable_call_args(callee, args, out),
+            ValueSource::Yields(children) | ValueSource::Holds(children) =>
+                for c in children { self.reachable_sources(&c, out); },
+            ValueSource::Receiver | ValueSource::Element | ValueSource::Closure | ValueSource::Fresh => {},
         }
     }
 

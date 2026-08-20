@@ -85,6 +85,18 @@ pub enum HirLiteral {
     Lambda(HirFnDecl),
 }
 
+/// Where a value came from.
+pub enum ValueSource<'a> {
+    Name(Symbol),
+    Receiver,
+    Call(&'a HirId<HirExpr>, &'a [HirId<HirExpr>]),
+    Element,
+    Closure,
+    Yields(Vec<HirId<HirExpr>>),
+    Holds(Vec<HirId<HirExpr>>),
+    Fresh,
+}
+
 pub enum HirExpr {
     Block(Vec<HirId<HirStmt>>),
     Unary(UnOp, HirId<HirExpr>),
@@ -608,14 +620,26 @@ impl Hir {
         }
     }
 
-    /// The child expressions a value's ownership flows through.
-    pub(crate) fn ownership_children(&self, value: &HirId<HirExpr>) -> Vec<HirId<HirExpr>> {
+    pub(crate) fn value_source(&self, value: &HirId<HirExpr>) -> ValueSource<'_> {
         match self.get(value) {
-            HirExpr::Mut(x) | HirExpr::Assert(x) | HirExpr::Propagate(x) => vec![*x],
-            HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r) => vec![*l, *r],
-            HirExpr::Literal(HirLiteral::Array(elems)) => elems.clone(),
-            HirExpr::Literal(HirLiteral::Dict(pairs)) => pairs.iter().flat_map(|(k, v)| [*k, *v]).collect(),
-            _ => Vec::new(),
+            HirExpr::Identifier(name) => ValueSource::Name(*name),
+            HirExpr::This => ValueSource::Receiver,
+            HirExpr::Call(callee, args) | HirExpr::SafeCall(callee, args) => ValueSource::Call(callee, args),
+            HirExpr::Index(..) | HirExpr::SafeAccess(..) => ValueSource::Element,
+            HirExpr::Literal(HirLiteral::Lambda(_)) => ValueSource::Closure,
+
+            HirExpr::Mut(x) | HirExpr::Assert(x) | HirExpr::Propagate(x) => ValueSource::Yields(vec![*x]),
+            HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r) => ValueSource::Yields(vec![*l, *r]),
+            HirExpr::Binary(BinOp::And | BinOp::Or, l, r) => ValueSource::Yields(vec![*l, *r]),
+            HirExpr::Assign(_, rhs) => ValueSource::Yields(vec![*rhs]),
+
+            HirExpr::Construct(_, brace) => ValueSource::Holds(brace.iter().map(|(_, v)| *v).collect()),
+            HirExpr::Literal(HirLiteral::Array(elems)) => ValueSource::Holds(elems.clone()),
+            HirExpr::Literal(HirLiteral::Dict(pairs)) => ValueSource::Holds(pairs.iter().flat_map(|(k, v)| [*k, *v]).collect()),
+
+            HirExpr::Unary(..) | HirExpr::Binary(..) | HirExpr::Match(..) | HirExpr::Block(_)
+            | HirExpr::Literal(HirLiteral::Null | HirLiteral::Boolean(_)
+                | HirLiteral::Number(_) | HirLiteral::String(_)) => ValueSource::Fresh,
         }
     }
 
