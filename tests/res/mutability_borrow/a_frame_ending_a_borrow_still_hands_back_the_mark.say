@@ -1,14 +1,14 @@
-fn nothing(x) { }
+fn opaque(x) { }
 fn keeps(*v)! { return v; }
 fn hand(n, a, g)! { g(n); a[0]; return n; }
-say arr = mut [1];
-say f = keeps;
-f(hand(5, arr, nothing)); // error: cannot pass a borrowed argument to a callee that retains it
+fn outer(p, a, k)! { return k(hand(p, a, opaque)); } // error: cannot pass a borrowed argument to a callee that retains it
+say arr = [1];
+print(outer(5, arr, keeps));
 
 // @split
-fn nothing(x) { }
-fn reads(v)! { return v; }
+fn opaque(x) { }
+fn keeps(*v)! { return v; }
 fn hand(n, a, g)! { g(n); a[0]; return n; }
-say arr = mut [1];
-say f = reads;
-print(f(hand(5, arr, nothing))); // expect: 5
+say arr = [1];
+say f = keeps;
+print(f(hand(5, arr, opaque))); // expect: 5

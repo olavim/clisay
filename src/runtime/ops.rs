@@ -73,7 +73,7 @@ impl Vm {
         // Handing a borrowed value back does not end the borrow.
         let handed_back_from = self.stack.offset(0);
         let handed_back_borrow = !self.stack.peek(0).is_object()
-            && self.stack.is_borrowed(handed_back_from);
+            && self.stack.borrow_outlives(handed_back_from, frame.stack_start);
         let value = self.stack.pop();
         // The value outlives this frame, so the scope releases below must not let go of it.
         objects::record_escape(value);
@@ -82,7 +82,7 @@ impl Vm {
         self.stack.push(value);
         if handed_back_borrow {
             let into = self.stack.offset(0);
-            self.stack.mark_borrowed(into);
+            self.stack.mark_borrowed(into, self.stack.borrow_origin(handed_back_from));
             if self.forced {
                 self.carry_watched_mark(handed_back_from, into);
             }
@@ -95,12 +95,12 @@ impl Vm {
         let value = self.stack.peek(0);
         self.ensure_not_holding_borrow(value)?;
 
-        // Handing a borrowed value back does not end the borrow.
-        let handed_back_from = self.stack.offset(0);
-        let handed_back_borrow = !value.is_object() && self.stack.is_borrowed(handed_back_from);
-
         let frame = self.frames.pop();
         self.ip = frame.return_ip;
+
+        let handed_back_from = self.stack.offset(0);
+        let handed_back_borrow = !value.is_object()
+            && self.stack.borrow_outlives(handed_back_from, frame.stack_start);
 
         // The value outlives this frame, so a later scope release must not let go of it.
         objects::record_escape(value);
@@ -115,7 +115,7 @@ impl Vm {
 
         if handed_back_borrow {
             let into = self.stack.offset(0);
-            self.stack.mark_borrowed(into);
+            self.stack.mark_borrowed(into, self.stack.borrow_origin(handed_back_from));
             if self.forced {
                 self.carry_watched_mark(handed_back_from, into);
             }

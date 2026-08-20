@@ -183,7 +183,7 @@ fn load_local(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value)
     let from = unsafe { base.add(idx) };
     debug_assert!(!vm.stack.is_borrowed(top), "a push destination carried a stale borrow mark");
     if vm.stack.is_borrowed(from) {
-        vm.stack.mark_borrowed(top);
+        vm.stack.mark_borrowed(top, vm.stack.borrow_origin(from));
         if vm.forced {
             vm.carry_watched_mark(from, top);
         }
@@ -594,17 +594,17 @@ fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R 
     let nothing_to_unwind = vm.open_upvalues.is_empty() && vm.write_ownerships.is_empty();
     if nothing_to_unwind && vm.borrows.is_empty() {
         let frame = vm.frames.pop();
-        let value = unsafe { *top.sub(1) };
-        // Handing a borrowed value back does not end the borrow.
         let returned_from = unsafe { top.sub(1) };
+        let value = unsafe { *returned_from };
+        // Handing a borrowed value back does not end the borrow.
         let handed_back_borrow = returned_from < vm.stack.borrowed_end()
             && !value.is_object()
-            && vm.stack.is_borrowed(returned_from);
+            && vm.stack.borrow_outlives(returned_from, frame.stack_start);
         // The result lands in the callee slot, which the call may have marked borrowed.
         vm.stack.prune_borrowed(frame.stack_start);
         unsafe { *frame.stack_start = value };
         if handed_back_borrow {
-            vm.stack.mark_borrowed(frame.stack_start);
+            vm.stack.mark_borrowed(frame.stack_start, vm.stack.borrow_origin(returned_from));
             if vm.forced {
                 vm.carry_watched_mark(returned_from, frame.stack_start);
             }

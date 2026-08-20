@@ -525,12 +525,12 @@ impl Vm {
             // Most calls have no receiver at all, so that answer comes first.
             ReceiverSlot::Callee => {},
             ReceiverSlot::Retained => self.retain_slot(stack_start)?,
-            ReceiverSlot::BorrowedRecorded => self.borrow_slot(stack_start, true),
+            ReceiverSlot::BorrowedRecorded => self.borrow_slot(stack_start, true, stack_start),
             ReceiverSlot::Borrowed => if self.forced {
                 let receiver = unsafe { *stack_start };
                 let standing = self.stack.is_borrowed(stack_start)
                     || (receiver.is_object() && receiver.as_object().is_borrowed());
-                self.borrow_slot(stack_start, true);
+                self.borrow_slot(stack_start, true, stack_start);
                 if !standing { self.watch_receiver_borrow(stack_start); }
             },
         }
@@ -561,7 +561,7 @@ impl Vm {
                 let recorded_anyway = needs_borrow_mark || objects::is_container(value);
                 // Read before the mark is taken, since taking it would answer this itself.
                 let mark_already_stood = self.stack.is_borrowed(addr);
-                self.borrow_slot(addr, marks_slot);
+                self.borrow_slot(addr, marks_slot, stack_start);
                 if self.forced && !recorded_anyway && !mark_already_stood {
                     self.watch_mark(addr, Some(position as u8));
                 // A mark this call did not make keeps whatever watch already stands on it.
@@ -580,13 +580,19 @@ impl Vm {
         Ok(())
     }
 
-    /// Marks what a slot holds as borrowed for the call, so the body may not let it outlive the call.
-    /// A frozen value is marked too, because the declaration is what lends it, not its mutability.
-    fn borrow_slot(&mut self, addr: *mut Value, marks_slot: bool) {
+    #[inline]
+    fn borrow_origin_for(&self, addr: *mut Value, frame_start: *mut Value) -> *mut Value {
+        match self.stack.is_borrowed(addr) {
+            true => self.stack.borrow_origin(addr),
+            false => frame_start,
+        }
+    }
+
+    fn borrow_slot(&mut self, addr: *mut Value, marks_slot: bool, frame_start: *mut Value) {
         let value = unsafe { *addr };
         if !objects::is_container(value) {
             if marks_slot {
-                self.stack.mark_borrowed(addr);
+                self.stack.mark_borrowed(addr, self.borrow_origin_for(addr, frame_start));
             }
             return;
         }
@@ -594,17 +600,16 @@ impl Vm {
         // The object's own bit answers for a container, so release marks no slot for one. Debug
         // builds mark it anyway, to keep the pruning under a cross-check the header can settle.
         #[cfg(debug_assertions)]
-        self.stack.mark_borrowed(addr);
+        self.stack.mark_borrowed(addr, self.borrow_origin_for(addr, frame_start));
 
         self.borrows.push((value, value.as_object().is_borrowed()));
         value.as_object().set_borrowed(true);
     }
 
-    /// Carries a borrow mark from one slot to another, so a binding of a borrowed value is borrowed too.
     #[inline]
     pub(super) fn carry_borrowed(&mut self, from: *mut Value, into: *mut Value) {
         match self.stack.is_borrowed(from) {
-            true => self.stack.mark_borrowed(into),
+            true => self.stack.mark_borrowed(into, self.stack.borrow_origin(from)),
             false => self.stack.clear_borrowed(into),
         }
         if self.forced {

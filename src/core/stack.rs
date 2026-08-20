@@ -59,6 +59,7 @@ pub struct Stack<T, const N: usize> {
     end: *mut T,
     borrowed: SlotBits,
     borrowed_end: *mut T,
+    borrow_origins: Vec<*mut T>,
 }
 
 impl<'a, T: Copy, const N: usize> Stack<T, N> {
@@ -70,6 +71,7 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
             end: std::ptr::null_mut(),
             borrowed: SlotBits::new(N + SLACK),
             borrowed_end: std::ptr::null_mut(),
+            borrow_origins: vec![std::ptr::null_mut(); N + SLACK],
         }
     }
 
@@ -91,7 +93,7 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
     }
 
     #[inline]
-    pub fn mark_borrowed(&mut self, at: *mut T) {
+    pub fn mark_borrowed(&mut self, at: *mut T, origin: *mut T) {
         let after = unsafe { at.add(1) };
         if after > self.borrowed_end {
             // These slots are visible again, and what they held has gone, so their marks go too.
@@ -100,6 +102,17 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
         }
         let slot = self.slot_index(at);
         self.borrowed.set(slot);
+        unsafe { *self.borrow_origins.get_unchecked_mut(slot) = origin };
+    }
+
+    #[inline]
+    pub fn borrow_outlives(&self, at: *mut T, frame_start: *mut T) -> bool {
+        self.is_borrowed(at) && unsafe { *self.borrow_origins.get_unchecked(self.slot_index(at)) < frame_start }
+    }
+
+    #[inline]
+    pub fn borrow_origin(&self, at: *mut T) -> *mut T {
+        unsafe { *self.borrow_origins.get_unchecked(self.slot_index(at)) }
     }
 
     #[inline]
