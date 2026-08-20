@@ -335,8 +335,8 @@ impl<'a> Checker<'a> {
             HirExpr::SafeAccess(target_id, member, _) => {
                 let target = self.expr(target_id)?;
                 self.ctx.require_witnessed_operand(&target.debt, target_id)?;
-                self.expr(member)?;
-                self.chain_result(&target.debt, expr)
+                let yielded = self.member_access_of(&target, target_id, member)?;
+                self.chain_result_with(&target.debt, &yielded.debt, expr)
             },
             // `cb?(args)` short-circuits on a bad callee, carrying its obligations.
             HirExpr::SafeCall(callee_id, args) => {
@@ -344,11 +344,13 @@ impl<'a> Checker<'a> {
                 self.ctx.require_witnessed_operand(&callee.debt, callee_id)?;
                 let immutable = !std::mem::take(&mut self.mut_construction);
                 let arg_types: Vec<ValueState> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
-                if self.resolved_call(expr, callee_id, args, &arg_types, immutable)?.is_none() {
+                let resolved = self.resolved_call(expr, callee_id, args, &arg_types, immutable)?;
+                if resolved.is_none() {
                     self.note_opaque_call_args(callee_id, args, &arg_types);
                 }
                 self.invalidate_rebound_fields(callee_id);
-                self.chain_result(&callee.debt, expr)
+                let yielded = resolved.map_or(Debt::Clean, |state| state.debt);
+                self.chain_result_with(&callee.debt, &yielded, expr)
             },
             // `a?!` discharges the operand on its fall-through path. The enclosing function carries
             // the obligation instead, recorded in signatures. The yielded value is clean.
@@ -491,6 +493,10 @@ impl<'a> Checker<'a> {
     /// Member or data access `target.member` / `target[member]`.
     pub(super) fn member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let receiver = self.path_base_receiver(target)?;
+        self.member_access_of(&receiver, target, member)
+    }
+
+    pub(super) fn member_access_of(&mut self, receiver: &ValueState, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let Some(name) = self.ctx.member_display_name(member) else {
             self.expr(member)?;
             // Reading a container yields a pending element. Presence is tracked, not depth, so the
@@ -500,10 +506,11 @@ impl<'a> Checker<'a> {
             }
             return Ok(ValueState::unknown());
         };
+
         if matches!(receiver.tag, TypeTag::SelfType) {
             return self.trait_member(name, member);
         }
-        // A member name never interned as an identifier names no declared member.
+
         let Some(field) = self.ctx.hir.symbol_of(name) else { return Ok(ValueState::unknown()) };
         let narrowing = self.narrowable_field(target, field);
         if let TypeTag::Concrete(decl) = &receiver.tag {
@@ -526,8 +533,7 @@ impl<'a> Checker<'a> {
                         // A method reference is a non-null value.
                         TypeMember::Method(_) => Debt::Clean,
                     };
-                    // A member of an immutable value is reached only through it, so it cannot be
-                    // mutated either.
+
                     return Ok(match receiver.mutability {
                         Mutability::Immutable => ValueState::of(debt, TypeTag::Unknown).with_mutability(Mutability::Immutable),
                         _ => ValueState::of(debt, TypeTag::Unknown),

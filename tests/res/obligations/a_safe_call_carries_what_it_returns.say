@@ -1,0 +1,29 @@
+fn g(n)! { if n < 0 { return Err("x"); } return n; }
+say var r? = g(1); // error: cannot assign a value owing 'fails' to 'r'
+
+// @split
+fn g(n)! { if n < 0 { return Err("x"); } return n; }
+say var r? = g?(1); // error: cannot assign a value owing 'fails' to 'r'
+
+// @split
+fn g(n)! { if n < 0 { return Err("x"); } return n; }
+fn h(n)! { return g(n)?!; }
+say var r? = h(1); // error: cannot assign a value owing 'fails' to 'r'
+
+// @split
+// And through the `?` form.
+fn g(n)! { if n < 0 { return Err("x"); } return n; }
+fn h(n)! { return g?(n)?!; }
+say var r? = h(1); // error: cannot assign a value owing 'fails' to 'r'
+
+// @split
+fn g(n)! { if n < 0 { return Err("x"); } return n; }
+print(g(1)!); // expect: 1
+
+// @split
+fn g(n)! { if n < 0 { return Err("x"); } return n; }
+print(g?(1)!); // expect: 1
+
+// @split
+fn g(n)! { if n < 0 { return Err("x"); } return n; }
+print(g?(-1) ?? 0); // expect: 0

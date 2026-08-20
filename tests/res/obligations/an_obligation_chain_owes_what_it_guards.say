@@ -1,0 +1,33 @@
+type T { pub v; init(this) { this.v = 1; } }
+say a = T();
+say r = a?.v;
+print(r); // expect: 1
+
+// @split
+type T { pub var v?; init(this) { this.v = null; } }
+say a = T();
+say r = a?.v; // error: Cannot assign a nullable value to non-null binding 'r'
+
+// @split
+type T { pub v; init(this) { this.v = 1; } }
+say var a? = T();
+say r = a?.v; // error: Cannot assign a nullable value to non-null binding 'r'
+
+// @split
+type Inner { pub var z?; init(this) { this.z = null; } }
+type Outer { pub y; init(this) { this.y = Inner(); } }
+fn g(n)! { if n < 0 { return Err("x"); } return Outer(); }
+say r = g(1)?.y?.z; // error: cannot assign a value owing 'fails' to 'r'
+
+// @split
+fn g()! { return 1; }
+say r = g?();
+print(r); // expect: 1
+
+// @split
+fn g(n)! { if n < 0 { return Err("x"); } return n; }
+say var r? = g?(1); // error: cannot assign a value owing 'fails' to 'r'
+
+// @split
+fn g(n)! { if n < 0 { return Err("x"); } return n; }
+print(g?(-1) ?? 0); // expect: 0

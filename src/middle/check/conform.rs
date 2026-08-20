@@ -457,14 +457,17 @@ impl<'a> Checker<'a> {
         matches!(debt, Debt::Owed { container: true, .. })
     }
 
-    /// The result of a `?` chain.
-    pub(super) fn chain_result(&mut self, operand: &Debt, node: &HirId<HirExpr>) -> ValueState {
+    pub(super) fn chain_result_with(&mut self, operand: &Debt, yielded: &Debt, node: &HirId<HirExpr>) -> ValueState {
         if self.ctx.owes_object_witness(operand) {
             self.record_witness_test(node, operand);
         }
         let mut obligations = self.ctx.obligations_of(operand);
-        obligations.insert(self.ctx.sigs.opt);
-        ValueState::of(Debt::Owed { obligations, definite: false, container: false }, TypeTag::Unknown)
+        obligations.extend(self.ctx.obligations_of(yielded));
+        let debt = match obligations.is_empty() {
+            true => Debt::Clean,
+            false => Debt::Owed { obligations, definite: false, container: false },
+        };
+        ValueState::of(debt, TypeTag::Unknown)
     }
 }
 
