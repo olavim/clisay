@@ -12,6 +12,7 @@ use indexmap::IndexSet;
 use std::collections::{HashMap, HashSet};
 
 use crate::frontend::lex::SourcePosition;
+use crate::RunConfig;
 use crate::middle::bind::{Bindings, TypeLayout};
 use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{Hir, HirExpr, HirId, HirStmt, ReturnShape, Symbol};
@@ -23,8 +24,8 @@ use alias::{AliasLocal, ElementKey, TransferSite};
 
 pub use barriers::{Barrier, Barriers, Guard, WitnessSet};
 
-pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures, force_checks: bool) -> Result<Barriers, anyhow::Error> {
-    let mut checker = Checker::new(hir, bindings, sigs, force_checks);
+pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures, config: RunConfig) -> Result<Barriers, anyhow::Error> {
+    let mut checker = Checker::new(hir, bindings, sigs, config);
     checker.stmt(&hir.get_root())?;
     checker.out.witness_decls = sigs.object_witnesses().map(|(_, id)| id).collect();
     Ok(checker.out)
@@ -33,15 +34,9 @@ pub fn check(hir: &Hir, bindings: &Bindings, sigs: &Signatures, force_checks: bo
 /// The obligation state of a value as it flows.
 #[derive(Clone)]
 enum Debt {
-    /// A present value owing no obligations.
     Clean,
-    /// A void result: no value at all.
     Void,
-    /// A dynamic-boundary value whose obligations are unknown.
     Unknown,
-    /// A value owing obligations. `definite` marks a value known to be in the bad state, as
-    /// opposed to one that only may be. `container` marks an array or dict whose elements owe
-    /// the obligations.
     Owed { obligations: Obligations, definite: bool, container: bool },
 }
 
@@ -58,7 +53,6 @@ enum Violation {
     Nullable,
 }
 
-/// What the pass knows about a value at a point: what it owes, what it is, and who may write it.
 #[derive(Clone)]
 struct ValueState {
     debt: Debt,
@@ -81,35 +75,28 @@ impl ValueState {
     fn with_writable(mut self, writable: Mutability) -> ValueState { self.writable = writable; self }
 }
 
-/// A tracked binding in the current function frame.
 struct Local {
     name: Symbol,
-    /// The obligations this binding owes. Reading it yields those obligations until it is narrowed.
     owed: Obligations,
     reassignable: bool,
-    /// Whether the binding is provably assigned on the current path.
     assigned: bool,
     tag: TypeTag,
     func: Option<HirId<HirStmt>>,
-    /// The form this binding was bound by, or `None` for an ordinary binding.
     binder: Option<BinderSource>,
     /// Whether the binding holds a container whose elements owe `owed`.
     container: bool,
-    /// Whether the binding is a function parameter.
     param: bool,
-    /// The obligations settled on this binding: discharged here, or handed to a slot that declares them.
+    /// The obligations settled on this binding.
     handled: Obligations,
-    /// The obligations discharged on this binding on the current path.
+    /// The obligations discharged on this binding.
     discharged: Obligations,
-    /// The obligations discharged per field of this binding, where it holds an immutable value of a known type.
+    /// The obligations discharged per field of this binding.
     field_discharged: HashMap<Symbol, Obligations>,
     /// Where the binding was introduced.
     site: Option<HirId<HirExpr>>,
     /// The node that declared the binding.
     decl: Option<usize>,
-    /// Everything the one-writer rule tracks about this binding, which `alias` owns.
     alias: AliasLocal,
-    /// Bound where no test proved what the member holds, so a read is a dynamic-boundary value.
     unknown: bool,
 }
 
@@ -123,7 +110,6 @@ pub(super) enum BinderSource {
 }
 
 impl Local {
-    /// What a read of this binding owes, given what the binding still owes.
     fn read_debt(&self, owed: Obligations) -> Debt {
         match (owed.is_empty(), self.unknown) {
             (false, _) => Debt::Owed { obligations: owed, definite: false, container: self.container },
@@ -132,8 +118,6 @@ impl Local {
         }
     }
 
-    /// A binding with every fact at its neutral default. Each named constructor overrides only the
-    /// fields that distinguish it, so a new field is added here once.
     fn base(name: Symbol) -> Local {
         Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal { may_be_shared: true, ..AliasLocal::default() }, unknown: false }
     }
@@ -142,7 +126,7 @@ impl Local {
         Local { owed, reassignable, ..Local::base(name) }
     }
 
-    /// A caught value, bound for the handler only. Nothing reassigns it.
+    /// A caught value.
     fn catch(name: Symbol, owed: Obligations) -> Local {
         Local::param(name, owed, false)
     }
@@ -160,7 +144,7 @@ impl Local {
     }
 }
 
-/// Where a narrowing applies: a local, a `this` field, or a field of an immutable local receiver.
+/// Where a narrowing applies.
 #[derive(Clone, Copy, PartialEq)]
 enum NarrowTarget {
     Local(usize),
@@ -168,7 +152,6 @@ enum NarrowTarget {
     LocalField(usize, Symbol),
 }
 
-/// A flow fact a check establishes for a branch.
 #[derive(PartialEq)]
 enum NarrowFact {
     /// The place no longer owes this obligation on the branch.
@@ -181,46 +164,35 @@ enum NarrowFact {
 #[derive(Default, Clone)]
 struct ReceiverFacts {
     mutability: Mutability,
-    /// The obligations the receiver clause declares.
     owed: Obligations,
 }
 
-/// The declared facts of the function currently being checked.
 #[derive(Default)]
 struct FnContext<'a> {
-    /// The declared return shape. `Inferred` marks a lambda or the program root.
     return_shape: ReturnShape,
-    /// Whether the return declares any obligation.
     return_owes: bool,
-    /// Whether the function has no return marker.
     return_unmarked: bool,
-    /// Whether the return is declared `: mut`.
     return_mut: bool,
-    /// The obligations the return admits, from the function's signature. A returned value may owe
-    /// no more than these. `None` where there is no signature to conform to, as in a lambda.
     return_admits: Option<Obligations>,
     /// What the declared `this` says about the receiver.
     receiver: ReceiverFacts,
     /// The function's name.
     name: Option<Symbol>,
-    /// The return-clause span.
     return_clause: Option<SourcePosition>,
-    /// The parameters as `(name, span)`.
     params: Vec<(Symbol, SourcePosition)>,
     /// Per parameter, whether the escape summary clears it of ever leaving the call.
     param_confined: Vec<bool>,
-    /// The names this body writes, so a read-only capture is told from a writing one.
+    /// The names this body writes.
     writes: Option<&'a HashSet<Symbol>>,
 }
 
-/// What the pass reads and never writes.
 #[derive(Clone, Copy)]
 pub(super) struct Ctx<'a> {
     hir: &'a Hir,
     bindings: &'a Bindings,
     sigs: &'a Signatures,
-    /// Whether to record the runtime checks the pass proves unnecessary, so codegen can emit them anyway.
     force_checks: bool,
+    drop_escape_refusal: bool,
 }
 
 impl<'a> Diagnose for Ctx<'a> {
@@ -304,9 +276,9 @@ impl<'a> Diagnose for Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
-    fn new(hir: &'a Hir, bindings: &'a Bindings, sigs: &'a Signatures, force_checks: bool) -> Checker<'a> {
+    fn new(hir: &'a Hir, bindings: &'a Bindings, sigs: &'a Signatures, config: RunConfig) -> Checker<'a> {
         Checker {
-            ctx: Ctx { hir, bindings, sigs, force_checks },
+            ctx: Ctx { hir, bindings, sigs, force_checks: config.force_checks, drop_escape_refusal: config.drop_escape_refusal },
             resolved_callees: HashMap::new(),
             rebound_in_expr: HashSet::new(),
             element_write_ownerships_transferred: 0,

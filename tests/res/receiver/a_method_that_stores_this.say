@@ -1,13 +1,12 @@
-// A borrowing receiver is lent for the call, so a store that outlives the call is refused where
-// the method is written rather than at every call of it.
 say sink = mut [];
 type Box {
     pub var inner;
     pub fn hide(this) { sink.push(this); } // error: a borrowing receiver cannot let the instance escape
 }
+say c = mut Box { inner: 5 };
+c.hide();
 
 // @split
-// A `*mut` receiver is given away, so storing it is the point and the caller loses the name.
 say sink = mut [];
 type Box { pub var inner; pub fn hide(*mut this) { sink.push(this); } }
 say c = mut Box { inner: 5 };
@@ -15,7 +14,6 @@ c.hide();
 print(sink[0].inner); // expect: 5
 
 // @split
-// An immutable receiver is nobody's second writer, and `*this` is how it says so.
 say sink = mut [];
 type Box { pub inner; pub fn hide(*this) { sink.push(this); } }
 say c = Box { inner: 5 };
@@ -25,7 +23,6 @@ print(sink.length()); // expect: 2
 print(c.inner); // expect: 5
 
 // @split
-// Handing `this` back is not letting it escape, which is what a builder does.
 type B { pub var n; init(this) { this.n = 0; } pub fn set(mut this, *x)! { this.n = x; return this; } }
 say b = mut B();
 b.set(1).set(2);

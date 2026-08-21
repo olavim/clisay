@@ -35,22 +35,17 @@ struct TryFrame {
     finally: Option<HirId<HirExpr>>
 }
 
-/// How a path write names the container it reaches through.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum PathRoot {
     Local(u8),
     Upvalue(u8),
-    /// No binding names it, so the barrier compares against the value itself.
     Unnamed,
 }
 
-/// Where the container taking an element's write-ownership lives. This is the compile-time half of
-/// the runtime's `WriteOwnershipHolder`: a place to read the holder from, rather than the holder.
 #[derive(Clone, Copy)]
 pub(super) enum WriteOwnershipHolderPlace {
     Local(u8),
     Upvalue(u8),
-    /// On the stack, this far below the value being handed over. For a receiver no binding names.
     Stack(u8),
 }
 
@@ -60,24 +55,19 @@ pub struct Compiler<'a> {
     hir: &'a Hir,
     gc: &'a mut Gc,
     bindings: &'a Bindings,
-    /// Nodes whose value needs a runtime null-barrier, from the check pass. Empty when checking is off.
     barriers: &'a Barriers,
     sigs: &'a Signatures,
-    /// The kind of each enclosing function, for factory return handling.
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
-    /// The id of each registered object witness, by declaration.
+    /// The id of each registered object witness.
     witness_ids: FnvHashMap<TypeId, u16>,
-    /// The slot that will hold the container being built, while its parts are compiled. An element
-    /// handed to it takes its writer slot in that slot's name.
+    /// The slot that will hold the container being built.
     receiving_slot: Option<WriteOwnershipHolderPlace>,
     /// The root node of a path whose write barrier compares against it.
     stash_root: Option<HirId<HirExpr>>,
-    /// Whether to drop every placed guard.
-    floor_only: bool,
-    /// Each live `??` binder: the slot bind gave its name, and the slot its operand landed in.
+    drop_guards: bool,
+    /// Each live `?? e =>` binder.
     handle_binder_slots: Vec<(u8, u8)>,
-    /// How many slots the frame being emitted holds.
     frame_slot_count: usize,
 }
 
@@ -91,11 +81,11 @@ impl<'a> Compiler<'a> {
         u8::try_from(count).map_err(|_| self.error(format!("{subject} may have at most {} {unit}", u8::MAX), at))
     }
 
-    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures, floor_only: bool) -> Result<Ir, anyhow::Error> {
+    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures, drop_guards: bool) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
             receiving_slot: None,
             stash_root: None,
-            floor_only,
+            drop_guards,
             ir: Ir::new(),
             hir,
             gc,
@@ -115,8 +105,6 @@ impl<'a> Compiler<'a> {
         Ok(compiler.finish())
     }
 
-    /// Where a name lives. A `??` binder is the one name bind cannot number, because its slot
-    /// depends on what the expression around it already pushed.
     fn place(&self, node: &HirId<HirExpr>) -> Place {
         match self.bindings.place(node) {
             Place::Local(slot) => Place::Local(self.real_slot(slot)),
@@ -124,7 +112,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// The slot a name really reads. Only a `??` binder's differs from what bind gave it.
     fn real_slot(&self, slot: u8) -> u8 {
         self.handle_binder_slots.iter()
             .find_map(|&(binder_slot, operand_slot)| (binder_slot == slot).then_some(operand_slot))
@@ -135,7 +122,6 @@ impl<'a> Compiler<'a> {
         anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node_id).clone()))
     }
 
-    /// Numbers every registered object witness.
     fn assign_witness_ids(&mut self) {
         for &decl in self.barriers.witness_decls() {
             let next = self.witness_ids.len() as u16;
@@ -146,7 +132,6 @@ impl<'a> Compiler<'a> {
         self.ir.set_witness_ids(ids);
     }
 
-    /// The runtime identity of the declaration a type test names.
     pub(super) fn type_test_id<T: 'static>(&self, matcher: &HirId<HirMatcher>, node: &HirId<T>) -> Result<TypeId, anyhow::Error> {
         let Some(decl) = self.bindings.type_ref(matcher) else {
             compiler_error!(self, node, "a type test names no declaration");
@@ -157,7 +142,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// The witness ids the given declarations are numbered by, sorted.
     pub(super) fn witness_id_set(&self, decls: &[TypeId]) -> Box<[u16]> {
         let mut ids: Vec<u16> = decls.iter().filter_map(|decl| self.witness_ids.get(decl)).copied().collect();
         ids.sort_unstable();
@@ -195,8 +179,6 @@ impl<'a> Compiler<'a> {
         self.ir.map_source(at, role, pos);
     }
 
-    /// Emits a conditional branch to a fresh (unbound) label and returns it.
-    /// The caller should bind the label to the jump's destination.
     fn emit_conditional_jump<T: 'static>(&mut self, cond: &HirId<HirExpr>, node_id: &HirId<T>) -> Result<Label, anyhow::Error> {
         let target = self.ir.new_label();
         self.expression(cond)?;

@@ -675,7 +675,7 @@ impl<'a> Checker<'a> {
         if let Some(stmt) = stmt {
             for (i, param) in decl.params.iter().enumerate() {
                 let cap = param.clause.capability;
-                if !cap.is_retain() && self.ctx.sigs.escapes_beyond_return_at(&stmt, i) {
+                if !cap.is_retain() && !self.ctx.drop_escape_refusal && self.ctx.sigs.escapes_beyond_return_at(&stmt, i) {
                     let text = self.ctx.hir.text(self.ctx.hir.ident_sym(&param.name));
                     let barred = param.clause.names.iter().copied().find(|&o| self.ctx.sigs.obligation_rules_of(o).no_persist);
                     let help = match barred {
@@ -700,7 +700,8 @@ impl<'a> Checker<'a> {
             }
 
             let cap = decl.receiver.as_ref().map_or(Capability::None, |r| r.capability);
-            if decl.receiver.is_some() && !cap.is_retain() && self.ctx.sigs.escapes_beyond_return_at(&stmt, decl.params.len()) {
+            if decl.receiver.is_some() && !cap.is_retain() && !self.ctx.drop_escape_refusal
+                && self.ctx.sigs.escapes_beyond_return_at(&stmt, decl.params.len()) {
                 let own = match cap.is_mut() {
                     true => "*mut this",
                     false => "*this",

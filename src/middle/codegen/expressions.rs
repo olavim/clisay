@@ -7,12 +7,9 @@ use crate::middle::check::{Barrier, Guard, WitnessSet};
 
 use super::{Compiler, WriteOwnershipHolderPlace, PathRoot};
 
-/// How an index / property expression (`a.b`, `a[b]`) is being accessed.
 #[derive(Clone, Copy)]
 enum IndexOp {
-    /// Read the value.
     Load,
-    /// Assign `rhs`. `discarded` is true in statement position (the value should be dropped).
     Store { rhs: HirId<HirExpr>, discarded: bool },
 }
 
@@ -77,8 +74,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Marks a write root to be sent to the store when no binding names it. The root is
-    /// the first part of the path compiled. A mark is always taken before the next one.
     fn mark_path_root(&mut self, target: &HirId<HirExpr>) {
         let (root, kind) = self.path_root(target);
         // A node that is its own root would be compared against itself. The move rule keeps a
@@ -89,8 +84,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// The node a path is rooted in, and how a barrier can name it. `this` names a place like any
-    /// other binding, so a write through it has a named root.
     fn path_root(&self, node: &HirId<HirExpr>) -> (HirId<HirExpr>, PathRoot) {
         let mut current = *node;
         loop {
@@ -107,7 +100,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// The binding a receiver is rooted in, for the container that takes an argument's writer slot.
     fn root_holder(&self, node: &HirId<HirExpr>) -> Option<WriteOwnershipHolderPlace> {
         match self.path_root(node).1 {
             PathRoot::Local(slot) => Some(WriteOwnershipHolderPlace::Local(slot)),
@@ -116,7 +108,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// The root a field store on `this` names. The receiver is the root, and its place says where.
     fn receiver_root_operands(receiver: Receiver) -> (u8, u8) {
         match receiver {
             Receiver::Slot => (WRITE_ROOT_RECEIVER, 0),
@@ -124,8 +115,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// The root a store names, encoded for the store's own operands. A root no binding names is
-    /// left to the path barrier, which codegen already emits for every one of those writes.
     fn write_root_operands(&self, node: &HirId<HirExpr>) -> (u8, u8) {
         let (kind, operand) = self.root_operands(node);
         match self.barriers.store_is_unshared(node) {
@@ -150,11 +139,9 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Emits one runtime check, once the node's value is on the stack. The operand each needs is
-    /// derived here rather than carried, since only codegen knows a binding's slot.
     fn emit_guard(&mut self, node: &HirId<HirExpr>, guard: Guard) -> Result<(), anyhow::Error> {
         // `!` asks for its check in the source, so it's the operation rather than a safety guard.
-        if self.floor_only && guard != Guard::NonNull {
+        if self.drop_guards && guard != Guard::NonNull {
             return Ok(());
         }
         match guard {
@@ -175,8 +162,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Emits the boundary guard for an unknown value. The VM throws any registered witness the value provides
-    /// that is not among them.
     fn emit_boundary_barrier(&mut self, node: &HirId<HirExpr>, barrier: &Barrier) -> Result<(), anyhow::Error> {
         let allow = self.witness_id_set(&barrier.allow_witnesses);
         let idx = self.ir.add_witness_allow(allow)?;
@@ -198,7 +183,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `a ?? b`: yield `a` when it is clean, else `b`.
+    /// Compiles `a ?? b`.
     fn coalesce(&mut self, node: &HirId<HirExpr>, left: &HirId<HirExpr>, right: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(left)?;
@@ -223,7 +208,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `cb?(args)`: yield the callee when it is bad, else the call.
+    /// Compiles `cb?(args)`.
     fn safe_call(&mut self, node: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(callee)?;
@@ -236,7 +221,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Jumps to `clean` when the value on top is clean, leaving it there.
     fn emit_clean_jump(&mut self, node: &HirId<HirExpr>, at: &HirId<HirExpr>, clean: Label) -> Result<(), anyhow::Error> {
         match self.barriers.witness_set(node) {
             // A user witness is a type test, so its jumps fire on a bad value. That leaves
@@ -252,7 +236,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `a?!`: on a bad value the enclosing function returns it.
+    /// Compiles `a?!`.
     fn propagate(&mut self, node: &HirId<HirExpr>, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let cont = self.ir.new_label();
         self.expression(operand)?;
@@ -262,7 +246,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `a!`: yield the clean value. Any witness the operand owes is thrown when the value `is` it.
+    /// Compiles `a!`.
     fn assert(&mut self, node: &HirId<HirExpr>, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.expression(operand)?;
         let Some(set) = self.barriers.witness_set(node) else { return Ok(()) };
@@ -281,7 +265,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `a ?? p => h`: yield `a` when clean, else bind the bad value to `p` and yield `h`.
+    /// Compiles `a ?? p => h`.
     fn handle(&mut self, node: &HirId<HirExpr>, left: &HirId<HirExpr>, handler: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(left)?;
@@ -300,7 +284,7 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `a?.b` / `a?[i]`: yield the operand when it is bad, else the member access.
+    /// Compiles `a?.b` / `a?[i]`.
     fn safe_access(&mut self, node: &HirId<HirExpr>, target: &HirId<HirExpr>, member: &HirId<HirExpr>, is_dot: bool) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(target)?;
@@ -311,7 +295,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Emits the `?` chain's short-circuit: on a bad operand, jump to `end` keeping the operand.
     fn chain_guard(&mut self, node: &HirId<HirExpr>, at: &HirId<HirExpr>, end: Label) -> Result<(), anyhow::Error> {
         match self.barriers.witness_set(node) {
             Some(set) if set.contains_user_witnesses => self.emit_witness_jumps(at, set, end)?,
@@ -321,7 +304,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles an expression in statement position, where its value is discarded.
     pub (super) fn expression_stmt(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match self.hir.get(expr) {
             HirExpr::Block(stmts) => self.scoped_body(stmts, expr),
@@ -342,7 +324,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles a brace construction. Source order: push the type, then the brace values.
     fn construct_expression(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, brace: &[(Symbol, HirId<HirExpr>)], seal: u8) -> Result<(), anyhow::Error> {
         self.expression(callee)?;
         for (_, value) in brace {
@@ -373,7 +354,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Pushes the receiver an implicit-`this` field hangs off.
     fn emit_receiver(&mut self, receiver: Receiver, node: &HirId<HirExpr>) {
         match receiver {
             Receiver::Slot => self.emit(Inst::LoadLocal(0), node),
@@ -381,7 +361,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Emits a read of `place`, pushing its value.
     fn emit_load(&mut self, place: Place, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match place {
             Place::Local(slot) => self.emit(Inst::LoadLocal(slot), node),
@@ -399,8 +378,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Emits a store into `place`. The value to store is already on top of the
-    /// stack. When `discarded` (statement position) the store also pops the value.
     fn emit_store(&mut self, place: Place, discarded: bool, node: &HirId<HirExpr>, value: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match place {
             Place::Local(slot) => {
@@ -423,8 +400,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `lhs = rhs`. `discarded` is true in statement position, which lets
-    /// the store pop its own value.
     fn compile_assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>, discarded: bool) -> Result<(), anyhow::Error> {
         match self.hir.get(lhs) {
             HirExpr::Identifier(_) => {
@@ -455,7 +430,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles `a && b` / `a || b` with short-circuit.
     fn logical_expression(&mut self, op: BinOp, left: &HirId<HirExpr>, right: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let end = self.ir.new_label();
         self.expression(left)?;
@@ -469,15 +443,13 @@ impl<'a> Compiler<'a> {
         self.ir.bind(end);
         Ok(())
     }
+
     fn index(&mut self, target: &HirId<HirExpr>, member_expr_id: &HirId<HirExpr>, is_dot: bool, op: IndexOp) -> Result<(), anyhow::Error> {
         if matches!(self.hir.get(target), HirExpr::This) {
             let member_id = self.bindings.member(target);
             return self.index_member_by_id(target, member_id, op);
         }
 
-        // `.name` (member, `is_dot`) and `[expr]` (data) use the same stack protocol
-        // but distinct opcodes, so the VM can route the dynamic-boundary `dict` to its
-        // method surface (`.`) vs its keyed data (`[]`).
         match op {
             IndexOp::Load => {
                 self.expression(target)?;
@@ -539,15 +511,11 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
-        // Fuse `recv.name(args)` into a single INVOKE when the receiver is an
-        // arbitrary expression and the member is a literal name.
+        // Fuse `recv.name(args)` into a single INVOKE.
         if let Some((target, name, is_dot)) = self.as_method_invoke(callee) {
             self.mark_path_root(&target);
             self.expression(&target)?;
 
-            // An argument the callee stores into its receiver hands write-ownership over at the
-            // call, by a transfer emitted while that argument compiles. Point it at the receiver.
-            // An unnamed receiver is on the stack, one slot deeper per argument already pushed.
             let receiver = self.root_holder(&target);
             let saved = std::mem::replace(&mut self.receiving_slot, receiver);
             let compiled = args.iter().enumerate().try_for_each(|(i, arg)| {
@@ -575,7 +543,7 @@ impl<'a> Compiler<'a> {
         }
 
         // An opaque call that must keep an argument asserts the callee borrows it, not consumes it.
-        if let Some(positions) = self.barriers.survive(callee).filter(|_| !self.floor_only) {
+        if let Some(positions) = self.barriers.survive(callee).filter(|_| !self.drop_guards) {
             let entries = positions.iter()
                 .map(|&(p, _)| (p, self.hir.pos(&args[p as usize]).clone()))
                 .collect();
@@ -594,14 +562,11 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// The `this` target for a `this.name(args)` call. The layout resolves the member
-    /// the same way it resolves a read or a store.
     fn as_this_invoke(&self, callee: &HirId<HirExpr>) -> Option<HirId<HirExpr>> {
         let HirExpr::Index(target, _, _) = self.hir.get(callee) else { return None };
         matches!(self.hir.get(target), HirExpr::This).then_some(*target)
     }
 
-    /// The receiver and member of a `recv.name(args)` or `recv["name"](args)`, with which access it was.
     fn as_method_invoke(&self, callee: &HirId<HirExpr>) -> Option<(HirId<HirExpr>, String, bool)> {
         let HirExpr::Index(target, member, is_dot) = self.hir.get(callee) else { return None };
         if matches!(self.hir.get(target), HirExpr::This) {
@@ -617,10 +582,9 @@ impl<'a> Compiler<'a> {
         return Ok(());
     }
 
-    /// Emits a runtime check that an immutable container holds no mutable element, when the checker
-    /// flagged the literal for it.
+    /// Emits a runtime check that an immutable container holds no mutable element.
     fn seal_check(&mut self, expr: &HirId<HirExpr>) {
-        if self.barriers.needs_seal_check(expr) && !self.floor_only {
+        if self.barriers.needs_seal_check(expr) && !self.drop_guards {
             self.emit(Inst::SealCheck, expr);
         }
     }
