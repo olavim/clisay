@@ -36,43 +36,30 @@ pub const GAVE_TRANSFERRED_ELEMENT: &str = "cannot give away a value whose write
 /// A call that would retain a value an earlier retain already took the write-ownership of.
 pub const RETAINED_TWICE: &str = "cannot retain a value whose write-ownership was already taken";
 
-/// Whether a per-parameter mask holds at a position. A call row records one bit per parameter, so
-/// a position past 63 is outside what the row says.
 #[inline]
 pub fn mask_holds(mask: u64, position: usize) -> bool {
     position < 64 && mask & (1u64 << position) != 0
 }
 
-/// Whether a value is a mutable container. Only Array, Dict, and Instance carry the immutable bit;
-/// every other object kind and every primitive is always an immutable value.
 pub fn is_mutable_container(value: Value) -> bool {
     is_container(value) && !value.as_object().is_immutable()
 }
 
-/// Whether a value has an identity two names can share. A primitive is copied, so lending one
-/// hands the callee nothing the caller keeps.
 pub fn is_container(value: Value) -> bool {
     matches!(value.kind(), ValueKind::Object(ObjectKind::Array | ObjectKind::Dict | ObjectKind::Instance))
 }
 
-/// Whether a value's kind can hold write-ownership over another value, and so needs the marks a
-/// scope exit reads. A mutable container owns what is stored into it, and a closure owns what it
-/// captured. Nothing else can be asked who may write a value it holds.
 pub fn can_own_writes(value: Value) -> bool {
     is_mutable_container(value)
         || matches!(value.kind(), ValueKind::Object(ObjectKind::Closure))
 }
 
-/// Marks a value that left the frame that built it. A scope exit must not release what such a
-/// value holds, since something outside still reaches it. Only a holder needs the bit, since the
-/// question it answers is whether to release the writer slot it holds.
 pub fn record_escape(value: Value) {
     if can_own_writes(value) {
         unsafe { (*value.as_object().as_header_ptr()).set(FLAG_ESCAPED, true); }
     }
 }
 
-/// Whether a value keeps a lend alive, by being borrowed itself or by holding one.
 pub fn carries_borrow(value: Value) -> bool {
     value.is_object() && unsafe { (*value.as_object().as_header_ptr()).has(FLAG_BORROWED | FLAG_HOLDS_BORROW) }
 }
@@ -84,35 +71,24 @@ pub fn mark_holds_borrow(container: Value) {
 }
 
 /// Records that a borrow reached `container` if `value` carries a borrow.
-pub fn record_held_borrow(container: Value, value: Value) {
-    if carries_borrow(value) {
+pub fn container_took<H: Host + ?Sized>(host: &mut H, container: Value, value: Value, borrowed: bool) -> Result<(), anyhow::Error> {
+    host.note_containment(container, value);
+    if borrowed {
         mark_holds_borrow(container);
     }
-}
-
-/// Both records a container makes when a value enters it: what it now holds, and who may write it.
-/// The host is told too, since a store made inside a primitive never passes through the bytecode.
-/// Generic rather than `dyn`, to keep the bytecode store path a static call.
-pub fn container_took<H: Host + ?Sized>(host: &mut H, container: Value, value: Value) -> Result<(), anyhow::Error> {
-    host.note_containment(container, value);
-    record_held_borrow(container, value);
     give_container_write_ownership(container, value)
 }
 
-/// A closure taking write-ownership of what it captured. A capture cannot be refused the way a
-/// store can: the closure already exists by the time this is asked, and a retired value keeps its
-/// retirement, which traps at its next write anyway.
+/// A closure taking write-ownership of what it captured.
 pub fn closure_captured<H: Host + ?Sized>(host: &mut H, closure: Value, value: Value) {
-    let _ = container_took(host, closure, value);
+    let _ = container_took(host, closure, value, carries_borrow(value));
 }
 
-/// What a value records about who holds its write-ownership once the name holding the value is gone.
 pub enum RecordedHolder {
     Container,
     Nobody,
 }
 
-/// Who the value says writes it, if anyone.
 pub fn recorded_holder(value: Value) -> RecordedHolder {
     match value.as_object().container_write_owner() {
         owner if owner.is_object() => RecordedHolder::Container,
@@ -120,8 +96,6 @@ pub fn recorded_holder(value: Value) -> RecordedHolder {
     }
 }
 
-/// Moves `value`'s write-ownership to `container`. Refuses the store where there is no
-/// write-ownership left to move.
 fn give_container_write_ownership(container: Value, value: Value) -> Result<(), anyhow::Error> {
     if !is_mutable_container(value) || value == container {
         return Ok(());
@@ -134,8 +108,6 @@ fn give_container_write_ownership(container: Value, value: Value) -> Result<(), 
     Ok(())
 }
 
-/// Whether `root` write-owns `value`, directly or through the containers between them. A false
-/// says nothing about whether `root` contains it, only about who may write it.
 pub fn write_ownership_reaches(value: Value, root: Value) -> bool {
     // The root is the target. No intermediate container exists to cause a conflict.
     if value == root {
@@ -164,8 +136,6 @@ pub fn write_ownership_reaches(value: Value, root: Value) -> bool {
     }
 }
 
-/// Marks a value immutable, then its container children. `origin` is the code index of the freeze
-/// site, recorded on each newly-frozen value so a later mutation can point back at it.
 pub fn freeze_value(value: Value, origin: u32) {
     let ValueKind::Object(kind) = value.kind() else { return };
     let object = value.as_object();
@@ -209,10 +179,7 @@ pub const FLAG_HOLDS_BORROW: u8 = 1 << 6;
 #[repr(C)]
 pub struct ObjectHeader {
     pub kind: ObjectKind,
-    /// The header's boolean state, packed so another flag costs no object memory. Every heap object
-    /// carries this header, so a byte here is a byte per allocation.
     flags: u8,
-    /// Code index of the site that made this value immutable, or `NO_ORIGIN` while it is mutable.
     pub immutable_origin: u32
 }
 
@@ -252,9 +219,7 @@ fn without_tag<T>(ptr: *mut T) -> *mut T {
     ((ptr as usize) & !PTR_TAG) as *mut T
 }
 
-/// The single source of truth for the set of heap object types. Each row is
-/// `Kind => Struct, union_field, accessor, pointer_tag, display_name` and drives
-/// everything that must enumerate the object kinds.
+/// The single source of truth for the set of heap object types.
 macro_rules! objects {
     ( $( $kind:ident => $ty:ty, $field:ident, $accessor:ident, $tag:ident, $display:literal );+ $(;)? ) => {
         #[derive(Clone, Copy, PartialEq)]
@@ -535,29 +500,17 @@ pub struct ObjFn {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
     pub arity: u8,
-    /// Whether the method declared `mut this`, so a call has to prove its receiver is mutable.
     pub mut_receiver: bool,
-    /// Whether the method declared `*this` or `*mut this`, so the call hands the receiver's
-    /// write-ownership over rather than lending it.
     pub retain_receiver: bool,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>,
-    /// One bit per parameter that lets its argument out of the caller's sole reach: it retains it,
-    /// hands it back, or passes it to a callee that would. Parameters past 63 are read as borrowing.
     pub escape_mask: u64,
-    /// One bit per parameter that retains its argument (`*`), so the call can transfer each one's
-    /// write-ownership without codegen naming the positions.
     pub retain_mask: u64,
-    /// The parameters whose slots a call marks borrowed. Every parameter without `*` is borrowed,
-    /// but not all params need the mark. If this body hands a borrowed param to a call that might
-    /// retain it (we know it does statically, or it's a dynamic-boundary call), then it needs the mark.
     pub needs_borrow_mark: u64,
-    /// Whether a call has to record its borrow of the receiver.
     pub receiver_needs_borrow: bool
 }
 
 impl ObjFn {
-    /// Whether the parameter at `position` lets its argument escape, as opposed to borrowing it.
     #[inline]
     pub fn escapes(&self, position: usize) -> bool {
         mask_holds(self.escape_mask, position)
@@ -617,8 +570,6 @@ impl ObjNativeFn {
         ObjNativeFn::of(name, arity, false, function)
     }
 
-    /// A native that writes its receiver. Named apart from `new` so a mutator cannot be declared
-    /// without saying so.
     pub fn mutating(name: *mut ObjString, arity: u8, function: NativeFn) -> ObjNativeFn {
         ObjNativeFn::of(name, arity, true, function)
     }
@@ -648,8 +599,6 @@ impl GcTraceable for ObjNativeFn {
     }
 }
 
-/// A closure's captured upvalues are stored as a trailing array in the same
-/// allocation as the struct, sized to the exact capture count.
 #[repr(align(8))]
 #[repr(C)]
 pub struct ObjClosure {
@@ -666,7 +615,6 @@ pub struct ObjClosure {
     pub receiver_needs_borrow: bool
 }
 
-/// The three per-parameter masks a call reads.
 #[derive(Clone, Copy)]
 pub struct CallMasks {
     pub retain_mask: u64,
@@ -682,7 +630,6 @@ impl ObjClosure {
     /// Byte offset of the trailing upvalue array.
     const UPVALUES_OFFSET: usize = mem::size_of::<ObjClosure>();
 
-    /// Whether the parameter at `position` lets its argument escape, as opposed to borrowing it.
     #[inline]
     pub fn escapes(&self, position: usize) -> bool {
         mask_holds(self.escape_mask, position)
@@ -693,16 +640,12 @@ impl ObjClosure {
         Self::UPVALUES_OFFSET + count * mem::size_of::<*mut ObjUpvalue>()
     }
 
-    /// The trailing upvalue array. Takes the allocation pointer rather than `&self`, because a
-    /// reference to the struct reaches only its own bytes and the array sits past them.
-    /// Safety: `closure` must be a pointer returned by [`Gc::alloc_closure`].
+    /// The trailing upvalue array.
     #[inline]
     pub unsafe fn upvalues_ptr(closure: *const ObjClosure) -> *mut *mut ObjUpvalue {
         unsafe { (closure as *mut u8).add(Self::UPVALUES_OFFSET) as *mut *mut ObjUpvalue }
     }
 
-    /// Reads the captured upvalue at `idx`.
-    /// Safety: as `upvalues_ptr`, and `idx < upvalue_count`.
     #[inline]
     pub unsafe fn upvalue_at(closure: *const ObjClosure, idx: usize) -> *mut ObjUpvalue {
         unsafe { *Self::upvalues_ptr(closure).add(idx) }
@@ -800,24 +743,19 @@ pub struct ObjType {
     /// Members below this id are fields and the rest are methods.
     pub field_count: MemberId,
     pub id: TypeId,
-    /// Field and regular-method names. The accessors/factory are *not* here;
-    /// they're addressed structurally via the id fields below.
     pub members: FnvHashMap<*mut ObjString, TypeMember>,
     pub methods: IntMap<MemberId, Object>,
     /// The declaration id of every trait/type this type provides: its own, plus every `with`-mixed trait.
     pub provided: IntSet<TypeId>,
-    /// The obligation witnesses this type provides, by id, sorted. Almost always empty: a type
-    /// provides one per witness trait it mixes, and most types mix none.
+    /// The obligation witnesses this type provides, by id, sorted.
     pub witness_ids: Box<[u16]>,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
-    /// `None` for a factory-less type, or a native type.
     pub factory_id: Option<MemberId>,
-    /// Prebuilt initial instance values (method slots filled, fields `NULL`).
+    /// Prebuilt initial instance values.
     pub template: Box<[Value]>,
-    /// The `gives` delegations, `(field id, field name, trait name, trait id)`. A construction
-    /// verifies each field provides that trait.
+    /// The `gives` delegations.
     pub gives: Box<[(MemberId, *mut ObjString, *mut ObjString, TypeId)]>
 }
 
@@ -841,8 +779,6 @@ impl ObjType {
         }
     }
 
-    /// Copies a type so its methods can be rebound for one execution. Every field but the header
-    /// is copied as-is. The caller reinstalls the methods that capture.
     pub fn duplicate(&self) -> ObjType {
         ObjType {
             header: ObjectHeader::new(ObjectKind::Type),
@@ -862,8 +798,6 @@ impl ObjType {
         }
     }
 
-    /// Builds the initial instance-value template from the finalized members.
-    /// Call once after `methods`/`member_count` are fully populated.
     pub fn build_template(&mut self) {
         let mut values = vec![Value::NULL; self.member_count as usize].into_boxed_slice();
         for (&id, &method) in &self.methods {
@@ -934,9 +868,7 @@ impl GcTraceable for ObjType {
 #[repr(C)]
 pub struct ObjInstance {
     pub header: ObjectHeader,
-    /// The container that write-owns this instance, or null. Weak, so a collection clears it.
-    /// A binding can write-own one too, but a frame slot is not reachable from the heap, so that
-    /// half lives in the write-ownership table instead.
+    /// The container that write-owns this instance, or null.
     pub container_write_owner: Value,
     pub ty: *mut ObjType,
     /// Member values indexed directly by member id.
@@ -1028,9 +960,7 @@ impl GcTraceable for ObjUpvalue {
 #[repr(C)]
 pub struct ObjArray {
     pub header: ObjectHeader,
-    /// The container that write-owns this array, or null. Weak, so a collection clears it.
-    /// A binding can write-own one too, but a frame slot is not reachable from the heap, so that
-    /// half lives in the write-ownership table instead.
+    /// The container that write-owns this array, or null.
     pub container_write_owner: Value,
     pub values: Vec<Value>
 }
@@ -1061,16 +991,11 @@ impl GcTraceable for ObjArray {
     }
 }
 
-/// The loose tier: an open, value-keyed map. Keys are `Value`s compared by
-/// identity/equality with no coercion (`5`, `"5"`, and `true` are distinct keys).
-/// Data lives here, keyed by `[]`; methods live on the native `dict` surface.
 #[repr(align(8))]
 #[repr(C)]
 pub struct ObjDict {
     pub header: ObjectHeader,
-    /// The container that write-owns this dict, or null. Weak, so a collection clears it.
-    /// A binding can write-own one too, but a frame slot is not reachable from the heap, so that
-    /// half lives in the write-ownership table instead.
+    /// The container that write-owns this dict, or null.
     pub container_write_owner: Value,
     pub entries: FnvHashMap<DictKey, Value>
 }

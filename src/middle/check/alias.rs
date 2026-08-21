@@ -670,7 +670,7 @@ impl<'a> Checker<'a> {
 
     pub(super) fn escape_via_capture_error(&self, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let Some(i) = self.upvalue_index(name) else { return Ok(()) };
-        if self.locals[i].alias.borrowed && !self.locals[i].alias.confined {
+        if self.locals[i].alias.borrowed && !self.locals[i].alias.confined && !self.ctx.drop_escape_refusal {
             let text = self.ctx.hir.text(name);
             return Err(self.error_help(
                 "a borrowed value cannot be retained, and this closure outlives the call".to_string(), node,

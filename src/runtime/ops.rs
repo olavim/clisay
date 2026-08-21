@@ -315,16 +315,17 @@ impl Vm {
     /// Hands a container the elements still on the stack, `step` apart.
     fn take_elements(&mut self, container: Value, count: usize, step: usize, seal: bool) -> Result<(), anyhow::Error> {
         for i in (0..count).step_by(step) {
-            let value = self.stack.peek(i);
+            let slot = self.stack.offset(i);
+            let value = unsafe { *slot };
             match seal {
                 // A sealed literal takes no writer slot, but it still carries what its elements hold.
                 true => {
                     if objects::is_mutable_container(value) {
                         return self.mutable_in_immutable_error();
                     }
-                    objects::record_held_borrow(container, value);
+                    self.record_held_borrow_from(container, slot);
                 },
-                false => self.container_took(container, value)?,
+                false => self.container_took_from(container, slot)?,
             }
         }
         Ok(())

@@ -593,26 +593,37 @@ fn halt(vm: &mut Vm, _ip: *const OpCode, _top: *mut Value, _base: *mut Value) ->
     Ok(std::mem::take(&mut vm.out))
 }
 
+/// Whether the value about to be returned took a borrow in.
+#[inline]
+fn returns_a_held_borrow(top: *mut Value) -> bool {
+    let returning = unsafe { *top.sub(1) };
+    returning.is_object() && returning.as_object().holds_borrow()
+}
+
 fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R {
     // The top-level ends in HALT, so every RETURN has a caller frame to pop.
     let nothing_to_unwind = vm.open_upvalues.is_empty() && vm.write_ownerships.is_empty();
-    if nothing_to_unwind && vm.borrows.is_empty() {
+    if nothing_to_unwind && vm.borrows.is_empty() && !returns_a_held_borrow(top) {
         let frame = vm.frames.pop();
         let returned_from = unsafe { top.sub(1) };
         let value = unsafe { *returned_from };
+
         // Handing a borrowed value back does not end the borrow.
         let handed_back_borrow = returned_from < vm.stack.borrowed_end()
             && !value.is_object()
             && vm.stack.borrow_outlives(returned_from, frame.stack_start);
+
         // The result lands in the callee slot, which the call may have marked borrowed.
         vm.stack.prune_borrowed(frame.stack_start);
         unsafe { *frame.stack_start = value };
+
         if handed_back_borrow {
             vm.stack.mark_borrowed(frame.stack_start, vm.stack.borrow_origin(returned_from));
             if vm.forced {
                 vm.carry_watched_mark(returned_from, frame.stack_start);
             }
         }
+
         let top = unsafe { frame.stack_start.add(1) };
         let base = unsafe { (*vm.frames.top()).stack_start };
         become dispatch(vm, frame.return_ip, top, base);

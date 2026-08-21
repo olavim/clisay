@@ -38,9 +38,10 @@ impl<'a> Compiler<'a> {
         let handed_on = param_bits((0..decl.params.len()).map(|i| self.sigs.param_needs_borrow_mark_at(stmt, i)));
         // A taken parameter is not borrowed, so it never wants the mark that says it is.
         let retains = declared_retains(decl);
-        // The escape row carries the receiver one past the declared positions.
+        let receiver = decl.params.len();
         let receiver_needs_borrow = decl.receiver.is_some()
-            && self.sigs.param_needs_borrow_mark_at(stmt, decl.params.len());
+            && (self.sigs.param_needs_borrow_mark_at(stmt, receiver)
+                || self.sigs.escapes_beyond_return_at(stmt, receiver));
         ParamMasks { retains, escapes, needs_borrow_mark: handed_on & !retains, receiver_needs_borrow }
     }
 
@@ -49,7 +50,6 @@ impl<'a> Compiler<'a> {
         let escapes = self.sigs.lambda_param_escapes.get(expr)
             .map(|e| param_bits(e.iter().copied()))
             .unwrap_or_else(|| if arity >= 64 { u64::MAX } else { (1u64 << arity) - 1 });
-        // A lambda publishes no row of its own, so every one of its parameters may be handed over.
         let retains = declared_retains(decl) | escapes;
         ParamMasks { retains, escapes, needs_borrow_mark: !retains, receiver_needs_borrow: true }
     }

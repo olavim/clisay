@@ -73,9 +73,15 @@ fn field_stores() {
 }
 
 #[cfg(unix)]
+#[library_benchmark]
+fn store_objects() {
+    run_say("benches/store_objects.say");
+}
+
+#[cfg(unix)]
 library_benchmark_group!(
     name = workloads;
-    benchmarks = fib, loops, deep_sum, method_calls, strings, arrays, alloc_gc, compare_dict, element_stores, field_stores
+    benchmarks = fib, loops, deep_sum, method_calls, strings, arrays, alloc_gc, compare_dict, element_stores, field_stores, store_objects
 );
 
 #[cfg(unix)]

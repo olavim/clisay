@@ -1051,11 +1051,14 @@ impl Vm {
         }
     }
 
+    #[inline]
     fn borrowed_argument_mask(&self, arg_count: usize) -> u64 {
+        if self.stack.borrowed_end() <= self.stack.offset(arg_count.saturating_sub(1)) {
+            return 0;
+        }
         let mut mask = 0u64;
         for position in 0..arg_count.min(64) {
-            let slot = self.stack.offset(arg_count - 1 - position);
-            if self.slot_carries_borrow(slot, unsafe { *slot }) {
+            if self.stack.is_borrowed(self.stack.offset(arg_count - 1 - position)) {
                 mask |= 1u64 << position;
             }
         }
@@ -1117,14 +1120,15 @@ impl Vm {
         let instance = unsafe { &mut *instance_ptr };
         let instance_val = Value::from(instance_ptr);
         for j in 0..field_count {
-            let value = self.stack.peek(field_count - 1 - j);
+            let slot = self.stack.offset(field_count - 1 - j);
+            let value = unsafe { *slot };
             // A frozen instance is immutable all the way down.
             if seal && objects::is_mutable_container(value) {
                 return self.mutable_in_immutable_error();
             }
             // A construction is fresh, so nothing outside reaches it yet. The store that takes it
             // out is what asks, and this record is what lets that store answer.
-            objects::record_held_borrow(instance_val, value);
+            self.record_held_borrow_from(instance_val, slot);
             instance.set(field_ids[j], value);
         }
 
@@ -1143,7 +1147,9 @@ impl Vm {
         // A sealed brace freezes what it took, so it writes nothing and takes no write-ownership.
         if !seal {
             for j in 0..field_count {
-                self.container_took(instance_val, instance.get(field_ids[j]))?;
+                // The loop above already asked each slot, so only the value answers here.
+                let field = instance.get(field_ids[j]);
+                self.container_took(instance_val, field, objects::carries_borrow(field))?;
             }
         }
 
