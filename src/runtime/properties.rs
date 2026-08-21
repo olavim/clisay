@@ -294,8 +294,9 @@ impl Vm {
         self.ensure_mutable(target)?;
         self.arbitrate_write(target, root_kind, root_operand)?;
 
+        // Ask before the pop, which would prune the mark this reads.
+        self.ensure_borrowed_does_not_persist(self.stack.peek(0), self.stack.offset(0), root_kind, root_operand)?;
         let value = self.stack.pop();
-        self.ensure_borrowed_does_not_persist(value, root_kind, root_operand)?;
         self.container_took(target, value)?;
         let instance = unsafe { &mut *target.as_object().as_instance_ptr() };
 
@@ -363,8 +364,13 @@ impl Vm {
             .unwrap_err()
     }
 
-    pub(super) fn ensure_borrowed_does_not_persist(&self, value: Value, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
-        if objects::carries_borrow(value) && !self.root_is_frame_local(root_kind, root_operand) {
+    #[inline]
+    pub(super) fn slot_carries_borrow(&self, slot: *mut Value, value: Value) -> bool {
+        objects::carries_borrow(value) || self.stack.is_borrowed(slot)
+    }
+
+    pub(super) fn ensure_borrowed_does_not_persist(&self, value: Value, slot: *mut Value, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
+        if self.slot_carries_borrow(slot, value) && !self.root_is_frame_local(root_kind, root_operand) {
             return Err(self.persisted_borrow_error());
         }
         Ok(())
@@ -432,7 +438,7 @@ impl Vm {
         self.ensure_mutable(target)?;
         self.arbitrate_write(target, root_kind, root_operand)?;
         let stored = self.stack.peek(0);
-        self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
+        self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target)?,
@@ -505,7 +511,7 @@ impl Vm {
         self.ensure_mutable(target)?;
         self.arbitrate_write(target, root_kind, root_operand)?;
         let stored = self.stack.peek(0);
-        self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
+        self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target)?,
@@ -667,7 +673,7 @@ impl Vm {
 
         let instance_ref = value.as_object().as_instance_ptr();
         let stored = self.stack.peek(0);
-        self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
+        self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
         self.container_took(value, stored)?;
         let instance = unsafe { &mut *instance_ref };
 

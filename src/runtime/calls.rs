@@ -1035,6 +1035,8 @@ impl Vm {
     pub(super) fn call_native(&mut self, arg_count: usize, native_fn_ptr: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
         let func = unsafe { &*native_fn_ptr };
         check_arity!(self, arg_count, func.arity as usize, func.name);
+        // Popping prunes the marks, so read them before the arguments come off.
+        self.native_borrowed_arguments = self.borrowed_argument_mask(arg_count);
         let args = self.stack.pop_slice(arg_count);
         // The "target" is the first value in a call window. For method calls, this is the instance.
         let target = self.stack.pop();
@@ -1047,6 +1049,17 @@ impl Vm {
                 msg => self.error(msg),
             }
         }
+    }
+
+    fn borrowed_argument_mask(&self, arg_count: usize) -> u64 {
+        let mut mask = 0u64;
+        for position in 0..arg_count.min(64) {
+            let slot = self.stack.offset(arg_count - 1 - position);
+            if self.slot_carries_borrow(slot, unsafe { *slot }) {
+                mask |= 1u64 << position;
+            }
+        }
+        mask
     }
 
     fn call_closure(&mut self, arg_count: usize, closure_ptr: *mut ObjClosure, seal: bool) -> Result<(), anyhow::Error> {

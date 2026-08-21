@@ -54,11 +54,10 @@ impl NativeArray {
         if target.as_object().is_immutable() {
             bail!("{IMMUTABLE_MUTATION}");
         }
-        // A borrow may be pushed into a container the calling frame declared, since nothing outside
-        // that frame reaches it. Anywhere else the push would outlive the lend.
-        if carries_borrow(value) && !host.receiver_is_frame_local() {
+        if (carries_borrow(value) || host.argument_is_borrowed(0)) && !host.receiver_is_frame_local() {
             bail!("{PERSISTED_BORROW}");
         }
+
         let array = unsafe { &mut *target.as_object().as_array_ptr() };
         container_took(host, target, value)?;
         array.values.push(value);

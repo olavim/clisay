@@ -256,10 +256,10 @@ pub struct Vm {
     index_cache: Box<[IndexCache]>,
     call_cache: Box<[CallCache]>,
     out: Vec<String>,
-    /// Whether the receiver of the native about to run is a slot the calling frame declared. Set
-    /// at an invoke that named a root, and cleared once the native has read it. Last in the struct
-    /// so the dispatch loop's fields keep their offsets.
-    native_receiver_is_frame_local: bool
+    /// Whether the receiver of the native about to run is a slot the calling frame declared.
+    native_receiver_is_frame_local: bool,
+    /// One bit per argument of the running native, set where its slot was borrowed at the call.
+    native_borrowed_arguments: u64
 }
 
 macro_rules! as_short {
@@ -349,6 +349,10 @@ impl Host for Vm {
         self.native_receiver_is_frame_local
     }
 
+    fn argument_is_borrowed(&self, position: usize) -> bool {
+        objects::mask_holds(self.native_borrowed_arguments, position)
+    }
+
     fn note_containment(&mut self, container: Value, value: Value) {
         self.note_container_took_watched_value(container, value);
     }
@@ -409,7 +413,8 @@ impl Vm {
             refuted_write_ownership_release_sites: FnvHashSet::default(),
             refuted_write_ownership_releases: 0,
             out: Vec::new(),
-            native_receiver_is_frame_local: false
+            native_receiver_is_frame_local: false,
+            native_borrowed_arguments: 0
         };
 
         vm.stack.init();

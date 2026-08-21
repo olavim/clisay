@@ -225,12 +225,13 @@ fn load_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Valu
 fn store_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut ip = ip;
     let idx = rb!(ip) as usize;
+    let slot = unsafe { top.sub(1) };
     let value = peek!(top, 0);
     // A captured variable outlives the call that borrowed the value, so it may not be stored into one.
-    if objects::carries_borrow(value) {
+    if vm.slot_carries_borrow(slot, value) {
         vm.stack.set_top(top);
         vm.ip = ip;
-        vm.ensure_borrowed_does_not_persist(value, crate::middle::ir::WRITE_ROOT_UPVALUE, idx as u8)?;
+        vm.ensure_borrowed_does_not_persist(value, slot, crate::middle::ir::WRITE_ROOT_UPVALUE, idx as u8)?;
     }
     // The slot written belongs to an enclosing frame, so the value outlives this one and the
     // claim over it moves there rather than dying with this frame.
@@ -247,12 +248,15 @@ fn store_upvalue_pop(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut
     let mut ip = ip;
     let mut top = top;
     let idx = rb!(ip) as usize;
-    let value = pop!(vm, top);
-    if objects::carries_borrow(value) {
+    // Ask before the pop, which would prune the mark this reads.
+    let slot = unsafe { top.sub(1) };
+    let value = peek!(top, 0);
+    if vm.slot_carries_borrow(slot, value) {
         vm.stack.set_top(top);
         vm.ip = ip;
-        vm.ensure_borrowed_does_not_persist(value, crate::middle::ir::WRITE_ROOT_UPVALUE, idx as u8)?;
+        vm.ensure_borrowed_does_not_persist(value, slot, crate::middle::ir::WRITE_ROOT_UPVALUE, idx as u8)?;
     }
+    let _ = pop!(vm, top);
     vm.stack.set_top(top);
     vm.ip = ip;
     vm.hand_write_ownership_to_upvalue(idx, value)?;
