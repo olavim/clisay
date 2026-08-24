@@ -6,6 +6,7 @@ use crate::middle::diagnose::Diagnose;
 use crate::frontend::lex::Diagnostic;
 use crate::middle::obligations::{quoted_obligation_list, obligation_atoms, ObligationRule, Site};
 use crate::middle::hir::{HirFnDecl, HirExpr, HirId, ReturnShape};
+use crate::middle::signatures::CallableId;
 use crate::middle::obligations::Obligations;
 
 use super::{Checker, Ctx, Mutability, Debt, ValueState, Violation};
@@ -28,13 +29,20 @@ impl<'a> Ctx<'a> {
         Err(self.error_help(Site::Drop.refusal(&owed), node, help))
     }
 
-    pub(super) fn mixed_void_error(&self, decl: &HirFnDecl, obligations: &Obligations) -> anyhow::Error {
-        let name = self.hir.text(decl.name);
+    pub(super) fn callable_subject(&self, callable: CallableId, decl: &HirFnDecl) -> String {
+        match callable {
+            CallableId::Fn(_) => format!("'{}'", self.hir.text(decl.name)),
+            CallableId::Lambda(_) => "this lambda".to_string(),
+        }
+    }
+
+    pub(super) fn mixed_void_error(&self, callable: CallableId, decl: &HirFnDecl, obligations: &Obligations) -> anyhow::Error {
+        let subject = self.callable_subject(callable, decl);
         let list = quoted_obligation_list(self.hir, obligations);
         // The annotation spells the obligations as clause atoms: `: void opt fails`.
         let annotation = format!(": void {}", obligation_atoms(self.hir, obligations));
         self.error_help(
-            format!("'{name}' returns a value owing {list} on some paths and no value on others"),
+            format!("{subject} returns a value owing {list} on some paths and no value on others"),
             &decl.body,
             format!("annotate its return '{annotation}', or return a value on every path"),
         )
@@ -151,7 +159,7 @@ impl<'a> Checker<'a> {
     /// Rejects a binding that reaches the end of its scope still owing a `discharge before drop` obligation.
     pub(super) fn check_dropped(&self, mark: usize, at: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         for local in &self.locals[mark..] {
-            if local.func.is_some() || local.owed.is_empty() {
+            if local.fn_decl || local.owed.is_empty() {
                 continue;
             }
             let pending: Obligations = local.owed.iter().copied()

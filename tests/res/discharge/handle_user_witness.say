@@ -1,4 +1,3 @@
-// A binding handler tests the operand against the obligation's own witness, not just null and `Err`.
 type W { pub d; init(this, *d) { this.d = d; } }
 obligation warned { witness W; discharge to use; }
 
@@ -16,7 +15,7 @@ print(f(7));    // expect: 7
 type W { pub d; init(this, *d) { this.d = d; } }
 obligation warned { witness W; discharge to use; }
 
-say make = (v) => v;
+say make = (v: warned) => v;
 
 fn g(x: warned)! { return x ?? e => e.d + 100; }
 

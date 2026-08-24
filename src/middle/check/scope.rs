@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::middle::hir::{HirExpr, HirId, HirMatchArm, HirParam, HirStmt, Symbol};
 use crate::middle::obligations::Obligations;
-use crate::middle::signatures::{Mutability, TypeTag};
+use crate::middle::signatures::{CallableId, Mutability, TypeTag};
 
 use super::narrow::collect_whole_value_binders;
 use super::alias::WriteOwnershipTransfer;
@@ -38,6 +38,7 @@ pub struct LocalFlow {
     pub handled: Obligations,
     pub discharged: Obligations,
     pub field_discharged: HashMap<Symbol, Obligations>,
+    pub resolved_callable: Option<CallableId>,
 }
 
 /// A snapshot of flow facts that branches widen back at a join.
@@ -245,8 +246,13 @@ impl<'a> Checker<'a> {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             let LocalFlow {
                 assigned, tag, mutability, transfer_site, provenance: _kept,
-                extracted_from: _also_kept, handled, discharged, field_discharged,
+                extracted_from: _also_kept, handled, discharged, field_discharged, resolved_callable,
             } = snap;
+
+            if local.resolved_callable != *resolved_callable {
+                local.resolved_callable = None;
+            }
+
             local.assigned = *assigned;
             local.tag = tag.clone();
             local.alias.mutability = *mutability;
@@ -262,7 +268,7 @@ impl<'a> Checker<'a> {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             let LocalFlow {
                 assigned: _, tag: _, mutability: _, transfer_site: _, provenance: _,
-                extracted_from: _, handled: _, discharged, field_discharged,
+                extracted_from: _, handled: _, discharged, field_discharged, resolved_callable: _,
             } = snap;
             local.discharged.retain(|ob| discharged.contains(ob));
             intersect_narrowings(&mut local.field_discharged, field_discharged);
@@ -293,13 +299,14 @@ pub(super) fn local_flow_of(local: &Local) -> LocalFlow {
         handled: local.handled.clone(),
         discharged: local.discharged.clone(),
         field_discharged: local.field_discharged.clone(),
+        resolved_callable: local.resolved_callable,
     }
 }
 
 pub(super) fn restore_local_flow(local: &mut Local, flow: &LocalFlow) {
     let LocalFlow {
         assigned, tag, mutability, transfer_site, provenance,
-        extracted_from, handled, discharged, field_discharged,
+        extracted_from, handled, discharged, field_discharged, resolved_callable,
     } = flow;
     local.assigned = *assigned;
     local.tag = tag.clone();
@@ -310,17 +317,24 @@ pub(super) fn restore_local_flow(local: &mut Local, flow: &LocalFlow) {
     local.handled = handled.clone();
     local.discharged = discharged.clone();
     local.field_discharged = field_discharged.clone();
+    local.resolved_callable = *resolved_callable;
 }
 
 pub fn merge_local_flow(into: &mut LocalFlow, owed: &Obligations, other: &LocalFlow) {
     let LocalFlow {
         assigned, tag, mutability, transfer_site, provenance,
-        extracted_from, handled, discharged, field_discharged,
+        extracted_from, handled, discharged, field_discharged, resolved_callable,
     } = other;
     into.assigned = into.assigned && *assigned;
     into.tag = if into.tag == *tag { into.tag.clone() } else { TypeTag::Unknown };
     into.mutability = if into.mutability == *mutability { into.mutability } else { Mutability::Unknown };
     into.transfer_site = merge_transfer_sites(into.transfer_site, *transfer_site);
+
+    // Either path could have run, so a name resolves only where both paths reach the same callable.
+    if into.resolved_callable != *resolved_callable {
+        into.resolved_callable = None;
+    }
+
     // Either branch could have run, so the binding may have come out of any origin either of them
     // named. An origin is a restriction, so the join keeps them all.
     for origin in extracted_from {
@@ -328,6 +342,7 @@ pub fn merge_local_flow(into: &mut LocalFlow, owed: &Obligations, other: &LocalF
             into.extracted_from.push(*origin);
         }
     }
+
     // A source is where the write-ownership goes back when the binding dies, and the join above
     // keeps a move either branch made.
     for source in provenance {
@@ -335,12 +350,14 @@ pub fn merge_local_flow(into: &mut LocalFlow, owed: &Obligations, other: &LocalF
             into.provenance.push(*source);
         }
     }
+
     // An outcome resolves an obligation either by handling it or by proving the value is not in its
     // bad state. Only what every outcome resolved survives the join.
     let both: Obligations = owed.iter().copied()
         .filter(|ob| (into.handled.contains(ob) || into.discharged.contains(ob))
             && (handled.contains(ob) || discharged.contains(ob)))
         .collect();
+
     into.handled = both;
     into.discharged.retain(|ob| discharged.contains(ob));
     intersect_narrowings(&mut into.field_discharged, field_discharged);

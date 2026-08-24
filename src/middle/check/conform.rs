@@ -9,7 +9,7 @@ use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{builtin_obligation_rules, BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt, Symbol};
 use crate::middle::obligations::{quoted_obligation_list, sorted_obligation_names, Obligations};
 use crate::middle::native::{self, NativeSig};
-use crate::middle::signatures::{Mutability, RetSig, TypeTag, Witness};
+use crate::middle::signatures::{CallableId, Mutability, RetSig, TypeTag, Witness};
 use crate::middle::hir::TypeId;
 
 use super::narrow::collect_whole_value_binders;
@@ -30,10 +30,10 @@ impl<'a> Ctx<'a> {
         })
     }
 
-    pub(super) fn call_result(&self, stmt: HirId<HirStmt>, receiver_tag: &TypeTag) -> ValueState {
-        let debt = self.sigs.fns.get(&stmt).map_or(Debt::Unknown, |s| self.ret_debt(&s.ret));
-        let mutability = self.sigs.ret_mut.get(&stmt).copied().unwrap_or(Mutability::Unknown);
-        let tag = self.sigs.ret_tags.get(&stmt).map_or(TypeTag::Unknown, |t| t.resolve(receiver_tag));
+    pub(super) fn call_result(&self, callable: CallableId, receiver_tag: &TypeTag) -> ValueState {
+        let debt = self.sigs.fn_sig_of(callable).map_or(Debt::Unknown, |s| self.ret_debt(&s.ret));
+        let mutability = self.sigs.ret_mut_of_callable(callable);
+        let tag = self.sigs.ret_tag_of(callable).map_or(TypeTag::Unknown, |t| t.resolve(receiver_tag));
         ValueState::of(debt, tag).with_mutability(mutability)
     }
 

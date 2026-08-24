@@ -9,8 +9,39 @@ mod returns;
 use std::collections::{HashMap, HashSet};
 
 use crate::middle::bind::Bindings;
-use crate::middle::hir::{builtin_obligation_rules, Capability, Hir, HirExpr, HirId, HirLiteral, HirMatcher, HirStmt, HirTypeDecl, ObligationRules, Symbol, TypeId};
+use crate::middle::hir::{builtin_obligation_rules, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatcher, HirStmt, HirTypeDecl, ObligationRules, Symbol, TypeId};
 use crate::middle::obligations::Obligations;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallableId {
+    Fn(HirId<HirStmt>),
+    Lambda(HirId<HirExpr>),
+}
+
+impl CallableId {
+    fn sort_key(&self) -> (u8, usize) {
+        match self {
+            CallableId::Fn(s) => (0, s.index()),
+            CallableId::Lambda(e) => (1, e.index()),
+        }
+    }
+}
+
+impl From<HirId<HirStmt>> for CallableId {
+    fn from(id: HirId<HirStmt>) -> CallableId { CallableId::Fn(id) }
+}
+
+impl From<HirId<HirExpr>> for CallableId {
+    fn from(id: HirId<HirExpr>) -> CallableId { CallableId::Lambda(id) }
+}
+
+impl From<&HirId<HirStmt>> for CallableId {
+    fn from(id: &HirId<HirStmt>) -> CallableId { CallableId::Fn(*id) }
+}
+
+impl From<&HirId<HirExpr>> for CallableId {
+    fn from(id: &HirId<HirExpr>) -> CallableId { CallableId::Lambda(*id) }
+}
 
 /// What one parameter's argument undergoes in the body it is passed to.
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -104,23 +135,13 @@ pub struct Signatures {
     pub(crate) witnesses: HashMap<Symbol, Witness>,
     /// Each user obligation's rule.
     pub(crate) rules: HashMap<Symbol, ObligationRules>,
-
-    // Per-function facts, keyed by the function's statement.
-    pub(crate) fns: HashMap<HirId<HirStmt>, FnSig>,
-    pub(crate) ret_tags: HashMap<HirId<HirStmt>, TypeTag>,
-    pub(crate) ret_mut: HashMap<HirId<HirStmt>, Mutability>,
-    /// What each parameter's argument undergoes in the body. A method's receiver rides the last entry.
-    pub(crate) params: HashMap<HirId<HirStmt>, Vec<ParamFact>>,
-    /// Per function, the names its result may be that are none of its parameters. A body returning
-    /// a binding from an outer scope hands out a second name for it, which no parameter row says.
-    pub(crate) returns_free: HashMap<HirId<HirStmt>, Vec<Symbol>>,
-    /// Per lambda parameter, whether the body persists its argument.
-    pub(crate) lambda_param_escapes: HashMap<HirId<HirExpr>, Vec<bool>>,
-    /// Names each function's body writes, either persisting or mutating them. A closure that only
-    /// reads a captured name borrows it, so its enclosing binding stays live.
-    pub(crate) writes: HashMap<HirId<HirStmt>, HashSet<Symbol>>,
-    /// The same write set for each lambda, keyed by its expression id.
-    pub(crate) lambda_writes: HashMap<HirId<HirExpr>, HashSet<Symbol>>,
+    pub(crate) fns: HashMap<CallableId, FnSig>,
+    pub(crate) ret_tags: HashMap<CallableId, TypeTag>,
+    pub(crate) ret_mut: HashMap<CallableId, Mutability>,
+    pub(crate) params: HashMap<CallableId, Vec<ParamFact>>,
+    pub(crate) returns_upvalues: HashMap<CallableId, Vec<Symbol>>,
+    /// Names each callable's body writes.
+    pub(crate) writes: HashMap<CallableId, HashSet<Symbol>>,
     /// Every name some body rebinds through a capture or a global.
     pub(crate) any_rebind: HashSet<Symbol>,
 
@@ -140,7 +161,7 @@ pub struct Signatures {
 impl Signatures {
     fn new(opt: Symbol, fails: Symbol) -> Signatures {
         Signatures {
-            returns_free: HashMap::new(),
+            returns_upvalues: HashMap::new(),
             opt,
             fails,
             witnesses: HashMap::from([(opt, Witness::Null)]),
@@ -149,9 +170,7 @@ impl Signatures {
             ret_tags: HashMap::new(),
             ret_mut: HashMap::new(),
             params: HashMap::new(),
-            lambda_param_escapes: HashMap::new(),
             writes: HashMap::new(),
-            lambda_writes: HashMap::new(),
             any_rebind: HashSet::new(),
             types_by_name: HashMap::new(),
             traits_by_name: HashMap::new(),
@@ -160,6 +179,36 @@ impl Signatures {
             methods_by_type: HashMap::new(),
             method_owner: HashMap::new(),
         }
+    }
+
+    pub(crate) fn writes_of(&self, callable: impl Into<CallableId>) -> Option<&HashSet<Symbol>> {
+        self.writes.get(&callable.into())
+    }
+
+    pub(crate) fn ret_tag_of(&self, callable: impl Into<CallableId>) -> Option<&TypeTag> {
+        self.ret_tags.get(&callable.into())
+    }
+
+    pub(crate) fn ret_mut_of_callable(&self, callable: impl Into<CallableId>) -> Mutability {
+        self.ret_mut.get(&callable.into()).copied().unwrap_or(Mutability::Unknown)
+    }
+
+    /// The declaration a callable id stands for, whichever spelling wrote it.
+    pub(crate) fn decl_of<'h>(hir: &'h Hir, callable: CallableId) -> Option<&'h HirFnDecl> {
+        match callable {
+            CallableId::Fn(stmt) => match hir.get(&stmt) {
+                HirStmt::Fn(decl) => Some(decl),
+                _ => None,
+            },
+            CallableId::Lambda(expr) => match hir.get(&expr) {
+                HirExpr::Literal(HirLiteral::Lambda(decl)) => Some(decl),
+                _ => None,
+            },
+        }
+    }
+
+    pub(crate) fn fn_sig_of(&self, callable: impl Into<CallableId>) -> Option<&FnSig> {
+        self.fns.get(&callable.into())
     }
 
     pub(crate) fn is_type(&self, name: Symbol) -> bool {
@@ -213,40 +262,39 @@ impl Signatures {
         out.into_iter()
     }
 
-    fn param_fact(&self, func: &HirId<HirStmt>, param: usize) -> ParamFact {
-        self.params.get(func).and_then(|row| row.get(param)).copied().unwrap_or_default()
+    fn param_fact(&self, func: impl Into<CallableId>, param: usize) -> ParamFact {
+        self.params.get(&func.into()).and_then(|row| row.get(param)).copied().unwrap_or_default()
     }
 
-    pub(crate) fn param_escapes_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
+    pub(crate) fn param_escapes_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
         self.param_fact(func, param).escapes
     }
 
-    pub(crate) fn param_stored_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
+    pub(crate) fn param_stored_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
         self.param_fact(func, param).stored_away
     }
 
-    pub(crate) fn param_needs_borrow_mark_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
+    pub(crate) fn param_needs_borrow_mark_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
         self.param_fact(func, param).needs_borrow_mark
     }
 
-    pub(crate) fn escapes_beyond_return_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
+    pub(crate) fn escapes_beyond_return_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
         self.param_fact(func, param).escapes_beyond_return
     }
 
-    pub(crate) fn escape_site_at(&self, func: &HirId<HirStmt>, param: usize) -> Option<HirId<HirExpr>> {
+    pub(crate) fn escape_site_at(&self, func: impl Into<CallableId>, param: usize) -> Option<HirId<HirExpr>> {
         self.param_fact(func, param).escape_site
     }
 
-    /// Whether `func`'s result may be the argument at `param` itself.
-    pub(crate) fn returns_free(&self, func: &HirId<HirStmt>) -> &[Symbol] {
-        self.returns_free.get(func).map_or(&[], Vec::as_slice)
+    pub(crate) fn returns_outer_names(&self, callable: impl Into<CallableId>) -> &[Symbol] {
+        self.returns_upvalues.get(&callable.into()).map_or(&[], Vec::as_slice)
     }
 
-    pub(crate) fn hands_back_itself_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
+    pub(crate) fn hands_back_itself_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
         self.param_fact(func, param).hands_back_itself
     }
 
-    pub(crate) fn param_mutates_at(&self, func: &HirId<HirStmt>, param: usize) -> bool {
+    pub(crate) fn param_mutates_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
         self.param_fact(func, param).mutates
     }
 
@@ -338,7 +386,6 @@ pub fn collect(hir: &Hir, bindings: &Bindings) -> Signatures {
     collector.infer_propagated();
     collector.collect_lambda_captures();
     collector.infer_escape_summaries();
-    collector.infer_lambda_escapes();
     collector.sigs
 }
 
@@ -351,7 +398,7 @@ struct Collector<'a> {
     /// The receiver's reserved name, which the escape rows track it under.
     this: Symbol,
     sigs: Signatures,
-    returns: HashMap<HirId<HirStmt>, Vec<HirId<HirExpr>>>,
+    returns: HashMap<CallableId, Vec<HirId<HirExpr>>>,
     /// Each lambda's captured names, resolved once so a closure mentioned many times is walked once.
     lambda_captures: HashMap<HirId<HirExpr>, Vec<Symbol>>,
 }

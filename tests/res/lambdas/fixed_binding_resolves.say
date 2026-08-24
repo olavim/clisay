@@ -1,0 +1,7 @@
+say maker = () => Err("boom");
+say caught: fails = maker();
+print(caught ?? "recovered"); // expect: recovered
+
+// @split
+say maker = () => Err("boom");
+say bad: opt = maker(); // error: cannot assign a value owing 'fails' to 'bad'

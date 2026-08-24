@@ -1,5 +1,3 @@
-//! Function, factory, and parameter-list parsing.
-
 use super::*;
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
@@ -70,7 +68,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.node_stmt(Stmt::Fn(fn_decl), pos))
     }
 
-    /// Parses a parameter list up to `end_token`, taking a leading `this` as the receiver.
     pub(super) fn parse_params(&mut self, end_token: TokenType) -> Result<(Option<Receiver>, Vec<Param>), anyhow::Error> {
         if self.tokens.next_if(end_token).is_some() {
             return Ok((None, Vec::new()));
@@ -142,10 +139,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     /// param := pattern (":" clause)?
-    ///
-    /// The pattern is the whole parameter. A lone lowercase name binds the argument, `_` discards
-    /// it, and any other pattern is a precondition the argument has to satisfy.
-    fn parse_param(&mut self) -> Result<Param, anyhow::Error> {
+    pub(super) fn parse_param(&mut self) -> Result<Param, anyhow::Error> {
         let start = self.tokens.peek(0).pos.clone();
         let prefix = self.parse_capability_prefix();
         // A group settles what the marker covers, so its contents need no further judging.

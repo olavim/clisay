@@ -2,6 +2,8 @@
 
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt};
 
+use super::CallableId;
+use super::Signatures;
 use super::{Collector, Mutability, TypeTag};
 use crate::middle::walk::Child;
 use crate::middle::walk;
@@ -9,13 +11,13 @@ use crate::middle::walk;
 impl<'a> Collector<'a> {
     /// Infers every function's return type tag.
     pub(super) fn infer_ret_tags(&mut self) {
-        let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
-        for stmt in &stmts {
+        let callables: Vec<CallableId> = self.sigs.fns.keys().copied().collect();
+        for stmt in &callables {
             self.sigs.ret_tags.insert(*stmt, TypeTag::Unknown);
         }
         loop {
             let mut changed = false;
-            for stmt in &stmts {
+            for stmt in &callables {
                 let tag = self.infer_body_tag(&self.returns[stmt]);
                 if self.sigs.ret_tags.get(stmt) != Some(&tag) {
                     self.sigs.ret_tags.insert(*stmt, tag);
@@ -29,15 +31,15 @@ impl<'a> Collector<'a> {
     }
 
     pub(super) fn infer_ret_mut(&mut self) {
-        let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
-        for stmt in &stmts {
+        let callables: Vec<CallableId> = self.sigs.fns.keys().copied().collect();
+        for stmt in &callables {
             self.sigs.ret_mut.insert(*stmt, Mutability::Unknown);
         }
         let mut changed = true;
         while changed {
             changed = false;
-            for stmt in &stmts {
-                let HirStmt::Fn(decl) = self.hir.get(stmt) else { continue };
+            for stmt in &callables {
+                let Some(decl) = Signatures::decl_of(self.hir, *stmt) else { continue };
                 let mutability = self.ret_mut_of(decl, &self.returns[stmt]);
                 changed |= self.sigs.ret_mut.insert(*stmt, mutability) != Some(mutability);
             }
@@ -46,9 +48,9 @@ impl<'a> Collector<'a> {
 
     /// Walks each function body once, so the tag and mutability passes share the return list.
     pub(super) fn collect_all_returns(&mut self) {
-        let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
-        for stmt in stmts {
-            let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
+        let callables: Vec<CallableId> = self.sigs.fns.keys().copied().collect();
+        for stmt in callables {
+            let Some(decl) = Signatures::decl_of(self.hir, stmt) else { continue };
             let mut returns = Vec::new();
             self.collect_returns(&decl.body, &mut returns);
             self.returns.insert(stmt, returns);
@@ -75,7 +77,7 @@ impl<'a> Collector<'a> {
             HirExpr::Call(callee, _) => {
                 let HirExpr::Identifier(name) = self.hir.get(callee) else { return false };
                 let Some(stmt) = self.sigs.fns_by_name.get(name) else { return false };
-                self.sigs.ret_mut.get(stmt) == Some(&Mutability::Mutable)
+                self.sigs.ret_mut_of_callable(stmt) == Mutability::Mutable
             },
             _ => false,
         }
@@ -106,7 +108,7 @@ impl<'a> Collector<'a> {
                 Some(decl) => TypeTag::Concrete(decl),
                 None => match self.hir.get(callee) {
                     HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
-                        .and_then(|stmt| self.sigs.ret_tags.get(stmt).cloned())
+                        .and_then(|stmt| self.sigs.ret_tag_of(stmt).cloned())
                         .unwrap_or(TypeTag::Unknown),
                     _ => TypeTag::Unknown,
                 },
@@ -117,6 +119,10 @@ impl<'a> Collector<'a> {
 
     /// A nested function's returns belong to that function, which the walk treats as a leaf.
     pub(super) fn collect_returns(&self, expr: &HirId<HirExpr>, out: &mut Vec<HirId<HirExpr>>) {
+        if let Some(value) = self.hir.expression_body(expr) {
+            out.push(value);
+            return;
+        }
         walk::visit_body(self.hir, expr, &mut |node| {
             if let Child::Stmt(s) = node {
                 if let HirStmt::Return(Some(e)) = self.hir.get(&s) { out.push(*e); }

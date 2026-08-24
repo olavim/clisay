@@ -1,4 +1,4 @@
 say sink = mut [];
 fn relay(x, cb) { cb(x); } // error: cannot pass a borrowed argument to a callee that retains it
 say m = mut [1, 2];
-relay(m, v => sink.push(v));
+relay(m, (*v) => sink.push(v));

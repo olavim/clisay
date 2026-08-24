@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use clisay::internals::{
     intersect_narrowings, merge_local_flow, symbol, ElementKey, LocalFlow, WriteOwnershipTransfer, TransferSite,
-    Mutability, Obligations, Symbol, TypeTag, HirId,
+    CallableId, Mutability, Obligations, Symbol, TypeTag, HirId,
 };
 
 // Two obligations the local owes, and one it does not.
@@ -104,6 +104,11 @@ fn field_sets() -> Vec<HashMap<Symbol, Obligations>> {
     ]
 }
 
+/// The callables a name can be found to reach, plus reaching none.
+fn resolutions() -> Vec<Option<CallableId>> {
+    vec![None, Some(CallableId::Fn(HirId::from_index(TYPE_A))), Some(CallableId::Lambda(HirId::from_index(TYPE_B)))]
+}
+
 fn base() -> LocalFlow {
     LocalFlow {
         assigned: true,
@@ -115,6 +120,7 @@ fn base() -> LocalFlow {
         handled: sets()[0].clone(),
         discharged: sets()[0].clone(),
         field_discharged: field_sets()[0].clone(),
+        resolved_callable: resolutions()[0],
     }
 }
 
@@ -128,6 +134,7 @@ fn domain() -> Vec<LocalFlow> {
                         for handled in &sets() {
                             for discharged in &sets() {
                                 for field_discharged in &field_sets() {
+                                    for resolves_to in &resolutions() {
                                     out.push(LocalFlow {
                                         assigned,
                                         tag: tag.clone(),
@@ -138,7 +145,9 @@ fn domain() -> Vec<LocalFlow> {
                                         handled: handled.clone(),
                                         discharged: discharged.clone(),
                                         field_discharged: field_discharged.clone(),
+                                        resolved_callable: *resolves_to,
                                     });
+                                    }
                                 }
                             }
                         }

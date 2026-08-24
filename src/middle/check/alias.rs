@@ -293,7 +293,7 @@ impl<'a> Checker<'a> {
         }
         let captor = self.fn_ctx.name;
         let local = &mut self.locals[i];
-        if local.func.is_some() || local.alias.mutability != Mutability::Mutable {
+        if local.fn_decl || local.alias.mutability != Mutability::Mutable {
             return;
         }
         match captor {
@@ -580,19 +580,19 @@ impl<'a> Checker<'a> {
         }
         let Some(func) = self.resolved_callees.get(callee).copied() else { return };
         for (i, a) in args.iter().enumerate() {
-            if self.ctx.sigs.hands_back_itself_at(&func, i) {
+            if self.ctx.sigs.hands_back_itself_at(func, i) {
                 self.reachable_sources(a, out);
             }
         }
         // A method's receiver rides the row position after its declared parameters.
         if let HirExpr::Index(receiver, _, _) = self.ctx.hir.get(callee) {
-            if self.ctx.sigs.hands_back_itself_at(&func, args.len()) {
+            if self.ctx.sigs.hands_back_itself_at(func, args.len()) {
                 self.reachable_sources(receiver, out);
             }
         }
         // A result that may be a binding from an outer scope names that binding a second time, so
         // it reaches whatever the caller holds under the same name.
-        for &name in self.ctx.sigs.returns_free(&func) {
+        for &name in self.ctx.sigs.returns_outer_names(func) {
             if let Some(i) = self.frame_index_of(name).filter(|&i| self.holds_mutable(i)) {
                 out.push((i, *callee));
             }
@@ -627,7 +627,7 @@ impl<'a> Checker<'a> {
 
     pub(super) fn captured_sources(&self, value: &HirId<HirExpr>) -> Vec<usize> {
         let HirExpr::Literal(HirLiteral::Lambda(_)) = self.ctx.hir.get(value) else { return Vec::new() };
-        let Some(writes) = self.ctx.sigs.lambda_writes.get(value) else { return Vec::new() };
+        let Some(writes) = self.ctx.sigs.writes_of(value) else { return Vec::new() };
         writes.iter().filter_map(|name| {
             let i = self.frame_index_of(*name)?;
             self.holds_mutable(i).then_some(i)

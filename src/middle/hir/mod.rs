@@ -298,7 +298,15 @@ pub struct HirFnDecl {
 impl HirFnDecl {
     /// Whether the return carries no annotation.
     pub(crate) fn is_unmarked(&self) -> bool {
-        self.ret == ReturnShape::Void && !self.clause.void
+        if self.clause.void {
+            return false;
+        }
+        // Lowering maps a declared return clause to `Inferred` too, so the shape alone does not
+        // say whether anything was annotated. An empty clause beside it is what does.
+        self.ret == ReturnShape::Void
+            || (self.ret == ReturnShape::Inferred
+                && self.clause.names.is_empty()
+                && self.clause.capability == Capability::None)
     }
 }
 
@@ -578,6 +586,13 @@ impl Hir {
         HirId { id: self.nodes.len() - 1, _marker: PhantomData }
     }
 
+    pub(crate) fn stmt_at(&self, index: usize) -> Option<HirId<HirStmt>> {
+        match self.nodes.get(index).map(|n| &n.kind) {
+            Some(HirNodeKind::Stmt(_)) => Some(HirId { id: index, _marker: PhantomData }),
+            _ => None,
+        }
+    }
+
     pub(crate) fn lambda_ids(&self) -> Vec<HirId<HirExpr>> {
         self.nodes.iter().enumerate()
             .filter(|(_, n)| matches!(&n.kind, HirNodeKind::Expr(HirExpr::Literal(HirLiteral::Lambda(_)))))
@@ -641,6 +656,17 @@ impl Hir {
             | HirExpr::Literal(HirLiteral::Null | HirLiteral::Boolean(_)
                 | HirLiteral::Number(_) | HirLiteral::String(_)) => ValueSource::Fresh,
         }
+    }
+
+    pub(crate) fn expression_body(&self, body: &HirId<HirExpr>) -> Option<HirId<HirExpr>> {
+        match self.get(body) {
+            HirExpr::Block(_) => None,
+            _ => Some(*body),
+        }
+    }
+
+    pub(crate) fn body_returns_a_value(&self, body: &HirId<HirExpr>) -> bool {
+        self.expression_body(body).is_some() || self.definitely_returns(body)
     }
 
     pub(crate) fn definitely_returns(&self, body: &HirId<HirExpr>) -> bool {

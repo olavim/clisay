@@ -308,8 +308,7 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Where `target.field`'s narrowing lands when the place can be narrowed: a `this` field, or a
-    /// field of an immutable local.
+    /// Where `target.field`'s narrowing lands when the place can be narrowed.
     pub(super) fn narrowable_field(&self, target: &HirId<HirExpr>, field: Symbol) -> Option<NarrowTarget> {
         match self.ctx.hir.get(target) {
             HirExpr::This => {
@@ -320,7 +319,7 @@ impl<'a> Checker<'a> {
             // rebind happens, rather than refused here.
             HirExpr::Identifier(name) => {
                 let i = self.frame_index_of(*name)?;
-                if self.locals[i].func.is_some() {
+                if self.locals[i].fn_decl {
                     return None;
                 }
                 let TypeTag::Concrete(decl) = &self.locals[i].tag else { return None };
@@ -401,7 +400,7 @@ impl<'a> Checker<'a> {
             HirExpr::Literal(HirLiteral::Number(_) | HirLiteral::String(_) | HirLiteral::Boolean(_)) => true,
             HirExpr::Identifier(name) => self.frame_index_of(*name).is_some_and(|i| {
                 let local = &self.locals[i];
-                local.func.is_none() && local.owed.difference(&local.discharged).next().is_none()
+                !local.fn_decl && local.owed.difference(&local.discharged).next().is_none()
             }),
             _ => false,
         }
@@ -413,7 +412,7 @@ impl<'a> Checker<'a> {
             return;
         }
         let hit: Vec<usize> = self.locals.iter().enumerate()
-            .filter(|(_, l)| l.func.is_none() && self.ctx.reachable_by_a_rebind(l))
+            .filter(|(_, l)| !l.fn_decl && self.ctx.reachable_by_a_rebind(l))
             .map(|(i, _)| i)
             .collect();
         for i in hit {
@@ -450,7 +449,7 @@ impl<'a> Checker<'a> {
     pub(super) fn narrow_target(&self, expr: &HirId<HirExpr>) -> Option<NarrowTarget> {
         match self.ctx.hir.get(expr) {
             HirExpr::Identifier(name) => self.frame_index_of(*name)
-                .filter(|&i| self.locals[i].func.is_none())
+                .filter(|&i| !self.locals[i].fn_decl)
                 .map(NarrowTarget::Local),
             HirExpr::Index(target, member, _) => self.ctx.string_member(member)
                 .and_then(|field| self.narrowable_field(target, field)),

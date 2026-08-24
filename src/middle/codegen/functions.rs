@@ -47,10 +47,8 @@ impl<'a> Compiler<'a> {
 
     pub(super) fn lambda_masks(&self, expr: &HirId<HirExpr>, decl: &HirFnDecl) -> ParamMasks {
         let arity = decl.params.len();
-        let escapes = self.sigs.lambda_param_escapes.get(expr)
-            .map(|e| param_bits(e.iter().copied()))
-            .unwrap_or_else(|| if arity >= 64 { u64::MAX } else { (1u64 << arity) - 1 });
-        let retains = declared_retains(decl) | escapes;
+        let escapes = param_bits((0..arity).map(|i| self.sigs.param_escapes_at(expr, i)));
+        let retains = declared_retains(decl);
         ParamMasks { retains, escapes, needs_borrow_mark: !retains, receiver_needs_borrow: true }
     }
 

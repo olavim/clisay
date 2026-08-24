@@ -18,7 +18,7 @@ use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{Hir, HirExpr, HirId, HirStmt, ReturnShape, Symbol};
 use crate::middle::obligations::{Obligations, ObligationRule, Site};
 use crate::middle::signatures::Resolved;
-use crate::middle::signatures::{Mutability, Signatures, TypeTag};
+use crate::middle::signatures::{CallableId, Mutability, Signatures, TypeTag};
 
 use alias::{AliasLocal, ElementKey, TransferSite};
 
@@ -81,7 +81,8 @@ struct Local {
     reassignable: bool,
     assigned: bool,
     tag: TypeTag,
-    func: Option<HirId<HirStmt>>,
+    fn_decl: bool,
+    resolved_callable: Option<CallableId>,
     binder: Option<BinderSource>,
     /// Whether the binding holds a container whose elements owe `owed`.
     container: bool,
@@ -119,7 +120,7 @@ impl Local {
     }
 
     fn base(name: Symbol) -> Local {
-        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, func: None, binder: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal { may_be_shared: true, ..AliasLocal::default() }, unknown: false }
+        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, fn_decl: false, resolved_callable: None, binder: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal { may_be_shared: true, ..AliasLocal::default() }, unknown: false }
     }
 
     fn param(name: Symbol, owed: Obligations, reassignable: bool) -> Local {
@@ -136,7 +137,7 @@ impl Local {
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {
-        Local { func: Some(stmt), ..Local::base(name) }
+        Local { fn_decl: true, resolved_callable: Some(stmt.into()), ..Local::base(name) }
     }
 
     fn value(name: Symbol, owed: Obligations, reassignable: bool, assigned: bool, tag: TypeTag) -> Local {
@@ -260,7 +261,7 @@ struct Checker<'a> {
     frame_start: usize,
     current_type: Option<HirId<HirStmt>>,
     checking_factory: bool,
-    resolved_callees: HashMap<HirId<HirExpr>, HirId<HirStmt>>,
+    resolved_callees: HashMap<HirId<HirExpr>, CallableId>,
     this_narrowed: HashMap<Symbol, Obligations>,
     current_trait_surface: Option<IndexSet<Symbol>>,
     fn_ctx: FnContext<'a>,
@@ -313,8 +314,8 @@ impl<'a> Checker<'a> {
         ValueState::of(debt, self.this_tag()).with_mutability(receiver.mutability)
     }
 
-    fn func_of(&self, name: Symbol) -> Option<HirId<HirStmt>> {
-        self.locals.iter().rev().find(|l| l.name == name).and_then(|l| l.func)
+    fn callable_of(&self, name: Symbol) -> Option<CallableId> {
+        self.locals.iter().rev().find(|l| l.name == name).and_then(|l| l.resolved_callable)
     }
 
     fn trait_member(&self, name: &str, node: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {

@@ -1,0 +1,12 @@
+say sink = mut [];
+say keeps = (*v) => { sink.push(v); };
+fn hands(*x) { keeps(x); }
+hands(mut [1]);
+print(sink[0][0]); // expect: 1
+
+// @split
+say sink = mut [];
+say keeps = (*v) => { sink.push(v); };
+fn hands(x) { keeps(x); } // error: cannot retain a borrowed argument
+say m = mut [2];
+hands(m);

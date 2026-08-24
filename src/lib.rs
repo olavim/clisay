@@ -45,7 +45,7 @@ pub mod internals {
     pub use crate::middle::check::scope::{intersect_narrowings, merge_local_flow, LocalFlow};
     pub use crate::middle::check::alias::{ElementKey, WriteOwnershipTransfer, TransferSite};
     pub use crate::middle::obligations::Obligations;
-    pub use crate::middle::signatures::{Mutability, TypeTag};
+    pub use crate::middle::signatures::{CallableId, Mutability, TypeTag};
 
     pub use crate::middle::codegen::matching::{Scalar, tree::{build_tree, Access, Clause, DecisionTree, Path, ValueTest}};
     pub use crate::middle::ir::{Ir, Label};

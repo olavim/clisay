@@ -145,6 +145,8 @@ pub struct Bindings {
     members: FnvHashMap<HirId<HirExpr>, u8>,
     /// `say`/`fn`/`type` statements => the local slot they occupy.
     slots: FnvHashMap<HirId<HirStmt>, u8>,
+    /// Identifier uses => the node that declared the binding they reach.
+    decls: FnvHashMap<HirId<HirExpr>, usize>,
     /// Function bodies => the captured upvalues of that function.
     upvalues: FnvHashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
     /// Type declarations => their member layout.
@@ -219,6 +221,10 @@ impl Bindings {
 
     pub fn slot(&self, id: &HirId<HirStmt>) -> u8 {
         self.slots[id]
+    }
+
+    pub fn declaring_node(&self, id: &HirId<HirExpr>) -> Option<usize> {
+        self.decls.get(id).copied()
     }
 
     pub fn upvalues(&self, body: &HirId<HirExpr>) -> &[UpvalueLocation] {

@@ -6,6 +6,8 @@ use crate::middle::bind::Place;
 use crate::middle::hir::{HirCatchClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol, ValueSource};
 use crate::middle::native;
 
+use super::CallableId;
+use super::Signatures;
 use super::{Collector, ParamFact};
 use crate::middle::walk::Child;
 use crate::middle::walk;
@@ -111,7 +113,7 @@ struct EscapeFacts {
 /// One forwarding edge: the argument named `arg` escapes if `callee` persists it at its
 /// `callee_param` position.
 struct EscapeForward {
-    callee: HirId<HirStmt>,
+    callee: CallableId,
     callee_param: usize,
     arg: Symbol,
     /// The argument node.
@@ -119,7 +121,7 @@ struct EscapeForward {
 }
 
 struct FnAnalysis {
-    func: HirId<HirStmt>,
+    callable: CallableId,
     params: Vec<Symbol>,
     /// Which parameters each name in the body may hold.
     carriers: Carriers,
@@ -173,16 +175,16 @@ impl Carriers {
 /// Tarjan's strongly connected components over the call graph. Components come out in reverse
 /// topological order, so a component is emitted only after everything it calls.
 struct Components {
-    index: HashMap<HirId<HirStmt>, usize>,
-    low: HashMap<HirId<HirStmt>, usize>,
-    on_stack: HashSet<HirId<HirStmt>>,
-    stack: Vec<HirId<HirStmt>>,
+    index: HashMap<CallableId, usize>,
+    low: HashMap<CallableId, usize>,
+    on_stack: HashSet<CallableId>,
+    stack: Vec<CallableId>,
     next: usize,
-    out: Vec<Vec<HirId<HirStmt>>>,
+    out: Vec<Vec<CallableId>>,
 }
 
 impl Components {
-    fn of(nodes: &[HirId<HirStmt>], edges: &HashMap<HirId<HirStmt>, Vec<HirId<HirStmt>>>) -> Vec<Vec<HirId<HirStmt>>> {
+    fn of(nodes: &[CallableId], edges: &HashMap<CallableId, Vec<CallableId>>) -> Vec<Vec<CallableId>> {
         let mut run = Components {
             index: HashMap::new(),
             low: HashMap::new(),
@@ -199,7 +201,7 @@ impl Components {
         run.out
     }
 
-    fn visit(&mut self, v: HirId<HirStmt>, edges: &HashMap<HirId<HirStmt>, Vec<HirId<HirStmt>>>) {
+    fn visit(&mut self, v: CallableId, edges: &HashMap<CallableId, Vec<CallableId>>) {
         self.index.insert(v, self.next);
         self.low.insert(v, self.next);
         self.next += 1;
@@ -282,12 +284,12 @@ impl<'a> Collector<'a> {
     }
 
     pub(super) fn infer_escape_summaries(&mut self) {
-        let funcs: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
-        let edges: HashMap<HirId<HirStmt>, Vec<HirId<HirStmt>>> = funcs.iter()
-            .map(|func| (*func, self.called_by(*func)))
+        let callables: Vec<CallableId> = self.sigs.fns.keys().copied().collect();
+        let edges: HashMap<CallableId, Vec<CallableId>> = callables.iter()
+            .map(|callable| (*callable, self.called_by(*callable)))
             .collect();
 
-        for component in Components::of(&funcs, &edges) {
+        for component in Components::of(&callables, &edges) {
             // A lone function that does not call itself sees final callee summaries on its first
             // visit. A recursive group has to settle, since its members feed each other.
             let recursive = component.len() > 1 || edges[&component[0]].contains(&component[0]);
@@ -295,8 +297,8 @@ impl<'a> Collector<'a> {
             loop {
                 analyses.clear();
                 let mut changed = false;
-                for func in &component {
-                    let analysis = self.analyze_fn(*func);
+                for callable in &component {
+                    let analysis = self.analyze_callable(*callable);
                     changed |= self.record(&analysis);
                     analyses.push(analysis);
                 }
@@ -307,21 +309,28 @@ impl<'a> Collector<'a> {
             // already settled by the time this component is done.
             for analysis in &analyses {
                 let writes = self.names_written_by_body(&analysis.escape_facts);
-                self.sigs.writes.insert(analysis.func, writes);
+                self.sigs.writes.insert(analysis.callable, writes);
                 self.sigs.any_rebind.extend(&analysis.escape_facts.rebound);
             }
         }
     }
 
-    fn analyze_fn(&self, func: HirId<HirStmt>) -> FnAnalysis {
-        let HirStmt::Fn(decl) = self.hir.get(&func) else { unreachable!("every collected signature is a fn") };
+    fn method_owner_of(&self, callable: CallableId) -> Option<HirId<HirStmt>> {
+        match callable {
+            CallableId::Fn(stmt) => self.sigs.method_owner.get(&stmt).copied(),
+            CallableId::Lambda(_) => None,
+        }
+    }
+
+    fn analyze_callable(&self, callable: CallableId) -> FnAnalysis {
+        let decl = Signatures::decl_of(self.hir, callable).expect("every collected signature has a declaration");
         let params = self.escape_params(decl);
-        let owner = self.sigs.method_owner.get(&func).copied();
+        let owner = self.method_owner_of(callable);
         let mut facts = EscapeFacts::default();
         self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Escape, owner, false);
         resolve_stores(&params, self.this, &mut facts);
         let carriers = Carriers::of(&params, &facts.aliases);
-        FnAnalysis { func, params, carriers, escape_facts: facts }
+        FnAnalysis { callable, params, carriers, escape_facts: facts }
     }
 
     fn fold_param_facts(&self, params: &[Symbol], carriers: &Carriers, facts: &EscapeFacts) -> Vec<ParamFact> {
@@ -347,7 +356,7 @@ impl<'a> Collector<'a> {
             for p in carriers.held(name) { param_facts[param_position(params, *p)].stored_away = true; }
         }
         for forward in &facts.forwards {
-            let callee_fact = self.sigs.param_fact(&forward.callee, forward.callee_param);
+            let callee_fact = self.sigs.param_fact(forward.callee, forward.callee_param);
             for p in carriers.held(&forward.arg) {
                 let fact = &mut param_facts[param_position(params, *p)];
                 // A callee that only hands the argument back has not let it out of this body. Where
@@ -365,18 +374,14 @@ impl<'a> Collector<'a> {
         param_facts
     }
 
-    /// Writes one function's param facts, answering whether they grew.
     fn record(&mut self, a: &FnAnalysis) -> bool {
         let mut param_facts = self.fold_param_facts(&a.params, &a.carriers, &a.escape_facts);
-        let mut free: Vec<Symbol> = Vec::new();
-        // Handing an argument back still counts as keeping it, which is what bars passing a mutable
-        // value to a function that returns it.
+        let mut returns_upvalues: Vec<Symbol> = Vec::new();
+
         for (name, at) in a.escape_facts.returned.iter() {
             for p in a.carriers.held(name) {
                 let fact = &mut param_facts[param_position(&a.params, *p)];
                 fact.escapes = true;
-                // A name that reaches the argument through a container hands back the container,
-                // not the argument. The caller gets no way back to what it lent.
                 if a.carriers.contains(name, p) {
                     fact.escapes_beyond_return = true;
                     fact.escape_site = take_earlier_expr(fact.escape_site, *at);
@@ -384,40 +389,36 @@ impl<'a> Collector<'a> {
             }
         }
 
-        for ret in self.returns.get(&a.func).into_iter().flatten() {
-            // A function hands back an argument when its result keeps that argument reachable.
-            // `return x`, `return [x]` and `return () => x.n` all count, as does returning a call
-            // that itself hands the argument back.
+        for ret in self.returns.get(&a.callable).into_iter().flatten() {
             for (name, kind, at) in self.carried_names(ret) {
                 let carried: Vec<Symbol> = a.carriers.held(&name).copied().collect();
                 for p in &carried {
                     let fact = &mut param_facts[param_position(&a.params, *p)];
                     fact.hands_back = true;
-                    // The narrower fact: the result may be the argument itself, not merely
-                    // something holding it. `return x` counts and `return [x]` does not.
                     fact.hands_back_itself |= kind == AliasKind::Identity && !a.carriers.contains(&name, p);
                 }
-                // A name no parameter carries is worth reporting only if the caller can hold it too.
-                let free_here = matches!(self.bindings.place_of(&at), Some(Place::Upvalue(_)));
-                if carried.is_empty() && kind == AliasKind::Identity && free_here {
-                    free.push(name);
+
+                let is_upvalue = matches!(self.bindings.place_of(&at), Some(Place::Upvalue(_)));
+                if carried.is_empty() && kind == AliasKind::Identity && is_upvalue {
+                    returns_upvalues.push(name);
                 }
             }
         }
 
-        free.sort_unstable();
-        free.dedup();
+        returns_upvalues.sort_unstable();
+        returns_upvalues.dedup();
+
         // Every input only ever grows, so param facts that differ from the stored ones have grown.
-        let grew = self.sigs.params.get(&a.func) != Some(&param_facts)
-            || self.sigs.returns_free.get(&a.func) != Some(&free);
-        self.sigs.params.insert(a.func, param_facts);
-        self.sigs.returns_free.insert(a.func, free);
+        let grew = self.sigs.params.get(&a.callable) != Some(&param_facts)
+            || self.sigs.returns_upvalues.get(&a.callable) != Some(&returns_upvalues);
+        self.sigs.params.insert(a.callable, param_facts);
+        self.sigs.returns_upvalues.insert(a.callable, returns_upvalues);
         grew
     }
 
-    fn called_by(&self, func: HirId<HirStmt>) -> Vec<HirId<HirStmt>> {
-        let HirStmt::Fn(decl) = self.hir.get(&func) else { unreachable!("every collected signature is a fn") };
-        let owner = self.sigs.method_owner.get(&func).copied();
+    fn called_by(&self, callable: CallableId) -> Vec<CallableId> {
+        let decl = Signatures::decl_of(self.hir, callable).expect("every collected signature has a declaration");
+        let owner = self.method_owner_of(callable);
         let mut out = Vec::new();
 
         walk::visit_body(self.hir, &decl.body, &mut |node| {
@@ -431,22 +432,34 @@ impl<'a> Collector<'a> {
         });
 
         // One edge per callee, however many times the body calls it.
-        out.sort_unstable_by_key(|f| f.index());
+        out.sort_unstable_by_key(|c| c.sort_key());
         out.dedup();
         out
     }
 
-    /// The declaration a callee expression names.
-    fn resolved_callee(&self, callee: &HirId<HirExpr>, owner: Option<HirId<HirStmt>>) -> Option<HirId<HirStmt>> {
+    fn declared_callable(&self, callee: &HirId<HirExpr>) -> Option<CallableId> {
+        let stmt = self.bindings.declaring_node(callee).and_then(|i| self.hir.stmt_at(i))?;
+        match self.hir.get(&stmt) {
+            HirStmt::Fn(_) => Some(stmt.into()),
+            HirStmt::Say(field) if !field.reassignable => {
+                let value = field.value?;
+                matches!(self.hir.get(&value), HirExpr::Literal(HirLiteral::Lambda(_))).then(|| value.into())
+            },
+            _ => None,
+        }
+    }
+
+    fn resolved_callee(&self, callee: &HirId<HirExpr>, owner: Option<HirId<HirStmt>>) -> Option<CallableId> {
         if self.resolved().type_named(callee).is_some() {
             return None;
         }
         match self.hir.get(callee) {
-            HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name).copied(),
+            HirExpr::Identifier(name) => self.declared_callable(callee)
+                .or_else(|| self.sigs.fns_by_name.get(name).copied().map(Into::into)),
             // A `this.method` call resolves within the enclosing type.
             HirExpr::Index(receiver, member, _) => {
                 let owner = owner.filter(|_| matches!(self.hir.get(receiver), HirExpr::This))?;
-                self.sigs.methods_by_type.get(&(owner, self.member_symbol(member)?)).copied()
+                self.sigs.methods_by_type.get(&(owner, self.member_symbol(member)?)).copied().map(Into::into)
             },
             _ => None,
         }
@@ -478,30 +491,11 @@ impl<'a> Collector<'a> {
             writes.extend(carriers.held(n).copied());
         }
         for f in &facts.forwards {
-            if self.sigs.param_escapes_at(&f.callee, f.callee_param) || self.sigs.param_mutates_at(&f.callee, f.callee_param) {
+            if self.sigs.param_escapes_at(f.callee, f.callee_param) || self.sigs.param_mutates_at(f.callee, f.callee_param) {
                 writes.extend(carriers.held(&f.arg).copied());
             }
         }
         writes
-    }
-
-    pub(super) fn infer_lambda_escapes(&mut self) {
-        for id in self.hir.lambda_ids() {
-            let HirExpr::Literal(HirLiteral::Lambda(decl)) = self.hir.get(&id) else { continue };
-            let params: Vec<Symbol> = decl.params.iter().map(|p| self.param_sym(&p.name)).collect();
-            let mut facts = EscapeFacts::default();
-            self.walk_escapes(&decl.body, &mut facts, EscapeCollectMode::Escape, None, false);
-            resolve_stores(&params, self.this, &mut facts);
-
-            let carriers = Carriers::of(&params, &facts.aliases);
-            // A lambda publishes only whether it keeps an argument. Returning one hands it back, and
-            // a lambda is never resolved at a call site, so the return does not enter this row.
-            let row = self.fold_param_facts(&params, &carriers, &facts);
-            self.sigs.lambda_param_escapes.insert(id, row.iter().map(|f| f.escapes).collect());
-            let writes = self.names_written_by_body(&facts);
-            self.sigs.lambda_writes.insert(id, writes);
-            self.sigs.any_rebind.extend(&facts.rebound);
-        }
     }
 
     fn param_sym(&self, id: &HirId<HirExpr>) -> Symbol {
@@ -536,7 +530,7 @@ impl<'a> Collector<'a> {
         let Some(func) = self.resolved_callee(callee, None) else { return Vec::new() };
         let mut out = Vec::new();
         for (i, arg) in args.iter().enumerate() {
-            let fact = self.sigs.param_fact(&func, i);
+            let fact = self.sigs.param_fact(func, i);
             if !fact.hands_back { continue; }
             // The result is the argument itself only where the callee hands that argument back
             // rather than a container it built around it.
@@ -589,7 +583,7 @@ impl<'a> Collector<'a> {
             }
             return;
         };
-        let markers = self.sigs.fns.get(&target).map(|sig| sig.param_markers.as_slice()).unwrap_or(&[]);
+        let markers = self.sigs.fn_sig_of(target).map(|sig| sig.param_markers.as_slice()).unwrap_or(&[]);
         for (callee_param, arg) in args.iter().enumerate() {
             let taken = markers.get(callee_param).is_some_and(|m| m.is_retain());
             for arg_name in self.carried_symbols(arg) {
@@ -601,10 +595,10 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn call_target(&self, callee: &HirId<HirExpr>, owner: Option<HirId<HirStmt>>) -> Option<HirId<HirStmt>> {
+    fn call_target(&self, callee: &HirId<HirExpr>, owner: Option<HirId<HirStmt>>) -> Option<CallableId> {
         let Some(ty) = self.resolved().type_named(callee) else { return self.resolved_callee(callee, owner) };
         let HirStmt::Type(decl) = self.hir.get(&ty) else { return None };
-        Some(decl.init).filter(|init| self.sigs.fns.contains_key(init))
+        Some(decl.init).filter(|init| self.sigs.fn_sig_of(*init).is_some()).map(Into::into)
     }
 
     fn member_symbol(&self, member: &HirId<HirExpr>) -> Option<Symbol> {

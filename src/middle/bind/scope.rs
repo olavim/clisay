@@ -100,19 +100,15 @@ impl<'a> Resolver<'a> {
     }
 
     pub(super) fn resolve_local(&self, name: Symbol) -> Option<u8> {
-        self.resolve_local_in_range(name, self.local_offset(), self.locals.len())
+        let start = self.local_offset();
+        self.resolve_local_in_range(name, start, self.locals.len()).map(|i| (i - start) as u8)
     }
 
-    fn resolve_local_in_range(&self, name: Symbol, start: usize, end: usize) -> Option<u8> {
-        for i in (start..end).rev() {
-            if self.locals[i].name == Some(name) {
-                return Some((i - start) as u8);
-            }
-        }
-        None
+    fn resolve_local_in_range(&self, name: Symbol, start: usize, end: usize) -> Option<usize> {
+        (start..end).rev().find(|&i| self.locals[i].name == Some(name))
     }
 
-    fn resolve_upvalue(&mut self, name: Symbol) -> Result<Option<u8>, anyhow::Error> {
+    fn resolve_upvalue(&mut self, name: Symbol) -> Result<Option<(u8, Option<usize>)>, anyhow::Error> {
         if self.fn_frames.is_empty() {
             return Ok(None);
         }
@@ -120,7 +116,7 @@ impl<'a> Resolver<'a> {
         self.resolve_frame_upvalue(name, self.fn_frames.len() - 1, max_type_frame)
     }
 
-    fn resolve_frame_upvalue(&mut self, name: Symbol, frame_idx: usize, max_type_frame: Option<u8>) -> Result<Option<u8>, anyhow::Error> {
+    fn resolve_frame_upvalue(&mut self, name: Symbol, frame_idx: usize, max_type_frame: Option<u8>) -> Result<Option<(u8, Option<usize>)>, anyhow::Error> {
         let type_frame = self.fn_frames[frame_idx].type_frame;
 
         // A member-resolvable name must not capture past the type frame that owns it: stop if this
@@ -134,17 +130,18 @@ impl<'a> Resolver<'a> {
         let range_start = if frame_idx == 0 { 0 } else { self.fn_frames[frame_idx - 1].local_offset };
         let range_end = self.fn_frames[frame_idx].local_offset;
 
-        if let Some(idx) = self.resolve_local_in_range(name, range_start, range_end) {
-            self.mark_captured(range_start + idx as usize);
-            return Ok(Some(self.add_upvalue(idx, true, frame_idx)?));
+        if let Some(i) = self.resolve_local_in_range(name, range_start, range_end) {
+            self.mark_captured(i);
+            let decl = self.locals[i].decl;
+            return Ok(Some((self.add_upvalue((i - range_start) as u8, true, frame_idx)?, decl)));
         }
 
         if frame_idx == 0 {
             return Ok(None);
         }
 
-        if let Some(idx) = self.resolve_frame_upvalue(name, frame_idx - 1, max_type_frame)? {
-            return Ok(Some(self.add_upvalue(idx, false, frame_idx)?));
+        if let Some((idx, decl)) = self.resolve_frame_upvalue(name, frame_idx - 1, max_type_frame)? {
+            return Ok(Some((self.add_upvalue(idx, false, frame_idx)?, decl)));
         }
 
         Ok(None)
@@ -171,12 +168,21 @@ impl<'a> Resolver<'a> {
         None
     }
 
+    fn record_decl(&mut self, node: &HirId<HirExpr>, decl: Option<usize>) {
+        if let Some(decl) = decl {
+            self.bindings.decls.insert(*node, decl);
+        }
+    }
+
     pub(super) fn resolve_place(&mut self, name: Symbol, node: &HirId<HirExpr>) -> Result<Place, anyhow::Error> {
-        let place = if let Some(slot) = self.resolve_local(name) {
-            Place::Local(slot)
+        let start = self.local_offset();
+        let place = if let Some(i) = self.resolve_local_in_range(name, start, self.locals.len()) {
+            self.record_decl(node, self.locals[i].decl);
+            Place::Local((i - start) as u8)
         } else if let Some((id, receiver)) = self.this_field(name)? {
             Place::Field(id, receiver)
-        } else if let Some(idx) = self.resolve_upvalue(name)? {
+        } else if let Some((idx, decl)) = self.resolve_upvalue(name)? {
+            self.record_decl(node, decl);
             Place::Upvalue(idx)
         } else {
             self.deny_private_member(name, node)?;
