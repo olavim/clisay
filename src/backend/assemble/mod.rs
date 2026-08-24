@@ -39,6 +39,7 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     }
 
     chunk.witness_allows = ir.witness_allows().to_vec();
+    chunk.param_accepts = ir.param_accepts().to_vec();
     chunk.owed_names = ir.owed_names().to_vec();
     chunk.constants = ir.constants().to_vec();
     chunk.elisions = ir.elisions().iter().map(|&idx| offsets[idx]).collect();

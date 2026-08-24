@@ -5,6 +5,7 @@ use crate::frontend::lex::Diagnostic;
 
 use crate::core::gc::Gc;
 use crate::middle::hir::TypeId;
+use crate::middle::obligations::Obligations;
 use crate::middle::ir::{Inst, Ir, Label, SourceRole, NULL_WITNESS_ID};
 use crate::middle::bind::{Bindings, FnKind, Place};
 use crate::middle::check::Barriers;
@@ -140,6 +141,16 @@ impl<'a> Compiler<'a> {
             HirStmt::Type(decl) | HirStmt::Trait(decl) => Ok(decl.id),
             _ => compiler_error!(self, node, "a type test names no declaration"),
         }
+    }
+
+    /// What a destination accepts, given the obligations its clause names.
+    pub(super) fn accepts_index(&mut self, owed: &Obligations, nullable: bool) -> Result<u16, anyhow::Error> {
+        let witnesses: Vec<TypeId> = self.sigs.object_witnesses()
+            .filter(|(ob, _)| owed.contains(ob) || !self.sigs.obligation_rules_of(*ob).before_drop)
+            .map(|(_, id)| id)
+            .collect();
+        let accepts = self.accepted_witness_set(&witnesses, nullable || owed.contains(&self.sigs.opt));
+        self.ir.add_witness_allow(accepts)
     }
 
     pub(super) fn accepted_witness_set(&self, decls: &[TypeId], null_allowed: bool) -> Box<[u16]> {

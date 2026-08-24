@@ -13,6 +13,17 @@ use crate::frontend::lex::SourcePosition;
 
 pub const NULL_WITNESS_ID: u16 = 0;
 
+fn intern_row(pool: &mut Vec<Box<[u16]>>, row: Box<[u16]>, what: &str) -> Result<u16, anyhow::Error> {
+    if let Some(i) = pool.iter().position(|existing| **existing == *row) {
+        return Ok(i as u16);
+    }
+    if pool.len() >= u16::MAX as usize {
+        bail!("Too many distinct {what}");
+    }
+    pool.push(row);
+    Ok((pool.len() - 1) as u16)
+}
+
 // How a store names the root its write reaches through.
 pub const WRITE_ROOT_NONE: u8 = 0;
 pub const WRITE_ROOT_LOCAL: u8 = 1;
@@ -192,6 +203,7 @@ pub struct Ir {
     /// Instruction indices of the checks that check-forcing put back.
     /// Empty unless check-forcing is on.
     elisions: Vec<usize>,
+    param_accepts: Vec<Box<[u16]>>,
     /// Extra source positions an instruction needs, keyed by instruction index and role.
     source_map: FnvHashMap<(usize, SourceRole), SourcePosition>,
 }
@@ -222,6 +234,7 @@ impl Ir {
             survive_positions: Vec::new(),
             owed_names: Vec::new(),
             elisions: Vec::new(),
+            param_accepts: Vec::new(),
             source_map: FnvHashMap::default(),
         }
     }
@@ -340,16 +353,17 @@ impl Ir {
         &self.witness_allows
     }
 
+    pub fn add_param_accepts(&mut self, accepts: Box<[u16]>) -> Result<u16, anyhow::Error> {
+        intern_row(&mut self.param_accepts, accepts, "parameter accept sets")
+    }
+
+    pub fn param_accepts(&self) -> &[Box<[u16]>] {
+        &self.param_accepts
+    }
+
     /// Pools a barrier's allowed witness ids.
     pub fn add_witness_allow(&mut self, allow: Box<[u16]>) -> Result<u16, anyhow::Error> {
-        if let Some(i) = self.witness_allows.iter().position(|a| **a == *allow) {
-            return Ok(i as u16);
-        }
-        if self.witness_allows.len() >= u16::MAX as usize {
-            bail!("Too many distinct barrier witness sets");
-        }
-        self.witness_allows.push(allow);
-        Ok((self.witness_allows.len() - 1) as u16)
+        intern_row(&mut self.witness_allows, allow, "barrier witness sets")
     }
 
     pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
@@ -432,6 +446,7 @@ impl Ir {
             witness_ids: self.witness_ids,
             builtin_layouts: self.builtin_layouts,
             witness_allows: self.witness_allows,
+            param_accepts: self.param_accepts,
         }
     }
 }

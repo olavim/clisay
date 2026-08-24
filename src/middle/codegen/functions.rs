@@ -1,6 +1,8 @@
+use crate::middle::signatures::CallableId;
 use crate::core::objects::{ObjFn, UpvalueLocation};
 use crate::core::value::Value;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirParam, HirStmt};
+use crate::middle::obligations::Obligations;
 use crate::middle::ir::Inst;
 use crate::middle::bind::FnKind;
 
@@ -88,7 +90,16 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, decl: &HirFnDecl, kind: FnKind, masks: ParamMasks) -> Result<u8, anyhow::Error> {
+    fn param_accepts(&mut self, callable: CallableId) -> Result<u16, anyhow::Error> {
+        let clauses: &[Obligations] = self.sigs.fn_sig_of(callable).map_or(&[], |s| &s.param_clauses);
+        let mut out = Vec::with_capacity(clauses.len());
+        for owed in clauses.to_vec() {
+            out.push(self.accepts_index(&owed, false)?);
+        }
+        self.ir.add_param_accepts(out.into_boxed_slice())
+    }
+
+    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, callable: CallableId, decl: &HirFnDecl, kind: FnKind, masks: ParamMasks) -> Result<u8, anyhow::Error> {
         self.fn_kinds.push(kind);
 
         // Add a jump over the function's body after declaration.
@@ -127,7 +138,8 @@ impl<'a> Compiler<'a> {
         let mut_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_mut());
         let retain_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_retain());
 
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, masks.needs_borrow_mark, mut_receiver, retain_receiver, masks.receiver_needs_borrow));
+        let param_accepts = self.param_accepts(callable)?;
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, masks.needs_borrow_mark, mut_receiver, retain_receiver, masks.receiver_needs_borrow, param_accepts));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))

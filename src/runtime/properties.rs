@@ -95,7 +95,7 @@ impl Vm {
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, ip_start, true)?;
         let m = unsafe { (*closure_ptr).call_masks() };
-        self.transfer_argument_write_ownership(m.retain_mask, m.escape_mask, m.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(retain_receiver, unsafe { (*closure_ptr).receiver_needs_borrow }))?;
+        self.transfer_argument_write_ownership(m.retain_mask, m.escape_mask, m.needs_borrow_mark, m.param_accepts, stack_start, arg_count, ReceiverSlot::declared(retain_receiver, unsafe { (*closure_ptr).receiver_needs_borrow }))?;
         Ok(())
     }
 
@@ -255,6 +255,30 @@ impl Vm {
         ))
     }
 
+    #[inline]
+    pub(super) fn check_arguments_accepted(&mut self, param_accepts: u16, stack_start: *mut Value, arity: usize) -> Result<(), anyhow::Error> {
+        if !objects::arguments_may_carry_witness(stack_start, arity) {
+            return Ok(());
+        }
+        self.check_each_argument_accepted(param_accepts, stack_start, arity)
+    }
+
+    #[cold]
+    pub(super) fn check_each_argument_accepted(&mut self, param_accepts: u16, stack_start: *mut Value, arity: usize) -> Result<(), anyhow::Error> {
+        let row = &self.chunk.param_accepts[param_accepts as usize];
+        debug_assert_eq!(row.len(), arity, "a callable's accept row covers every parameter");
+        let refused = (0..arity.min(row.len())).find_map(|position| {
+            let value = unsafe { *stack_start.add(position + 1) };
+            let allowed = row[position];
+            (objects::may_carry_witness(value) && !self.accepts_value(value, allowed)).then_some((value, allowed))
+        });
+        match refused {
+            Some((value, allowed)) => self.check_value_accepted(value, allowed),
+            None => Ok(()),
+        }
+    }
+
+    #[cold]
     fn store_field(&mut self, instance_ref: *mut ObjInstance, field: u8, value: Value) -> Result<(), anyhow::Error> {
         if objects::may_carry_witness(value) {
             self.check_into_field(instance_ref, field, value)?;
@@ -273,13 +297,7 @@ impl Vm {
     fn check_into_field(&mut self, instance_ref: *mut ObjInstance, field: u8, value: Value) -> Result<(), anyhow::Error> {
         let ty = unsafe { &*(*instance_ref).ty };
         let Some(&allowed) = ty.field_accepts.get(field as usize) else { return Ok(()) };
-        if self.accepts_value(value, allowed) {
-            return Ok(());
-        }
-        if value.is_null() {
-            return self.error("unexpected null");
-        }
-        self.throw_value(value)
+        self.check_value_accepted(value, allowed)
     }
 
     fn set_instance_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {

@@ -262,6 +262,16 @@ impl Vm {
         self.chunk.witness_allows[allowed as usize].first() == Some(&NULL_WITNESS_ID)
     }
 
+    pub(super) fn check_value_accepted(&mut self, value: Value, allowed: u16) -> Result<(), anyhow::Error> {
+        if self.accepts_value(value, allowed) {
+            return Ok(());
+        }
+        match value.is_null() {
+            true => self.error("unexpected null"),
+            false => self.throw_value(value),
+        }
+    }
+
     pub(super) fn accepts_value(&self, value: Value, allowed: u16) -> bool {
         match value.is_null() {
             true => self.accepts_null(allowed),

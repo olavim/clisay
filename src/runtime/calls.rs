@@ -506,7 +506,8 @@ impl Vm {
 
     /// Hands each retained argument's write-ownership to the parameter slot about to take it.
     #[inline]
-    pub(crate) fn transfer_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, needs_borrow_mark: u64, stack_start: *mut Value, arity: usize, receiver: ReceiverSlot) -> Result<(), anyhow::Error> {
+    pub(crate) fn transfer_argument_write_ownership(&mut self, retain_mask: u64, escape_mask: u64, needs_borrow_mark: u64, param_accepts: u16, stack_start: *mut Value, arity: usize, receiver: ReceiverSlot) -> Result<(), anyhow::Error> {
+        self.check_arguments_accepted(param_accepts, stack_start, arity)?;
         // The two receiver kinds that record nothing, so the arguments are the whole question.
         if matches!(receiver, ReceiverSlot::Callee | ReceiverSlot::Borrowed)
             && self.arguments_record_nothing(retain_mask | needs_borrow_mark, stack_start, arity) {
@@ -1070,7 +1071,7 @@ impl Vm {
         check_arity!(self, arg_count, closure.arity, closure.name);
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-        self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::Callee)?;
+        self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, closure.param_accepts, stack_start, arg_count, ReceiverSlot::Callee)?;
         Ok(())
     }
 
@@ -1087,7 +1088,7 @@ impl Vm {
                 check_arity!(self, arg_count, closure.arity, closure.name);
                 let stack_start = self.stack.set(arg_count, Value::from(bound_method.target));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(closure.retain_receiver, closure.receiver_needs_borrow))?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, closure.param_accepts, stack_start, arg_count, ReceiverSlot::declared(closure.retain_receiver, closure.receiver_needs_borrow))?;
             },
             objects::TAG_NATIVE_FUNCTION => {
                 self.stack.set(arg_count, Value::from(bound_method.target));
@@ -1181,7 +1182,7 @@ impl Vm {
                 self.stack.pop();
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure.as_closure_ptr(), stack_start, factory.ip_start, seal)?;
-                self.transfer_argument_write_ownership(factory.retain_mask, factory.escape_mask, factory.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(false, factory.receiver_needs_borrow))?;
+                self.transfer_argument_write_ownership(factory.retain_mask, factory.escape_mask, factory.needs_borrow_mark, factory.param_accepts, stack_start, arg_count, ReceiverSlot::declared(false, factory.receiver_needs_borrow))?;
                 Ok(())
             },
             objects::TAG_CLOSURE => {
@@ -1192,7 +1193,7 @@ impl Vm {
                 let instance = self.alloc(ObjInstance::new(type_ptr));
                 let stack_start = self.stack.set(arg_count, Value::from(instance));
                 self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
-                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, stack_start, arg_count, ReceiverSlot::declared(false, closure.receiver_needs_borrow))?;
+                self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, closure.param_accepts, stack_start, arg_count, ReceiverSlot::declared(false, closure.receiver_needs_borrow))?;
                 Ok(())
             },
             // A native factory receives the fresh instance as its target and fills its fields. The

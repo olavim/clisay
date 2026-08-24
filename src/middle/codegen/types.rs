@@ -101,24 +101,17 @@ impl<'a> Compiler<'a> {
 
     /// What each field accepts, by field id.
     fn field_accepts(&mut self, layout: &TypeLayout) -> Result<Box<[u16]>, anyhow::Error> {
-        let nothing = self.ir.add_witness_allow(Box::new([]))?;
-        let count = layout.fields.iter().copied().max().map_or(0, |id| id as usize + 1);
-        let mut out = vec![nothing; count];
+        let mut out = Vec::with_capacity(layout.fields.len());
         for &id in &layout.fields {
             let owed = layout.clauses.get(&id).map(|c| c.owed.clone()).unwrap_or_default();
-            let witnesses: Vec<TypeId> = self.sigs.object_witnesses()
-                .filter(|(ob, _)| owed.contains(ob))
-                .map(|(_, id)| id)
-                .collect();
-            let accepts = self.accepted_witness_set(&witnesses, layout.nullable.contains(&id));
-            out[id as usize] = self.ir.add_witness_allow(accepts)?;
+            out.push(self.accepts_index(&owed, layout.nullable.contains(&id))?);
         }
         Ok(out.into_boxed_slice())
     }
 
     fn compile_fn(&mut self, stmt: &HirId<HirStmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {
         let decl = self.fn_decl(stmt);
-        let const_idx = self.function(stmt, decl, kind, self.declared_masks(stmt, decl))?;
+        let const_idx = self.function(stmt, (*stmt).into(), decl, kind, self.declared_masks(stmt, decl))?;
         let func_const = self.ir.constants()[const_idx as usize];
         Ok(func_const.as_object().as_function_ptr())
     }

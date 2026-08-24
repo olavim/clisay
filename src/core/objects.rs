@@ -507,7 +507,8 @@ pub struct ObjFn {
     pub escape_mask: u64,
     pub retain_mask: u64,
     pub needs_borrow_mark: u64,
-    pub receiver_needs_borrow: bool
+    pub receiver_needs_borrow: bool,
+    pub param_accepts: u16
 }
 
 impl ObjFn {
@@ -517,10 +518,10 @@ impl ObjFn {
     }
 
     pub fn call_masks(&self) -> CallMasks {
-        CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark }
+        CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark, param_accepts: self.param_accepts }
     }
 
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, needs_borrow_mark: u64, mut_receiver: bool, retain_receiver: bool, receiver_needs_borrow: bool) -> ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, needs_borrow_mark: u64, mut_receiver: bool, retain_receiver: bool, receiver_needs_borrow: bool, param_accepts: u16) -> ObjFn {
         debug_assert_eq!(needs_borrow_mark & retain_mask, 0, "a taken parameter asked for a borrow mark");
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
@@ -533,7 +534,8 @@ impl ObjFn {
             escape_mask,
             retain_mask,
             needs_borrow_mark,
-            receiver_needs_borrow
+            receiver_needs_borrow,
+            param_accepts
         }
     }
 }
@@ -612,7 +614,8 @@ pub struct ObjClosure {
     pub escape_mask: u64,
     pub retain_mask: u64,
     pub needs_borrow_mark: u64,
-    pub receiver_needs_borrow: bool
+    pub receiver_needs_borrow: bool,
+    pub param_accepts: u16
 }
 
 #[derive(Clone, Copy)]
@@ -620,11 +623,12 @@ pub struct CallMasks {
     pub retain_mask: u64,
     pub escape_mask: u64,
     pub needs_borrow_mark: u64,
+    pub param_accepts: u16,
 }
 
 impl ObjClosure {
     pub fn call_masks(&self) -> CallMasks {
-        CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark }
+        CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark, param_accepts: self.param_accepts }
     }
 
     /// Byte offset of the trailing upvalue array.
@@ -711,6 +715,10 @@ impl GcTraceable for ObjBoundMethod {
 }
 
 type MemberId = u8;
+
+pub fn arguments_may_carry_witness(stack_start: *mut Value, arity: usize) -> bool {
+    (0..arity).any(|i| may_carry_witness(unsafe { *stack_start.add(i + 1) }))
+}
 
 pub fn may_carry_witness(value: Value) -> bool {
     !value.is_number() && !value.is_bool()

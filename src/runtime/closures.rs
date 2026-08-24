@@ -62,10 +62,11 @@ impl Vm {
         let receiver_needs_borrow = fn_ref.receiver_needs_borrow;
         let mut_receiver = fn_ref.mut_receiver;
         let retain_receiver = fn_ref.retain_receiver;
+        let param_accepts = fn_ref.param_accepts;
         if self.gc.should_collect() {
             self.start_gc();
         }
-        let closure: Object = self.gc.alloc_closure(name, arity, ip_start, &upvalues, escape_mask, retain_mask, needs_borrow_mark, mut_receiver, retain_receiver, receiver_needs_borrow).into();
+        let closure: Object = self.gc.alloc_closure(name, arity, ip_start, &upvalues, escape_mask, retain_mask, needs_borrow_mark, mut_receiver, retain_receiver, receiver_needs_borrow, param_accepts).into();
         // A capture is a store into the closure, so the closure takes what an array would: the
         // write-ownership of each captured value, and the answer for any borrow among them.
         for &upvalue in upvalues.iter() {

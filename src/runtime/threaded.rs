@@ -583,7 +583,10 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
             true => unsafe { (*closure).escape_mask },
             false => 0,
         };
-        vm.transfer_argument_write_ownership(retain_mask, escape_mask, needs_borrow_mark, stack_start, arg_count, ReceiverSlot::Callee)?;
+
+        if objects::arguments_may_carry_witness(stack_start, arg_count) || retain_mask | needs_borrow_mark != 0 || vm.forced {
+            vm.transfer_argument_write_ownership(retain_mask, escape_mask, needs_borrow_mark, unsafe { (*closure).param_accepts }, stack_start, arg_count, ReceiverSlot::Callee)?;
+        }
     }
     become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
 }
