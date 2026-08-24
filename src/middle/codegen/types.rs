@@ -2,7 +2,7 @@ use crate::core::objects::{BuiltinLayout, TypeMember, ObjType, ObjFn, ObjString}
 use crate::core::value::Value;
 use crate::middle::hir::{HirTypeDecl, HirId, HirStmt, TypeId};
 use crate::middle::ir::Inst;
-use crate::middle::bind::FnKind;
+use crate::middle::bind::{FnKind, TypeLayout};
 
 use super::Compiler;
 
@@ -57,6 +57,7 @@ impl<'a> Compiler<'a> {
         // The same set under codegen's dense numbering, for the barrier test.
         let provided: Vec<TypeId> = decl.provides.iter().map(|(_, id)| *id).collect();
         ty.witness_ids = self.witness_id_set(&provided);
+        ty.field_accepts = self.field_accepts(layout)?;
 
         // Compile the factory into its slot. A factory-less type has none, so its `factory_id`
         // stays None and `K()` on it finds no factory to call.
@@ -96,6 +97,23 @@ impl<'a> Compiler<'a> {
         self.emit(Inst::Pop, stmt);
 
         Ok(())
+    }
+
+    /// What each field accepts, by field id.
+    fn field_accepts(&mut self, layout: &TypeLayout) -> Result<Box<[u16]>, anyhow::Error> {
+        let nothing = self.ir.add_witness_allow(Box::new([]))?;
+        let count = layout.fields.iter().copied().max().map_or(0, |id| id as usize + 1);
+        let mut out = vec![nothing; count];
+        for &id in &layout.fields {
+            let owed = layout.clauses.get(&id).map(|c| c.owed.clone()).unwrap_or_default();
+            let witnesses: Vec<TypeId> = self.sigs.object_witnesses()
+                .filter(|(ob, _)| owed.contains(ob))
+                .map(|(_, id)| id)
+                .collect();
+            let accepts = self.accepted_witness_set(&witnesses, layout.nullable.contains(&id));
+            out[id as usize] = self.ir.add_witness_allow(accepts)?;
+        }
+        Ok(out.into_boxed_slice())
     }
 
     fn compile_fn(&mut self, stmt: &HirId<HirStmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {

@@ -255,6 +255,33 @@ impl Vm {
         ))
     }
 
+    fn store_field(&mut self, instance_ref: *mut ObjInstance, field: u8, value: Value) -> Result<(), anyhow::Error> {
+        if objects::may_carry_witness(value) {
+            self.check_into_field(instance_ref, field, value)?;
+        }
+        let instance = unsafe { &mut *instance_ref };
+
+        #[cfg(debug_assertions)]
+        assert_field_slot(instance, field);
+
+        instance.set(field, value);
+        Ok(())
+    }
+
+    /// Refuses a value the field does not accept.
+    #[cold]
+    fn check_into_field(&mut self, instance_ref: *mut ObjInstance, field: u8, value: Value) -> Result<(), anyhow::Error> {
+        let ty = unsafe { &*(*instance_ref).ty };
+        let Some(&allowed) = ty.field_accepts.get(field as usize) else { return Ok(()) };
+        if self.accepts_value(value, allowed) {
+            return Ok(());
+        }
+        if value.is_null() {
+            return self.error("unexpected null");
+        }
+        self.throw_value(value)
+    }
+
     fn set_instance_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
         let instance_ref = target.as_object().as_instance_ptr();
         let instance = unsafe { &mut *instance_ref };
@@ -269,11 +296,7 @@ impl Vm {
         }
 
         match ty.resolve(prop.as_object().as_string_ptr()) {
-            Some(TypeMember::Field(id)) => {
-                let value = self.stack.peek(0);
-                instance.set(id, value);
-                Ok(())
-            },
+            Some(TypeMember::Field(id)) => self.store_field(instance_ref, id, self.stack.peek(0)),
             Some(TypeMember::Method(_)) => self.error(format!("Cannot assign to method '{}'", prop.as_object().as_string())),
             None => self.error(format!(
                 "Invalid index: {} doesn't have member {}",
@@ -284,6 +307,14 @@ impl Vm {
     }
 
     pub(super) fn op_set_field_pop(&mut self) -> Result<(), anyhow::Error> {
+        self.set_field::<true>()
+    }
+
+    pub(super) fn op_set_field(&mut self) -> Result<(), anyhow::Error> {
+        self.set_field::<false>()
+    }
+
+    fn set_field<const POP: bool>(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
         let root_kind = self.read_next();
         let root_operand = self.read_next();
@@ -294,18 +325,19 @@ impl Vm {
         self.ensure_mutable(target)?;
         self.arbitrate_write(target, root_kind, root_operand)?;
 
+        let instance_ref = target.as_object().as_instance_ptr();
+
         // Ask before the pop, which would prune the mark this reads.
         let slot = self.stack.offset(0);
-        let borrowed = self.ensure_borrowed_does_not_persist(unsafe { *slot }, slot, root_kind, root_operand)?;
-        let value = self.stack.pop();
+        let value = unsafe { *slot };
+        let borrowed = self.ensure_borrowed_does_not_persist(value, slot, root_kind, root_operand)?;
+        if POP {
+            self.stack.pop();
+        }
+
+        // Record before storing, so a store this refuses has not already mutated the instance.
         self.container_took(target, value, borrowed)?;
-        let instance = unsafe { &mut *target.as_object().as_instance_ptr() };
-
-        #[cfg(debug_assertions)]
-        assert_field_slot(instance, member_id);
-
-        instance.set(member_id, value);
-        Ok(())
+        self.store_field(instance_ref, member_id, value)
     }
 
     pub(super) fn op_get_index(&mut self) -> Result<(), anyhow::Error> {
@@ -672,30 +704,6 @@ impl Vm {
         let instance_ref = object.as_instance_ptr();
         let value = self.get_property_by_id(instance_ref, member_id);
         self.stack.push(value);
-        Ok(())
-    }
-
-    pub(super) fn op_set_field(&mut self) -> Result<(), anyhow::Error> {
-        let member_id = self.read_next();
-        let root_kind = self.read_next();
-        let root_operand = self.read_next();
-        let value = self.stack.pop();
-        if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
-            return self.error(format!("Invalid property access: {}", value.fmt()));
-        }
-        self.ensure_mutable(value)?;
-        self.arbitrate_write(value, root_kind, root_operand)?;
-
-        let instance_ref = value.as_object().as_instance_ptr();
-        let stored = self.stack.peek(0);
-        let borrowed = self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
-        self.container_took(value, stored, borrowed)?;
-        let instance = unsafe { &mut *instance_ref };
-
-        #[cfg(debug_assertions)]
-        assert_field_slot(instance, member_id);
-
-        instance.set(member_id, stored);
         Ok(())
     }
 }

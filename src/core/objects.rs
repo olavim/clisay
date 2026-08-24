@@ -712,6 +712,10 @@ impl GcTraceable for ObjBoundMethod {
 
 type MemberId = u8;
 
+pub fn may_carry_witness(value: Value) -> bool {
+    !value.is_number() && !value.is_bool()
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum TypeMember {
     Field(MemberId),
@@ -749,6 +753,8 @@ pub struct ObjType {
     pub provided: IntSet<TypeId>,
     /// The obligation witnesses this type provides, by id, sorted.
     pub witness_ids: Box<[u16]>,
+    /// What each field accepts, by field id, as a witness-pool index.
+    pub field_accepts: Box<[u16]>,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
@@ -770,6 +776,7 @@ impl ObjType {
             methods: IntMap::default(),
             provided: IntSet::default(),
             witness_ids: Box::new([]),
+            field_accepts: Box::new([]),
             member_count: 0,
             getter_id: None,
             setter_id: None,
@@ -789,6 +796,7 @@ impl ObjType {
             methods: self.methods.clone(),
             provided: self.provided.clone(),
             witness_ids: self.witness_ids.clone(),
+            field_accepts: self.field_accepts.clone(),
             member_count: self.member_count,
             getter_id: self.getter_id,
             setter_id: self.setter_id,
