@@ -100,8 +100,8 @@ impl<'a> Compiler<'a> {
             let idx = c.member_constant(*member)?;
             let inst = match admits {
                 Some((null_allowed, witnesses)) => {
-                    let allow = c.witness_id_set(witnesses);
-                    Inst::MemberAdmits(idx, *null_allowed, c.ir.add_witness_allow(allow)?)
+                    let allow = c.accepted_witness_set(witnesses, *null_allowed);
+                    Inst::MemberAdmits(idx, c.ir.add_witness_allow(allow)?)
                 },
                 None => Inst::HasMember(idx),
             };

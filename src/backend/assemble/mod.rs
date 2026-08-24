@@ -196,14 +196,12 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(seal, pos);
         }
 
-        BarrierGuard(null_allowed, idx) => {
-            chunk.write(null_allowed as u8, pos);
+        BarrierGuard(idx) => {
             write_u16(chunk, idx, pos);
         }
 
-        MemberAdmits(member, null_allowed, idx) => {
+        MemberAdmits(member, idx) => {
             chunk.write(member, pos);
-            chunk.write(null_allowed as u8, pos);
             write_u16(chunk, idx, pos);
         }
 

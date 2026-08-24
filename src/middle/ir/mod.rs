@@ -11,7 +11,9 @@ use crate::core::objects::TypeId;
 use crate::core::value::Value;
 use crate::frontend::lex::SourcePosition;
 
-/// How a store names the root its write reaches through.
+pub const NULL_WITNESS_ID: u16 = 0;
+
+// How a store names the root its write reaches through.
 pub const WRITE_ROOT_NONE: u8 = 0;
 pub const WRITE_ROOT_LOCAL: u8 = 1;
 pub const WRITE_ROOT_UPVALUE: u8 = 2;
@@ -78,21 +80,13 @@ pub enum Inst {
     /// Puts the root on top of the stash for a root no binding can name. The
     /// stack is left alone. The path builds over the root as if no barrier existed.
     StashRoot,
-    /// Guards an unknown value at a destination: throws any registered witness the destination
-    /// does not allow.
-    BarrierGuard(bool, u16),
-    /// Asserts an opaque callee borrows the guarded argument positions. Operands are the argument
-    /// count, an index into the barrier's owed-obligation names, and an index into the barrier's
-    /// position list.
+    BarrierGuard(u16),
     AssertNoRetain(u8, u16, u16),
     TransferWriteOwnership(u8),
     TransferWriteOwnershipUp(u8),
     /// The container is on the stack, this far below the element it is given.
     TransferWriteOwnershipAt(u8),
     ReleaseWriteOwnership(u8),
-    /// Closes a scope: releases the write-ownership its locals hold, closes the upvalues over
-    /// them, and drops them. The second operand is how many slots the frame should hold as the
-    /// scope leaves, which a debug build checks against the stack it actually finds.
     PopScope(u8, u8),
 
     // Stack / constants
@@ -168,8 +162,7 @@ pub enum Inst {
     Is(TypeId),
     HasMember(u8),
     /// Whether a member satisfies what its declaration admits.
-    MemberAdmits(u8, bool, u16),
-    /// Replaces the top with whether it is a dict or instance, the values a shape can match.
+    MemberAdmits(u8, u16),
     IsShaped,
     ArrayLen,
     /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.

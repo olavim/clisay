@@ -1,4 +1,5 @@
 use super::*;
+use crate::middle::ir::NULL_WITNESS_ID;
 
 macro_rules! num_binop_methods {
     ( $( $name:ident => |$a:ident, $b:ident| $body:expr, $token:literal );+ $(;)? ) => {
@@ -253,11 +254,19 @@ impl Vm {
         }
     }
 
-    /// Reads a barrier's operands: whether null passes, then the pool index of the witnesses it allows.
-    pub(super) fn read_allowed(&mut self) -> (bool, u16) {
-        let null_allowed = self.read_next() != 0;
-        let idx = u16::from_le_bytes([self.read_next(), self.read_next()]);
-        (null_allowed, idx)
+    pub(super) fn read_allowed_witnesses(&mut self) -> u16 {
+        u16::from_le_bytes([self.read_next(), self.read_next()])
+    }
+
+    pub(super) fn accepts_null(&self, allowed: u16) -> bool {
+        self.chunk.witness_allows[allowed as usize].first() == Some(&NULL_WITNESS_ID)
+    }
+
+    pub(super) fn accepts_value(&self, value: Value, allowed: u16) -> bool {
+        match value.is_null() {
+            true => self.accepts_null(allowed),
+            false => !self.carries_disallowed_witness(value, allowed),
+        }
     }
 
     /// Whether the value carries a witness the destination does not allow.
@@ -272,10 +281,13 @@ impl Vm {
     }
 
     pub(super) fn op_barrier_guard(&mut self) -> Result<(), anyhow::Error> {
-        let (null_allowed, allowed) = self.read_allowed();
+        let allowed = self.read_allowed_witnesses();
         let value = self.stack.peek(0);
         if value.is_null() {
-            return if null_allowed { Ok(()) } else { self.error("unexpected null") };
+            return match self.accepts_null(allowed) {
+                true => Ok(()),
+                false => self.error("unexpected null"),
+            };
         }
         if self.carries_disallowed_witness(value, allowed) {
             let bad = self.stack.pop();

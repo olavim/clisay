@@ -545,7 +545,7 @@ impl Vm {
     /// Whether a member satisfies what its declaration admits.
     pub(super) fn op_member_admits(&mut self) {
         let const_idx = self.read_next() as usize;
-        let (null_allowed, allowed) = self.read_allowed();
+        let allowed = self.read_allowed_witnesses();
         let key = self.chunk.constants[const_idx];
         let receiver = self.stack.pop();
 
@@ -554,8 +554,7 @@ impl Vm {
             MemberValue::Method => true,
             // A surface asks for a member, so a receiver without one exposes no surface.
             MemberValue::Absent => false,
-            MemberValue::Value(value) if value.is_null() => null_allowed,
-            MemberValue::Value(value) => !self.carries_disallowed_witness(value, allowed),
+            MemberValue::Value(value) => self.accepts_value(value, allowed),
         };
         self.stack.push(Value::from(admits));
     }

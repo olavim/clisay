@@ -5,7 +5,7 @@ use crate::frontend::lex::Diagnostic;
 
 use crate::core::gc::Gc;
 use crate::middle::hir::TypeId;
-use crate::middle::ir::{Inst, Ir, Label, SourceRole};
+use crate::middle::ir::{Inst, Ir, Label, SourceRole, NULL_WITNESS_ID};
 use crate::middle::bind::{Bindings, FnKind, Place};
 use crate::middle::check::Barriers;
 use crate::middle::signatures::Signatures;
@@ -124,7 +124,7 @@ impl<'a> Compiler<'a> {
 
     fn assign_witness_ids(&mut self) {
         for &decl in self.barriers.witness_decls() {
-            let next = self.witness_ids.len() as u16;
+            let next = self.witness_ids.len() as u16 + 1;
             self.witness_ids.entry(decl).or_insert(next);
         }
         // The VM builds some types itself, so it needs the numbering to mark them the same way.
@@ -142,6 +142,16 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    pub(super) fn accepted_witness_set(&self, decls: &[TypeId], null_allowed: bool) -> Box<[u16]> {
+        let mut ids: Vec<u16> = self.witness_id_set(decls).into_vec();
+        if null_allowed {
+            ids.insert(0, NULL_WITNESS_ID);
+        }
+        ids.into_boxed_slice()
+    }
+
+    /// The ids these declarations are numbered as. `ObjType::witness_ids` lists what a type
+    /// provides, and null is not among them.
     pub(super) fn witness_id_set(&self, decls: &[TypeId]) -> Box<[u16]> {
         let mut ids: Vec<u16> = decls.iter().filter_map(|decl| self.witness_ids.get(decl)).copied().collect();
         ids.sort_unstable();

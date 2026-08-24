@@ -163,9 +163,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_boundary_barrier(&mut self, node: &HirId<HirExpr>, barrier: &Barrier) -> Result<(), anyhow::Error> {
-        let allow = self.witness_id_set(&barrier.allow_witnesses);
+        let allow = self.accepted_witness_set(&barrier.allow_witnesses, barrier.null_allowed);
         let idx = self.ir.add_witness_allow(allow)?;
-        self.emit(Inst::BarrierGuard(barrier.null_allowed, idx), node);
+        self.emit(Inst::BarrierGuard(idx), node);
         Ok(())
     }
 

@@ -33,19 +33,19 @@ match t {
 // 47: LOAD_LOCAL L2
 // 49: GET_INDEX_OR_NULL "x"
 // 51: STORE_LOCAL_POP L3
-// 53: JUMP <72>
+// 53: JUMP <71>
 // 56: LOAD_LOCAL L2
-// 58: MEMBER_ADMITS "x" <0> #0
-// 63: JUMP_IF_FALSE <69>
-// 66: JUMP <78>
-// 69: JUMP <84>
-// 72: PUSH_CONSTANT 0
-// 74: POP
-// 75: JUMP <84>
-// 78: PUSH_CONSTANT 0
-// 80: POP
-// 81: JUMP <84>
-// 84: POP_SCOPE <2> <4>
-// 87: POP_SCOPE <2> <2>
-// 90: PUSH_NULL
-// 91: HALT
+// 58: MEMBER_ADMITS "x" #0
+// 62: JUMP_IF_FALSE <68>
+// 65: JUMP <77>
+// 68: JUMP <83>
+// 71: PUSH_CONSTANT 0
+// 73: POP
+// 74: JUMP <83>
+// 77: PUSH_CONSTANT 0
+// 79: POP
+// 80: JUMP <83>
+// 83: POP_SCOPE <2> <4>
+// 86: POP_SCOPE <2> <2>
+// 89: PUSH_NULL
+// 90: HALT
