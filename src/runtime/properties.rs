@@ -524,13 +524,14 @@ impl Vm {
         let stored = self.stack.peek(0);
         let borrowed = self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
 
+        self.container_took(target, stored, borrowed)?;
+
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target)?,
             ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop)?,
             ObjectKind::Dict => self.set_dict_index(target, prop)?,
             _ => self.error(format!("Invalid property access: {}", target.fmt()))?,
         }
-        self.container_took(target, stored, borrowed)?;
         Ok(())
     }
 
@@ -597,6 +598,8 @@ impl Vm {
         let stored = self.stack.peek(0);
         let borrowed = self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
 
+        self.container_took(target, stored, borrowed)?;
+
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target)?,
             ObjectKind::Array => self.set_native_type_index(self.native_types.array, target, prop)?,
@@ -606,7 +609,6 @@ impl Vm {
             ))?,
             _ => self.error(format!("Invalid property access: {}", target.fmt()))?,
         }
-        self.container_took(target, stored, borrowed)?;
         Ok(())
     }
 
