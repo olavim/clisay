@@ -107,8 +107,7 @@ impl<'a> Checker<'a> {
         ))
     }
 
-    /// Checks a `return <value>` against the declared return shape: a `!` rejects a possibly-null
-    /// or void value, a `?` accepts any value, and a void function may not return a value at all.
+    /// Checks a `return <value>` against the declared return shape.
     pub(super) fn check_return(&mut self, debt: &Debt, shape: ReturnShape, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // A lambda and the program root have no signature, so the return infers what the body produces.
         let admits = match &self.fn_ctx.return_admits {
@@ -119,18 +118,10 @@ impl<'a> Checker<'a> {
         self.ctx.obligation_rule_reject_at(debt, super::ObligationRule::NoReturn, super::Site::Return, node)?;
         self.mark_settled(node, &admits);
 
-        // A lambda or the program root infers its shape from the body, so there is none to check.
-        if shape == ReturnShape::Inferred {
-            return Ok(());
-        }
-        
-        // An unmarked function infers its obligations from what it returns. A bad value is a legal
-        // return that names an obligation.
-        if self.fn_ctx.return_unmarked {
+        if shape == ReturnShape::Inferred || self.fn_ctx.return_unmarked {
             return match debt {
-                Debt::Owed { .. } => Ok(()),
                 Debt::Void => Err(self.error("Cannot return a void result".to_string(), node)),
-                _ => Err(self.error("A void function cannot return a value".to_string(), node)),
+                _ => Ok(()),
             };
         }
         match shape {

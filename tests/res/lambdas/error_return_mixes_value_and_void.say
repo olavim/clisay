@@ -2,3 +2,7 @@ fn source(n)! { return Err("x"); }
 fn ok(n): void fails { if (n > 0) { return; } return source(n); }
 ok(1);
 say bad = (n) => { if (n > 0) { return; } return source(n); }; // error: this lambda returns a value owing 'fails' on some paths and no value on others
+
+// @split
+fn source(n)! { return Err("x"); }
+fn bad(n) { if (n > 0) { return; } return source(n); } // error: 'bad' returns a value owing 'fails' on some paths and no value on others
