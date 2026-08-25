@@ -12,6 +12,28 @@ use crate::core::value::Value;
 use crate::frontend::lex::SourcePosition;
 
 pub const NULL_WITNESS_ID: u16 = 0;
+pub const SLOT_ACCEPTS_SCRIPT_FRAME: u16 = 0;
+pub const SLOT_ACCEPTS_ANYTHING: u16 = u16::MAX;
+
+/// A `to` for a binding no scope exit closes, so it answers for its slot until its frame ends.
+pub const TO_FRAME_END: usize = usize::MAX;
+
+#[derive(Clone, Copy)]
+pub struct SlotAccepts {
+    pub slot: u8,
+    /// The declaration's instruction index.
+    pub from: usize,
+    /// Where the binding's scope ends.
+    pub to: usize,
+    pub accepts: u16,
+}
+
+fn remap_end(old_to_new: &[usize], to: usize) -> usize {
+    match to {
+        TO_FRAME_END => TO_FRAME_END,
+        to => old_to_new[to],
+    }
+}
 
 fn intern_row(pool: &mut Vec<Box<[u16]>>, row: Box<[u16]>, what: &str) -> Result<u16, anyhow::Error> {
     if let Some(i) = pool.iter().position(|existing| **existing == *row) {
@@ -204,6 +226,8 @@ pub struct Ir {
     /// Empty unless check-forcing is on.
     elisions: Vec<usize>,
     param_accepts: Vec<Box<[u16]>>,
+    /// One table per frame, the script's first.
+    slot_accepts: Vec<Vec<SlotAccepts>>,
     /// Extra source positions an instruction needs, keyed by instruction index and role.
     source_map: FnvHashMap<(usize, SourceRole), SourcePosition>,
 }
@@ -235,6 +259,7 @@ impl Ir {
             owed_names: Vec::new(),
             elisions: Vec::new(),
             param_accepts: Vec::new(),
+            slot_accepts: Vec::new(),
             source_map: FnvHashMap::default(),
         }
     }
@@ -357,6 +382,34 @@ impl Ir {
         intern_row(&mut self.param_accepts, accepts, "parameter accept sets")
     }
 
+    pub fn new_slot_accepts_table(&mut self) -> Result<u16, anyhow::Error> {
+        let index = self.slot_accepts.len();
+        if index >= u16::MAX as usize {
+            bail!("Too many frames with their own slots");
+        }
+        self.slot_accepts.push(Vec::new());
+        Ok(index as u16)
+    }
+
+    pub fn end_slot_accepts_from(&mut self, table_id: u16, first_dead: u8) {
+        let at = self.code.len();
+        for entry in self.slot_accepts[table_id as usize].iter_mut() {
+            if entry.slot >= first_dead && entry.to == TO_FRAME_END {
+                entry.to = at;
+            }
+        }
+    }
+
+    /// Records what a binding's slot accepts, from its declaration onward.
+    pub fn record_slot_accepts(&mut self, table: u16, slot: u8, accepts: u16) {
+        let from = self.code.len();
+        self.slot_accepts[table as usize].push(SlotAccepts { slot, from, to: TO_FRAME_END, accepts });
+    }
+
+    pub fn slot_accepts(&self) -> &[Vec<SlotAccepts>] {
+        &self.slot_accepts
+    }
+
     pub fn param_accepts(&self) -> &[Box<[u16]>] {
         &self.param_accepts
     }
@@ -447,6 +500,9 @@ impl Ir {
             builtin_layouts: self.builtin_layouts,
             witness_allows: self.witness_allows,
             param_accepts: self.param_accepts,
+            slot_accepts: self.slot_accepts.into_iter()
+                .map(|body| body.into_iter().map(|e| SlotAccepts { from: old_to_new[e.from], to: remap_end(&old_to_new, e.to), ..e }).collect())
+                .collect(),
         }
     }
 }

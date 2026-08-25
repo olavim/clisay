@@ -107,8 +107,10 @@ impl<'a> Compiler<'a> {
             HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
             // Traits emit no runtime type; they exist only for self-containment validation in resolve.
             HirStmt::Trait(_) => {},
-            HirStmt::Say(HirFieldInit { value, .. }) => {
+            HirStmt::Say(field @ HirFieldInit { value, .. }) => {
                 let slot = self.bindings.slot(stmt_id);
+                let accepts = self.accepts_index(&field.clause.owed(), field.nullable)?;
+                self.ir.record_slot_accepts(self.slot_table, slot, accepts);
 
                 let inst = if let Some(expr) = value {
                     let saved = self.receiving_slot.replace(WriteOwnershipHolderPlace::Local(slot));

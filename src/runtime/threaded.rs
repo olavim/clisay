@@ -196,9 +196,9 @@ fn store_local(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value
     let mut ip = ip;
     let idx = rb!(ip) as usize;
     let value = peek!(top, 0);
-    let into = unsafe { base.add(idx) };
-    vm.carry_borrowed(unsafe { top.sub(1) }, into);
-    unsafe { *into = value };
+    vm.carry_borrowed(unsafe { top.sub(1) }, unsafe { base.add(idx) });
+    let accepted = vm.accept_slot_write(base, idx as u8, ip, top, value)?;
+    vm.write_slot(accepted);
     become dispatch(vm, ip, top, base)
 }
 
@@ -209,7 +209,8 @@ fn store_local_pop(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut V
     let into = unsafe { base.add(idx) };
     vm.carry_borrowed(unsafe { top.sub(1) }, into);
     let value = pop!(vm, top);
-    unsafe { *into = value };
+    let accepted = vm.accept_slot_write(base, idx as u8, ip, top, value)?;
+    vm.write_slot(accepted);
     become dispatch(vm, ip, top, base)
 }
 
@@ -238,9 +239,7 @@ fn store_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Val
     vm.stack.set_top(top);
     vm.ip = ip;
     vm.hand_write_ownership_to_upvalue(idx, value)?;
-    let upvalue = vm.get_upvalue(idx);
-    crate::core::objects::record_escape(value);
-    unsafe { *(*upvalue).location = value };
+    vm.store_through_upvalue(idx, value)?;
     become dispatch(vm, ip, top, base)
 }
 
@@ -260,9 +259,7 @@ fn store_upvalue_pop(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut
     vm.stack.set_top(top);
     vm.ip = ip;
     vm.hand_write_ownership_to_upvalue(idx, value)?;
-    let upvalue = vm.get_upvalue(idx);
-    crate::core::objects::record_escape(value);
-    unsafe { *(*upvalue).location = value };
+    vm.store_through_upvalue(idx, value)?;
     become dispatch(vm, ip, top, base)
 }
 
@@ -584,7 +581,10 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
             false => 0,
         };
 
-        if objects::arguments_may_carry_witness(stack_start, arg_count) || retain_mask | needs_borrow_mark != 0 || vm.forced {
+        // Both of the transfer's own early-outs, asked before the call rather than inside it. That
+        // duplication is deliberate: skipping the call is worth 3.8% on a recursive one-argument
+        // call, and the closure stays unread, which is what the cache exists for.
+        if retain_mask | needs_borrow_mark != 0 || vm.forced || objects::any_argument_null_or_container(stack_start, arg_count) {
             vm.transfer_argument_write_ownership(retain_mask, escape_mask, needs_borrow_mark, unsafe { (*closure).param_accepts }, stack_start, arg_count, ReceiverSlot::Callee)?;
         }
     }

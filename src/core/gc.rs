@@ -129,7 +129,8 @@ impl Gc {
         mut_receiver: bool,
         retain_receiver: bool,
         receiver_needs_borrow: bool,
-        param_accepts: u16
+        param_accepts: u16,
+        slot_accepts: u16
     ) -> *mut ObjClosure {
         let count = upvalues.len();
         let size = ObjClosure::alloc_size(count);
@@ -149,7 +150,8 @@ impl Gc {
                 retain_mask,
                 needs_borrow_mark,
                 receiver_needs_borrow,
-                param_accepts
+                param_accepts,
+                slot_accepts
             });
             std::ptr::copy_nonoverlapping(
                 upvalues.as_ptr(),

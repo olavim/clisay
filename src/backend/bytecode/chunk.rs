@@ -3,7 +3,7 @@ use std::mem;
 use fnv::{FnvHashMap, FnvHashSet};
 
 use crate::frontend::lex::SourcePosition;
-use crate::middle::ir::SourceRole;
+use crate::middle::ir::{SlotAccepts, SourceRole};
 use crate::core::gc::{Gc, GcTraceable};
 use crate::ast::BuiltinType;
 use crate::core::objects::TypeId;
@@ -24,6 +24,7 @@ pub struct BytecodeChunk {
     pub witness_allows: Vec<Box<[u16]>>,
     /// What each callable's parameters accept, by position, as witness-pool indices.
     pub param_accepts: Vec<Box<[u16]>>,
+    pub slot_accepts: Vec<Box<[SlotAccepts]>>,
     /// The obligation each survive barrier's guarded positions owe, by pool index.
     pub owed_names: Vec<Box<[(u8, Box<str>)]>>,
     pub code: Vec<OpCode>,
@@ -44,6 +45,7 @@ impl BytecodeChunk {
             builtin_layouts: std::array::from_fn(|_| None),
             witness_allows: Vec::new(),
             param_accepts: Vec::new(),
+            slot_accepts: Vec::new(),
             owed_names: Vec::new(),
             code: Vec::new(),
             constants: Vec::new(),

@@ -47,14 +47,16 @@ impl<'a> Compiler<'a> {
             },
             HirMatcher::Binder(name) => {
                 let Some(binders) = binders else { compiler_error!(self, node, "a `has` matcher cannot bind"); };
-                self.emit(Inst::StoreLocalPop(slot_of(binders, *name)), node);
+                let slot = slot_of(binders, *name);
+                self.emit(Inst::StoreLocalPop(slot), node);
                 self.emit(Inst::PushTrue, node);
                 Ok(())
             },
             HirMatcher::As(name, inner) => {
                 let Some(binders) = binders else { compiler_error!(self, node, "a `has` matcher cannot bind"); };
                 self.emit(Inst::Dup, node);
-                self.emit(Inst::StoreLocalPop(slot_of(binders, *name)), node);
+                let slot = slot_of(binders, *name);
+                self.emit(Inst::StoreLocalPop(slot), node);
                 self.compile_matcher(inner, Some(binders), node)
             },
             HirMatcher::Type { nominal, name, shape } => self.compile_type(matcher, *nominal, *name, shape, binders, node),

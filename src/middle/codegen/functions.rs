@@ -110,15 +110,13 @@ impl<'a> Compiler<'a> {
         let body = self.ir.new_label();
         self.ir.bind(body);
 
-        let caller_frame_slot_count = self.frame_slot_count;
-        // A binder names a slot of the frame that made it, so a nested body starts with none.
-        let caller_binders = std::mem::take(&mut self.handle_binder_slots);
-        self.compile_entry_steps(&decl.params)?;
-        self.frame_slot_count = self.bindings.frame_slot_count_at(&decl.body) as usize;
-        self.expression(&decl.body)?;
-        self.exit_function(&decl.body, kind);
-        self.frame_slot_count = caller_frame_slot_count;
-        self.handle_binder_slots = caller_binders;
+        let (_, slot_accepts) = self.with_frame(|c| {
+            c.compile_entry_steps(&decl.params)?;
+            c.frame_slot_count = c.bindings.frame_slot_count_at(&decl.body) as usize;
+            c.expression(&decl.body)?;
+            c.exit_function(&decl.body, kind);
+            Ok(())
+        })?;
         self.ir.bind(skip);
 
         self.fn_kinds.pop();
@@ -139,7 +137,7 @@ impl<'a> Compiler<'a> {
         let retain_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_retain());
 
         let param_accepts = self.param_accepts(callable)?;
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, masks.needs_borrow_mark, mut_receiver, retain_receiver, masks.receiver_needs_borrow, param_accepts));
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, masks.needs_borrow_mark, mut_receiver, retain_receiver, masks.receiver_needs_borrow, param_accepts, slot_accepts));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))

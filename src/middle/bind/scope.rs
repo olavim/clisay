@@ -31,7 +31,6 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Records that a nested body names this local, so it outlives its own frame's control.
     fn mark_captured(&mut self, index: usize) {
         self.locals[index].is_captured = true;
         if let Some(decl) = self.locals[index].decl {
@@ -39,7 +38,6 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Pushes a local and answers its absolute index. Every local is introduced through here.
     fn push_local(&mut self, name: Option<Symbol>, decl: Option<usize>) -> Result<usize, anyhow::Error> {
         if self.locals.len() - self.local_offset() >= u8::MAX as usize {
             return Err(self.too_many_locals());
@@ -65,7 +63,6 @@ impl<'a> Resolver<'a> {
         self.bindings.exit_frame_slot_counts.insert(scope.index(), count);
     }
 
-    /// The index the current frame's slots are counted from.
     fn local_offset(&self) -> usize {
         self.fn_frames.last().map_or(0, |frame| frame.local_offset)
     }
@@ -74,12 +71,9 @@ impl<'a> Resolver<'a> {
         (index - self.local_offset()) as u8
     }
 
-    /// Declares a binding. `decl` is the node it comes from.
     pub(super) fn declare_local(&mut self, name: Symbol, decl: usize) -> Result<u8, anyhow::Error> {
         #[cfg(debug_assertions)]
         self.bindings.note_declaration(decl);
-
-        // Duplicate-name collisions across the whole namespace are caught earlier, in `middle::names`.
         let index = self.push_local(Some(name), Some(decl))?;
         Ok(self.frame_slot(index))
     }
@@ -90,7 +84,6 @@ impl<'a> Resolver<'a> {
         Ok(self.frame_slot(index))
     }
 
-    /// Declares a matcher's binders as locals, pairing each with the slot it stores into.
     pub(super) fn declare_binders(&mut self, matcher: &HirId<HirMatcher>, decl: usize) -> Result<Vec<(Symbol, u8)>, anyhow::Error> {
         let mut binders = Vec::new();
         for name in self.hir.get(matcher).binders(self.hir) {
@@ -119,8 +112,7 @@ impl<'a> Resolver<'a> {
     fn resolve_frame_upvalue(&mut self, name: Symbol, frame_idx: usize, max_type_frame: Option<u8>) -> Result<Option<(u8, Option<usize>)>, anyhow::Error> {
         let type_frame = self.fn_frames[frame_idx].type_frame;
 
-        // A member-resolvable name must not capture past the type frame that owns it: stop if this
-        // frame is outside that type (no type frame, or one nested shallower than the owner).
+        // A member-resolvable name must not capture past the type frame that owns it.
         if let Some(max) = max_type_frame {
             if type_frame.map_or(true, |cf| cf < max) {
                 return Ok(None);
@@ -204,15 +196,11 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// A bare name that names a field of the enclosing type, with where its receiver sits. A bare
-    /// field is `this.<name>`, so a nested body captures the receiver exactly as a written `this` does.
     fn this_field(&mut self, name: Symbol) -> Result<Option<(u8, Receiver)>, anyhow::Error> {
         let Some(id) = self.this_field_id(name) else { return Ok(None) };
         Ok(self.receiver_place()?.map(|receiver| (id, receiver)))
     }
 
-    /// Where the receiver sits for the body being resolved. The receiver is slot 0 of the nearest
-    /// method or factory frame, so a nested body reaches it as an upvalue like any captured local.
     fn receiver_place(&mut self) -> Result<Option<Receiver>, anyhow::Error> {
         let Some(owner) = self.fn_frames.iter().rposition(|frame| frame.owns_receiver) else {
             return Ok(None);
@@ -223,7 +211,6 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Chains one upvalue per frame between the receiver's owner and the body naming it.
     fn capture_this(&mut self, owner: usize) -> Result<u8, anyhow::Error> {
         self.mark_captured(self.fn_frames[owner].local_offset);
         let mut idx = self.add_upvalue(0, true, owner + 1)?;

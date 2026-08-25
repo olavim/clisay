@@ -266,6 +266,8 @@ macro_rules! as_short {
     ($l:expr, $r:expr) => { ($l as u16) | (($r as u16) << 8) }
 }
 
+mod accepts;
+mod writes;
 mod calls;
 mod closures;
 mod properties;

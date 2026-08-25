@@ -7,7 +7,7 @@ use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::opcode;
 use crate::core::objects::TypeMember;
 use crate::frontend::lex::SourcePosition;
-use crate::middle::ir::{Inst, Ir, Label};
+use crate::middle::ir::{TO_FRAME_END, SlotAccepts, Inst, Ir, Label};
 
 pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     let mut offsets = Vec::with_capacity(ir.code().len());
@@ -40,6 +40,9 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
 
     chunk.witness_allows = ir.witness_allows().to_vec();
     chunk.param_accepts = ir.param_accepts().to_vec();
+    chunk.slot_accepts = ir.slot_accepts().iter()
+        .map(|body| body.iter().map(|e| SlotAccepts { from: offsets[e.from], to: if e.to == TO_FRAME_END { TO_FRAME_END } else { offsets[e.to] }, ..*e }).collect())
+        .collect();
     chunk.owed_names = ir.owed_names().to_vec();
     chunk.constants = ir.constants().to_vec();
     chunk.elisions = ir.elisions().iter().map(|&idx| offsets[idx]).collect();

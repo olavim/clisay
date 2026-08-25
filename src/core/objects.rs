@@ -508,7 +508,8 @@ pub struct ObjFn {
     pub retain_mask: u64,
     pub needs_borrow_mark: u64,
     pub receiver_needs_borrow: bool,
-    pub param_accepts: u16
+    pub param_accepts: u16,
+    pub slot_accepts: u16
 }
 
 impl ObjFn {
@@ -521,7 +522,7 @@ impl ObjFn {
         CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark, param_accepts: self.param_accepts }
     }
 
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, needs_borrow_mark: u64, mut_receiver: bool, retain_receiver: bool, receiver_needs_borrow: bool, param_accepts: u16) -> ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, needs_borrow_mark: u64, mut_receiver: bool, retain_receiver: bool, receiver_needs_borrow: bool, param_accepts: u16, slot_accepts: u16) -> ObjFn {
         debug_assert_eq!(needs_borrow_mark & retain_mask, 0, "a taken parameter asked for a borrow mark");
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
@@ -535,7 +536,8 @@ impl ObjFn {
             retain_mask,
             needs_borrow_mark,
             receiver_needs_borrow,
-            param_accepts
+            param_accepts,
+            slot_accepts
         }
     }
 }
@@ -615,7 +617,8 @@ pub struct ObjClosure {
     pub retain_mask: u64,
     pub needs_borrow_mark: u64,
     pub receiver_needs_borrow: bool,
-    pub param_accepts: u16
+    pub param_accepts: u16,
+    pub slot_accepts: u16
 }
 
 #[derive(Clone, Copy)]
@@ -716,12 +719,35 @@ impl GcTraceable for ObjBoundMethod {
 
 type MemberId = u8;
 
+#[inline]
 pub fn arguments_may_carry_witness(stack_start: *mut Value, arity: usize) -> bool {
     (0..arity).any(|i| may_carry_witness(unsafe { *stack_start.add(i + 1) }))
 }
 
+#[inline]
+pub fn any_argument_null_or_container(stack_start: *mut Value, arity: usize) -> bool {
+    (0..arity).any(|i| {
+        let value = unsafe { *stack_start.add(i + 1) };
+        value.is_null() || is_container(value)
+    })
+}
+
+#[inline]
 pub fn may_carry_witness(value: Value) -> bool {
-    !value.is_number() && !value.is_bool()
+    if value.is_number() || value.is_bool() {
+        return false;
+    }
+
+    if value.is_null() {
+        return true;
+    }
+
+    if !value.is_object() || value.as_object().kind() != ObjectKind::Instance {
+        return false;
+    }
+
+    let ty = unsafe { &*(*value.as_object().as_instance_ptr()).ty };
+    !ty.witness_ids.is_empty()
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -936,7 +962,8 @@ impl GcTraceable for ObjInstance {
 pub struct ObjUpvalue {
     pub header: ObjectHeader,
     pub location: *mut Value,
-    pub closed: Value
+    pub closed: Value,
+    pub accepts: u16
 }
 
 impl ObjUpvalue {
@@ -944,11 +971,12 @@ impl ObjUpvalue {
         std::ptr::eq(self.location as *const Value, &raw const self.closed)
     }
 
-    pub fn new(location: *mut Value) -> ObjUpvalue {
+    pub fn new(location: *mut Value, accepts: u16) -> ObjUpvalue {
         ObjUpvalue {
             header: ObjectHeader::new(ObjectKind::Upvalue),
             location,
-            closed: Value::NULL
+            closed: Value::NULL,
+            accepts
         }
     }
 

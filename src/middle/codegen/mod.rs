@@ -6,7 +6,7 @@ use crate::frontend::lex::Diagnostic;
 use crate::core::gc::Gc;
 use crate::middle::hir::TypeId;
 use crate::middle::obligations::Obligations;
-use crate::middle::ir::{Inst, Ir, Label, SourceRole, NULL_WITNESS_ID};
+use crate::middle::ir::{Inst, Ir, Label, SourceRole, NULL_WITNESS_ID, SLOT_ACCEPTS_SCRIPT_FRAME};
 use crate::middle::bind::{Bindings, FnKind, Place};
 use crate::middle::check::Barriers;
 use crate::middle::signatures::Signatures;
@@ -70,6 +70,8 @@ pub struct Compiler<'a> {
     /// Each live `?? e =>` binder.
     handle_binder_slots: Vec<(u8, u8)>,
     frame_slot_count: usize,
+    /// The slot table of the frame being compiled, which its bindings record into.
+    slot_table: u16,
 }
 
 #[macro_export]
@@ -98,12 +100,30 @@ impl<'a> Compiler<'a> {
             witness_ids: FnvHashMap::default(),
             frame_slot_count: 0,
             handle_binder_slots: Vec::new(),
+            slot_table: SLOT_ACCEPTS_SCRIPT_FRAME,
         };
 
         compiler.assign_witness_ids();
         let stmt_id = compiler.hir.get_root();
-        compiler.statement(&stmt_id)?;
+        let (_, script) = compiler.with_frame(|c| c.statement(&stmt_id))?;
+        debug_assert_eq!(script, SLOT_ACCEPTS_SCRIPT_FRAME, "the script's frame is the first one opened");
         Ok(compiler.finish())
+    }
+
+    fn with_frame<R>(&mut self, body: impl FnOnce(&mut Self) -> Result<R, anyhow::Error>) -> Result<(R, u16), anyhow::Error> {
+        let caller_slot_count = self.frame_slot_count;
+        // A binder names a slot of the frame that made it, so a nested frame starts with none.
+        let caller_binders = std::mem::take(&mut self.handle_binder_slots);
+        let caller_table = self.slot_table;
+        self.slot_table = self.ir.new_slot_accepts_table()?;
+        let table = self.slot_table;
+
+        let result = body(self);
+
+        self.frame_slot_count = caller_slot_count;
+        self.handle_binder_slots = caller_binders;
+        self.slot_table = caller_table;
+        Ok((result?, table))
     }
 
     fn place(&self, node: &HirId<HirExpr>) -> Place {
@@ -143,7 +163,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// What a destination accepts, given the obligations its clause names.
     pub(super) fn accepts_index(&mut self, owed: &Obligations, nullable: bool) -> Result<u16, anyhow::Error> {
         let witnesses: Vec<TypeId> = self.sigs.object_witnesses()
             .filter(|(ob, _)| owed.contains(ob) || !self.sigs.obligation_rules_of(*ob).before_drop)
@@ -213,6 +232,10 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
         let slot_count = self.bindings.exit_frame_slot_count_at(node_id);
+        // Bind says how many slots survive the exit, so the rest stop answering here whatever
+        // binding form took them.
+        let first_dead = slot_count.saturating_sub(count as u8);
+        self.ir.end_slot_accepts_from(self.slot_table, first_dead);
         self.emit(Inst::PopScope(count, slot_count), node_id);
         Ok(())
     }

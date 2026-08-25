@@ -255,6 +255,27 @@ impl Vm {
         ))
     }
 
+
+    pub(super) fn running_slot_table(&self) -> u16 {
+        let closure = unsafe { (*self.frames.top()).closure };
+        match closure.is_null() {
+            true => ir::SLOT_ACCEPTS_SCRIPT_FRAME,
+            false => unsafe { (*closure).slot_accepts },
+        }
+    }
+
+    pub(super) fn slot_accepts_at(&self, slot: u8, at: usize) -> u16 {
+        self.slot_accepts_in(self.running_slot_table(), slot, at)
+    }
+
+    pub(super) fn slot_accepts_in(&self, table: u16, slot: u8, at: usize) -> u16 {
+        let Some(rows) = self.chunk.slot_accepts.get(table as usize) else { return ir::SLOT_ACCEPTS_ANYTHING };
+        rows.iter().rev()
+            .find(|r| r.slot == slot && r.from <= at && at < r.to)
+            .map_or(ir::SLOT_ACCEPTS_ANYTHING, |r| r.accepts)
+    }
+
+
     #[inline]
     pub(super) fn check_arguments_accepted(&mut self, param_accepts: u16, stack_start: *mut Value, arity: usize) -> Result<(), anyhow::Error> {
         if !objects::arguments_may_carry_witness(stack_start, arity) {
@@ -280,25 +301,22 @@ impl Vm {
 
     #[cold]
     fn store_field(&mut self, instance_ref: *mut ObjInstance, field: u8, value: Value) -> Result<(), anyhow::Error> {
-        if objects::may_carry_witness(value) {
-            self.check_into_field(instance_ref, field, value)?;
-        }
-        let instance = unsafe { &mut *instance_ref };
-
         #[cfg(debug_assertions)]
-        assert_field_slot(instance, field);
+        assert_field_slot(unsafe { &*instance_ref }, field);
 
-        instance.set(field, value);
+        let accepted = self.accept_field_write(instance_ref, field, value)?;
+        self.write_field(accepted);
         Ok(())
     }
 
     /// Refuses a value the field does not accept.
     #[cold]
-    fn check_into_field(&mut self, instance_ref: *mut ObjInstance, field: u8, value: Value) -> Result<(), anyhow::Error> {
+    /// What a field accepts. A field id the type does not have refuses nothing.
+    pub(super) fn field_accepts(&self, instance_ref: *mut ObjInstance, field: u8) -> u16 {
         let ty = unsafe { &*(*instance_ref).ty };
-        let Some(&allowed) = ty.field_accepts.get(field as usize) else { return Ok(()) };
-        self.check_value_accepted(value, allowed)
+        ty.field_accepts.get(field as usize).copied().unwrap_or(ir::SLOT_ACCEPTS_ANYTHING)
     }
+
 
     fn set_instance_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
         let instance_ref = target.as_object().as_instance_ptr();
