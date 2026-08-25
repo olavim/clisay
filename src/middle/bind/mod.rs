@@ -546,12 +546,20 @@ impl<'a> Resolver<'a> {
                 HirStmt::Trait(decl) => (decl.name, true, false),
                 _ => continue,
             };
+
             if names_a_type {
                 self.type_scope.push(TypeInScope { name, depth: self.scope_depth });
                 self.type_index.insert(name, *stmt_id);
             }
+
             if takes_slot {
                 self.declare_local(name, stmt_id.index())?;
+            }
+
+            if let HirStmt::Type(decl) = self.hir.get(stmt_id) {
+                let layout = self.build_type_layout(decl)?;
+                self.bindings.types.insert(*stmt_id, layout);
+                self.record_public_members(stmt_id, &decl.pub_members);
             }
         }
         Ok(())

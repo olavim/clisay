@@ -6,6 +6,15 @@ use crate::middle::bind::FnKind;
 use super::{Compiler, WriteOwnershipHolderPlace, TryCatchPosition, TryFrame};
 
 
+/// Whether a statement's name takes a slot the hoisting run reserves at the top of its scope.
+fn reserves_a_slot(stmt: &HirStmt) -> bool {
+    match stmt {
+        HirStmt::Fn(_) => true,
+        HirStmt::Type(decl) => decl.builtin.is_none(),
+        _ => false,
+    }
+}
+
 impl<'a> Compiler<'a> {
     pub (super) fn statement(&mut self, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
         self.frame_slot_count = self.bindings.frame_slot_count_at(stmt_id) as usize;
@@ -219,10 +228,60 @@ impl<'a> Compiler<'a> {
 
     fn statement_body(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         self.hoist_declarations(body)?;
-        for stmt_id in body {
+
+        // A declaration is built as soon as the locals its closures capture are live. One that
+        // captures nothing is built at the top of the scope, so its name works above its own line.
+        let mut waiting: Vec<(usize, u8)> = body.iter().enumerate()
+            .filter(|(_, s)| reserves_a_slot(self.hir.get(s)))
+            .map(|(i, s)| (i, self.captured_slots(s).max().unwrap_or(0)))
+            .collect();
+        // The hoisting run above reserved every declaration's slot, so those are already live.
+        let mut live = body.iter().filter(|s| reserves_a_slot(self.hir.get(s)))
+            .map(|s| self.bindings.slot(s)).max().unwrap_or(0);
+
+        self.build_ready_declarations(body, &mut waiting, live)?;
+        for (i, stmt_id) in body.iter().enumerate() {
+            match waiting.iter().position(|&(w, _)| w == i) {
+                // A declaration still waiting at its own line is built here.
+                Some(pos) => { waiting.remove(pos); },
+                // A declaration missing from the list was built above.
+                None if reserves_a_slot(self.hir.get(stmt_id)) => continue,
+                None => {},
+            }
             self.statement(stmt_id)?;
+            if let HirStmt::Say(_) = self.hir.get(stmt_id) {
+                live = live.max(self.bindings.slot(stmt_id));
+                self.build_ready_declarations(body, &mut waiting, live)?;
+            }
         }
         Ok(())
+    }
+
+    fn build_ready_declarations(&mut self, body: &[HirId<HirStmt>], waiting: &mut Vec<(usize, u8)>, live: u8) -> Result<(), anyhow::Error> {
+        while let Some(pos) = waiting.iter().position(|&(_, needs)| needs <= live) {
+            let (index, _) = waiting.remove(pos);
+            self.statement(&body[index])?;
+        }
+        Ok(())
+    }
+
+    /// The frame slots a declaration's closures capture. An upvalue of the enclosing frame reads
+    /// the closure's own array rather than a slot, so it never holds a declaration back.
+    fn captured_slots(&self, stmt: &HirId<HirStmt>) -> impl Iterator<Item = u8> + '_ {
+        let bodies: Vec<HirId<HirExpr>> = match self.hir.get(stmt) {
+            HirStmt::Fn(decl) => vec![decl.body],
+            HirStmt::Type(decl) => std::iter::once(&decl.init).chain(&decl.methods)
+                .filter_map(|s| match self.hir.get(s) {
+                    HirStmt::Fn(decl) => Some(decl.body),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        bodies.into_iter()
+            .flat_map(|b| self.bindings.upvalues(&b).to_vec())
+            .filter(|u| u.is_local)
+            .map(|u| u.location)
     }
 
     pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<HirId<HirStmt>>, node_id: &HirId<T>) -> Result<(), anyhow::Error> {
@@ -253,12 +312,7 @@ impl<'a> Compiler<'a> {
 
     fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
-            let reserves = match self.hir.get(stmt_id) {
-                HirStmt::Fn(_) => true,
-                HirStmt::Type(decl) => decl.builtin.is_none(),
-                _ => false,
-            };
-            if reserves {
+            if reserves_a_slot(self.hir.get(stmt_id)) {
                 self.emit(Inst::PushNull, stmt_id);
             }
         }

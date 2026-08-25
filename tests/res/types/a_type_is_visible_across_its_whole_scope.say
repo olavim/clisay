@@ -1,0 +1,20 @@
+fn make()! { return T{ v: 1 }; }
+type T { pub v; }
+print(make().v); // expect: 1
+
+// @split
+{
+    fn make()! { return T{ v: 2 }; }
+    type T { pub v; }
+    print(make().v); // expect: 2
+}
+
+// @split
+fn make()! { return T{ nope: 1 }; } // error: 'T' has no field 'nope'
+type T { pub v; }
+make();
+
+// @split
+{ type T { pub v; } }
+fn make()! { return T{ v: 1 }; } // error: Undefined variable 'T'
+make();

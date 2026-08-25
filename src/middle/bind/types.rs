@@ -121,7 +121,7 @@ impl<'a> Resolver<'a> {
         &self.type_frames.last().unwrap().layout
     }
 
-    fn build_type_layout(&self, decl: &HirTypeDecl) -> Result<TypeLayout, anyhow::Error> {
+    pub(super) fn build_type_layout(&self, decl: &HirTypeDecl) -> Result<TypeLayout, anyhow::Error> {
         if decl.fields.len() + decl.methods.len() >= u8::MAX as usize {
             bail!("Too many members in type '{}'", self.hir.text(decl.name));
         }
@@ -190,8 +190,8 @@ impl<'a> Resolver<'a> {
 
         self.enter_scope();
 
-        let layout = self.build_type_layout(decl)?;
-        self.push_type_frame(layout.clone(), decl);
+        let layout = self.bindings.layout_of_decl(stmt).expect("hoisting builds every type's layout").clone();
+        self.push_type_frame(layout, decl);
 
         // Method bodies resolve under the declaring trait's private scope.
         let outer_trait = self.current_trait.take();
@@ -209,13 +209,10 @@ impl<'a> Resolver<'a> {
         self.current_trait = outer_trait;
         self.type_frames.pop();
         self.exit_scope(stmt);
-
-        self.bindings.types.insert(*stmt, layout);
-        self.record_public_members(stmt, &decl.pub_members);
         Ok(())
     }
 
-    fn record_public_members(&mut self, stmt: &HirId<HirStmt>, members: &IndexSet<Symbol>) {
+    pub(super) fn record_public_members(&mut self, stmt: &HirId<HirStmt>, members: &IndexSet<Symbol>) {
         self.bindings.surfaces.insert(*stmt, members.iter().copied().collect());
     }
 
