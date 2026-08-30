@@ -39,13 +39,6 @@ pub enum Receiver {
     Upvalue(u8),
 }
 
-/// A local cleanup emitted when a scope exits, top of stack first.
-#[derive(Clone, Copy)]
-pub enum Cleanup {
-    Pop,
-    CloseUpvalue(u8),
-}
-
 #[derive(Clone, Copy)]
 pub enum FnKind {
     Function,
@@ -152,6 +145,8 @@ pub struct Bindings {
     members: FnvHashMap<HirId<HirExpr>, u8>,
     /// `say`/`fn`/`type` statements => the local slot they occupy.
     slots: FnvHashMap<HirId<HirStmt>, u8>,
+    /// Identifier uses => the node that declared the binding they reach.
+    decls: FnvHashMap<HirId<HirExpr>, usize>,
     /// Function bodies => the captured upvalues of that function.
     upvalues: FnvHashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
     /// Type declarations => their member layout.
@@ -159,8 +154,12 @@ pub struct Bindings {
     /// Type/trait declaration => its public member names, for the `x has T` surface form. A type
     /// contributes its public members; a trait its declared surface.
     surfaces: FnvHashMap<HirId<HirStmt>, Vec<Symbol>>,
-    /// Scope nodes (by HIR node index) => locals to clean up on exit.
-    cleanups: FnvHashMap<usize, Vec<Cleanup>>,
+    /// Statements and function bodies (by HIR node index) => frame slots live where they begin.
+    frame_slot_counts: FnvHashMap<usize, u8>,
+    /// Scope nodes (by HIR node index) => frame slots live where they end.
+    exit_frame_slot_counts: FnvHashMap<usize, u8>,
+    /// Scope nodes (by HIR node index) => how many locals die on exit.
+    cleanups: FnvHashMap<usize, u8>,
     /// Declaration nodes whose binding some nested body captures. A binding absent here is named by
     /// nothing but its own frame.
     captured: FnvHashSet<usize>,
@@ -224,6 +223,10 @@ impl Bindings {
         self.slots[id]
     }
 
+    pub fn declaring_node(&self, id: &HirId<HirExpr>) -> Option<usize> {
+        self.decls.get(id).copied()
+    }
+
     pub fn upvalues(&self, body: &HirId<HirExpr>) -> &[UpvalueLocation] {
         &self.upvalues[body]
     }
@@ -252,8 +255,9 @@ impl Bindings {
         self.expr_types.get(id).copied()
     }
 
-    pub fn cleanup<T>(&self, scope: &HirId<T>) -> &[Cleanup] {
-        self.cleanups.get(&scope.index()).map_or(&[], Vec::as_slice)
+    /// How many locals a scope drops on the way out.
+    pub fn cleanup<T>(&self, scope: &HirId<T>) -> u8 {
+        self.cleanups.get(&scope.index()).copied().unwrap_or(0)
     }
 
     pub fn construct_fields(&self, id: &HirId<HirExpr>) -> &[u8] {
@@ -271,16 +275,22 @@ impl Bindings {
     pub fn handle_binder(&self, id: &HirId<HirExpr>) -> u8 {
         self.handle_binders[id]
     }
+
+    pub fn frame_slot_count_at<T: 'static>(&self, id: &HirId<T>) -> u8 {
+        self.frame_slot_counts[&id.index()]
+    }
+
+    pub fn exit_frame_slot_count_at<T: 'static>(&self, scope: &HirId<T>) -> u8 {
+        self.exit_frame_slot_counts[&scope.index()]
+    }
 }
 
 struct Local {
-    /// `None` for the callee/`this` slot of a method or factory: it's
-    /// addressed positionally (slot 0), never resolved by name.
+    /// `None` for the callee/`this` slot of a method or factory.
     name: Option<Symbol>,
     depth: u8,
     is_captured: bool,
-    /// The node that declared this binding. `None` where nothing outside
-    /// this pass names the binding.
+    /// The node that declared this binding.
     decl: Option<usize>,
 }
 
@@ -293,7 +303,9 @@ struct TypeInScope {
 
 struct FnFrame {
     upvalues: Vec<UpvalueLocation>,
-    local_offset: u8,
+    name: Symbol,
+    /// Where this frame's slots start in `locals`.
+    local_offset: usize,
     type_frame: Option<u8>,
     /// Whether slot 0 of this frame is the receiver.
     owns_receiver: bool,
@@ -302,11 +314,9 @@ struct FnFrame {
 
 struct TypeFrame {
     layout: TypeLayout,
-    /// Per trait, its private members' plain name -> renamed slot name (from the HIR). The
-    /// resolver scopes a trait body's accesses to its own trait's entry. See `lower::traits`.
+    /// Trait's private members' plain name -> renamed slot name.
     trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
-    /// The plain names of every trait private member (any trait) for diagnostics: an access
-    /// that misses but names one of these is reported as private rather than missing.
+    /// The plain names of every trait private member.
     private_names: HashSet<Symbol>,
 }
 
@@ -352,6 +362,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn statement(&mut self, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
+        self.record_frame_slot_count(stmt_id);
         match self.hir.get(stmt_id) {
             HirStmt::Return(expr) => {
                 if let Some(expr) = expr {
@@ -418,7 +429,7 @@ impl<'a> Resolver<'a> {
                 // the next arm reuse the same slots.
                 let block_base = self.locals.len();
                 let binder_slots = arms.iter()
-                    .map(|a| self.hir.get(&a.matcher).binders(self.hir).len() + a.guard.as_ref().map_or(0, |g| self.hir.condition_binders(g).len()))
+                    .map(|a| self.hir.get(&a.matcher).binders(self.hir).len() + a.guard.as_ref().map_or(0, |g| self.hir.condition_pattern_binders(g).len()))
                     .max().unwrap_or(0);
 
                 let mut arm_binders = Vec::with_capacity(arms.len());
@@ -434,6 +445,12 @@ impl<'a> Resolver<'a> {
                     // stores land inside the reserved block that codegen pushes.
                     if let Some(guard) = &arm.guard {
                         self.resolve_condition(guard, true, guard.index())?;
+                    }
+
+                    // codegen pushes the whole block whatever arm runs, so an arm with fewer
+                    // binders still has all of it below its body.
+                    while self.locals.len() < block_base + binder_slots {
+                        self.declare_temp()?;
                     }
 
                     self.expression(&arm.body)?;
@@ -480,7 +497,7 @@ impl<'a> Resolver<'a> {
                 // Both sides bind the identical set only when the union is non-empty. Then each
                 // side stores into the shared slots, so record its match binders. Otherwise the
                 // sides bind nothing usable, so resolve them only for their scrutinees.
-                let union = self.hir.condition_binders(cond);
+                let union = self.hir.condition_pattern_binders(cond);
                 let record_sides = record && !union.is_empty();
                 let mark = self.locals.len();
                 self.resolve_condition(left, record_sides, decl)?;
@@ -529,12 +546,20 @@ impl<'a> Resolver<'a> {
                 HirStmt::Trait(decl) => (decl.name, true, false),
                 _ => continue,
             };
+
             if names_a_type {
                 self.type_scope.push(TypeInScope { name, depth: self.scope_depth });
                 self.type_index.insert(name, *stmt_id);
             }
+
             if takes_slot {
                 self.declare_local(name, stmt_id.index())?;
+            }
+
+            if let HirStmt::Type(decl) = self.hir.get(stmt_id) {
+                let layout = self.build_type_layout(decl)?;
+                self.bindings.types.insert(*stmt_id, layout);
+                self.record_public_members(stmt_id, &decl.pub_members);
             }
         }
         Ok(())
@@ -617,8 +642,7 @@ impl<'a> Resolver<'a> {
             HirExpr::Propagate(operand) => self.expression(operand)?,
             HirExpr::Handle(left, binder, handler) => {
                 self.expression(left)?;
-                // The binder is live only while resolving the handler. Its slot is where the bad
-                // value already sits, so it is dropped without a cleanup. Slot reused for the result.
+                // The binder lives only while the handler resolves.
                 let mark = self.locals.len();
                 let slot = self.declare_local(*binder, expr.index())?;
                 self.bindings.handle_binders.insert(*expr, slot);

@@ -125,7 +125,12 @@ impl Gc {
         upvalues: &[*mut ObjUpvalue],
         escape_mask: u64,
         retain_mask: u64,
-        mut_receiver: bool
+        needs_borrow_mark: u64,
+        mut_receiver: bool,
+        retain_receiver: bool,
+        receiver_needs_borrow: bool,
+        param_accepts: u16,
+        slot_accepts: u16
     ) -> *mut ObjClosure {
         let count = upvalues.len();
         let size = ObjClosure::alloc_size(count);
@@ -139,9 +144,14 @@ impl Gc {
                 arity,
                 upvalue_count: count as u8,
                 mut_receiver,
+                retain_receiver,
                 ip_start,
                 escape_mask,
-                retain_mask
+                retain_mask,
+                needs_borrow_mark,
+                receiver_needs_borrow,
+                param_accepts,
+                slot_accepts
             });
             std::ptr::copy_nonoverlapping(
                 upvalues.as_ptr(),

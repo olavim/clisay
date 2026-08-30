@@ -1,5 +1,6 @@
-// A persist reached only through recursion still reaches the caller, so the group settles on it.
 type Box { pub var v; init(this) { this.v = 0; } }
 fn keep(mut x, mut sink, n) {
     if (n > 0) { keep(x, sink, n - 1); } else { sink.v = x; } // error: cannot retain a borrowed argument
 }
+say b = mut Box();
+keep(mut [1], b, 2);

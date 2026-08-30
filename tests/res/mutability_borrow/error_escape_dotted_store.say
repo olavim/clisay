@@ -1,7 +1,5 @@
-// A borrow forwarded to a callback that persists it via a dotted field store. The callback keeps
-// what it is given, so the hand-over is refused before the store it would have done.
 type Box { pub var item?; init(this) { } }
 say bx = mut Box();
 fn relay(x, cb) { cb(x); } // error: cannot pass a borrowed argument to a callee that retains it
 say m = mut [1, 2];
-relay(m, v => bx.item = v);
+relay(m, (*v) => bx.item = v);

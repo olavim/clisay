@@ -41,9 +41,7 @@ match v {
 // 64: PUSH_CONSTANT 0
 // 66: POP
 // 67: JUMP <70>
-// 70: POP
-// 71: POP
-// 72: POP
-// 73: POP
-// 74: PUSH_NULL
-// 75: HALT
+// 70: POP_SCOPE <3> <4>
+// 73: POP_SCOPE <1> <1>
+// 76: PUSH_NULL
+// 77: HALT

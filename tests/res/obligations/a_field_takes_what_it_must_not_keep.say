@@ -1,0 +1,18 @@
+type Token { pub v; init(this, *x) { this.v = x; } }
+type Box { pub var item; }
+obligation parsed { witness Token; discharge to use; }
+say b: parsed = Token(1);
+say h = mut Box { item: 0 };
+h.item = b;
+print(h.item.v); // expect: 1
+
+// @split
+type Box { pub var item; }
+fn opaque(f)! { return f(); }
+say h = mut Box { item: 0 };
+try {
+    h.item = opaque(() => Err("boom"));
+    print("unreachable");
+} catch (e) {
+    print("refused"); // expect: refused
+}

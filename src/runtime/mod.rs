@@ -50,8 +50,8 @@ struct CallCache {
     callee: Value,
     closure: *mut ObjClosure,
     ip_start: usize,
-    /// The callee's `*mut` positions.
-    retain_mask: u64
+    retain_mask: u64,
+    needs_borrow_mark: u64
 }
 
 /// A site no instruction pointer can be, which is how an entry says it answers nothing.
@@ -66,7 +66,7 @@ impl IndexCache {
 impl CallCache {
     /// An entry naming nothing. A collection resets to this, since what it named may be freed.
     const fn empty() -> CallCache {
-        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0, retain_mask: 0 }
+        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0, retain_mask: 0, needs_borrow_mark: u64::MAX }
     }
 }
 
@@ -112,11 +112,45 @@ pub struct CallFrame {
 pub enum WriteOwnershipHolder {
     Name(*mut Value),
     Container(Value),
-    /// A container gc found unreachable.
-    Dead,
     /// A `*mut` parameter whose frame is gone. The write-ownership was handed over and the taker
     /// never handed it on, so it belongs to nobody.
     Retired,
+}
+
+/// What a call puts in slot zero.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ReceiverSlot {
+    /// The slot holds the callee, so the call has no receiver.
+    Callee,
+    /// The caller lends its receiver for the call and gets it back, and the body may hand `this`
+    /// on, so the borrow is written down where such a call can read it.
+    BorrowedRecorded,
+    Borrowed,
+    Retained,
+}
+
+impl ReceiverSlot {
+    pub fn declared(retain: bool, records: bool) -> ReceiverSlot {
+        match (retain, records) {
+            (true, _) => ReceiverSlot::Retained,
+            (false, true) => ReceiverSlot::BorrowedRecorded,
+            (false, false) => ReceiverSlot::Borrowed,
+        }
+    }
+}
+
+/// The root used to reach a target.
+#[derive(Clone, Copy)]
+pub enum WriteRoot {
+    /// The write reaches its target through a binding, named by where it lives, as in `a[0] = 1`.
+    /// The flag marks a path through the receiver.
+    Named(*mut Value, bool),
+    /// The write targets an element of an unnamed value, such as `get()[0][0] = 1`. The stash
+    /// holds the container the element came from.
+    Stashed(Value),
+    /// The write targets an unnamed value directly, such as `get()[0] = 1`. This value has no name
+    /// or container. There is nothing to compare a second writer against.
+    NoRoot,
 }
 
 /// Write-ownership of one element, held by a name or by a container.
@@ -147,36 +181,50 @@ pub struct TryFrame {
     stack_start: *mut Value,
     /// The borrow-stack depth when the `try` began, restored on an unwind to this handler.
     borrow_depth: usize,
-    write_depth: usize
+    write_depth: usize,
+    /// The stash depth at the start of the try block.
+    stash_depth: usize
 }
 
 /// An argument a resolved call said it only borrows, watched for as long as that call runs.
-struct BorrowClaim {
+struct BorrowWatch {
     value: Value,
     /// Containers the callee put the argument in.
     into: Vec<Value>,
-    /// The frame depth once the call pushed its own frame. The claim ends when the frames are
-    /// that deep again.
+    /// The frame depth once the call pushed its own frame.
     depth: usize,
-    /// The lowest slot the call's frame owns. A store below it lands in a frame that outlives the call.
+    /// The lowest slot the call's frame owns.
     stack_start: *mut Value,
     position: u8,
+    site: usize,
+}
+
+#[cfg(debug_assertions)]
+struct MarkWatch {
+    slot: *mut Value,
+    position: Option<u8>,
     site: usize,
 }
 
 pub struct Vm {
     /// Forced checks this run reached, for the coverage report.
     elisions_reached: FnvHashSet<usize>,
-    /// Whether this run puts the claims the analysis made on trial.
+    /// Whether this run puts what the analysis concluded on trial.
     forced: bool,
-    /// Arguments a call claimed it borrows, live until that call returns.
-    borrow_claims: Vec<BorrowClaim>,
-    /// Containers a finished call put a borrowed argument into. A collection settles them in place,
-    /// so what is left after it is what outlived the call.
+    /// Arguments a call said it only borrows, watched until that call returns.
+    borrow_watches: Vec<BorrowWatch>,
+    /// Containers a finished call put a borrowed argument into.
     settling_containments: Vec<(Value, u8, usize)>,
-    /// How many claims the run put to a callee.
-    claims_made: usize,
-    claims_settled: usize,
+    watches_made: usize,
+    watches_settled: usize,
+    #[cfg(debug_assertions)]
+    mark_watches: Vec<MarkWatch>,
+    #[cfg(debug_assertions)]
+    watched_receivers: Vec<(Value, usize, usize)>,
+    #[cfg(debug_assertions)]
+    marks_watched: usize,
+    #[cfg(debug_assertions)]
+    marks_read: usize,
     /// Write barriers that had to collect before they could answer, split by what the collection
     /// then said. A trace the barrier did not need is an escape no primitive recorded, so only
     /// those sites are worth naming.
@@ -202,21 +250,24 @@ pub struct Vm {
     borrows: Vec<(Value, bool)>,
     /// Values whose element writer slot is held, innermost last.
     write_ownerships: Vec<WriteOwnership>,
+    root_stash: Vec<Value>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     index_cache: Box<[IndexCache]>,
     call_cache: Box<[CallCache]>,
     out: Vec<String>,
-    /// Whether the receiver of the native about to run is a slot the calling frame declared. Set
-    /// at an invoke that named a root, and cleared once the native has read it. Last in the struct
-    /// so the dispatch loop's fields keep their offsets.
-    native_receiver_is_frame_local: bool
+    /// Whether the receiver of the native about to run is a slot the calling frame declared.
+    native_receiver_is_frame_local: bool,
+    /// One bit per argument of the running native, set where its slot was borrowed at the call.
+    native_borrowed_arguments: u64
 }
 
 macro_rules! as_short {
     ($l:expr, $r:expr) => { ($l as u16) | (($r as u16) << 8) }
 }
 
+mod accepts;
+mod writes;
 mod calls;
 mod closures;
 mod properties;
@@ -300,8 +351,12 @@ impl Host for Vm {
         self.native_receiver_is_frame_local
     }
 
+    fn argument_is_borrowed(&self, position: usize) -> bool {
+        objects::mask_holds(self.native_borrowed_arguments, position)
+    }
+
     fn note_containment(&mut self, container: Value, value: Value) {
-        self.note_claimed_containment(container, value);
+        self.note_container_took_watched_value(container, value);
     }
 }
 
@@ -333,16 +388,25 @@ impl Vm {
             try_frames: Vec::new(),
             borrows: Vec::new(),
             write_ownerships: Vec::new(),
+            root_stash: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
             index_cache: vec![IndexCache::empty(); INDEX_CACHE_SIZE].into_boxed_slice(),
             call_cache: vec![CallCache::empty(); CALL_CACHE_SIZE].into_boxed_slice(),
             elisions_reached: FnvHashSet::default(),
             forced,
-            borrow_claims: Vec::new(),
+            borrow_watches: Vec::new(),
             settling_containments: Vec::new(),
-            claims_made: 0,
-            claims_settled: 0,
+            watches_made: 0,
+            watches_settled: 0,
+            #[cfg(debug_assertions)]
+            mark_watches: Vec::new(),
+            #[cfg(debug_assertions)]
+            watched_receivers: Vec::new(),
+            #[cfg(debug_assertions)]
+            marks_watched: 0,
+            #[cfg(debug_assertions)]
+            marks_read: 0,
             write_barrier_missed_sites: FnvHashSet::default(),
             write_barrier_traced_missed: 0,
             write_barrier_traced_refused: 0,
@@ -351,7 +415,8 @@ impl Vm {
             refuted_write_ownership_release_sites: FnvHashSet::default(),
             refuted_write_ownership_releases: 0,
             out: Vec::new(),
-            native_receiver_is_frame_local: false
+            native_receiver_is_frame_local: false,
+            native_borrowed_arguments: 0
         };
 
         vm.stack.init();
@@ -435,13 +500,11 @@ impl Vm {
         }
 
         vm.report_elision_coverage();
-        vm.report_claim_coverage();
+        vm.report_watch_coverage();
         vm.report_barrier_traces();
         Ok(result?)
     }
 
-    /// How often a write barrier had to collect to answer. Every trace but a genuine refusal is an
-    /// escape that reached no recording point, so this is the list of primitives still to cover.
     fn report_barrier_traces(&self) {
         if std::env::var_os("CLISAY_BARRIER_TRACES").is_none() {
             return;
@@ -476,15 +539,18 @@ impl Vm {
             self.elisions_reached.len(), self.chunk.elisions.len());
     }
 
-    fn report_claim_coverage(&self) {
-        if self.claims_made == 0 {
-            return;
+    fn report_watch_coverage(&self) {
+        if self.watches_made > 0 {
+            eprintln!("watched borrows: {} put on trial, {} settled by a collection",
+                self.watches_made, self.watches_settled);
         }
-        eprintln!("forced claims: {} borrow claims, {} settled by a collection",
-            self.claims_made, self.claims_settled);
+        #[cfg(debug_assertions)]
+        if self.marks_watched > 0 {
+            eprintln!("watched marks: {} taken by forcing, {} reached by a read",
+                self.marks_watched, self.marks_read);
+        }
     }
 
-    /// Whether the instruction now executing is a check the analysis elided and forcing put back.
     fn at_elided_site(&mut self) -> bool {
         if self.chunk.elisions.is_empty() {
             return false;
@@ -497,31 +563,26 @@ impl Vm {
         forced
     }
 
-    /// Error for a forced check that failed.
     #[cold]
-    fn refuted_elision(&self, what: &str) -> Result<(), anyhow::Error> {
+    fn refuted_elision_error(&self, what: &str) -> Result<(), anyhow::Error> {
         self.raise(Diagnostic::new(format!("unsound elision: {what}"), self.get_source_position().clone())
             .with_help("the check pass proved this check unnecessary, and forcing it back on refuted that"))
     }
 
     fn stringify_frame(&self, frame: &CallFrame, ip: *const OpCode) -> String {
         let name = unsafe { &(*(*frame.closure).name).value };
-        format!("\tat {} ({})", name, self.pos_at(ip))
+        format!("\tat {} ({})", name, self.source_pos_at(ip))
     }
 
-    /// The top-level script frame, shown as the base of a call chain.
-    fn stringify_base(&self, ip: *const OpCode) -> String {
-        format!("\tat script ({})", self.pos_at(ip))
+    fn stringify_op(&self, ip: *const OpCode) -> String {
+        format!("\tat script ({})", self.source_pos_at(ip))
     }
 
-    /// The code index of the instruction whose opcode sits just before `ip`.
     fn code_index_at(&self, ip: *const OpCode) -> usize {
         unsafe { ip.offset_from(self.chunk.code.as_ptr()) as usize - 1 }
     }
 
-    /// The source position of the code byte just before `ip`. That is the instruction's own span
-    /// for all but the operand bytes that carry a narrower one of their own.
-    fn pos_at(&self, ip: *const OpCode) -> &SourcePosition {
+    fn source_pos_at(&self, ip: *const OpCode) -> &SourcePosition {
         &self.chunk.code_pos[self.code_index_at(ip)]
     }
 
@@ -529,14 +590,11 @@ impl Vm {
         self.raise(Diagnostic::new(message, self.get_source_position().clone()))
     }
 
-    /// A runtime error whose caret carries a label.
     fn error_labeled(&self, message: impl Into<String>, label: impl Into<String>) -> Result<(), anyhow::Error> {
         self.raise(Diagnostic::new(message, self.get_source_position().clone()).with_label(label))
     }
 
-    /// Traps a mutation of an immutable value. The primary caret marks the mutation site, and a
-    /// context caret points back at where the value became immutable when that site is known.
-    fn error_immutable(&self, target: Value) -> Result<(), anyhow::Error> {
+    fn immutable_error(&self, target: Value) -> Result<(), anyhow::Error> {
         let mut diagnostic = Diagnostic::new(objects::IMMUTABLE_MUTATION, self.get_source_position().clone())
             .with_label("this value is immutable");
         if let Some(origin) = target.as_object().immutable_origin() {
@@ -546,8 +604,7 @@ impl Vm {
         self.raise(diagnostic)
     }
 
-    /// Traps a call whose receiver cannot satisfy the method's declared `mut this`.
-    pub(super) fn error_readonly_receiver(&self, name: *mut ObjString, target: Value) -> Result<(), anyhow::Error> {
+    pub(super) fn readonly_receiver_error(&self, name: *mut ObjString, target: Value) -> Result<(), anyhow::Error> {
         let method = unsafe { &(*name).value };
         let mut diagnostic = Diagnostic::new(format!("`{method}` declares `mut this`, but its receiver is immutable"),
             self.get_source_position().clone())
@@ -559,20 +616,17 @@ impl Vm {
         self.raise(diagnostic)
     }
 
-    /// Whether a receiver fails a method's declared `mut this`.
     #[inline]
     pub(super) fn receiver_rejects_mut(&self, target: Value) -> bool {
         matches!(target.kind(), ValueKind::Object(_)) && target.as_object().is_immutable()
     }
 
-    /// Traps a mutable element landing in an immutable container at construction.
-    fn error_seal(&self) -> Result<(), anyhow::Error> {
+    fn mutable_in_immutable_error(&self) -> Result<(), anyhow::Error> {
         self.raise(Diagnostic::new(objects::MUTABLE_IN_IMMUTABLE, self.get_source_position().clone())
             .with_label("this container is immutable")
             .with_help("an element is mutable; freeze it, or mark the container `mut`"))
     }
 
-    /// Attaches the call trace to a diagnostic and raises it.
     fn raise(&self, diagnostic: Diagnostic) -> Result<(), anyhow::Error> {
         // Each frame is paused on one instruction: the current `ip` for the top frame, and each
         // caller's saved `return_ip` for the frames below it. The base frame has no closure.
@@ -586,7 +640,7 @@ impl Vm {
         // Show the top-level script as the base of the chain, but only when a function frame sits
         // above it. At top level the primary caret already marks the site.
         if frames.len() > 1 {
-            lines.push(self.stringify_base(ip));
+            lines.push(self.stringify_op(ip));
         }
         let trace = lines.join("\n");
 
@@ -621,8 +675,6 @@ impl Vm {
         self.globals.insert(name_ref, value);
     }
 
-    /// Checks the pointer invariants a collection rests on. A root outside the live stack is either
-    /// marked from dead slots or never closed. Both corrupt a value far from where the mistake is.
     #[cfg(debug_assertions)]
     fn verify_roots(&self) {
         let (bottom, top) = (self.stack.bottom(), self.stack.top());
@@ -667,8 +719,10 @@ impl Vm {
             value.mark(&mut self.gc);
         }
 
-        // Both caches key on raw pointers. A sweep can free an interned string or a type and the
-        // next allocation can reuse the block, so a surviving entry would answer for another name.
+        for value in &self.root_stash {
+            value.mark(&mut self.gc);
+        }
+
         for entry in self.call_cache.iter_mut() {
             *entry = CallCache::empty();
         }
@@ -678,29 +732,27 @@ impl Vm {
 
         self.gc.trace();
         self.refute_predicted_write_ownership_releases();
-        self.settle_claimed_containments();
-        self.prune_borrow_claims();
+        self.settle_watched_containments();
+        self.prune_borrow_watches();
         self.prune_write_ownerships();
         self.gc.sweep();
     }
 
-    fn settle_claimed_containments(&mut self) {
+    fn settle_watched_containments(&mut self) {
         #[cfg(debug_assertions)]
         assert!(self.gc.marks_valid(), "a containment settled outside the window where marks say what survived");
         self.settling_containments.retain(|(container, _, _)| container.is_marked());
     }
 
-    fn prune_borrow_claims(&mut self) {
+    fn prune_borrow_watches(&mut self) {
         #[cfg(debug_assertions)]
-        assert!(self.gc.marks_valid(), "a claim pruned outside the window where marks say what survived");
-        self.borrow_claims.retain_mut(|claim| {
-            claim.into.retain(|container| container.is_marked());
-            claim.value.is_marked()
+        assert!(self.gc.marks_valid(), "a watch pruned outside the window where marks say what survived");
+        self.borrow_watches.retain_mut(|watch| {
+            watch.into.retain(|container| container.is_marked());
+            watch.value.is_marked()
         });
     }
 
-    /// Refutes the write-ownership a scope exit would have released. A container still reachable
-    /// here was reachable when the release would have fired, so firing it would have been wrong.
     fn refute_predicted_write_ownership_releases(&mut self) {
         #[cfg(debug_assertions)]
         assert!(self.gc.marks_valid(), "a prediction settled outside the window where marks say what survived");
@@ -712,17 +764,19 @@ impl Vm {
         }
     }
 
-    /// Drops the write-ownership records a collection made pointless.
     fn prune_write_ownerships(&mut self) {
         #[cfg(debug_assertions)]
         assert!(self.gc.marks_valid(), "a claim pruned outside the window where marks say what survived");
-        self.write_ownerships.retain_mut(|held| {
+        self.write_ownerships.retain(|held| {
             if !held.value.is_object() || !held.value.as_object().is_marked() {
                 return false;
             }
+            // A container not reached by the trace no longer holds the value. Clearing the bit
+            // allows subsequent writes to proceed without re-verifying.
             if let WriteOwnershipHolder::Container(container) = held.holder {
                 if !container.is_object() || !container.as_object().is_marked() {
-                    held.holder = WriteOwnershipHolder::Dead;
+                    held.value.as_object().set_write_owned(false);
+                    return false;
                 }
             }
             true
@@ -737,12 +791,10 @@ impl Vm {
     }
 
     pub fn get_source_position(&self) -> &SourcePosition {
-        self.pos_at(self.ip)
+        self.source_pos_at(self.ip)
     }
 
-    /// The code index of the instruction currently executing, for recording where a value was frozen.
     pub fn current_pos_index(&self) -> u32 {
         self.code_index_at(self.ip) as u32
     }
-
 }

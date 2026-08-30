@@ -1,0 +1,12 @@
+fn clean(x) { print(x); }
+fn other(x) { print(x); }
+say var f = clean;
+f = other;
+f(1); // expect: 1
+
+// @split
+
+fn clean(x) { print(x); }
+fn other(x) { print(x); }
+say f = clean;
+f = other; // error: Cannot reassign binding `f`

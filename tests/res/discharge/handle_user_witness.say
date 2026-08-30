@@ -1,0 +1,23 @@
+type W { pub d; init(this, *d) { this.d = d; } }
+obligation warned { witness W; discharge to use; }
+
+fn sink(y)! { return y; }
+
+fn f(x: warned)! {
+    say y = x ?? e => e.d;
+    return sink(y);
+}
+
+print(f(W(1))); // expect: 1
+print(f(7));    // expect: 7
+
+// @split
+type W { pub d; init(this, *d) { this.d = d; } }
+obligation warned { witness W; discharge to use; }
+
+say make = (v: warned) => v;
+
+fn g(x: warned)! { return x ?? e => e.d + 100; }
+
+print(g(make(W(4)))); // expect: 104
+print(g(make(9)));    // expect: 9

@@ -2,10 +2,53 @@
 
 use super::*;
 
+pub(super) struct LambdaSig {
+    params: Vec<Param>,
+    ret: ReturnShape,
+    clause: SlotClause,
+}
+
+impl LambdaSig {
+    fn of(params: Vec<Param>) -> LambdaSig {
+        LambdaSig { params, ret: ReturnShape::Inferred, clause: SlotClause::default() }
+    }
+}
+
 impl<'parser, 'vm> Parser<'parser, 'vm> {
+    pub(super) fn parse_lambda_sig(&mut self) -> Option<LambdaSig> {
+        let start = self.tokens.checkpoint();
+        if let Some(sig) = self.try_parse_lambda_sig() {
+            return Some(sig);
+        }
+        self.tokens.rewind(start);
+        None
+    }
+
+    fn try_parse_lambda_sig(&mut self) -> Option<LambdaSig> {
+        let mut params = Vec::new();
+        while self.tokens.next_if(TokenType::RightParen).is_none() {
+            let Ok(param) = self.parse_param() else { return None; };
+            params.push(param);
+            self.tokens.next_if(TokenType::Comma);
+        }
+        let (ret, clause) = self.parse_lambda_return().ok()?;
+
+        if !self.tokens.matches(TokenType::FatArrow) {
+            return None;
+        }
+
+        Some(LambdaSig { params, ret, clause })
+    }
+
+    fn parse_lambda_return(&mut self) -> Result<(ReturnShape, SlotClause), anyhow::Error> {
+        let ret = match self.parse_return_shape() {
+            ReturnShape::Void => ReturnShape::Inferred,
+            marked => marked,
+        };
+        Ok((ret, self.parse_slot_clause(SlotKind::Return)?))
+    }
+
     pub(super) fn make_lambda(&mut self, params: Vec<AstId<Expr>>, body: AstId<Expr>) -> Expr {
-        let name = self.ast.intern("lambda");
-        // Lambda parameters take no markers. The return shape is inferred from the body.
         let mut lambda_params = Vec::with_capacity(params.len());
         for param in params {
             let pos = self.ast.pos(&param).clone();
@@ -13,15 +56,19 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             let pattern = self.ast.add_matcher(Matcher::Binder(*sym), pos.clone());
             lambda_params.push(Param { pattern, pos, nullable: false, reassignable: false, clause: SlotClause::default() });
         }
-        let params = lambda_params;
+        self.lambda_of(LambdaSig::of(lambda_params), body)
+    }
+
+    pub(super) fn lambda_of(&mut self, sig: LambdaSig, body: AstId<Expr>) -> Expr {
+        let name = self.ast.intern("lambda");
         Expr::Literal(Literal::Lambda(FnDecl {
             name,
             sig_pos: self.ast.pos(&body).clone(),
             receiver: None,
-            params,
+            params: sig.params,
             body,
-            ret: ReturnShape::Inferred,
-            clause: SlotClause::default()
+            ret: sig.ret,
+            clause: sig.clause,
         }))
     }
 
@@ -200,11 +247,19 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Operator::Group => {
                 match self.tokens.next_if(TokenType::RightParen) {
                     Some(_) => {
+                        let (ret, clause) = self.parse_lambda_return()?;
                         let Some(Operator::Arrow) = Operator::parse_infix(self.tokens, 0) else {
                             parse_error!(self, &pos, "Unexpected token: Expected '=>'")
                         };
                         let right = self.parse_block_or_expr(Operator::Arrow.infix_precedence().unwrap())?;
-                        self.make_lambda(Vec::new(), right)
+                        self.lambda_of(LambdaSig { params: Vec::new(), ret, clause }, right)
+                    },
+                    None if let Some(sig) = self.parse_lambda_sig() => {
+                        let Some(Operator::Arrow) = Operator::parse_infix(self.tokens, 0) else {
+                            parse_error!(self, &pos, "Unexpected token: Expected '=>'")
+                        };
+                        let right = self.parse_block_or_expr(Operator::Arrow.infix_precedence().unwrap())?;
+                        self.lambda_of(sig, right)
                     },
                     None => {
                         let expr = self.parse_expr()?;

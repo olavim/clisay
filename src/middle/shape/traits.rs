@@ -25,8 +25,8 @@ impl<'a> Shape<'a> {
                 continue;
             }
             let host = decl.methods.iter().copied().find(|s| matches!(self.hir.get(s), HirStmt::Fn(h) if h.name == base_sym));
-            let (Some(host), Some(trait_ret)) = (host, self.sigs.fns.get(method).map(|f| &f.ret)) else { continue };
-            let Some(host_ret) = self.sigs.fns.get(&host).map(|f| &f.ret) else { continue };
+            let (Some(host), Some(trait_ret)) = (host, self.sigs.fn_sig_of(method).map(|f| &f.ret)) else { continue };
+            let Some(host_ret) = self.sigs.fn_sig_of(&host).map(|f| &f.ret) else { continue };
             if !self.ret_conforms(host_ret, trait_ret) {
                 return Err(self.error_labeled("override is more nullable than the trait allows".to_string(),
                     &host, format!("`{base}` may return null where trait '{trait_name}' declares non-null")));
@@ -41,7 +41,7 @@ impl<'a> Shape<'a> {
     pub(super) fn check_req_conformance(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         for req in &decl.req_fns {
             let Some(method) = self.satisfying_method(decl, req.name) else { continue };
-            let (Some(sig), HirStmt::Fn(sat)) = (self.sigs.fns.get(&method), self.hir.get(&method)) else { continue };
+            let (Some(sig), HirStmt::Fn(sat)) = (self.sigs.fn_sig_of(&method), self.hir.get(&method)) else { continue };
             let name = self.hir.text(req.name);
             let type_name = self.hir.text(decl.name);
             let trait_name = self.hir.text(req.trait_name);
@@ -57,7 +57,7 @@ impl<'a> Shape<'a> {
 
             // The capability axis is invariant: the satisfier's inferred return capability must
             // match the hole's declared one.
-            let sat_mut = self.sigs.ret_mut.get(&method) == Some(&Mutability::Mutable);
+            let sat_mut = self.sigs.ret_mut_of_callable(&method) == Mutability::Mutable;
             if req.ret.capability.is_mut() && !sat_mut {
                 return Err(self.error_ctx_help("return is immutable but trait requires mutable",
                     &sat.sig_pos, format!("`{type_name}.{name}` returns an immutable value"),

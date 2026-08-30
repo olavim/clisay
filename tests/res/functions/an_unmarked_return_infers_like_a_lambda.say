@@ -1,0 +1,12 @@
+fn f() { return 1; }
+say g = () => { return 1; };
+print(f()); // expect: 1
+print(g()); // expect: 1
+
+// @split
+fn nothing() { print("ran"); }
+fn f() { return nothing(); } // error: Cannot return a void result
+
+// @split
+fn nothing() { print("ran"); }
+say g = () => { return nothing(); }; // error: Cannot return a void result

@@ -1,0 +1,37 @@
+fn f(mut v) { v.push(1); }
+say a = [1];
+f(a); // error: expected mutable argument
+
+// @split
+fn f(mut v) { v.push(1); }
+say a = [1];
+f?(a); // error: expected mutable argument
+
+// @split
+fn hand(x)! { return x; }
+say a = mut [1];
+say b = hand(a);
+a[0] = 5; // error: cannot write `a`, which gave its write-ownership away
+
+// @split
+fn hand(x)! { return x; }
+say a = mut [1];
+say b = hand?(a)!;
+a[0] = 5; // error: cannot write `a`, which gave its write-ownership away
+
+// @split
+fn hand(x)! { return x; }
+say a = mut [1];
+say b = hand?(a)!;
+b[0] = 5;
+print(b[0]); // expect: 5
+
+// @split
+fn twice(n)! { return n + n; }
+say var cb? = null;
+cb = twice;
+print(cb?(4) ?? 0); // expect: 8
+
+// @split
+say var cb? = null;
+print(cb?(4) ?? 7); // expect: 7

@@ -11,12 +11,56 @@ use crate::core::objects::TypeId;
 use crate::core::value::Value;
 use crate::frontend::lex::SourcePosition;
 
-/// How a store names the root its write reaches through.
+pub const NULL_WITNESS_ID: u16 = 0;
+pub const SLOT_ACCEPTS_SCRIPT_FRAME: u16 = 0;
+pub const SLOT_ACCEPTS_ANYTHING: u16 = u16::MAX;
+
+/// A `to` for a binding no scope exit closes, so it answers for its slot until its frame ends.
+pub const TO_FRAME_END: usize = usize::MAX;
+
+#[derive(Clone, Copy)]
+pub struct SlotAccepts {
+    pub slot: u8,
+    /// The declaration's instruction index.
+    pub from: usize,
+    /// Where the binding's scope ends.
+    pub to: usize,
+    pub accepts: u16,
+}
+
+fn remap_end(old_to_new: &[usize], to: usize) -> usize {
+    match to {
+        TO_FRAME_END => TO_FRAME_END,
+        to => old_to_new[to],
+    }
+}
+
+fn intern_row(pool: &mut Vec<Box<[u16]>>, row: Box<[u16]>, what: &str) -> Result<u16, anyhow::Error> {
+    if let Some(i) = pool.iter().position(|existing| **existing == *row) {
+        return Ok(i as u16);
+    }
+    if pool.len() >= u16::MAX as usize {
+        bail!("Too many distinct {what}");
+    }
+    pool.push(row);
+    Ok((pool.len() - 1) as u16)
+}
+
+// How a store names the root its write reaches through.
 pub const WRITE_ROOT_NONE: u8 = 0;
 pub const WRITE_ROOT_LOCAL: u8 = 1;
 pub const WRITE_ROOT_UPVALUE: u8 = 2;
 pub const WRITE_ROOT_RECEIVER: u8 = 3;
 pub const WRITE_ROOT_RECEIVER_UP: u8 = 4;
+/// A root without a binding name. `StashRoot` puts it on the stash for the store to use.
+pub const WRITE_ROOT_STASH: u8 = 5;
+/// Set on a store's root kind where one name is proven to reach the target. The store then skips
+/// the one-writer arbitration that every other store runs.
+pub const WRITE_ROOT_UNSHARED: u8 = 0x80;
+
+pub const fn write_root_kind(kind: u8) -> u8 {
+    kind & !WRITE_ROOT_UNSHARED
+}
 
 /// A symbolic jump target, resolved to a byte offset at assembly time.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -32,8 +76,11 @@ pub enum Inst {
     /// Brace construction `C { f: v, ... }`. The second operand is the seal flag: 1 freezes the
     /// instance in place, 0 leaves it mutable (`mut K{..}`).
     Construct(u16, u8),
-    /// Fused method call `recv.name(args)`.
-    Invoke(u8, u8, u8, u8),
+    /// Fused method call `recv.name(args)`. The last operand is 1 for a `.` access and 0 for a
+    /// `[]` one.
+    Invoke(u8, u8, u8, u8, u8),
+    /// Fused `this.name(args)` where the member is known at compile time.
+    InvokeThis(u8, u8, u8, u8),
     Jump(Label),
     JumpIfFalse(Label),
     JumpIfFalseOrPop(Label),
@@ -62,26 +109,18 @@ pub enum Inst {
     PopTry,
     /// Aborts if the top of the stack is null, else leaves it.
     AssertNonNull,
-    AssertNoOtherWriter(u8),
-    AssertNoOtherWriterUp(u8),
-    /// The same barrier for a path whose root no binding names, compared against the stashed root.
-    AssertNoOtherWriterRoot,
-    AssertNoWriter,
     AssertImmutable,
-    /// Guards an unknown value at a destination: throws any registered witness the destination
-    /// does not allow.
-    BarrierGuard(bool, u16),
-    /// Asserts an opaque callee borrows the guarded argument positions. Operands are the argument
-    /// count, an index into the barrier's owed-obligation names, and an index into the barrier's
-    /// position list.
+    /// Puts the root on top of the stash for a root no binding can name. The
+    /// stack is left alone. The path builds over the root as if no barrier existed.
+    StashRoot,
+    BarrierGuard(u16),
     AssertNoRetain(u8, u16, u16),
-    TakeWriteOwnership(u8),
     TransferWriteOwnership(u8),
     TransferWriteOwnershipUp(u8),
     /// The container is on the stack, this far below the element it is given.
     TransferWriteOwnershipAt(u8),
     ReleaseWriteOwnership(u8),
-    ReleaseWriteOwnershipAt(u8),
+    PopScope(u8, u8),
 
     // Stack / constants
     Pop,
@@ -106,6 +145,7 @@ pub enum Inst {
     StoreUpvalue(u8),
     StoreUpvaluePop(u8),
     CloseUpvalue(u8),
+    CloseSlotUpvalue(u8),
     GetIndex,
     SetIndex(u8, u8),
     GetIndexOrNull(u8),
@@ -155,8 +195,7 @@ pub enum Inst {
     Is(TypeId),
     HasMember(u8),
     /// Whether a member satisfies what its declaration admits.
-    MemberAdmits(u8, bool, u16),
-    /// Replaces the top with whether it is a dict or instance, the values a shape can match.
+    MemberAdmits(u8, u16),
     IsShaped,
     ArrayLen,
     /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
@@ -186,6 +225,9 @@ pub struct Ir {
     /// Instruction indices of the checks that check-forcing put back.
     /// Empty unless check-forcing is on.
     elisions: Vec<usize>,
+    param_accepts: Vec<Box<[u16]>>,
+    /// One table per frame, the script's first.
+    slot_accepts: Vec<Vec<SlotAccepts>>,
     /// Extra source positions an instruction needs, keyed by instruction index and role.
     source_map: FnvHashMap<(usize, SourceRole), SourcePosition>,
 }
@@ -216,6 +258,8 @@ impl Ir {
             survive_positions: Vec::new(),
             owed_names: Vec::new(),
             elisions: Vec::new(),
+            param_accepts: Vec::new(),
+            slot_accepts: Vec::new(),
             source_map: FnvHashMap::default(),
         }
     }
@@ -334,16 +378,45 @@ impl Ir {
         &self.witness_allows
     }
 
+    pub fn add_param_accepts(&mut self, accepts: Box<[u16]>) -> Result<u16, anyhow::Error> {
+        intern_row(&mut self.param_accepts, accepts, "parameter accept sets")
+    }
+
+    pub fn new_slot_accepts_table(&mut self) -> Result<u16, anyhow::Error> {
+        let index = self.slot_accepts.len();
+        if index >= u16::MAX as usize {
+            bail!("Too many frames with their own slots");
+        }
+        self.slot_accepts.push(Vec::new());
+        Ok(index as u16)
+    }
+
+    pub fn end_slot_accepts_from(&mut self, table_id: u16, first_dead: u8) {
+        let at = self.code.len();
+        for entry in self.slot_accepts[table_id as usize].iter_mut() {
+            if entry.slot >= first_dead && entry.to == TO_FRAME_END {
+                entry.to = at;
+            }
+        }
+    }
+
+    /// Records what a binding's slot accepts, from its declaration onward.
+    pub fn record_slot_accepts(&mut self, table: u16, slot: u8, accepts: u16) {
+        let from = self.code.len();
+        self.slot_accepts[table as usize].push(SlotAccepts { slot, from, to: TO_FRAME_END, accepts });
+    }
+
+    pub fn slot_accepts(&self) -> &[Vec<SlotAccepts>] {
+        &self.slot_accepts
+    }
+
+    pub fn param_accepts(&self) -> &[Box<[u16]>] {
+        &self.param_accepts
+    }
+
     /// Pools a barrier's allowed witness ids.
     pub fn add_witness_allow(&mut self, allow: Box<[u16]>) -> Result<u16, anyhow::Error> {
-        if let Some(i) = self.witness_allows.iter().position(|a| **a == *allow) {
-            return Ok(i as u16);
-        }
-        if self.witness_allows.len() >= u16::MAX as usize {
-            bail!("Too many distinct barrier witness sets");
-        }
-        self.witness_allows.push(allow);
-        Ok((self.witness_allows.len() - 1) as u16)
+        intern_row(&mut self.witness_allows, allow, "barrier witness sets")
     }
 
     pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
@@ -426,6 +499,10 @@ impl Ir {
             witness_ids: self.witness_ids,
             builtin_layouts: self.builtin_layouts,
             witness_allows: self.witness_allows,
+            param_accepts: self.param_accepts,
+            slot_accepts: self.slot_accepts.into_iter()
+                .map(|body| body.into_iter().map(|e| SlotAccepts { from: old_to_new[e.from], to: remap_end(&old_to_new, e.to), ..e }).collect())
+                .collect(),
         }
     }
 }

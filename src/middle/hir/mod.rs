@@ -85,6 +85,18 @@ pub enum HirLiteral {
     Lambda(HirFnDecl),
 }
 
+/// Where a value came from.
+pub enum ValueSource<'a> {
+    Name(Symbol),
+    Receiver,
+    Call(&'a HirId<HirExpr>, &'a [HirId<HirExpr>]),
+    Element,
+    Closure,
+    Yields(Vec<HirId<HirExpr>>),
+    Holds(Vec<HirId<HirExpr>>),
+    Fresh,
+}
+
 pub enum HirExpr {
     Block(Vec<HirId<HirStmt>>),
     Unary(UnOp, HirId<HirExpr>),
@@ -286,7 +298,15 @@ pub struct HirFnDecl {
 impl HirFnDecl {
     /// Whether the return carries no annotation.
     pub(crate) fn is_unmarked(&self) -> bool {
-        self.ret == ReturnShape::Void && !self.clause.void
+        if self.clause.void {
+            return false;
+        }
+        // Lowering maps a declared return clause to `Inferred` too, so the shape alone does not
+        // say whether anything was annotated. An empty clause beside it is what does.
+        self.ret == ReturnShape::Void
+            || (self.ret == ReturnShape::Inferred
+                && self.clause.names.is_empty()
+                && self.clause.capability == Capability::None)
     }
 }
 
@@ -509,31 +529,30 @@ impl Hir {
         Hir { nodes: Vec::new(), ident_ids, ident_texts, obligations: HashMap::new(), type_info: HashMap::new() }
     }
 
-    /// Records what a declaration id stands for.
     pub(crate) fn declare_type(&mut self, id: TypeId, name: Symbol, is_trait: bool) {
         self.type_info.insert(id, TypeInfo { name, is_trait });
     }
 
-    /// What a declaration id stands for.
     pub fn type_info(&self, id: TypeId) -> Option<&TypeInfo> {
         self.type_info.get(&id)
+    }
+
+    pub fn is_trait(&self, id: TypeId) -> bool {
+        self.type_info(id).is_some_and(|info| info.is_trait)
     }
 
     pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: Option<ObligationWitness>, rules: ObligationRules) {
         self.obligations.insert(name, ObligationDecl { witness, rules });
     }
 
-    /// Every user-declared obligation, keyed by name.
     pub fn obligations(&self) -> impl Iterator<Item = (Symbol, &ObligationDecl)> {
         self.obligations.iter().map(|(name, decl)| (*name, decl))
     }
 
-    /// The text of an interned symbol.
     pub fn text(&self, symbol: Symbol) -> &str {
         &self.ident_texts[symbol.index()]
     }
 
-    /// The symbol for `text` if it was ever interned, else `None`.
     pub fn symbol_of(&self, text: &str) -> Option<Symbol> {
         self.ident_ids.get(text).copied().map(Symbol::from_raw)
     }
@@ -552,8 +571,6 @@ impl Hir {
         T::unwrap(&self.nodes[id.id].kind)
     }
 
-    /// The symbol an identifier node names. Only call it where the grammar guarantees one, such
-    /// as a parameter name.
     pub fn ident_sym(&self, id: &HirId<HirExpr>) -> Symbol {
         match self.get(id) {
             HirExpr::Identifier(sym) => *sym,
@@ -569,7 +586,13 @@ impl Hir {
         HirId { id: self.nodes.len() - 1, _marker: PhantomData }
     }
 
-    /// Every lambda literal's expression id.
+    pub(crate) fn stmt_at(&self, index: usize) -> Option<HirId<HirStmt>> {
+        match self.nodes.get(index).map(|n| &n.kind) {
+            Some(HirNodeKind::Stmt(_)) => Some(HirId { id: index, _marker: PhantomData }),
+            _ => None,
+        }
+    }
+
     pub(crate) fn lambda_ids(&self) -> Vec<HirId<HirExpr>> {
         self.nodes.iter().enumerate()
             .filter(|(_, n)| matches!(&n.kind, HirNodeKind::Expr(HirExpr::Literal(HirLiteral::Lambda(_)))))
@@ -577,38 +600,34 @@ impl Hir {
             .collect()
     }
 
-    /// Each binder a condition introduces, paired with the value it was destructured out of. A
-    /// binder names part of its scrutinee, so that scrutinee is where its element comes from.
-    pub fn condition_binder_sources(&self, cond: &HirId<HirExpr>) -> Vec<(Symbol, HirId<HirExpr>)> {
+    pub fn condition_pattern_binder_sources(&self, cond: &HirId<HirExpr>) -> Vec<(Symbol, HirId<HirExpr>)> {
         match self.get(cond) {
             HirExpr::Match(scrutinee, matcher) => self.get(matcher).binders(self).into_iter().map(|n| (n, *scrutinee)).collect(),
             HirExpr::Binary(BinOp::And, left, right) => {
-                let mut out = self.condition_binder_sources(left);
-                out.extend(self.condition_binder_sources(right));
+                let mut out = self.condition_pattern_binder_sources(left);
+                out.extend(self.condition_pattern_binder_sources(right));
                 out
             },
             // An `or` binds the same names on both sides, so either side names their sources.
-            HirExpr::Binary(BinOp::Or, left, _) => match self.condition_binders(cond).is_empty() {
+            HirExpr::Binary(BinOp::Or, left, _) => match self.condition_pattern_binders(cond).is_empty() {
                 true => Vec::new(),
-                false => self.condition_binder_sources(left),
+                false => self.condition_pattern_binder_sources(left),
             },
             _ => Vec::new(),
         }
     }
 
-    /// The binder names a condition makes live in its true branch, in store order. `&&` unions
-    /// both sides. An `||` contributes a name only when both sides bind the identical set.
-    pub fn condition_binders(&self, cond: &HirId<HirExpr>) -> Vec<Symbol> {
+    pub fn condition_pattern_binders(&self, cond: &HirId<HirExpr>) -> Vec<Symbol> {
         match self.get(cond) {
             HirExpr::Match(_, matcher) => self.get(matcher).binders(self),
             HirExpr::Binary(BinOp::And, left, right) => {
-                let mut out = self.condition_binders(left);
-                out.extend(self.condition_binders(right));
+                let mut out = self.condition_pattern_binders(left);
+                out.extend(self.condition_pattern_binders(right));
                 out
             },
             HirExpr::Binary(BinOp::Or, left, right) => {
-                let left = self.condition_binders(left);
-                let right = self.condition_binders(right);
+                let left = self.condition_pattern_binders(left);
+                let right = self.condition_pattern_binders(right);
                 let same = left.len() == right.len() && left.iter().all(|name| right.contains(name));
                 if same { left } else { Vec::new() }
             },
@@ -616,18 +635,40 @@ impl Hir {
         }
     }
 
-    /// The child expressions a value's ownership flows through.
-    pub(crate) fn ownership_children(&self, value: &HirId<HirExpr>) -> Vec<HirId<HirExpr>> {
+    pub(crate) fn value_source(&self, value: &HirId<HirExpr>) -> ValueSource<'_> {
         match self.get(value) {
-            HirExpr::Mut(x) | HirExpr::Assert(x) | HirExpr::Propagate(x) => vec![*x],
-            HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r) => vec![*l, *r],
-            HirExpr::Literal(HirLiteral::Array(elems)) => elems.clone(),
-            HirExpr::Literal(HirLiteral::Dict(pairs)) => pairs.iter().flat_map(|(k, v)| [*k, *v]).collect(),
-            _ => Vec::new(),
+            HirExpr::Identifier(name) => ValueSource::Name(*name),
+            HirExpr::This => ValueSource::Receiver,
+            HirExpr::Call(callee, args) | HirExpr::SafeCall(callee, args) => ValueSource::Call(callee, args),
+            HirExpr::Index(..) | HirExpr::SafeAccess(..) => ValueSource::Element,
+            HirExpr::Literal(HirLiteral::Lambda(_)) => ValueSource::Closure,
+
+            HirExpr::Mut(x) | HirExpr::Assert(x) | HirExpr::Propagate(x) => ValueSource::Yields(vec![*x]),
+            HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r) => ValueSource::Yields(vec![*l, *r]),
+            HirExpr::Binary(BinOp::And | BinOp::Or, l, r) => ValueSource::Yields(vec![*l, *r]),
+            HirExpr::Assign(_, rhs) => ValueSource::Yields(vec![*rhs]),
+
+            HirExpr::Construct(_, brace) => ValueSource::Holds(brace.iter().map(|(_, v)| *v).collect()),
+            HirExpr::Literal(HirLiteral::Array(elems)) => ValueSource::Holds(elems.clone()),
+            HirExpr::Literal(HirLiteral::Dict(pairs)) => ValueSource::Holds(pairs.iter().flat_map(|(k, v)| [*k, *v]).collect()),
+
+            HirExpr::Unary(..) | HirExpr::Binary(..) | HirExpr::Match(..) | HirExpr::Block(_)
+            | HirExpr::Literal(HirLiteral::Null | HirLiteral::Boolean(_)
+                | HirLiteral::Number(_) | HirLiteral::String(_)) => ValueSource::Fresh,
         }
     }
 
-    /// Whether every path through a function body ends in a `return` or `throw`.
+    pub(crate) fn expression_body(&self, body: &HirId<HirExpr>) -> Option<HirId<HirExpr>> {
+        match self.get(body) {
+            HirExpr::Block(_) => None,
+            _ => Some(*body),
+        }
+    }
+
+    pub(crate) fn body_returns_a_value(&self, body: &HirId<HirExpr>) -> bool {
+        self.expression_body(body).is_some() || self.definitely_returns(body)
+    }
+
     pub(crate) fn definitely_returns(&self, body: &HirId<HirExpr>) -> bool {
         match self.get(body) {
             HirExpr::Block(stmts) => stmts.iter().any(|s| self.stmt_returns(s)),

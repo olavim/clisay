@@ -6,8 +6,19 @@ use crate::middle::bind::FnKind;
 use super::{Compiler, WriteOwnershipHolderPlace, TryCatchPosition, TryFrame};
 
 
+/// Whether a statement's name takes a slot the hoisting run reserves at the top of its scope.
+fn reserves_a_slot(stmt: &HirStmt) -> bool {
+    match stmt {
+        HirStmt::Fn(_) => true,
+        HirStmt::Type(decl) => decl.builtin.is_none(),
+        _ => false,
+    }
+}
+
 impl<'a> Compiler<'a> {
     pub (super) fn statement(&mut self, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
+        self.frame_slot_count = self.bindings.frame_slot_count_at(stmt_id) as usize;
+
         match self.hir.get(stmt_id) {
             HirStmt::Nop => {},
             HirStmt::Return(expr) => {
@@ -95,7 +106,7 @@ impl<'a> Compiler<'a> {
                 // The slot was reserved by hoisting so forward references resolve.
                 let slot = self.bindings.slot(stmt_id);
 
-                let const_idx = self.function(stmt_id, decl, FnKind::Function, self.declared_masks(stmt_id, decl))?;
+                let const_idx = self.function(stmt_id, (*stmt_id).into(), decl, FnKind::Function, self.declared_masks(stmt_id, decl))?;
                 self.emit(Inst::PushClosure(const_idx), stmt_id);
 
                 // Store the closure into the reserved slot and discard the placeholder.
@@ -105,8 +116,10 @@ impl<'a> Compiler<'a> {
             HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
             // Traits emit no runtime type; they exist only for self-containment validation in resolve.
             HirStmt::Trait(_) => {},
-            HirStmt::Say(HirFieldInit { value, .. }) => {
+            HirStmt::Say(field @ HirFieldInit { value, .. }) => {
                 let slot = self.bindings.slot(stmt_id);
+                let accepts = self.accepts_index(&field.clause.owed(), field.nullable)?;
+                self.ir.record_slot_accepts(self.slot_table, slot, accepts);
 
                 let inst = if let Some(expr) = value {
                     let saved = self.receiving_slot.replace(WriteOwnershipHolderPlace::Local(slot));
@@ -123,7 +136,7 @@ impl<'a> Compiler<'a> {
                 self.expression_stmt(expr)?;
             },
             HirStmt::While(cond, body) => {
-                let binders = self.hir.condition_binders(cond);
+                let binders = self.hir.condition_pattern_binders(cond);
                 if !binders.is_empty() {
                     return self.compile_binding_while(cond, body, binders.len(), stmt_id);
                 }
@@ -138,7 +151,7 @@ impl<'a> Compiler<'a> {
                 self.ir.bind(exit);
             },
             HirStmt::If(cond, then, otherwise) => {
-                let binders = self.hir.condition_binders(cond);
+                let binders = self.hir.condition_pattern_binders(cond);
                 if !binders.is_empty() {
                     return self.compile_binding_if(cond, then, otherwise, binders.len(), stmt_id);
                 }
@@ -174,18 +187,18 @@ impl<'a> Compiler<'a> {
         self.expression_stmt(then)?;
         match otherwise {
             Some(otherwise) => {
-                self.exit_scope(cond);
+                self.exit_scope(cond)?;
                 let end = self.ir.new_label();
                 self.emit(Inst::Jump(end), stmt_id);
                 self.ir.bind(else_target);
-                self.exit_scope(cond);
+                self.exit_scope(cond)?;
                 self.statement(otherwise)?;
                 self.ir.bind(end);
             },
             // Both paths converge before the single cleanup.
             None => {
                 self.ir.bind(else_target);
-                self.exit_scope(cond);
+                self.exit_scope(cond)?;
             },
         }
         Ok(())
@@ -200,14 +213,13 @@ impl<'a> Compiler<'a> {
         let exit = self.ir.new_label();
         self.emit(Inst::JumpIfFalse(exit), stmt_id);
         self.expression_stmt(body)?;
-        self.exit_scope(cond);
+        self.exit_scope(cond)?;
         self.emit(Inst::Jump(loop_start), stmt_id);
         self.ir.bind(exit);
-        self.exit_scope(cond);
+        self.exit_scope(cond)?;
         Ok(())
     }
 
-    /// Pushes `count` null placeholders to reserve a slot for each live binder.
     pub(super) fn reserve_slots<T: 'static>(&mut self, count: usize, node: &HirId<T>) {
         for _ in 0..count {
             self.emit(Inst::PushNull, node);
@@ -216,20 +228,68 @@ impl<'a> Compiler<'a> {
 
     fn statement_body(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         self.hoist_declarations(body)?;
-        for stmt_id in body {
+
+        // A declaration is built as soon as the locals its closures capture are live. One that
+        // captures nothing is built at the top of the scope, so its name works above its own line.
+        let mut waiting: Vec<(usize, u8)> = body.iter().enumerate()
+            .filter(|(_, s)| reserves_a_slot(self.hir.get(s)))
+            .map(|(i, s)| (i, self.captured_slots(s).max().unwrap_or(0)))
+            .collect();
+        // The hoisting run above reserved every declaration's slot, so those are already live.
+        let mut live = body.iter().filter(|s| reserves_a_slot(self.hir.get(s)))
+            .map(|s| self.bindings.slot(s)).max().unwrap_or(0);
+
+        self.build_ready_declarations(body, &mut waiting, live)?;
+        for (i, stmt_id) in body.iter().enumerate() {
+            match waiting.iter().position(|&(w, _)| w == i) {
+                // A declaration still waiting at its own line is built here.
+                Some(pos) => { waiting.remove(pos); },
+                // A declaration missing from the list was built above.
+                None if reserves_a_slot(self.hir.get(stmt_id)) => continue,
+                None => {},
+            }
             self.statement(stmt_id)?;
+            if let HirStmt::Say(_) = self.hir.get(stmt_id) {
+                live = live.max(self.bindings.slot(stmt_id));
+                self.build_ready_declarations(body, &mut waiting, live)?;
+            }
         }
         Ok(())
     }
 
-    pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<HirId<HirStmt>>, node_id: &HirId<T>) -> Result<(), anyhow::Error> {
-        self.statement_body(body)?;
-        self.exit_scope(node_id);
+    fn build_ready_declarations(&mut self, body: &[HirId<HirStmt>], waiting: &mut Vec<(usize, u8)>, live: u8) -> Result<(), anyhow::Error> {
+        while let Some(pos) = waiting.iter().position(|&(_, needs)| needs <= live) {
+            let (index, _) = waiting.remove(pos);
+            self.statement(&body[index])?;
+        }
         Ok(())
     }
 
-    /// Compiles the statements of a `HirExpr::Block` body directly into the current
-    /// scope, without its own cleanup.
+    /// The frame slots a declaration's closures capture. An upvalue of the enclosing frame reads
+    /// the closure's own array rather than a slot, so it never holds a declaration back.
+    fn captured_slots(&self, stmt: &HirId<HirStmt>) -> impl Iterator<Item = u8> + '_ {
+        let bodies: Vec<HirId<HirExpr>> = match self.hir.get(stmt) {
+            HirStmt::Fn(decl) => vec![decl.body],
+            HirStmt::Type(decl) => std::iter::once(&decl.init).chain(&decl.methods)
+                .filter_map(|s| match self.hir.get(s) {
+                    HirStmt::Fn(decl) => Some(decl.body),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        bodies.into_iter()
+            .flat_map(|b| self.bindings.upvalues(&b).to_vec())
+            .filter(|u| u.is_local)
+            .map(|u| u.location)
+    }
+
+    pub (super) fn scoped_body<T: 'static>(&mut self, body: &Vec<HirId<HirStmt>>, node_id: &HirId<T>) -> Result<(), anyhow::Error> {
+        self.statement_body(body)?;
+        self.exit_scope(node_id)?;
+        Ok(())
+    }
+
     fn inline_block(&mut self, body: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let HirExpr::Block(stmts) = self.hir.get(body) else { unreachable!() };
         self.statement_body(stmts)
@@ -240,7 +300,7 @@ impl<'a> Compiler<'a> {
         self.try_frames[idx].position = TryCatchPosition::Catch;
 
         self.inline_block(&catch.body)?;
-        self.exit_scope(&catch.body);
+        self.exit_scope(&catch.body)?;
         Ok(())
     }
 
@@ -250,17 +310,9 @@ impl<'a> Compiler<'a> {
         self.expression_stmt(finally)
     }
 
-    /// Emit a `PUSH_NULL` placeholder for every `fn`/`type` declared directly in
-    /// `body`, holding its (resolver-assigned) slot until the declaration is
-    /// compiled into it - which is what lets forward references resolve.
     fn hoist_declarations(&mut self, body: &Vec<HirId<HirStmt>>) -> Result<(), anyhow::Error> {
         for stmt_id in body {
-            let reserves = match self.hir.get(stmt_id) {
-                HirStmt::Fn(_) => true,
-                HirStmt::Type(decl) => decl.builtin.is_none(),
-                _ => false,
-            };
-            if reserves {
+            if reserves_a_slot(self.hir.get(stmt_id)) {
                 self.emit(Inst::PushNull, stmt_id);
             }
         }

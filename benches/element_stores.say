@@ -1,0 +1,10 @@
+// Bare element stores: nothing but the store path, so a change to it shows undiluted.
+say a = mut [0, 0, 0, 0];
+say var i = 0;
+while i < 200000 {
+    a[0] = i;
+    a[1] = i;
+    a[2] = i;
+    a[3] = i;
+    i = i + 1;
+}

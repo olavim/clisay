@@ -61,9 +61,27 @@ fn compare_dict() {
 }
 
 #[cfg(unix)]
+#[library_benchmark]
+fn element_stores() {
+    run_say("benches/element_stores.say");
+}
+
+#[cfg(unix)]
+#[library_benchmark]
+fn field_stores() {
+    run_say("benches/field_stores.say");
+}
+
+#[cfg(unix)]
+#[library_benchmark]
+fn store_objects() {
+    run_say("benches/store_objects.say");
+}
+
+#[cfg(unix)]
 library_benchmark_group!(
     name = workloads;
-    benchmarks = fib, loops, deep_sum, method_calls, strings, arrays, alloc_gc, compare_dict
+    benchmarks = fib, loops, deep_sum, method_calls, strings, arrays, alloc_gc, compare_dict, element_stores, field_stores, store_objects
 );
 
 #[cfg(unix)]

@@ -36,28 +36,24 @@ macro_rules! unary_op_methods {
 }
 
 impl Vm {
-    /// Lowers the stack out of a frame. Every exit goes through this, because one that lowers the
-    /// stack without closing upvalues first leaves a root pointing above the live top. `leaving` is
-    /// the value the exit carries out, which lands in the slot the frame started at.
     fn unwind_to(&mut self, stack_start: *mut Value, write_depth: usize, leaving: Value) -> Result<(), anyhow::Error> {
         self.close_upvalues(stack_start);
         self.release_write_ownership_above(write_depth, stack_start, leaving);
         self.stack.set_top(stack_start);
         if self.forced {
-            self.settle_borrow_claims(leaving)?;
+            self.settle_borrow_watches(leaving)?;
         }
         Ok(())
     }
 
-    /// Puts back the borrow bits marked since the stack was this deep.
-    fn restore_borrows(&mut self, depth: usize) {
+    pub(super) fn restore_borrows(&mut self, depth: usize) {
         while self.borrows.len() > depth {
             let (value, prev) = self.borrows.pop().unwrap();
             if value.is_object() { value.as_object().set_borrowed(prev); }
         }
     }
 
-    fn ensure_not_holding_borrow(&self, value: Value) -> Result<(), anyhow::Error> {
+    pub(super) fn ensure_not_holding_borrow(&self, value: Value) -> Result<(), anyhow::Error> {
         if value.is_object() && value.as_object().holds_borrow() {
             let label = format!("`{}` holds a value borrowed from the caller", self.get_source_position().snippet());
             return self.error_labeled(objects::PERSISTED_BORROW, label);
@@ -74,18 +70,61 @@ impl Vm {
         let frame = self.frames.pop();
         self.ip = frame.return_ip;
 
+        // Handing a borrowed value back does not end the borrow.
+        let handed_back_from = self.stack.offset(0);
+        let handed_back_borrow = !self.stack.peek(0).is_object()
+            && self.stack.borrow_outlives(handed_back_from, frame.stack_start);
         let value = self.stack.pop();
         // The value outlives this frame, so the scope releases below must not let go of it.
         objects::record_escape(value);
         self.restore_borrows(frame.borrow_depth);
         self.unwind_to(frame.stack_start, frame.write_depth, value)?;
         self.stack.push(value);
+        if handed_back_borrow {
+            let into = self.stack.offset(0);
+            self.stack.mark_borrowed(into, self.stack.borrow_origin(handed_back_from));
+            if self.forced {
+                self.carry_watched_mark(handed_back_from, into);
+            }
+        }
         Ok(true)
     }
 
-    /// A factory's return: like `op_return`, but deep-freezes the returned instance when the frame's
-    /// seal bit is set.
-    pub(super) fn op_return_fac(&mut self) -> Result<(), anyhow::Error> {
+    /// A return whose frame only needs to end borrows.
+    pub(super) fn return_ending_borrows(&mut self) -> Result<(), anyhow::Error> {
+        let value = self.stack.peek(0);
+        self.ensure_not_holding_borrow(value)?;
+
+        let frame = self.frames.pop();
+        self.ip = frame.return_ip;
+
+        let handed_back_from = self.stack.offset(0);
+        let handed_back_borrow = !value.is_object()
+            && self.stack.borrow_outlives(handed_back_from, frame.stack_start);
+
+        // The value outlives this frame, so a later scope release must not let go of it.
+        objects::record_escape(value);
+        self.restore_borrows(frame.borrow_depth);
+        self.stack.set_top(frame.stack_start);
+
+        if self.forced {
+            self.settle_borrow_watches(value)?;
+        }
+
+        self.stack.push(value);
+
+        if handed_back_borrow {
+            let into = self.stack.offset(0);
+            self.stack.mark_borrowed(into, self.stack.borrow_origin(handed_back_from));
+            if self.forced {
+                self.carry_watched_mark(handed_back_from, into);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn op_return_factory(&mut self) -> Result<(), anyhow::Error> {
         self.ensure_not_holding_borrow(self.stack.peek(0))?;
         let frame = self.frames.pop();
         self.ip = frame.return_ip;
@@ -122,6 +161,7 @@ impl Vm {
         let frame = self.try_frames.pop().unwrap();
         // Restore borrows marked since the `try` began, whose frame exits the unwind skips.
         self.restore_borrows(frame.borrow_depth);
+        self.root_stash.truncate(frame.stash_depth);
         self.frames.set_top(frame.origin);
         self.unwind_to(frame.stack_start, frame.write_depth, value)?;
         self.ip = frame.handler_ip;
@@ -136,7 +176,8 @@ impl Vm {
             handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
             stack_start: self.stack.top(),
             borrow_depth: self.borrows.len(),
-            write_depth: self.write_ownerships.len()
+            write_depth: self.write_ownerships.len(),
+            stash_depth: self.root_stash.len()
         });
     }
 
@@ -144,8 +185,6 @@ impl Vm {
         self.try_frames.pop();
     }
 
-    /// `&&`: keep the top value and jump to the end when it is falsy (the result
-    /// is the left operand); otherwise pop it and fall through to evaluate the right.
     pub(super) fn op_jump_if_false_or_pop(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
         if self.stack.peek(0).is_falsy() {
@@ -155,8 +194,6 @@ impl Vm {
         }
     }
 
-    /// `||`: keep the top value and jump to the end when it is truthy; otherwise
-    /// pop it and fall through to evaluate the right operand.
     pub(super) fn op_jump_if_true_or_pop(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
         if !self.stack.peek(0).is_falsy() {
@@ -166,8 +203,6 @@ impl Vm {
         }
     }
 
-    /// `??`: keep the top value and jump to the end when it is non-null (the result is the left
-    /// operand); otherwise pop it and fall through to evaluate the fallback.
     pub(super) fn op_jump_if_not_null_or_pop(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
         if !self.stack.peek(0).is_null() {
@@ -177,8 +212,6 @@ impl Vm {
         }
     }
 
-    /// `?.`/`?[`: keep the top value and jump to the end when it is null (the result is null);
-    /// otherwise leave the receiver and fall through to the member access.
     pub(super) fn op_jump_if_null(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
         if self.stack.peek(0).is_null() {
@@ -193,7 +226,6 @@ impl Vm {
         ty.provided.contains(&err_id)
     }
 
-    /// A discharge test: keep the top value and jump when it is clean.
     pub(super) fn op_jump_if_clean(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
         let value = self.stack.peek(0);
@@ -202,7 +234,6 @@ impl Vm {
         }
     }
 
-    /// Keep the top value and jump when `value is <name>`.
     pub(super) fn op_jump_if_is(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
         let id = u16::from_le_bytes([self.read_next(), self.read_next()]);
@@ -214,7 +245,6 @@ impl Vm {
         }
     }
 
-    /// Keep the top value and jump when it is bad (an obligation witness).
     pub(super) fn op_jump_if_bad(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
         let value = self.stack.peek(0);
@@ -223,31 +253,14 @@ impl Vm {
         }
     }
 
-    /// Reads a barrier's operands: whether null passes, then the pool index of the witnesses it allows.
-    pub(super) fn read_allowed(&mut self) -> (bool, u16) {
-        let null_allowed = self.read_next() != 0;
-        let idx = u16::from_le_bytes([self.read_next(), self.read_next()]);
-        (null_allowed, idx)
-    }
-
-    /// Whether the value carries a witness the destination does not allow.
-    pub(super) fn carries_disallowed_witness(&self, value: Value, allowed: u16) -> bool {
-        let ValueKind::Object(ObjectKind::Instance) = value.kind() else { return false };
-        let ty = unsafe { &*(*value.as_object().as_instance_ptr()).ty };
-        if ty.witness_ids.is_empty() {
-            return false;
-        }
-        let allow = &self.chunk.witness_allows[allowed as usize];
-        ty.witness_ids.iter().any(|id| !allow.contains(id))
-    }
-
-    /// Guards an unknown value at a destination. Throws a value that provides a registered witness
-    /// the destination does not allow, aborts on a disallowed null, and passes everything else.
     pub(super) fn op_barrier_guard(&mut self) -> Result<(), anyhow::Error> {
-        let (null_allowed, allowed) = self.read_allowed();
+        let allowed = self.read_allowed_witnesses();
         let value = self.stack.peek(0);
         if value.is_null() {
-            return if null_allowed { Ok(()) } else { self.error("unexpected null") };
+            return match self.accepts_null(allowed) {
+                true => Ok(()),
+                false => self.error("unexpected null"),
+            };
         }
         if self.carries_disallowed_witness(value, allowed) {
             let bad = self.stack.pop();
@@ -260,7 +273,7 @@ impl Vm {
         let forced = self.at_elided_site();
         if self.stack.peek(0).is_null() {
             return match forced {
-                true => self.refuted_elision("a value proven non-null is null"),
+                true => self.refuted_elision_error("a value proven non-null is null"),
                 false => self.error("unexpected null"),
             };
         }
@@ -287,28 +300,27 @@ impl Vm {
     /// Hands a container the elements still on the stack, `step` apart.
     fn take_elements(&mut self, container: Value, count: usize, step: usize, seal: bool) -> Result<(), anyhow::Error> {
         for i in (0..count).step_by(step) {
-            let value = self.stack.peek(i);
+            let slot = self.stack.offset(i);
+            let value = unsafe { *slot };
             match seal {
                 // A sealed literal takes no writer slot, but it still carries what its elements hold.
                 true => {
                     if objects::is_mutable_container(value) {
-                        return self.error_seal();
+                        return self.mutable_in_immutable_error();
                     }
-                    objects::record_held_borrow(container, value);
+                    self.record_held_borrow_from(container, slot);
                 },
-                false => self.container_took(container, value)?,
+                false => self.container_took_from(container, slot)?,
             }
         }
         Ok(())
     }
 
-    /// Pushes a freshly built container, sealed immutable by default.
     fn push_immutable(&mut self, value: Value) {
         value.as_object().set_immutable(self.current_pos_index());
         self.stack.push(value);
     }
 
-    /// Pushes a literal's container, sealed only when the literal said so.
     fn push_built_container(&mut self, value: Value, seal: bool) {
         match seal {
             true => self.push_immutable(value),
@@ -375,9 +387,6 @@ impl Vm {
         }
     }
 
-    /// Traps a mutable element in the immutable container on top of the stack. The compile pass
-    /// rejects known-mutable elements, so this only fires for a value of unknown capability that
-    /// turns out mutable at runtime.
     pub(super) fn op_seal_check(&mut self) -> Result<(), anyhow::Error> {
         let container = self.stack.peek(0);
         let mutable = match container.kind() {
@@ -388,7 +397,7 @@ impl Vm {
             _ => false,
         };
         if mutable {
-            return self.error_seal();
+            return self.mutable_in_immutable_error();
         }
         Ok(())
     }
@@ -410,8 +419,6 @@ impl Vm {
         Ok(())
     }
 
-    /// `x is T`: pushes whether the receiver's type provides the trait/type named by the constant
-    /// operand. Never errors: a non-instance receiver (null/number/dict/…) yields `false`.
     pub(super) fn op_is(&mut self) {
         let id = u16::from_le_bytes([self.read_next(), self.read_next()]);
         let receiver = self.stack.pop();

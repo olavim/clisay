@@ -1,0 +1,17 @@
+fn take(*v)! { return v; }
+fn hand(x)! { return x; }
+fn give(a) { take(hand(a)); } // error: cannot pass a borrowed argument to a callee that retains it
+give(mut [1]);
+
+// @split
+fn take(*v)! { return v; }
+fn hand(x)! { return x; }
+fn give(a) { take(hand(a)); } // error: cannot pass a borrowed argument to a callee that retains it
+give(7);
+
+// @split
+fn hand(x)! { return x; }
+say a = mut [1];
+say b = hand(a);
+b[0] = 5;
+print(b[0]); // expect: 5

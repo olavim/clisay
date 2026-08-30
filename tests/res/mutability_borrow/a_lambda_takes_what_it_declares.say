@@ -1,0 +1,29 @@
+say sink = mut [];
+say k = (*a) => { sink.push(a); return 1; };
+print(k(mut [7])); // expect: 1
+print(sink[0][0]); // expect: 7
+
+// @split
+say sink = mut [];
+say k = (a) => { sink.push(a); return 1; }; // error: cannot retain a borrowed argument
+print(k(mut [7]));
+
+// @split
+say sink = mut [];
+say k = (*a) => { sink.push(a); return 1; };
+fn f(x) { k(x); } // error: cannot retain a borrowed argument
+say m = mut [1];
+f(m);
+
+// @split
+say k = (a) => a[0];
+say m = mut [1];
+print(k(m)); // expect: 1
+m[0] = 5;
+print(m[0]); // expect: 5
+
+// @split
+say sink = mut [];
+fn g(*a) { sink.push(a); }
+g(mut [7]);
+print(sink[0][0]); // expect: 7

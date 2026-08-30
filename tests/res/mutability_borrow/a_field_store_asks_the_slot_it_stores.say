@@ -1,0 +1,39 @@
+type B {
+  pub var v;
+  init(this) { this.v = 0; }
+  pub fn keep(mut this, f, *x) { say y = f(x); this.v = y; }
+}
+fn hand(a)! { return a; }
+say b = mut B();
+b.keep(hand, 7);
+print(b.v); // expect: 7
+
+// @split
+type B {
+  pub var v;
+  init(this) { this.v = 0; }
+  pub fn keep(mut this, f, x) { say y = f(x); this.v = y; } // error: cannot persist a borrowed value
+}
+fn hand(a)! { return a; }
+say b = mut B();
+b.keep(hand, 7);
+
+// @split
+type B {
+  pub var v;
+  init(this) { this.v = 0; }
+  pub fn keep(mut this, f, *x)! { say y = f(x); return this.v = y; }
+}
+fn hand(a)! { return a; }
+say b = mut B();
+print(b.keep(hand, 7)); // expect: 7
+
+// @split
+type B {
+  pub var v;
+  init(this) { this.v = 0; }
+  pub fn keep(mut this, f, x)! { say y = f(x); return this.v = y; } // error: cannot persist a borrowed value
+}
+fn hand(a)! { return a; }
+say b = mut B();
+b.keep(hand, 7);

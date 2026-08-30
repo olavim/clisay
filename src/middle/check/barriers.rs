@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use crate::middle::hir::{HirExpr, HirId, Symbol, TypeId};
 use crate::middle::obligations::Obligations;
 
-use super::{Checker, Flow, Violation};
+use super::{Checker, Debt, Violation};
 
 /// The runtime witnesses a discharge node must test: `null` for `opt`, and one type/trait name
 /// per object witness.
@@ -38,12 +38,8 @@ pub enum Guard {
     NonNull,
     /// A store handing an element to a container, which takes its write-ownership.
     StoreIntoContainer,
-    /// A write through a path, which takes no write-ownership and so must find nothing holding it.
-    WriteThroughPath,
     /// A value entering an immutable construction.
     Immutable,
-    /// A write through a name, which takes the element's write-ownership.
-    WriteThroughName,
 }
 
 /// What a call does to its arguments.
@@ -77,15 +73,20 @@ pub struct Barriers {
     pub(super) seal_checks: HashSet<HirId<HirExpr>>,
     /// Paren-construction `Call` nodes (`K(args)`).
     pub(super) constructions: HashSet<HirId<HirExpr>>,
-    /// Rebinds of a name that holds an element writer slot, which give the slot back before the
-    /// new value lands. Keyed on the assignment's left side.
-    pub(super) rebind_releases: HashSet<HirId<HirExpr>>,
     /// Scopes holding an element writer slot, by node index. A scope gives back whatever its own
     /// locals still hold.
     pub(super) write_scopes: HashSet<usize>,
+    /// Store targets one name is proven to reach. Their stores skip the one-writer arbitration
+    /// that every other store runs.
+    pub(super) unshared_stores: HashSet<HirId<HirExpr>>,
 }
 
 impl Barriers {
+    /// Whether one name is proven to reach this store's target, so the store needs no arbitration.
+    pub fn store_is_unshared(&self, target: &HirId<HirExpr>) -> bool {
+        self.unshared_stores.contains(target)
+    }
+
     /// Every runtime check this node carries, in emission order.
     pub fn guards(&self, node: &HirId<HirExpr>) -> &[Guard] {
         self.guards.get(node).map_or(&[], Vec::as_slice)
@@ -126,11 +127,6 @@ impl Barriers {
         self.constructions.contains(node)
     }
 
-    /// Whether this rebind gives back the writer slot the name held.
-    pub fn releases_on_rebind(&self, lhs: &HirId<HirExpr>) -> bool {
-        self.rebind_releases.contains(lhs)
-    }
-
     /// Whether this scope has to give back element writer slots on the way out.
     pub fn releases_write_ownership<T>(&self, scope: &HirId<T>) -> bool {
         self.write_scopes.contains(&scope.index())
@@ -151,7 +147,7 @@ impl<'a> Checker<'a> {
     /// Records a runtime check the pass proved unnecessary. A no-op unless check-forcing is on,
     /// so neither the table nor the walk costs anything in an ordinary run.
     pub(super) fn record_elision(&mut self, node: &HirId<HirExpr>, guard: Guard) {
-        if !self.force_checks {
+        if !self.ctx.force_checks {
             return;
         }
         let elided = self.out.elided.entry(*node).or_default();
@@ -184,11 +180,6 @@ impl<'a> Checker<'a> {
         self.out.constructions.insert(*node);
     }
 
-    /// Marks a rebind that gives back the writer slot its name held.
-    pub(super) fn record_rebind_release(&mut self, lhs: &HirId<HirExpr>) {
-        self.out.rebind_releases.insert(*lhs);
-    }
-
     /// Marks a scope that has to give back element writer slots.
     pub(super) fn record_write_scope(&mut self, scope: &HirId<HirExpr>) {
         self.out.write_scopes.insert(scope.index());
@@ -197,9 +188,9 @@ impl<'a> Checker<'a> {
     /// Records the guard for an unknown value reaching a destination accepting `accepted`. The
     /// guard allows those obligations' witnesses.
     pub(super) fn record_boundary_barrier(&mut self, node: &HirId<HirExpr>, accepted: &Obligations) {
-        let null_allowed = accepted.contains(&self.sigs.opt);
+        let null_allowed = accepted.contains(&self.ctx.sigs.opt);
         let mut allow_witnesses = Vec::new();
-        for (ob, id) in self.sigs.object_witnesses() {
+        for (ob, id) in self.ctx.sigs.object_witnesses() {
             if accepted.contains(&ob) && !allow_witnesses.contains(&id) {
                 allow_witnesses.push(id);
             }
@@ -210,46 +201,46 @@ impl<'a> Checker<'a> {
 
     /// Classifies a value entering a non-null target. A non-null slot forbids `opt`, so only a
     /// value owing `opt` violates it. An unknown value records the non-null boundary guard.
-    pub(super) fn non_null_violation(&mut self, value: &Flow, target: &HirId<HirExpr>) -> Option<Violation> {
+    pub(super) fn non_null_violation(&mut self, value: &Debt, target: &HirId<HirExpr>) -> Option<Violation> {
         match value {
-            Flow::Clean => None,
-            Flow::Unknown => { self.record_boundary_barrier(target, &Obligations::new()); None },
-            Flow::Void => Some(Violation::Void),
-            Flow::Bad { obligations, definite, .. } if obligations.contains(&self.sigs.opt) => {
+            Debt::Clean => None,
+            Debt::Unknown => { self.record_boundary_barrier(target, &Obligations::new()); None },
+            Debt::Void => Some(Violation::Void),
+            Debt::Owed { obligations, definite, .. } if obligations.contains(&self.ctx.sigs.opt) => {
                 Some(if *definite { Violation::Null } else { Violation::Nullable })
             },
-            Flow::Bad { .. } => None,
+            Debt::Owed { .. } => None,
         }
     }
 
     /// Checks a value entering a slot against the obligations the slot accepts.
-    pub(super) fn check_into_slot(&mut self, flow: &Flow, accepted: &Obligations, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let text = self.binding_text(name);
-        let noun = if self.is_field_local(name) { "field" } else { "binding" };
+    pub(super) fn check_into_slot(&mut self, debt: &Debt, accepted: &Obligations, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let text = self.ctx.binding_display_name(name);
+        let noun = if self.ctx.is_factory_field(name) { "field" } else { "binding" };
         let void = || format!("Cannot assign a void result to '{text}'; the call returns no value");
 
-        if flow.is_void() {
+        if debt.is_void() {
             return Err(self.error(void(), node));
         }
 
         // An unknown value is guarded against every witness the slot does not accept.
-        if matches!(flow, Flow::Unknown) {
+        if matches!(debt, Debt::Unknown) {
             self.record_boundary_barrier(node, accepted);
             return Ok(());
         }
 
-        let undeclared = self.undeclared_obligations(flow, accepted);
+        let undeclared = self.ctx.unadmitted_obligations(debt, accepted);
         if !undeclared.is_empty() {
-            let owed = quoted_obligation_list(self.hir, &undeclared);
+            let owed = quoted_obligation_list(self.ctx.hir, &undeclared);
             return Err(self.error_help(format!("cannot assign a value owing {owed} to '{text}'"), node,
-                format!("discharge it first, or declare it on the {noun} (`{text}: {}`)", obligation_atoms(self.hir, &undeclared))));
+                format!("discharge it first, or declare it on the {noun} (`{text}: {}`)", obligation_atoms(self.ctx.hir, &undeclared))));
         }
 
-        if accepted.contains(&self.sigs.opt) {
+        if accepted.contains(&self.ctx.sigs.opt) {
             return Ok(());
         }
 
-        match self.non_null_violation(flow, node) {
+        match self.non_null_violation(debt, node) {
             None => Ok(()),
             Some(Violation::Void) => Err(self.error(void(), node)),
             Some(Violation::Null) => Err(self.error(format!("Cannot assign null to non-null {noun} '{text}'"), node)),

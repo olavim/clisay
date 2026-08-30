@@ -309,12 +309,25 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_value_mut(&mut self, node: &AstId<Expr>, inner: &AstId<Expr>) -> Result<HirId<HirExpr>, anyhow::Error> {
-        match self.ast.get(inner) {
-            Expr::Literal(Literal::Array(_)) | Expr::Literal(Literal::Dict(_)) | Expr::Construct(..) | Expr::Call(..) => {
-                let lowered = self.expr(inner)?;
-                Ok(self.hir.add(HirExpr::Mut(lowered), self.ast.pos(node).clone()))
-            },
-            _ => Err(self.error_help_at("invalid operand of `mut`", self.ast.pos(node), "`mut` can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`")),
+        let constructs = match self.ast.get(inner) {
+            Expr::Literal(Literal::Array(_)) | Expr::Literal(Literal::Dict(_)) | Expr::Construct(..) => true,
+            Expr::Call(callee, _) => self.calls_a_type(callee),
+            _ => false,
+        };
+        if !constructs {
+            return Err(self.error_help_at("invalid operand of `mut`", self.ast.pos(node),
+                "`mut` can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`"));
+        }
+        let lowered = self.expr(inner)?;
+        Ok(self.hir.add(HirExpr::Mut(lowered), self.ast.pos(node).clone()))
+    }
+
+    /// Whether a call constructs, which is what `mut` may mark. Any other call returns a value it
+    /// did not make, so marking it would re-mark what someone else holds.
+    fn calls_a_type(&self, callee: &AstId<Expr>) -> bool {
+        match self.ast.get(callee) {
+            Expr::Identifier(name) => self.names.is_type_or_trait(*name),
+            _ => false,
         }
     }
 

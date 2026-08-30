@@ -43,6 +43,7 @@ impl Vm {
         let arg_count = self.read_next() as usize;
         let root_kind = self.read_next();
         let root_operand = self.read_next();
+        let is_dot = self.read_next() != 0;
         let name = self.chunk.constants[name_idx].as_object().as_string_ptr();
         let receiver = self.stack.peek(arg_count);
 
@@ -56,30 +57,32 @@ impl Vm {
             }
         }
 
-        self.invoke_member_slow(name, arg_count, root_kind, root_operand)
+        self.invoke_member_slow(name, arg_count, root_kind, root_operand, is_dot)
     }
 
     /// Pushes a frame for an instance method without allocating a bound method.
     fn invoke_method(&mut self, method: Object, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
+        let root = self.take_write_root(root_kind, root_operand);
+
         // A capturing method is already a closure bound to the frame that declared its type. Any
         // other method captures nothing and is closed here.
         let is_bound = method.tag() == objects::TAG_CLOSURE;
-        let (name, arity, ip_start, mut_receiver) = match is_bound {
+        let (name, arity, ip_start, mut_receiver, retain_receiver) = match is_bound {
             true => {
                 let closure = unsafe { &*method.as_closure_ptr() };
-                (closure.name, closure.arity, closure.ip_start, closure.mut_receiver)
+                (closure.name, closure.arity, closure.ip_start, closure.mut_receiver, closure.retain_receiver)
             },
             false => {
                 let func = unsafe { &*method.as_function_ptr() };
-                (func.name, func.arity, func.ip_start, func.mut_receiver)
+                (func.name, func.arity, func.ip_start, func.mut_receiver, func.retain_receiver)
             },
         };
         if mut_receiver {
             let target = self.stack.peek(arg_count);
             if self.receiver_rejects_mut(target) {
-                return self.error_readonly_receiver(name, target);
+                return self.readonly_receiver_error(name, target);
             }
-            self.ensure_writer_is_root(target, root_kind, root_operand)?;
+            self.ensure_writable(target, root)?;
         }
         if arg_count != arity as usize {
             let text = unsafe { &(*name).value };
@@ -91,25 +94,72 @@ impl Vm {
         };
         let stack_start = self.stack.offset(arg_count);
         self.push_frame(closure_ptr, stack_start, ip_start, true)?;
-        let (retain_mask, escape_mask) = unsafe { ((*closure_ptr).retain_mask, (*closure_ptr).escape_mask) };
-        self.transfer_argument_write_ownership(retain_mask, escape_mask, stack_start, arg_count)?;
+        let m = unsafe { (*closure_ptr).call_masks() };
+        self.transfer_argument_write_ownership(m.retain_mask, m.escape_mask, m.needs_borrow_mark, m.param_accepts, stack_start, arg_count, ReceiverSlot::declared(retain_receiver, unsafe { (*closure_ptr).receiver_needs_borrow }))?;
         Ok(())
     }
 
-    fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
+    /// Invokes `this.name(args)`.
+    pub(super) fn op_invoke_this(&mut self) -> Result<(), anyhow::Error> {
+        let member_id = self.read_next();
+        let arg_count = self.read_next() as usize;
+        let root_kind = self.read_next();
+        let root_operand = self.read_next();
+        let receiver = self.stack.peek(arg_count);
+        let ValueKind::Object(ObjectKind::Instance) = receiver.kind() else {
+            return self.error(format!("Invalid property access: {}", receiver.fmt()));
+        };
+
+        // Fields are numbered before methods, so the id says which kind this is without reading
+        // the value. Only a function or a closure takes a frame. Anything else is called as a value.
+        let ty = unsafe { &*(*receiver.as_object().as_instance_ptr()).ty };
+        if member_id >= ty.field_count {
+            if let Some(method) = ty.methods.get(&member_id).copied() {
+                if matches!(method.tag(), objects::TAG_FUNCTION | objects::TAG_CLOSURE) {
+                    return self.invoke_method(method, arg_count, root_kind, root_operand);
+                }
+            }
+        }
+
+        self.invoke_this_field(receiver, member_id, arg_count, root_kind, root_operand)
+    }
+
+    /// Calls a field that holds a callable, such as `this.cb()`. The call does not
+    /// bind a receiver. The value is called as it is. A bound method still carries
+    /// its original receiver.
+    fn invoke_this_field(&mut self, receiver: Value, member_id: u8, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
+        let root = self.take_write_root(root_kind, root_operand);
+        let instance_ref = receiver.as_object().as_instance_ptr();
+        let callable = self.get_property_by_id(instance_ref, member_id);
+        if self.callable_writes_receiver(callable) {
+            self.claim_write_ownership_through(receiver, root)?;
+        }
+        self.stack.set(arg_count, callable);
+        self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
+        let called = self.call(arg_count, callable, true);
+        self.native_receiver_is_frame_local = false;
+        called
+    }
+
+    fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize, root_kind: u8, root_operand: u8, is_dot: bool) -> Result<(), anyhow::Error> {
+        let root = self.take_write_root(root_kind, root_operand);
+
         // Resolving the property allocates a bound method, which can collect. The arguments stay
         // on the stack across it, since a copy held anywhere else would not be a root.
         let receiver = self.stack.peek(arg_count);
         self.stack.push(receiver);
         self.stack.push(Value::from(name));
 
-        // INVOKE is always a `recv.name(args)`.
-        self.op_get_property()?;
+        // The two reads agree everywhere except for dict, where `.` is the method surface and `[]` is the data.
+        match is_dot {
+            true => self.op_get_property()?,
+            false => self.op_get_index()?,
+        }
 
         // The callable takes the receiver's slot, which is where a call reads it from.
         let callable = self.stack.pop();
         if self.callable_writes_receiver(callable) {
-            self.ensure_writer_is_root(receiver, root_kind, root_operand)?;
+            self.claim_write_ownership_through(receiver, root)?;
         }
         self.stack.set(arg_count, callable);
         self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
@@ -205,6 +255,69 @@ impl Vm {
         ))
     }
 
+
+    pub(super) fn running_slot_table(&self) -> u16 {
+        let closure = unsafe { (*self.frames.top()).closure };
+        match closure.is_null() {
+            true => ir::SLOT_ACCEPTS_SCRIPT_FRAME,
+            false => unsafe { (*closure).slot_accepts },
+        }
+    }
+
+    pub(super) fn slot_accepts_at(&self, slot: u8, at: usize) -> u16 {
+        self.slot_accepts_in(self.running_slot_table(), slot, at)
+    }
+
+    pub(super) fn slot_accepts_in(&self, table: u16, slot: u8, at: usize) -> u16 {
+        let Some(rows) = self.chunk.slot_accepts.get(table as usize) else { return ir::SLOT_ACCEPTS_ANYTHING };
+        rows.iter().rev()
+            .find(|r| r.slot == slot && r.from <= at && at < r.to)
+            .map_or(ir::SLOT_ACCEPTS_ANYTHING, |r| r.accepts)
+    }
+
+
+    #[inline]
+    pub(super) fn check_arguments_accepted(&mut self, param_accepts: u16, stack_start: *mut Value, arity: usize) -> Result<(), anyhow::Error> {
+        if !objects::arguments_may_carry_witness(stack_start, arity) {
+            return Ok(());
+        }
+        self.check_each_argument_accepted(param_accepts, stack_start, arity)
+    }
+
+    #[cold]
+    pub(super) fn check_each_argument_accepted(&mut self, param_accepts: u16, stack_start: *mut Value, arity: usize) -> Result<(), anyhow::Error> {
+        let row = &self.chunk.param_accepts[param_accepts as usize];
+        debug_assert_eq!(row.len(), arity, "a callable's accept row covers every parameter");
+        let refused = (0..arity.min(row.len())).find_map(|position| {
+            let value = unsafe { *stack_start.add(position + 1) };
+            let allowed = row[position];
+            (objects::may_carry_witness(value) && !self.accepts_value(value, allowed)).then_some((value, allowed))
+        });
+        match refused {
+            Some((value, allowed)) => self.check_value_accepted(value, allowed),
+            None => Ok(()),
+        }
+    }
+
+    #[cold]
+    fn store_field(&mut self, instance_ref: *mut ObjInstance, field: u8, value: Value) -> Result<(), anyhow::Error> {
+        #[cfg(debug_assertions)]
+        assert_field_slot(unsafe { &*instance_ref }, field);
+
+        let accepted = self.accept_field_write(instance_ref, field, value)?;
+        self.write_field(accepted);
+        Ok(())
+    }
+
+    /// Refuses a value the field does not accept.
+    #[cold]
+    /// What a field accepts. A field id the type does not have refuses nothing.
+    pub(super) fn field_accepts(&self, instance_ref: *mut ObjInstance, field: u8) -> u16 {
+        let ty = unsafe { &*(*instance_ref).ty };
+        ty.field_accepts.get(field as usize).copied().unwrap_or(ir::SLOT_ACCEPTS_ANYTHING)
+    }
+
+
     fn set_instance_index(&mut self, prop: Value, target: Value) -> Result<(), anyhow::Error> {
         let instance_ref = target.as_object().as_instance_ptr();
         let instance = unsafe { &mut *instance_ref };
@@ -219,11 +332,7 @@ impl Vm {
         }
 
         match ty.resolve(prop.as_object().as_string_ptr()) {
-            Some(TypeMember::Field(id)) => {
-                let value = self.stack.peek(0);
-                instance.set(id, value);
-                Ok(())
-            },
+            Some(TypeMember::Field(id)) => self.store_field(instance_ref, id, self.stack.peek(0)),
             Some(TypeMember::Method(_)) => self.error(format!("Cannot assign to method '{}'", prop.as_object().as_string())),
             None => self.error(format!(
                 "Invalid index: {} doesn't have member {}",
@@ -234,6 +343,14 @@ impl Vm {
     }
 
     pub(super) fn op_set_field_pop(&mut self) -> Result<(), anyhow::Error> {
+        self.set_field::<true>()
+    }
+
+    pub(super) fn op_set_field(&mut self) -> Result<(), anyhow::Error> {
+        self.set_field::<false>()
+    }
+
+    fn set_field<const POP: bool>(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
         let root_kind = self.read_next();
         let root_operand = self.read_next();
@@ -242,18 +359,21 @@ impl Vm {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         }
         self.ensure_mutable(target)?;
-        self.ensure_writer_is_root(target, root_kind, root_operand)?;
+        self.arbitrate_write(target, root_kind, root_operand)?;
 
-        let value = self.stack.pop();
-        self.ensure_borrowed_does_not_persist(value, root_kind, root_operand)?;
-        self.container_took(target, value)?;
-        let instance = unsafe { &mut *target.as_object().as_instance_ptr() };
+        let instance_ref = target.as_object().as_instance_ptr();
 
-        #[cfg(debug_assertions)]
-        assert_field_slot(instance, member_id);
+        // Ask before the pop, which would prune the mark this reads.
+        let slot = self.stack.offset(0);
+        let value = unsafe { *slot };
+        let borrowed = self.ensure_borrowed_does_not_persist(value, slot, root_kind, root_operand)?;
+        if POP {
+            self.stack.pop();
+        }
 
-        instance.set(member_id, value);
-        Ok(())
+        // Record before storing, so a store this refuses has not already mutated the instance.
+        self.container_took(target, value, borrowed)?;
+        self.store_field(instance_ref, member_id, value)
     }
 
     pub(super) fn op_get_index(&mut self) -> Result<(), anyhow::Error> {
@@ -291,7 +411,7 @@ impl Vm {
             return Ok(());
         }
         if target.as_object().is_immutable() {
-            return self.error_immutable(target);
+            return self.immutable_error(target);
         }
         if target.as_object().is_write_retired() {
             let label = format!("`{}` is written here", self.get_source_position().snippet());
@@ -300,8 +420,22 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn container_took(&mut self, container: Value, value: Value) -> Result<(), anyhow::Error> {
-        objects::container_took(self, container, value).map_err(|_| self.gave_transferred_element_error())
+    #[inline]
+    pub(super) fn container_took_from(&mut self, container: Value, slot: *mut Value) -> Result<(), anyhow::Error> {
+        let value = unsafe { *slot };
+        let borrowed = self.slot_carries_borrow(slot, value);
+        self.container_took(container, value, borrowed)
+    }
+
+    pub(super) fn record_held_borrow_from(&mut self, container: Value, slot: *mut Value) {
+        if self.slot_carries_borrow(slot, unsafe { *slot }) {
+            objects::mark_holds_borrow(container);
+        }
+    }
+
+    pub(super) fn container_took(&mut self, container: Value, value: Value, borrowed: bool) -> Result<(), anyhow::Error> {
+        objects::container_took(self, container, value, borrowed)
+            .map_err(|_| self.gave_transferred_element_error())
     }
 
     #[cold]
@@ -313,11 +447,17 @@ impl Vm {
             .unwrap_err()
     }
 
-    pub(super) fn ensure_borrowed_does_not_persist(&self, value: Value, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
-        if objects::carries_borrow(value) && !self.root_is_frame_local(root_kind, root_operand) {
+    #[inline]
+    pub(super) fn slot_carries_borrow(&self, slot: *mut Value, value: Value) -> bool {
+        objects::carries_borrow(value) || self.stack.is_borrowed(slot)
+    }
+
+    pub(super) fn ensure_borrowed_does_not_persist(&self, value: Value, slot: *mut Value, root_kind: u8, root_operand: u8) -> Result<bool, anyhow::Error> {
+        let borrowed = self.slot_carries_borrow(slot, value);
+        if borrowed && !self.root_is_frame_local(root_kind, root_operand) {
             return Err(self.persisted_borrow_error());
         }
-        Ok(())
+        Ok(borrowed)
     }
 
     #[cold]
@@ -344,7 +484,19 @@ impl Vm {
     }
 
     pub(super) fn root_is_frame_local(&self, kind: u8, operand: u8) -> bool {
-        kind == ir::WRITE_ROOT_LOCAL && self.frame_arity().is_some_and(|arity| operand as usize > arity)
+        ir::write_root_kind(kind) == ir::WRITE_ROOT_LOCAL
+            && self.frame_arity().is_some_and(|arity| operand as usize > arity)
+    }
+
+    /// Settles the one-writer rule for a store.
+    fn arbitrate_write(&mut self, target: Value, kind: u8, operand: u8) -> Result<(), anyhow::Error> {
+        if kind & ir::WRITE_ROOT_UNSHARED != 0 {
+            debug_assert!(ir::write_root_kind(kind) != ir::WRITE_ROOT_STASH,
+                "a stashed root is popped by the store, so it can never be proven unshared");
+            return Ok(());
+        }
+        let root = self.take_write_root(kind, operand);
+        self.claim_write_ownership_through(target, root)
     }
 
     fn frame_arity(&self) -> Option<usize> {
@@ -368,9 +520,11 @@ impl Vm {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.ensure_writer_is_root(target, root_kind, root_operand)?;
+        self.arbitrate_write(target, root_kind, root_operand)?;
         let stored = self.stack.peek(0);
-        self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
+        let borrowed = self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
+
+        self.container_took(target, stored, borrowed)?;
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target)?,
@@ -378,7 +532,6 @@ impl Vm {
             ObjectKind::Dict => self.set_dict_index(target, prop)?,
             _ => self.error(format!("Invalid property access: {}", target.fmt()))?,
         }
-        self.container_took(target, stored)?;
         Ok(())
     }
 
@@ -441,9 +594,11 @@ impl Vm {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.ensure_writer_is_root(target, root_kind, root_operand)?;
+        self.arbitrate_write(target, root_kind, root_operand)?;
         let stored = self.stack.peek(0);
-        self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
+        let borrowed = self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
+
+        self.container_took(target, stored, borrowed)?;
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target)?,
@@ -454,14 +609,13 @@ impl Vm {
             ))?,
             _ => self.error(format!("Invalid property access: {}", target.fmt()))?,
         }
-        self.container_took(target, stored)?;
         Ok(())
     }
 
     /// Whether a member satisfies what its declaration admits.
     pub(super) fn op_member_admits(&mut self) {
         let const_idx = self.read_next() as usize;
-        let (null_allowed, allowed) = self.read_allowed();
+        let allowed = self.read_allowed_witnesses();
         let key = self.chunk.constants[const_idx];
         let receiver = self.stack.pop();
 
@@ -470,8 +624,7 @@ impl Vm {
             MemberValue::Method => true,
             // A surface asks for a member, so a receiver without one exposes no surface.
             MemberValue::Absent => false,
-            MemberValue::Value(value) if value.is_null() => null_allowed,
-            MemberValue::Value(value) => !self.carries_disallowed_witness(value, allowed),
+            MemberValue::Value(value) => self.accepts_value(value, allowed),
         };
         self.stack.push(Value::from(admits));
     }
@@ -551,7 +704,6 @@ impl Vm {
         self.stack.push(Value::from(len));
     }
 
-    /// Resolves `dict.name` to a bound method of the `dict` method surface.
     fn get_dict_method(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let dict_type = unsafe { &*self.native_types.dict };
         if matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
@@ -565,7 +717,6 @@ impl Vm {
         self.error(format!("Invalid dict property: {}", prop.fmt()))
     }
 
-    /// Reads `dict[key]` by value key. A missing key yields `null`.
     fn get_dict_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let dict = unsafe { &*target.as_object().as_dict_ptr() };
         let value = dict.entries.get(&DictKey(prop)).copied().unwrap_or(Value::NULL);
@@ -573,8 +724,6 @@ impl Vm {
         Ok(())
     }
 
-    /// Writes `dict[key] = value`. The rhs is on the stack top; it stays there as
-    /// the assignment expression's result (mirrors the array/native setter path).
     fn set_dict_index(&mut self, target: Value, prop: Value) -> Result<(), anyhow::Error> {
         let value = self.stack.peek(0);
         let dict = unsafe { &mut *target.as_object().as_dict_ptr() };
@@ -595,34 +744,8 @@ impl Vm {
         self.stack.push(value);
         Ok(())
     }
-
-    pub(super) fn op_set_field(&mut self) -> Result<(), anyhow::Error> {
-        let member_id = self.read_next();
-        let root_kind = self.read_next();
-        let root_operand = self.read_next();
-        let value = self.stack.pop();
-        if !matches!(value.kind(), ValueKind::Object(ObjectKind::Instance)) {
-            return self.error(format!("Invalid property access: {}", value.fmt()));
-        }
-        self.ensure_mutable(value)?;
-        self.ensure_writer_is_root(value, root_kind, root_operand)?;
-
-        let instance_ref = value.as_object().as_instance_ptr();
-        let stored = self.stack.peek(0);
-        self.ensure_borrowed_does_not_persist(stored, root_kind, root_operand)?;
-        self.container_took(value, stored)?;
-        let instance = unsafe { &mut *instance_ref };
-
-        #[cfg(debug_assertions)]
-        assert_field_slot(instance, member_id);
-
-        instance.set(member_id, stored);
-        Ok(())
-    }
 }
 
-/// A static member id reaching a write must name a field. Fields are numbered before methods, so a
-/// higher id means the check pass let a write into a method slot through.
 #[cfg(debug_assertions)]
 fn assert_field_slot(instance: &ObjInstance, member_id: u8) {
     let ty = unsafe { &*instance.ty };

@@ -1,0 +1,21 @@
+say sink = mut [];
+fn give(s) { sink.push(s); } // error: cannot retain a borrowed argument
+give("hello");
+
+// @split
+say sink = mut [];
+fn give(s) { sink.push(s); } // error: cannot retain a borrowed argument
+give(7);
+
+// @split
+fn f(s)! { say bin = mut []; bin.push(s); return bin[0]; }
+print(f("hi")); // expect: hi
+
+// @split
+fn f()! { say bin = mut []; say v = "hi"; bin.push(v); return bin[0]; }
+print(f()); // expect: hi
+
+// @split
+type B { pub var v; init(this) { this.v = 0; } }
+fn f()! { say b = mut B(); b.v = "hi"; return b.v; }
+print(f()); // expect: hi
