@@ -102,6 +102,7 @@ pub enum HirExpr {
     Unary(UnOp, HirId<HirExpr>),
     Binary(BinOp, HirId<HirExpr>, HirId<HirExpr>),
     Assign(HirId<HirExpr>, HirId<HirExpr>),
+    CompoundAssign(HirId<HirExpr>, BinOp, HirId<HirExpr>),
     Call(HirId<HirExpr>, Vec<HirId<HirExpr>>),
     /// `Index(target, member, is_dot)`: `is_dot` distinguishes `.name` (member)
     /// from `[expr]` (data). See `ast::Expr::Index`.
@@ -652,9 +653,11 @@ impl Hir {
             HirExpr::Literal(HirLiteral::Array(elems)) => ValueSource::Holds(elems.clone()),
             HirExpr::Literal(HirLiteral::Dict(pairs)) => ValueSource::Holds(pairs.iter().flat_map(|(k, v)| [*k, *v]).collect()),
 
-            HirExpr::Unary(..) | HirExpr::Binary(..) | HirExpr::Match(..) | HirExpr::Block(_)
-            | HirExpr::Literal(HirLiteral::Null | HirLiteral::Boolean(_)
-                | HirLiteral::Number(_) | HirLiteral::String(_)) => ValueSource::Fresh,
+            HirExpr::CompoundAssign(..)
+            | HirExpr::Unary(..) | HirExpr::Binary(..)
+            | HirExpr::Match(..) | HirExpr::Block(_)
+            | HirExpr::Literal(HirLiteral::Null | HirLiteral::Boolean(_) | HirLiteral::Number(_) | HirLiteral::String(_))
+                => ValueSource::Fresh,
         }
     }
 

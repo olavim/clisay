@@ -11,6 +11,7 @@ use super::{Compiler, WriteOwnershipHolderPlace, PathRoot};
 enum IndexOp {
     Load,
     Store { rhs: HirId<HirExpr>, discarded: bool },
+    Update { op: BinOp, rhs: HirId<HirExpr>, discarded: bool },
 }
 
 impl<'a> Compiler<'a> {
@@ -28,6 +29,7 @@ impl<'a> Compiler<'a> {
             HirExpr::Unary(op, operand) => self.unary_expression(*op, operand)?,
             HirExpr::Binary(op, left, right) => self.binary_expression(*op, left, right)?,
             HirExpr::Assign(left, right) => self.compile_assign(left, right, false)?,
+            HirExpr::CompoundAssign(target, op, value) => self.compile_assign_op(target, Some(*op), value, false)?,
             HirExpr::Call(callee, args) => self.call_expression(callee, args, false)?,
             HirExpr::Index(target, member, is_dot) => self.index(target, member, *is_dot, IndexOp::Load)?,
             HirExpr::Literal(lit) => self.literal(expr, lit)?,
@@ -309,6 +311,7 @@ impl<'a> Compiler<'a> {
             HirExpr::Block(stmts) => self.scoped_body(stmts, expr),
             // An assignment statement stores in discard context, so the store op itself drops the value.
             HirExpr::Assign(left, right) => self.compile_assign(left, right, true),
+            HirExpr::CompoundAssign(target, op, value) => self.compile_assign_op(target, Some(*op), value, true),
             // Any other expression leaves a value that the statement discards.
             _ => {
                 self.expression(expr)?;
@@ -401,16 +404,30 @@ impl<'a> Compiler<'a> {
     }
 
     fn compile_assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>, discarded: bool) -> Result<(), anyhow::Error> {
+        self.compile_assign_op(lhs, None, rhs, discarded)
+    }
+
+    /// `lhs = rhs` or `lhs op= rhs`.
+    fn compile_assign_op(&mut self, lhs: &HirId<HirExpr>, op: Option<BinOp>, rhs: &HirId<HirExpr>, discarded: bool) -> Result<(), anyhow::Error> {
         match self.hir.get(lhs) {
             HirExpr::Identifier(_) => {
                 let place = self.place(lhs);
+                if let Some(op) = op {
+                    self.expression(lhs)?;
+                    self.emit_compound_assign_value(op, rhs, lhs)?;
+                    return self.emit_store(place, discarded, lhs, rhs);
+                }
                 self.expression(rhs)?;
                 self.emit_store(place, discarded, lhs, rhs)?;
                 Ok(())
             },
             HirExpr::Index(obj, member, is_dot) => {
                 let (obj, member, is_dot) = (*obj, *member, *is_dot);
-                self.index(&obj, &member, is_dot, IndexOp::Store { rhs: *rhs, discarded })
+                let index_op = match op {
+                    Some(op) => IndexOp::Update { op, rhs: *rhs, discarded },
+                    None => IndexOp::Store { rhs: *rhs, discarded },
+                };
+                self.index(&obj, &member, is_dot, index_op)
             },
             _ => compiler_error!(self, lhs, "Invalid assignment")
         }
@@ -457,23 +474,51 @@ impl<'a> Compiler<'a> {
                 self.emit(if is_dot { Inst::GetProperty } else { Inst::GetIndex }, target);
             },
             IndexOp::Store { rhs, discarded } => {
-                self.expression(&rhs)?;
                 self.mark_path_root(target);
                 self.expression(target)?;
                 self.expression(member_expr_id)?;
-                let (root_kind, root_operand) = self.write_root_operands(target);
-                let store = match is_dot {
-                    true => Inst::SetProperty(root_kind, root_operand),
-                    // The store asks the write-ownership question itself.
-                    false => Inst::SetIndex(root_kind, root_operand),
-                };
-                self.emit_store_inst(store, target, &rhs);
-                if discarded {
-                    self.emit(Inst::Pop, target);
-                }
-            }
+                self.expression(&rhs)?;
+                self.emit_path_store(target, is_dot, &rhs, discarded);
+            },
+            IndexOp::Update { op, rhs, discarded } => {
+                self.mark_path_root(target);
+                self.expression(target)?;
+                self.expression(member_expr_id)?;
+                self.emit(Inst::Dup2, target);
+                self.emit(if is_dot { Inst::GetProperty } else { Inst::GetIndex }, target);
+                self.emit_compound_assign_value(op, &rhs, target)?;
+                self.emit_path_store(target, is_dot, &rhs, discarded);
+            },
         }
         Ok(())
+    }
+
+    fn emit_compound_assign_value(&mut self, op: BinOp, rhs: &HirId<HirExpr>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if !matches!(op, BinOp::And | BinOp::Or) {
+            self.expression(rhs)?;
+            self.emit(binop_inst(op), node);
+            return Ok(());
+        }
+        let end = self.ir.new_label();
+        self.emit(match op {
+            BinOp::And => Inst::JumpIfFalseOrPop(end),
+            _ => Inst::JumpIfTrueOrPop(end),
+        }, node);
+        self.expression(rhs)?;
+        self.ir.bind(end);
+        Ok(())
+    }
+
+    fn emit_path_store(&mut self, target: &HirId<HirExpr>, is_dot: bool, value: &HirId<HirExpr>, discarded: bool) {
+        let (root_kind, root_operand) = self.write_root_operands(target);
+        let store = match is_dot {
+            true => Inst::SetProperty(root_kind, root_operand),
+            false => Inst::SetIndex(root_kind, root_operand),
+        };
+        self.emit_store_inst(store, target, value);
+        if discarded {
+            self.emit(Inst::Pop, target);
+        }
     }
 
     fn index_member_by_id(&mut self, target_expr: &HirId<HirExpr>, member_id: u8, op: IndexOp) -> Result<(), anyhow::Error> {
@@ -486,14 +531,25 @@ impl<'a> Compiler<'a> {
                 self.expression(&rhs)?;
                 self.mark_path_root(target_expr);
                 self.expression(target_expr)?;
-                let (kind, operand) = self.write_root_operands(target_expr);
-                self.emit_store_inst(match discarded {
-                    true => Inst::SetFieldPop(member_id, kind, operand),
-                    false => Inst::SetField(member_id, kind, operand),
-                }, target_expr, &rhs);
-            }
+                self.emit_field_store(target_expr, member_id, &rhs, discarded);
+            },
+            IndexOp::Update { op, rhs, discarded } => {
+                self.expression(target_expr)?;
+                self.emit(Inst::GetField(member_id), target_expr);
+                self.emit_compound_assign_value(op, &rhs, target_expr)?;
+                self.emit_load(self.place(target_expr), target_expr)?;
+                self.emit_field_store(target_expr, member_id, &rhs, discarded);
+            },
         }
         Ok(())
+    }
+
+    fn emit_field_store(&mut self, target_expr: &HirId<HirExpr>, member_id: u8, value: &HirId<HirExpr>, discarded: bool) {
+        let (kind, operand) = self.write_root_operands(target_expr);
+        self.emit_store_inst(match discarded {
+            true => Inst::SetFieldPop(member_id, kind, operand),
+            false => Inst::SetField(member_id, kind, operand),
+        }, target_expr, value);
     }
 
     fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], mutable: bool) -> Result<(), anyhow::Error> {

@@ -406,6 +406,19 @@ impl Vm {
         Ok(())
     }
 
+    #[inline]
+    fn store_operands(&self) -> (Value, Value, Value) {
+        (self.stack.peek(2), self.stack.peek(1), self.stack.peek(0))
+    }
+
+    #[inline]
+    fn drop_store_path(&mut self) {
+        let value = self.stack.peek(0);
+        self.stack.pop();
+        self.stack.pop();
+        self.stack.set(0, value);
+    }
+
     fn ensure_mutable(&self, target: Value) -> Result<(), anyhow::Error> {
         if !matches!(target.kind(), ValueKind::Object(_)) {
             return Ok(());
@@ -514,17 +527,16 @@ impl Vm {
     pub(super) fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
         let root_kind = self.read_next();
         let root_operand = self.read_next();
-        let prop = self.stack.pop();
-        let target = self.stack.pop();
+        let (target, prop, stored) = self.store_operands();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
         self.arbitrate_write(target, root_kind, root_operand)?;
-        let stored = self.stack.peek(0);
         let borrowed = self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
 
         self.container_took(target, stored, borrowed)?;
+        self.drop_store_path();
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target)?,
@@ -588,17 +600,16 @@ impl Vm {
     pub(super) fn op_set_property(&mut self) -> Result<(), anyhow::Error> {
         let root_kind = self.read_next();
         let root_operand = self.read_next();
-        let prop = self.stack.pop();
-        let target = self.stack.pop();
+        let (target, prop, stored) = self.store_operands();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
         self.arbitrate_write(target, root_kind, root_operand)?;
-        let stored = self.stack.peek(0);
         let borrowed = self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
 
         self.container_took(target, stored, borrowed)?;
+        self.drop_store_path();
 
         match object_kind {
             ObjectKind::Instance => self.set_instance_index(prop, target)?,

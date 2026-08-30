@@ -121,6 +121,7 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::JUMP_IF_IS => vm.op_jump_if_is(),
         opcode::ASSERT_NON_NULL => vm.op_assert_non_null()?,
         opcode::ASSERT_IMMUTABLE => vm.op_assert_immutable()?,
+        opcode::DUP2 => vm.op_dup2(),
         opcode::STASH_ROOT => vm.op_stash_root(),
         opcode::BARRIER_GUARD => vm.op_barrier_guard()?,
         opcode::ASSERT_NO_RETAIN => vm.op_assert_no_retain()?,

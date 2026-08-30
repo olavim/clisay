@@ -198,6 +198,9 @@ impl<'a> Compiler<'a> {
     fn emit<T: 'static>(&mut self, inst: Inst, node_id: &HirId<T>) {
         match inst {
             Inst::PushNull => self.frame_slot_count += 1,
+            Inst::Dup => self.frame_slot_count += 1,
+            Inst::Dup2 => self.frame_slot_count += 2,
+            Inst::GetIndex | Inst::GetProperty => self.frame_slot_count = self.frame_slot_count.saturating_sub(1),
             Inst::Pop
                 | Inst::JumpIfFalseOrPop(_)
                 | Inst::JumpIfTrueOrPop(_)

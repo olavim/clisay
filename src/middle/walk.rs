@@ -39,7 +39,8 @@ pub fn children_of_expr(hir: &Hir, node: &HirId<HirExpr>) -> Vec<Child> {
     match hir.get(node) {
         HirExpr::Unary(_, x) | HirExpr::Assert(x)
         | HirExpr::Match(x, _) | HirExpr::Mut(x) | HirExpr::Propagate(x) => out.push(Child::Expr(*x)),
-        HirExpr::Binary(_, l, r) | HirExpr::Assign(l, r) | HirExpr::Coalesce(l, r)
+        HirExpr::Binary(_, l, r)
+        | HirExpr::Assign(l, r) | HirExpr::CompoundAssign(l, _, r) | HirExpr::Coalesce(l, r)
         | HirExpr::Handle(l, _, r) | HirExpr::SafeAccess(l, r, _) | HirExpr::Index(l, r, _) => {
             out.push(Child::Expr(*l));
             out.push(Child::Expr(*r));

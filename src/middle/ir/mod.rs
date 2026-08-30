@@ -124,8 +124,8 @@ pub enum Inst {
 
     // Stack / constants
     Pop,
-    /// Pushes a copy of the top of the stack.
     Dup,
+    Dup2,
     PushConstant(u8),
     PushNull,
     PushTrue,

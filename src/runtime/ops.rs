@@ -36,6 +36,13 @@ macro_rules! unary_op_methods {
 }
 
 impl Vm {
+    pub(super) fn op_dup2(&mut self) {
+        let under = self.stack.peek(1);
+        let over = self.stack.peek(0);
+        self.stack.push(under);
+        self.stack.push(over);
+    }
+
     fn unwind_to(&mut self, stack_start: *mut Value, write_depth: usize, leaving: Value) -> Result<(), anyhow::Error> {
         self.close_upvalues(stack_start);
         self.release_write_ownership_above(write_depth, stack_start, leaving);

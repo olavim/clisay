@@ -290,11 +290,8 @@ impl<'a> Lowerer<'a> {
 
     fn binary(&mut self, expr_id: &AstId<Expr>, op: &Operator, left: &AstId<Expr>, right: &AstId<Expr>) -> Result<HirId<HirExpr>, anyhow::Error> {
         let pos = self.ast.pos(expr_id).clone();
-        // A compound assignment desugars to `target = target <op> value`.
         if let Some(binop) = compound_assign_binop(op) {
-            let value = HirExpr::Binary(binop, self.expr(left)?, self.expr(right)?);
-            let value = self.hir.add(value, self.ast.pos(right).clone());
-            let kind = HirExpr::Assign(self.expr(left)?, value);
+            let kind = HirExpr::CompoundAssign(self.expr(left)?, binop, self.expr(right)?);
             return Ok(self.hir.add(kind, pos));
         }
         let kind = match op {

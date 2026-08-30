@@ -110,7 +110,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | AssertNonNull
         | AssertImmutable
         | StashRoot
-        | Pop | Dup
+        | Pop | Dup | Dup2
         | PushNull | PushTrue | PushFalse
         | GetIndex
         | GetProperty

@@ -604,6 +604,7 @@ impl<'a> Resolver<'a> {
                 self.expression(right)?;
             },
             HirExpr::Assign(left, right) => self.assign(left, right)?,
+            HirExpr::CompoundAssign(left, _, right) => self.assign(left, right)?,
             HirExpr::Call(callee, args) => self.call_expression(callee, args)?,
             HirExpr::Index(target, member, _) => self.index(target, member)?,
             HirExpr::Literal(lit) => self.literal(lit)?,

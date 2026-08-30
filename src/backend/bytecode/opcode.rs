@@ -120,6 +120,7 @@ opcodes! {
     // Explicit stack manipulation
     Pop => POP,
     Dup => DUP,
+    Dup2 => DUP2,
     PushConstant => PUSH_CONSTANT(Const),
     PushNull => PUSH_NULL,
     PushTrue => PUSH_TRUE,

@@ -244,6 +244,10 @@ impl<'a> Checker<'a> {
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
             HirExpr::This => self.this_valuestate(),
             HirExpr::Assign(lhs, rhs) => self.assign(lhs, rhs)?,
+            HirExpr::CompoundAssign(lhs, _, rhs) => {
+                self.expr(lhs)?;
+                self.assign(lhs, rhs)?
+            },
             HirExpr::Call(callee, args) => {
                 let state = self.call(expr, callee, args)?;
                 self.invalidate_rebound_fields(callee);
