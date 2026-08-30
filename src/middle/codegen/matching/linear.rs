@@ -47,14 +47,16 @@ impl<'a> Compiler<'a> {
             },
             HirMatcher::Binder(name) => {
                 let Some(binders) = binders else { compiler_error!(self, node, "a `has` matcher cannot bind"); };
-                self.emit(Inst::StoreLocalPop(slot_of(binders, *name)), node);
+                let slot = slot_of(binders, *name);
+                self.emit(Inst::StoreLocalPop(slot), node);
                 self.emit(Inst::PushTrue, node);
                 Ok(())
             },
             HirMatcher::As(name, inner) => {
                 let Some(binders) = binders else { compiler_error!(self, node, "a `has` matcher cannot bind"); };
                 self.emit(Inst::Dup, node);
-                self.emit(Inst::StoreLocalPop(slot_of(binders, *name)), node);
+                let slot = slot_of(binders, *name);
+                self.emit(Inst::StoreLocalPop(slot), node);
                 self.compile_matcher(inner, Some(binders), node)
             },
             HirMatcher::Type { nominal, name, shape } => self.compile_type(matcher, *nominal, *name, shape, binders, node),
@@ -100,8 +102,8 @@ impl<'a> Compiler<'a> {
             let idx = c.member_constant(*member)?;
             let inst = match admits {
                 Some((null_allowed, witnesses)) => {
-                    let allow = c.witness_id_set(witnesses);
-                    Inst::MemberAdmits(idx, *null_allowed, c.ir.add_witness_allow(allow)?)
+                    let allow = c.accepted_witness_set(witnesses, *null_allowed);
+                    Inst::MemberAdmits(idx, c.ir.add_witness_allow(allow)?)
                 },
                 None => Inst::HasMember(idx),
             };

@@ -1,4 +1,5 @@
 fn keep(mut bin, mut x) { bin.push(x); }
+keep(mut [], mut [1]);
 // error(full):
 // error: cannot retain a borrowed argument
 //  --> error_persist_borrow_advice.say:1:36

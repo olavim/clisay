@@ -42,10 +42,10 @@ pub mod internals {
     pub use crate::core::objects::TypeMember;
     pub use crate::middle::bind::{Bindings, TypeLayout};
     pub use crate::middle::check::Barriers;
-    pub use crate::middle::check::scope::{intersect_narrowings, merge_flow, LocalFlow};
+    pub use crate::middle::check::scope::{intersect_narrowings, merge_local_flow, LocalFlow};
     pub use crate::middle::check::alias::{ElementKey, WriteOwnershipTransfer, TransferSite};
     pub use crate::middle::obligations::Obligations;
-    pub use crate::middle::signatures::{Mutability, TypeTag};
+    pub use crate::middle::signatures::{CallableId, Mutability, TypeTag};
 
     pub use crate::middle::codegen::matching::{Scalar, tree::{build_tree, Access, Clause, DecisionTree, Path, ValueTest}};
     pub use crate::middle::ir::{Ir, Label};
@@ -97,7 +97,7 @@ pub mod internals {
     pub fn nullck(src: &str) -> Barriers {
         let (hir, bindings) = bind(src);
         let sigs = crate::middle::signatures::collect(&hir, &bindings);
-        crate::middle::check::check(&hir, &bindings, &sigs, false).expect("nullck error")
+        crate::middle::check::check(&hir, &bindings, &sigs, crate::RunConfig::default()).expect("nullck error")
     }
 }
 
@@ -119,16 +119,15 @@ use crate::middle::signatures::collect as collect_signatures;
 pub struct RunConfig {
     /// Whether the peephole pass runs.
     pub optimize: bool,
-    /// Whether codegen also emits the checks the check pass proved unnecessary, so a firing one
-    /// refutes the proof.
+    /// Whether codegen emits the checks the check pass proved unnecessary.
     pub force_checks: bool,
-    /// Whether codegen drops every guard it places.
-    pub floor_only: bool,
+    pub drop_guards: bool,
+    pub drop_escape_refusal: bool,
 }
 
 impl Default for RunConfig {
     fn default() -> RunConfig {
-        RunConfig { optimize: true, force_checks: false, floor_only: false }
+        RunConfig { optimize: true, force_checks: false, drop_guards: false, drop_escape_refusal: false }
     }
 }
 
@@ -147,8 +146,8 @@ pub fn run_with(file_name: &str, src: &str, config: RunConfig) -> Result<Vec<Str
     let bindings = resolve_bindings(&hir)?;
     let sigs = collect_signatures(&hir, &bindings);
     check_shape(&hir, &bindings, &sigs)?;
-    let barriers = check(&hir, &bindings, &sigs, config.force_checks)?;
-    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs, config.floor_only)?;
+    let barriers = check(&hir, &bindings, &sigs, config)?;
+    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs, config.drop_guards)?;
     let ir = if config.optimize { optimize(ir) } else { ir };
 
     let chunk = assemble(ir)?;

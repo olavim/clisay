@@ -5,8 +5,9 @@ use crate::frontend::lex::Diagnostic;
 
 use crate::core::gc::Gc;
 use crate::middle::hir::TypeId;
-use crate::middle::ir::{Inst, Ir, Label, SourceRole};
-use crate::middle::bind::{Bindings, Cleanup, FnKind};
+use crate::middle::obligations::Obligations;
+use crate::middle::ir::{Inst, Ir, Label, SourceRole, NULL_WITNESS_ID, SLOT_ACCEPTS_SCRIPT_FRAME};
+use crate::middle::bind::{Bindings, FnKind, Place};
 use crate::middle::check::Barriers;
 use crate::middle::signatures::Signatures;
 use crate::middle::hir::Hir;
@@ -35,22 +36,17 @@ struct TryFrame {
     finally: Option<HirId<HirExpr>>
 }
 
-/// How a path write names the container it reaches through.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum PathRoot {
     Local(u8),
     Upvalue(u8),
-    /// No binding names it, so the barrier compares against the value itself.
     Unnamed,
 }
 
-/// Where the container taking an element's write-ownership lives. This is the compile-time half of
-/// the runtime's `WriteOwnershipHolder`: a place to read the holder from, rather than the holder.
 #[derive(Clone, Copy)]
 pub(super) enum WriteOwnershipHolderPlace {
     Local(u8),
     Upvalue(u8),
-    /// On the stack, this far below the value being handed over. For a receiver no binding names.
     Stack(u8),
 }
 
@@ -60,21 +56,22 @@ pub struct Compiler<'a> {
     hir: &'a Hir,
     gc: &'a mut Gc,
     bindings: &'a Bindings,
-    /// Nodes whose value needs a runtime null-barrier, from the check pass. Empty when checking is off.
     barriers: &'a Barriers,
     sigs: &'a Signatures,
-    /// The kind of each enclosing function, for factory return handling.
     fn_kinds: Vec<FnKind>,
     try_frames: Vec<TryFrame>,
-    /// The id of each registered object witness, by declaration.
+    /// The id of each registered object witness.
     witness_ids: FnvHashMap<TypeId, u16>,
-    /// The slot that will hold the container being built, while its parts are compiled. An element
-    /// handed to it takes its writer slot in that slot's name.
+    /// The slot that will hold the container being built.
     receiving_slot: Option<WriteOwnershipHolderPlace>,
     /// The root node of a path whose write barrier compares against it.
-    dup_root: Option<HirId<HirExpr>>,
-    /// Whether to drop every placed guard.
-    floor_only: bool,
+    stash_root: Option<HirId<HirExpr>>,
+    drop_guards: bool,
+    /// Each live `?? e =>` binder.
+    handle_binder_slots: Vec<(u8, u8)>,
+    frame_slot_count: usize,
+    /// The slot table of the frame being compiled, which its bindings record into.
+    slot_table: u16,
 }
 
 #[macro_export]
@@ -87,11 +84,11 @@ impl<'a> Compiler<'a> {
         u8::try_from(count).map_err(|_| self.error(format!("{subject} may have at most {} {unit}", u8::MAX), at))
     }
 
-    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures, floor_only: bool) -> Result<Ir, anyhow::Error> {
+    pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures, drop_guards: bool) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
             receiving_slot: None,
-            dup_root: None,
-            floor_only,
+            stash_root: None,
+            drop_guards,
             ir: Ir::new(),
             hir,
             gc,
@@ -100,23 +97,55 @@ impl<'a> Compiler<'a> {
             sigs,
             fn_kinds: Vec::new(),
             try_frames: Vec::new(),
-            witness_ids: FnvHashMap::default()
+            witness_ids: FnvHashMap::default(),
+            frame_slot_count: 0,
+            handle_binder_slots: Vec::new(),
+            slot_table: SLOT_ACCEPTS_SCRIPT_FRAME,
         };
 
         compiler.assign_witness_ids();
         let stmt_id = compiler.hir.get_root();
-        compiler.statement(&stmt_id)?;
+        let (_, script) = compiler.with_frame(|c| c.statement(&stmt_id))?;
+        debug_assert_eq!(script, SLOT_ACCEPTS_SCRIPT_FRAME, "the script's frame is the first one opened");
         Ok(compiler.finish())
+    }
+
+    fn with_frame<R>(&mut self, body: impl FnOnce(&mut Self) -> Result<R, anyhow::Error>) -> Result<(R, u16), anyhow::Error> {
+        let caller_slot_count = self.frame_slot_count;
+        // A binder names a slot of the frame that made it, so a nested frame starts with none.
+        let caller_binders = std::mem::take(&mut self.handle_binder_slots);
+        let caller_table = self.slot_table;
+        self.slot_table = self.ir.new_slot_accepts_table()?;
+        let table = self.slot_table;
+
+        let result = body(self);
+
+        self.frame_slot_count = caller_slot_count;
+        self.handle_binder_slots = caller_binders;
+        self.slot_table = caller_table;
+        Ok((result?, table))
+    }
+
+    fn place(&self, node: &HirId<HirExpr>) -> Place {
+        match self.bindings.place(node) {
+            Place::Local(slot) => Place::Local(self.real_slot(slot)),
+            other => other,
+        }
+    }
+
+    fn real_slot(&self, slot: u8) -> u8 {
+        self.handle_binder_slots.iter()
+            .find_map(|&(binder_slot, operand_slot)| (binder_slot == slot).then_some(operand_slot))
+            .unwrap_or(slot)
     }
 
     fn error<T: 'static>(&self, msg: impl Into<String>, node_id: &HirId<T>) -> anyhow::Error {
         anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node_id).clone()))
     }
 
-    /// Numbers every registered object witness.
     fn assign_witness_ids(&mut self) {
         for &decl in self.barriers.witness_decls() {
-            let next = self.witness_ids.len() as u16;
+            let next = self.witness_ids.len() as u16 + 1;
             self.witness_ids.entry(decl).or_insert(next);
         }
         // The VM builds some types itself, so it needs the numbering to mark them the same way.
@@ -124,7 +153,6 @@ impl<'a> Compiler<'a> {
         self.ir.set_witness_ids(ids);
     }
 
-    /// The runtime identity of the declaration a type test names.
     pub(super) fn type_test_id<T: 'static>(&self, matcher: &HirId<HirMatcher>, node: &HirId<T>) -> Result<TypeId, anyhow::Error> {
         let Some(decl) = self.bindings.type_ref(matcher) else {
             compiler_error!(self, node, "a type test names no declaration");
@@ -135,7 +163,25 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// The witness ids the given declarations are numbered by, sorted.
+    pub(super) fn accepts_index(&mut self, owed: &Obligations, nullable: bool) -> Result<u16, anyhow::Error> {
+        let witnesses: Vec<TypeId> = self.sigs.object_witnesses()
+            .filter(|(ob, _)| owed.contains(ob) || !self.sigs.obligation_rules_of(*ob).before_drop)
+            .map(|(_, id)| id)
+            .collect();
+        let accepts = self.accepted_witness_set(&witnesses, nullable || owed.contains(&self.sigs.opt));
+        self.ir.add_witness_allow(accepts)
+    }
+
+    pub(super) fn accepted_witness_set(&self, decls: &[TypeId], null_allowed: bool) -> Box<[u16]> {
+        let mut ids: Vec<u16> = self.witness_id_set(decls).into_vec();
+        if null_allowed {
+            ids.insert(0, NULL_WITNESS_ID);
+        }
+        ids.into_boxed_slice()
+    }
+
+    /// The ids these declarations are numbered as. `ObjType::witness_ids` lists what a type
+    /// provides, and null is not among them.
     pub(super) fn witness_id_set(&self, decls: &[TypeId]) -> Box<[u16]> {
         let mut ids: Vec<u16> = decls.iter().filter_map(|decl| self.witness_ids.get(decl)).copied().collect();
         ids.sort_unstable();
@@ -150,6 +196,14 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit<T: 'static>(&mut self, inst: Inst, node_id: &HirId<T>) {
+        match inst {
+            Inst::PushNull => self.frame_slot_count += 1,
+            Inst::Pop
+                | Inst::JumpIfFalseOrPop(_)
+                | Inst::JumpIfTrueOrPop(_)
+                | Inst::JumpIfNotNullOrPop(_) => self.frame_slot_count = self.frame_slot_count.saturating_sub(1),
+            _ => {},
+        }
         let pos = self.hir.pos(node_id);
         self.ir.emit(inst, pos);
     }
@@ -165,8 +219,6 @@ impl<'a> Compiler<'a> {
         self.ir.map_source(at, role, pos);
     }
 
-    /// Emits a conditional branch to a fresh (unbound) label and returns it.
-    /// The caller should bind the label to the jump's destination.
     fn emit_conditional_jump<T: 'static>(&mut self, cond: &HirId<HirExpr>, node_id: &HirId<T>) -> Result<Label, anyhow::Error> {
         let target = self.ir.new_label();
         self.expression(cond)?;
@@ -174,20 +226,18 @@ impl<'a> Compiler<'a> {
         Ok(target)
     }
 
-    fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) {
-        let cleanups = self.bindings.cleanup(node_id).to_vec();
-        // Writer slots go back before the locals holding them are popped. The count is how many
-        // values to look at, not how many were taken.
-        if self.barriers.releases_write_ownership(node_id) {
-            self.emit(Inst::ReleaseWriteOwnership(cleanups.len() as u8), node_id);
+    fn exit_scope<T: 'static>(&mut self, node_id: &HirId<T>) -> Result<(), anyhow::Error> {
+        let count = self.bindings.cleanup(node_id);
+        if count == 0 {
+            return Ok(());
         }
-        for cleanup in cleanups {
-            let inst = match cleanup {
-                Cleanup::Pop => Inst::Pop,
-                Cleanup::CloseUpvalue(slot) => Inst::CloseUpvalue(slot),
-            };
-            self.emit(inst, node_id);
-        }
+        let slot_count = self.bindings.exit_frame_slot_count_at(node_id);
+        // Bind says how many slots survive the exit, so the rest stop answering here whatever
+        // binding form took them.
+        let first_dead = slot_count.saturating_sub(count as u8);
+        self.ir.end_slot_accepts_from(self.slot_table, first_dead);
+        self.emit(Inst::PopScope(count, slot_count), node_id);
+        Ok(())
     }
 
     fn fn_decl(&self, stmt: &HirId<HirStmt>) -> &'a HirFnDecl {

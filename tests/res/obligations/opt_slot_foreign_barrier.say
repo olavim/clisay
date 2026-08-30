@@ -1,12 +1,14 @@
-// An unknown value into an `opt` slot is guarded. A foreign `Err` is thrown, not laundered as `opt`;
-// null or a clean value passes through.
-say bad = () => Err("boom");
-say good = () => 5;
-try {
-    say y: opt = bad();
+fn thrown(f) {
+    say y: opt = f();
     print("unreachable");
+}
+fn passed(f) {
+    say z: opt = f();
+}
+try {
+    thrown(() => Err("boom"));
 } catch (e) {
     print("caught"); // expect: caught
 }
-say z: opt = good();
+passed(() => 5);
 print("ok"); // expect: ok

@@ -23,7 +23,7 @@ match v {
 // 32: PUSH_CONSTANT 0
 // 34: POP
 // 35: JUMP <38>
-// 38: POP
-// 39: POP
-// 40: PUSH_NULL
-// 41: HALT
+// 38: POP_SCOPE <1> <2>
+// 41: POP_SCOPE <1> <1>
+// 44: PUSH_NULL
+// 45: HALT

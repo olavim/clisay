@@ -19,7 +19,8 @@ type Db with Reader {
     init(this) { this.n = 1; }
     pub fn read(this)! { return this.n; }
 }
-print(mut Db().read()); // expect: 1
+say d = mut Db();
+print(d.read()); // expect: 1
 
 // @split
 // Taking `this` is more than borrowing it, so that axis reads the same.

@@ -171,7 +171,7 @@ impl<'a> Compiler<'a> {
         }
 
         self.ir.bind(end);
-        self.exit_scope(stmt_id);
+        self.exit_scope(stmt_id)?;
         Ok(())
     }
 
@@ -268,9 +268,9 @@ impl<'a> Compiler<'a> {
             },
             ValueTest::Admits { key, null_allowed, witnesses } => {
                 let idx = self.scalar_constant(key)?;
-                let allow = self.witness_id_set(witnesses);
+                let allow = self.accepted_witness_set(witnesses, *null_allowed);
                 let allow_idx = self.ir.add_witness_allow(allow)?;
-                self.emit(Inst::MemberAdmits(idx, *null_allowed, allow_idx), node);
+                self.emit(Inst::MemberAdmits(idx, allow_idx), node);
             },
             ValueTest::Equal(lit) => self.emit_equal(lit, node)?,
             ValueTest::Nominal(id) => self.emit(Inst::Is(*id), node),

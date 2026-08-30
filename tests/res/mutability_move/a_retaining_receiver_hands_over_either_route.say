@@ -1,0 +1,27 @@
+// A `*mut this` call takes the receiver whether or not the pass could resolve the callee.
+type C { pub var v; init(this) { this.v = 0; } pub fn take(*mut this) { this.v = 1; } }
+say a = mut C();
+a.take();
+a.v = 2; // error: cannot write `a`, which gave its write-ownership away
+
+// @split
+type C { pub var v; init(this) { this.v = 0; } pub fn take(*mut this) { this.v = 1; } }
+say a = mut C();
+say g = a.take;
+g();
+a.v = 2; // error: cannot write a value whose write-ownership was given away
+
+// @split
+type C { pub var v; init(this) { this.v = 0; } pub fn take(*mut this) { this.v = 1; } }
+say a = mut C();
+say fns = mut [a.take];
+fns[0]();
+a.v = 2; // error: cannot write a value whose write-ownership was given away
+
+// @split
+type C { pub var v; init(this) { this.v = 0; } pub fn bump(mut this) { this.v = 1; } }
+say a = mut C();
+say g = a.bump;
+g();
+a.v = 2;
+print(a.v); // expect: 2

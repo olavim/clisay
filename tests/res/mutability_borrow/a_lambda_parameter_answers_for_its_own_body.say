@@ -5,7 +5,7 @@ print(k([7])); // expect: 7
 // @split
 // A closure that outlives the call is the case the rule is for.
 say var kept? = null;
-say k = (a) => { kept = () => a[0]; return 1; }; // error: a borrowed value cannot be retained, and this closure outlives the call
+say k = (a) => { kept = () => a[0]; return 1; }; // error: cannot retain a borrowed argument
 print(k([7]));
 
 // @split

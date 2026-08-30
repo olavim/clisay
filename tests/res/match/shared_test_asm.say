@@ -58,10 +58,7 @@ match obj {
 // 103: PUSH_CONSTANT 0
 // 105: POP
 // 106: JUMP <109>
-// 109: POP
-// 110: POP
-// 111: POP
-// 112: POP
-// 113: POP
-// 114: PUSH_NULL
-// 115: HALT
+// 109: POP_SCOPE <4> <5>
+// 112: POP_SCOPE <1> <1>
+// 115: PUSH_NULL
+// 116: HALT

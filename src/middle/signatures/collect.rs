@@ -8,6 +8,7 @@ use crate::middle::obligations::Obligations;
 use super::{Collector, FnSig, RetSig, Witness};
 use crate::middle::walk::Child;
 use crate::middle::walk;
+use super::CallableId;
 
 impl<'a> Collector<'a> {
     pub(super) fn resolved(&self) -> Resolved<'_> {
@@ -18,7 +19,7 @@ impl<'a> Collector<'a> {
         match self.hir.get(stmt) {
             HirStmt::Fn(decl) => {
                 let sig = self.fn_sig(decl);
-                self.sigs.fns.insert(*stmt, sig);
+                self.sigs.fns.insert((*stmt).into(), sig);
                 self.sigs.fns_by_name.insert(decl.name, *stmt);
                 self.expr(&decl.body);
             },
@@ -50,8 +51,9 @@ impl<'a> Collector<'a> {
     }
 
     fn expr(&mut self, expr: &HirId<HirExpr>) {
-        // A lambda is a leaf to the shared child walk, but its body may still declare functions.
         if let HirExpr::Literal(HirLiteral::Lambda(decl)) = self.hir.get(expr) {
+            let sig = self.fn_sig(decl);
+            self.sigs.fns.insert((*expr).into(), sig);
             self.expr(&decl.body);
             return;
         }
@@ -68,8 +70,10 @@ impl<'a> Collector<'a> {
         for (name, decl) in self.hir.obligations() {
             self.sigs.rules.insert(name, decl.rules);
             if let Some(witness) = &decl.witness {
-                let is_trait = self.hir.type_info(witness.id).is_some_and(|info| info.is_trait);
-                let w = if is_trait { Witness::Trait(witness.id) } else { Witness::Type(witness.id) };
+                let w = match self.hir.is_trait(witness.id) {
+                    true => Witness::Trait(witness.id),
+                    false => Witness::Type(witness.id),
+                };
                 self.sigs.witnesses.insert(name, w);
             }
         }
@@ -79,22 +83,31 @@ impl<'a> Collector<'a> {
     fn collect_sig(&mut self, stmt: &HirId<HirStmt>) {
         if let HirStmt::Fn(decl) = self.hir.get(stmt) {
             let sig = self.fn_sig(decl);
-            self.sigs.fns.insert(*stmt, sig);
+            self.sigs.fns.insert((*stmt).into(), sig);
             self.expr(&decl.body);
         }
     }
 
-    /// Folds each parameter's witness alternatives into the obligations its signature advertises,
-    /// so a caller sees `x @ Node | null` exactly as it sees `x: opt`.
+    /// Folds each parameter's witness alternatives into the obligations its signature advertises.
+    /// A caller sees `x @ Node | null` exactly as it sees `x: opt`.
     pub(super) fn admit_pattern_obligations(&mut self) {
-        let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
-        for stmt in stmts {
-            let HirStmt::Fn(decl) = self.hir.get(&stmt) else { continue };
+        let callables: Vec<CallableId> = self.sigs.fns.keys().copied().collect();
+        for callable in callables {
+            let decl = match callable {
+                CallableId::Fn(stmt) => match self.hir.get(&stmt) {
+                    HirStmt::Fn(decl) => decl,
+                    _ => continue,
+                },
+                CallableId::Lambda(expr) => match self.hir.get(&expr) {
+                    HirExpr::Literal(HirLiteral::Lambda(decl)) => decl,
+                    _ => continue,
+                },
+            };
             let admitted: Vec<(usize, Obligations)> = decl.params.iter().enumerate()
                 .filter_map(|(i, p)| Some((i, self.resolved().admitted_obligations(p.pattern.as_ref()?))))
                 .filter(|(_, admits)| !admits.is_empty())
                 .collect();
-            let Some(sig) = self.sigs.fns.get_mut(&stmt).filter(|_| !admitted.is_empty()) else { continue };
+            let Some(sig) = self.sigs.fns.get_mut(&callable).filter(|_| !admitted.is_empty()) else { continue };
             for (i, admits) in admitted {
                 sig.param_clauses[i].extend(admits);
             }
@@ -140,10 +153,9 @@ impl<'a> Collector<'a> {
         RetSig { obligations, void: decl.ret == ReturnShape::Void }
     }
 
-    /// Whether a function body can finish without returning a value: it falls off the end, or it
-    /// has a bare `return;`.
+    /// Whether a function body can finish without returning a value.
     fn has_void_path(&self, body: &HirId<HirExpr>) -> bool {
-        !self.hir.definitely_returns(body) || self.has_bare_return(body)
+        !self.hir.body_returns_a_value(body) || self.has_bare_return(body)
     }
 
     /// Whether a body contains a bare `return;` outside any nested function.

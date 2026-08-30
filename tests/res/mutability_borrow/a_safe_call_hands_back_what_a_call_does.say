@@ -1,0 +1,39 @@
+fn take(*v)! { return v; }
+fn hand(x)! { return x; }
+fn give(a) { take(hand(a)); } // error: cannot pass a borrowed argument to a callee that retains it
+give(7);
+
+// @split
+fn take(*v)! { return v; }
+fn hand(x)! { return x; }
+fn give(a) { take(hand?(a)!); } // error: cannot pass a borrowed argument to a callee that retains it
+give(7);
+
+// @split
+fn take(*v)! { return v; }
+fn hand(x)! { return x; }
+fn give(a) { take(hand?(a)!); } // error: cannot pass a borrowed argument to a callee that retains it
+give(mut [1]);
+
+// @split
+say var kept? = null;
+fn keep(*v) { kept = mut [v]; }
+fn give(a) { keep(a); } // error: cannot retain a borrowed argument
+give(mut [1]);
+
+// @split
+say var kept? = null;
+fn keep(*v) { kept = mut [v]; }
+fn give(a) { keep?(a); } // error: cannot retain a borrowed argument
+give(mut [1]);
+
+// @split
+fn hand(x)! { return x; }
+fn give(a)! { return hand?(a)! + 1; }
+print(give(7)); // expect: 8
+
+// @split
+fn f(mut v) { v.push(1); }
+say m = mut [0];
+f?(m);
+print(m.length()); // expect: 2

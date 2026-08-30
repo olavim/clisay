@@ -1,6 +1,8 @@
-use crate::core::objects::ObjFn;
+use crate::middle::signatures::CallableId;
+use crate::core::objects::{ObjFn, UpvalueLocation};
 use crate::core::value::Value;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirParam, HirStmt};
+use crate::middle::obligations::Obligations;
 use crate::middle::ir::Inst;
 use crate::middle::bind::FnKind;
 
@@ -25,21 +27,31 @@ pub(super) struct ParamMasks {
     pub retains: u64,
     /// The arguments the body lets out of the caller's reach.
     pub escapes: u64,
+    /// The borrowed arguments the body hands to a call that might retain them.
+    pub needs_borrow_mark: u64,
+    /// Whether the body may hand `this` to a call that retains it.
+    pub receiver_needs_borrow: bool,
 }
 
 impl<'a> Compiler<'a> {
     /// What a callable does with each argument.
     pub(super) fn declared_masks(&self, stmt: &HirId<HirStmt>, decl: &HirFnDecl) -> ParamMasks {
         let escapes = param_bits((0..decl.params.len()).map(|i| self.sigs.param_escapes_at(stmt, i)));
-        ParamMasks { retains: declared_retains(decl), escapes }
+        let handed_on = param_bits((0..decl.params.len()).map(|i| self.sigs.param_needs_borrow_mark_at(stmt, i)));
+        // A taken parameter is not borrowed, so it never wants the mark that says it is.
+        let retains = declared_retains(decl);
+        let receiver = decl.params.len();
+        let receiver_needs_borrow = decl.receiver.is_some()
+            && (self.sigs.param_needs_borrow_mark_at(stmt, receiver)
+                || self.sigs.escapes_beyond_return_at(stmt, receiver));
+        ParamMasks { retains, escapes, needs_borrow_mark: handed_on & !retains, receiver_needs_borrow }
     }
 
     pub(super) fn lambda_masks(&self, expr: &HirId<HirExpr>, decl: &HirFnDecl) -> ParamMasks {
         let arity = decl.params.len();
-        let escapes = self.sigs.lambda_param_escapes.get(expr)
-            .map(|e| param_bits(e.iter().copied()))
-            .unwrap_or_else(|| if arity >= 64 { u64::MAX } else { (1u64 << arity) - 1 });
-        ParamMasks { retains: declared_retains(decl) | escapes, escapes }
+        let escapes = param_bits((0..arity).map(|i| self.sigs.param_escapes_at(expr, i)));
+        let retains = declared_retains(decl);
+        ParamMasks { retains, escapes, needs_borrow_mark: !retains, receiver_needs_borrow: true }
     }
 
     /// Matches each pattern parameter against its slot on entry, publishing the pattern's binders
@@ -78,7 +90,16 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, decl: &HirFnDecl, kind: FnKind, masks: ParamMasks) -> Result<u8, anyhow::Error> {
+    fn param_accepts(&mut self, callable: CallableId) -> Result<u16, anyhow::Error> {
+        let clauses: &[Obligations] = self.sigs.fn_sig_of(callable).map_or(&[], |s| &s.param_clauses);
+        let mut out = Vec::with_capacity(clauses.len());
+        for owed in clauses.to_vec() {
+            out.push(self.accepts_index(&owed, false)?);
+        }
+        self.ir.add_param_accepts(out.into_boxed_slice())
+    }
+
+    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, callable: CallableId, decl: &HirFnDecl, kind: FnKind, masks: ParamMasks) -> Result<u8, anyhow::Error> {
         self.fn_kinds.push(kind);
 
         // Add a jump over the function's body after declaration.
@@ -89,23 +110,34 @@ impl<'a> Compiler<'a> {
         let body = self.ir.new_label();
         self.ir.bind(body);
 
-        self.compile_entry_steps(&decl.params)?;
-        self.expression(&decl.body)?;
-        self.exit_function(&decl.body, kind);
+        let (_, slot_accepts) = self.with_frame(|c| {
+            c.compile_entry_steps(&decl.params)?;
+            c.frame_slot_count = c.bindings.frame_slot_count_at(&decl.body) as usize;
+            c.expression(&decl.body)?;
+            c.exit_function(&decl.body, kind);
+            Ok(())
+        })?;
         self.ir.bind(skip);
 
         self.fn_kinds.pop();
 
         let name = self.gc.intern(self.hir.text(decl.name));
         let arity = decl.params.len() as u8;
-        let upvalues = self.bindings.upvalues(&decl.body).to_vec();
+        let upvalues = self.bindings.upvalues(&decl.body).iter()
+            .map(|u| match u.is_local {
+                true => UpvalueLocation { location: self.real_slot(u.location), is_local: true },
+                false => *u,
+            })
+            .collect();
 
         let escape_mask = masks.retains | masks.escapes;
 
         // A method declaring `mut this` needs the call to prove its receiver is mutable.
         let mut_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_mut());
+        let retain_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_retain());
 
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, mut_receiver));
+        let param_accepts = self.param_accepts(callable)?;
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, masks.needs_borrow_mark, mut_receiver, retain_receiver, masks.receiver_needs_borrow, param_accepts, slot_accepts));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))

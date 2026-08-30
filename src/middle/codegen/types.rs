@@ -2,7 +2,7 @@ use crate::core::objects::{BuiltinLayout, TypeMember, ObjType, ObjFn, ObjString}
 use crate::core::value::Value;
 use crate::middle::hir::{HirTypeDecl, HirId, HirStmt, TypeId};
 use crate::middle::ir::Inst;
-use crate::middle::bind::FnKind;
+use crate::middle::bind::{FnKind, TypeLayout};
 
 use super::Compiler;
 
@@ -57,6 +57,7 @@ impl<'a> Compiler<'a> {
         // The same set under codegen's dense numbering, for the barrier test.
         let provided: Vec<TypeId> = decl.provides.iter().map(|(_, id)| *id).collect();
         ty.witness_ids = self.witness_id_set(&provided);
+        ty.field_accepts = self.field_accepts(layout)?;
 
         // Compile the factory into its slot. A factory-less type has none, so its `factory_id`
         // stays None and `K()` on it finds no factory to call.
@@ -98,9 +99,19 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// What each field accepts, by field id.
+    fn field_accepts(&mut self, layout: &TypeLayout) -> Result<Box<[u16]>, anyhow::Error> {
+        let mut out = Vec::with_capacity(layout.fields.len());
+        for &id in &layout.fields {
+            let owed = layout.clauses.get(&id).map(|c| c.owed.clone()).unwrap_or_default();
+            out.push(self.accepts_index(&owed, layout.nullable.contains(&id))?);
+        }
+        Ok(out.into_boxed_slice())
+    }
+
     fn compile_fn(&mut self, stmt: &HirId<HirStmt>, kind: FnKind) -> Result<*mut ObjFn, anyhow::Error> {
         let decl = self.fn_decl(stmt);
-        let const_idx = self.function(stmt, decl, kind, self.declared_masks(stmt, decl))?;
+        let const_idx = self.function(stmt, (*stmt).into(), decl, kind, self.declared_masks(stmt, decl))?;
         let func_const = self.ir.constants()[const_idx as usize];
         Ok(func_const.as_object().as_function_ptr())
     }

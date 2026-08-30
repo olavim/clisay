@@ -1,4 +1,7 @@
-// A void function may not return a value.
-fn log(m) {
+fn give() { return 5; }
+print(give()); // expect: 5
+
+// @split
+fn log(m): void {
     return 5; // error: A void function cannot return a value
 }

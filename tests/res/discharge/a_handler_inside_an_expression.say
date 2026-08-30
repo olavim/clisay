@@ -1,0 +1,37 @@
+// The binder is the operand's own slot, so a handler does not write over a live temporary.
+fn sink(y)! { return y; }
+
+fn f()! {
+    say r: fails = Err("x");
+    return sink(r ?? e => 0);
+}
+
+print(f()); // expect: 0
+
+say a: fails = Err("a");
+say b: fails = Err("b");
+print(sink(a ?? p => p.value) + sink(b ?? q => q.value)); // expect: ab
+
+// @split
+type Box { init(this) {} pub fn twice(this, n)! { return n + n; } }
+say bx = Box();
+say c: fails = Err("c");
+print(bx.twice(c ?? m => 5)); // expect: 10
+
+// @split
+type W { pub d; init(this, *d) { this.d = d; } }
+obligation warned { witness W; discharge to use; }
+
+fn sink(y)! { return y; }
+fn f(x: warned)! { return sink(x ?? e => e.d); }
+
+print(f(W(2))); // expect: 2
+print(f(6));    // expect: 6
+
+// @split
+say e = "outer";
+say a: fails = Err("a");
+say b: fails = Err("b");
+say y = a ?? e => (b ?? e => e.value);
+print(y); // expect: b
+print(e); // expect: outer

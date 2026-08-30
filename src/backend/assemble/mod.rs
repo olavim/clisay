@@ -7,7 +7,7 @@ use crate::backend::bytecode::chunk::BytecodeChunk;
 use crate::backend::bytecode::opcode;
 use crate::core::objects::TypeMember;
 use crate::frontend::lex::SourcePosition;
-use crate::middle::ir::{Inst, Ir, Label};
+use crate::middle::ir::{TO_FRAME_END, SlotAccepts, Inst, Ir, Label};
 
 pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     let mut offsets = Vec::with_capacity(ir.code().len());
@@ -39,6 +39,10 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     }
 
     chunk.witness_allows = ir.witness_allows().to_vec();
+    chunk.param_accepts = ir.param_accepts().to_vec();
+    chunk.slot_accepts = ir.slot_accepts().iter()
+        .map(|body| body.iter().map(|e| SlotAccepts { from: offsets[e.from], to: if e.to == TO_FRAME_END { TO_FRAME_END } else { offsets[e.to] }, ..*e }).collect())
+        .collect();
     chunk.owed_names = ir.owed_names().to_vec();
     chunk.constants = ir.constants().to_vec();
     chunk.elisions = ir.elisions().iter().map(|&idx| offsets[idx]).collect();
@@ -104,9 +108,8 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Throw
         | PopTry
         | AssertNonNull
-        | AssertNoWriter
-        | AssertNoOtherWriterRoot
         | AssertImmutable
+        | StashRoot
         | Pop | Dup
         | PushNull | PushTrue | PushFalse
         | GetIndex
@@ -120,14 +123,16 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         Call(b) | CallMut(b)
         | PushConstant(b) | PushClosure(b) | PushType(b) | BuildType(b)
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
-        | CloseUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
+        | CloseUpvalue(b) | CloseSlotUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
         | GetField(b)
-        | TakeWriteOwnership(b)
         | TransferWriteOwnership(b) | TransferWriteOwnershipUp(b) | TransferWriteOwnershipAt(b)
-        | AssertNoOtherWriter(b) | AssertNoOtherWriterUp(b)
         | ReleaseWriteOwnership(b)
-        | ReleaseWriteOwnershipAt(b)
         | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
+
+        PopScope(count, depth) => {
+            chunk.write(count, pos);
+            chunk.write(depth, pos);
+        }
 
         Is(id) => write_u16(chunk, id, pos),
 
@@ -171,11 +176,19 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             write_positions(ir, chunk, idx, pos);
         }
 
-        Invoke(name, arg_count, kind, operand) => {
-            chunk.write(name, pos);
+        InvokeThis(member, arg_count, kind, operand) => {
+            chunk.write(member, pos);
             chunk.write(arg_count, pos);
             chunk.write(kind, pos);
             chunk.write(operand, pos);
+        }
+
+        Invoke(member, arg_count, kind, operand, is_dot) => {
+            chunk.write(member, pos);
+            chunk.write(arg_count, pos);
+            chunk.write(kind, pos);
+            chunk.write(operand, pos);
+            chunk.write(is_dot, pos);
         }
 
         Construct(fields_idx, seal) => {
@@ -187,14 +200,12 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(seal, pos);
         }
 
-        BarrierGuard(null_allowed, idx) => {
-            chunk.write(null_allowed as u8, pos);
+        BarrierGuard(idx) => {
             write_u16(chunk, idx, pos);
         }
 
-        MemberAdmits(member, null_allowed, idx) => {
+        MemberAdmits(member, idx) => {
             chunk.write(member, pos);
-            chunk.write(null_allowed as u8, pos);
             write_u16(chunk, idx, pos);
         }
 

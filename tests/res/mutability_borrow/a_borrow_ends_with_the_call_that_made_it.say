@@ -1,0 +1,36 @@
+fn opaque(x) { }
+fn keeps(*v)! { return v; }
+fn hand(n, g)! { g(n); return n; }
+say f = keeps;
+print(f(hand(5, opaque))); // expect: 5
+
+// @split
+fn opaque(x) { }
+fn keeps(*v)! { return v; }
+fn hand(n, g)! { g(n); return n; }
+say f = keeps;
+say n = 5;
+print(f(hand(n, opaque))); // expect: 5
+
+// @split
+fn opaque(x) { }
+fn keeps(*v)! { return v; }
+fn hand(n, g)! { g(n); return n; }
+say f = keeps;
+say a = mut [1];
+print(f(hand(a, opaque))[0]); // expect: 1
+
+// @split
+fn opaque(x) { }
+fn keeps(*v)! { return v; }
+fn hand(n, g)! { g(n); return n; }
+fn outer(p, k)! { return k(hand(p, opaque)); } // error: cannot pass a borrowed argument to a callee that retains it
+print(outer(5, keeps));
+
+// @split
+fn opaque(x) { }
+fn keeps(*v)! { return v; }
+fn hand(n, g)! { g(n); return n; }
+fn outer(p, k)! { return k(hand(p, opaque)); } // error: cannot pass a borrowed argument to a callee that retains it
+say a = mut [1];
+print(outer(a, keeps)[0]);

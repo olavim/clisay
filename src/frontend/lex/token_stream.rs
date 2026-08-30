@@ -14,6 +14,14 @@ impl<'a> TokenStream<'a> {
         return TokenStream { tokens, pos: 0 };
     }
 
+    pub fn checkpoint(&self) -> usize {
+        self.pos
+    }
+
+    pub fn rewind(&mut self, to: usize) {
+        self.pos = to;
+    }
+
     pub fn peek(&self, look_ahead: usize) -> &'a Token {
         if self.pos + look_ahead >= self.tokens.len() {
             return self.tokens.last().unwrap();

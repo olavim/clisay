@@ -1,0 +1,26 @@
+type Counter {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn leak(mut this)! { return () => { this.n = 1; }; } // error: a borrowing receiver cannot let the instance escape
+}
+say c = mut Counter();
+c.leak()();
+
+// @split
+type Counter {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn leak(this)! { return () => this.n; } // error: a borrowing receiver cannot let the instance escape
+}
+say c = Counter();
+print(c.leak()());
+
+// @split
+type Counter {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn leak(*this)! { return () => this.n; }
+}
+say c = Counter();
+say r = c.leak();
+print(r()); // expect: 0

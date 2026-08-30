@@ -1,0 +1,13 @@
+// A match pushes its binder block at the widest arm, so a narrow arm's body still sits above it.
+say d = 5;
+match d {
+    { x } => print(x),
+    _ => print(Err("y") ?? e => "two"), // expect: two
+}
+
+// @split
+say v = 7;
+match v {
+    n @ 1 => print(n),
+    _ => { say z = Err("z") ?? e => "caught"; print(z); }, // expect: caught
+}

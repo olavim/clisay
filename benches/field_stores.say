@@ -1,0 +1,9 @@
+// Bare field stores, the instance counterpart of element_stores.
+type P { pub var x; pub var y; init(this) { this.x = 0; this.y = 0; } }
+say p = mut P();
+say var i = 0;
+while i < 800000 {
+    p.x = i;
+    p.y = i;
+    i = i + 1;
+}

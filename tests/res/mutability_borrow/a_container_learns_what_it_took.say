@@ -1,0 +1,20 @@
+fn f(s)! { say bin = mut []; bin.push(s); return bin; } // error: cannot retain a borrowed argument
+say r = f("hi");
+print(r[0]);
+
+// @split
+fn f(s)! { say bin = mut []; bin.push(s); return bin[0]; }
+print(f("hi")); // expect: hi
+
+// @split
+fn f()! { say bin = mut []; say v = "hi"; bin.push(v); return bin; }
+print(f()[0]); // expect: hi
+
+// @split
+type B { pub var v; init(this, *v) { this.v = v; } }
+fn f()! { return mut B("hi"); }
+print(f().v); // expect: hi
+
+// @split
+fn f()! { return mut ["hi"]; }
+print(f()[0]); // expect: hi

@@ -1,0 +1,22 @@
+say sink = mut [];
+fn borrows(x) { fn keep(v) { print(v[0]); } keep(x); }
+fn retains() { fn keep(*v) { sink.push(v); } keep(mut [1]); }
+retains();
+say m = mut [3];
+borrows(m); // expect: 3
+print(sink[0][0]); // expect: 1
+
+// @split
+say sink = mut [];
+fn retains() { fn keep(*v) { sink.push(v); } keep(mut [1]); }
+fn borrows(x) { fn keep(v) { print(v[0]); } keep(x); }
+retains();
+say m = mut [3];
+borrows(m); // expect: 3
+
+// @split
+say sink = mut [];
+fn borrows(x) { fn keep(v) { print(v[0]); } keep(x); }
+fn retains(x) { fn keep(*v) { sink.push(v); } keep(x); } // error: cannot retain a borrowed argument
+say m = mut [3];
+retains(m);

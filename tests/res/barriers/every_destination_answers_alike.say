@@ -1,0 +1,30 @@
+say d = { a: null };
+say z = d["a"]; // error: unexpected null
+
+// @split
+say d = { a: null };
+say var z = 1;
+z = d["a"]; // error: unexpected null
+
+// @split
+say d = { a: null };
+say var z = 1;
+say w = () => { z = d["a"]; }; // error: unexpected null
+w();
+
+// @split
+type T { pub var v; init(this) { this.v = 1; } }
+say d = { a: null };
+say t = mut T();
+t.v = d["a"]; // error: unexpected null
+
+// @split
+say d = { a: null };
+fn takes(x) { print(x); }
+takes(d["a"]); // error: unexpected null
+
+// @split
+type T { pub var v; init(this) { this.v = 1; } pub fn set(mut this, *x) { this.v = x; } }
+say d = { a: null };
+say t = mut T();
+t.set(d["a"]); // error: unexpected null

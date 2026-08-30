@@ -1,0 +1,16 @@
+say nonNull = ()! => 1;
+print(nonNull()); // expect: 1
+say nullable = (n)? => null;
+print(nullable(1)); // expect: null
+say owing = (): fails => Err("boom");
+say r: fails = owing();
+print(r ?? "recovered"); // expect: recovered
+say mutable = (): mut => mut [1];
+say a = mutable();
+a[0] = 9;
+print(a[0]); // expect: 9
+say inferred = (v) => v;
+print(inferred(5)); // expect: 5
+
+// @split
+say bad = ()! => { return; }; // error: A '!' function must return a value, but this 'return' yields null

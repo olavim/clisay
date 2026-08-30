@@ -1,0 +1,14 @@
+say d = { a: null };
+if (true) { say refuses = 5; print(refuses); } // expect: 5
+say admits: opt = d["a"];
+print(admits ?? "null admitted"); // expect: null admitted
+
+// @split
+say d = { a: null };
+if (true) { say admits: opt = d["a"]; print(admits ?? "ok"); } // expect: ok
+say refuses = d["a"]; // error: unexpected null
+
+// @split
+say d = { a: null };
+if (true) { say p = 1; say refuses = 2; print(refuses); } // expect: 2
+match d { { a } => print(a ?? "binder admits"), _ => print("none") } // expect: binder admits

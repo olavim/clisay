@@ -3,9 +3,11 @@
 
 use std::collections::HashSet;
 
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, Symbol};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, HirStmt};
 use crate::middle::obligations::Obligations;
 
+use super::CallableId;
+use super::Signatures;
 use super::Collector;
 use crate::middle::walk::Child;
 use crate::middle::walk;
@@ -13,11 +15,11 @@ use crate::middle::walk;
 impl<'a> Collector<'a> {
     /// Adds each `?!` operand's obligations to the enclosing function's return set.
     pub(super) fn infer_propagated(&mut self) {
-        let stmts: Vec<HirId<HirStmt>> = self.sigs.fns.keys().copied().collect();
+        let callables: Vec<CallableId> = self.sigs.fns.keys().copied().collect();
         loop {
             let mut changed = false;
-            for stmt in &stmts {
-                let HirStmt::Fn(decl) = self.hir.get(stmt) else { continue };
+            for stmt in &callables {
+                let Some(decl) = Signatures::decl_of(self.hir, *stmt) else { continue };
                 let mut operands = Vec::new();
                 self.collect_propagates(&decl.body, &mut operands);
                 let mut add = HashSet::new();
@@ -41,34 +43,56 @@ impl<'a> Collector<'a> {
         }
     }
 
-    /// The obligations a `?!` operand carries. This mirrors the check pass's `chain_result`, so a
-    /// chain does not launder an object witness out of the propagated set.
     fn operand_obligations(&self, operand: &HirId<HirExpr>, decl: &HirFnDecl) -> Obligations {
         match self.hir.get(operand) {
             HirExpr::Call(callee, _) => {
                 if self.is_err_call(operand) {
                     return Obligations::from([self.fails]);
                 }
-                match self.hir.get(callee) {
-                    HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
-                        .map(|s| self.sigs.fns[s].ret.obligations.clone())
-                        .unwrap_or_default(),
-                    _ => Obligations::new(),
-                }
+                self.call_return_obligations(callee)
             },
-            // A `?` chain carries its operand's obligations from the guarded access.
-            HirExpr::SafeAccess(target, _, _) | HirExpr::SafeCall(target, _) => {
-                let mut set = self.operand_obligations(target, decl);
-                set.insert(self.opt);
+            HirExpr::SafeAccess(target, _, _) => self.operand_obligations(target, decl),
+            HirExpr::SafeCall(callee, _) => {
+                let mut set = self.operand_obligations(callee, decl);
+                set.extend(self.call_return_obligations(callee));
                 set
             },
             HirExpr::Literal(HirLiteral::Null) => Obligations::from([self.opt]),
-            HirExpr::Identifier(name) => self.param_obligations(*name, decl),
+            HirExpr::Identifier(name) => {
+                let owed = self.param_obligations(*name, decl);
+                match owed.is_empty() {
+                    true => self.local_obligations(*name, &decl.body),
+                    false => owed,
+                }
+            },
             _ => Obligations::new(),
         }
     }
 
-    /// The declared obligation set of `name` when it is a parameter of `decl`.
+    /// What calling this callee hands back, for a callee resolved by name.
+    fn call_return_obligations(&self, callee: &HirId<HirExpr>) -> Obligations {
+        match self.hir.get(callee) {
+            HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
+                .map(|s| self.sigs.fn_sig_of(s).map(|f| f.ret.obligations.clone()).unwrap_or_default())
+                .unwrap_or_default(),
+            _ => Obligations::new(),
+        }
+    }
+
+    fn local_obligations(&self, name: Symbol, body: &HirId<HirExpr>) -> Obligations {
+        let mut owed = Obligations::new();
+        walk::visit_body(self.hir, body, &mut |node| {
+            if let Child::Stmt(stmt) = node {
+                if let HirStmt::Say(init) = self.hir.get(&stmt) {
+                    if init.name == name {
+                        owed.extend(init.clause.names.iter().copied());
+                    }
+                }
+            }
+        });
+        owed
+    }
+
     fn param_obligations(&self, name: Symbol, decl: &HirFnDecl) -> Obligations {
         for p in &decl.params {
             if matches!(self.hir.get(&p.name), HirExpr::Identifier(pname) if *pname == name) {

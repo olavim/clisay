@@ -1,44 +1,33 @@
-// Each refusal here is the runtime floor rather than a compile rule, since a throw is what carries
-// the aggregate out and the escape analysis does not follow one.
-
-// A dict literal holds a borrow the same as an array literal does.
-fn f(mut x) { throw mut { "k": x }; } // error: cannot persist a borrowed value
+fn f(mut x) { throw mut { "k": x }; } // error: cannot retain a borrowed argument
 say m = mut [1];
 try { f(m); } catch (e) { print("caught"); }
 
 // @split
-// A native push is a store, so the array it pushed into holds what it took.
-fn f(mut x) { say a = mut []; a.push(x); throw a; } // error: cannot persist a borrowed value
+fn f(mut x) { say a = mut []; a.push(x); throw a; } // error: cannot retain a borrowed argument
 say m = mut [1];
 try { f(m); } catch (e) { print("caught"); }
 
 // @split
-// Nesting carries it as far as it goes.
-fn f(mut x) { throw mut [mut [mut [x]]]; } // error: cannot persist a borrowed value
+fn f(mut x) { throw mut [mut [mut [x]]]; } // error: cannot retain a borrowed argument
 say m = mut [1];
 try { f(m); } catch (e) { print("caught"); }
 
 // @split
-// A closure holding a container that holds a borrow. The capture rule reads the captured name,
-// which is not itself a borrow here, so this one reaches the floor.
-fn f(mut x) { say a = mut [x]; throw () => a[0][0]; } // error: cannot persist a borrowed value
+fn f(mut x) { say a = mut [x]; throw () => a[0][0]; } // error: cannot retain a borrowed argument
 say m = mut [1];
 try { f(m); } catch (e) { print("caught"); }
 
 // @split
-// A slice holds what it copied.
 fn f(mut x) { say a = mut [1, x, 3]; if (a ~ [first, ..mid, last]) { throw mid; } } // error: cannot persist a borrowed value
 say m = mut [9];
 try { f(m); } catch (e) { print("caught"); }
 
 // @split
-// A slice that copied past the borrow holds nothing, so it leaves.
 fn f(mut x) { say a = mut [x, 2, 3]; if (a ~ [first, ..mid, last]) { throw mid; } }
 say m = mut [9];
 try { f(m); } catch (e) { print("caught"); } // expect: caught
 
 // @split
-// A taken value is nobody's borrow, so the aggregate around it may leave.
 fn keep(*x)! { return mut [x]; }
 say m = mut [1];
 say held = keep(m);

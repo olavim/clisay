@@ -1,4 +1,4 @@
-fn getAdder(a, b, c, d, e)! {
+fn getAdder(*a, *b, *c, *d, *e)! {
     say var sum = 0;
     fn addA()! {
         sum = sum + a;
