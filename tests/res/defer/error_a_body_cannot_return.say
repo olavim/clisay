@@ -1,0 +1,19 @@
+fn f() {
+    defer { return; } // error: A 'defer' body cannot return
+    print("body");
+}
+f();
+
+// @split
+fn f() {
+    defer { fn h() { return 1; } print(h()); }
+    print("body"); // expect: body
+}
+f(); // expect: 1
+
+// @split
+fn f() {
+    defer { say h = () => { return 2; }; print(h()); }
+    print("body"); // expect: body
+}
+f(); // expect: 2

@@ -1,0 +1,6 @@
+fn f(a) {
+    defer { print("cleanup"); }
+    if (a) { return 7; }
+}
+f(true); // expect: cleanup
+f(false); // expect: cleanup

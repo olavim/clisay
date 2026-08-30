@@ -243,6 +243,7 @@ impl<'a> Compiler<'a> {
         let cont = self.ir.new_label();
         self.expression(operand)?;
         self.emit_clean_jump(node, operand, cont)?;
+        self.emit_defers_over_return_value(operand)?;
         self.emit(Inst::Return, operand);
         self.ir.bind(cont);
         Ok(())

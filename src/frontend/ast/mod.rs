@@ -373,6 +373,7 @@ pub enum Stmt {
     If(AstId<Expr>, AstId<Expr>, Option<AstId<Stmt>>),
     /// A bare `{ ... }` statement block (wraps an `Expr::Block`).
     Block(AstId<Expr>),
+    Defer(AstId<Expr>),
     Say(FieldInit),
     Fn(FnDecl),
     Type(Box<TypeDecl>),

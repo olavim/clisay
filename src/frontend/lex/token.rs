@@ -159,6 +159,7 @@ tokens! {
     Has => "has",
 
     Return => "return",
+    Defer => "defer",
     Break => "break",
     Continue => "continue",
     Say => "say",

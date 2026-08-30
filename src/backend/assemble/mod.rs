@@ -143,7 +143,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | JumpIfGe(l) | JumpIfGt(l)
         | JumpIfLe(l) | JumpIfLt(l)
         | JumpIfEq(l) | JumpIfNeq(l)
-        | PushTry(l) => write_jump(chunk, target_of(l)),
+        | PushTry(l) | PushDeferTry(l) => write_jump(chunk, target_of(l)),
 
         JumpIfGeLocalConst(l, local, c)
         | JumpIfGtLocalConst(l, local, c)

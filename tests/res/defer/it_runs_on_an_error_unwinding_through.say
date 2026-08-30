@@ -1,0 +1,40 @@
+fn boom() { throw "bang"; }
+fn f() {
+    defer { print("cleanup"); }
+    boom();
+}
+try { f(); } catch (e) { print("caught"); } // expect: cleanup
+// expect: caught
+
+// @split
+fn boom() { throw "bang"; }
+fn f() {
+    defer { print("outer"); }
+    {
+        defer { print("inner"); }
+        boom();
+    }
+}
+try { f(); } catch (e) { print("caught"); } // expect: inner
+// expect: outer
+// expect: caught
+
+// @split
+fn boom() { throw "bang"; }
+fn f() {
+    defer { print("before"); }
+    boom();
+    defer { print("after"); }
+}
+try { f(); } catch (e) { print("caught"); } // expect: before
+// expect: caught
+
+// @split
+fn boom() { throw "bang"; }
+fn f() {
+    defer { say y = "y"; print(y); }
+    say z = 1;
+    boom();
+}
+try { f(); } catch (e) { print("caught"); } // expect: y
+// expect: caught

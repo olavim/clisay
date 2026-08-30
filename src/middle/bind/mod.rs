@@ -149,6 +149,8 @@ pub struct Bindings {
     decls: FnvHashMap<HirId<HirExpr>, usize>,
     /// Function bodies => the captured upvalues of that function.
     upvalues: FnvHashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
+    /// Function bodies holding a `defer` => the slot their returned value waits in.
+    defer_parked_slots: FnvHashMap<HirId<HirExpr>, u8>,
     /// Type declarations => their member layout.
     types: FnvHashMap<HirId<HirStmt>, TypeLayout>,
     /// Type/trait declaration => its public member names, for the `x has T` surface form. A type
@@ -268,6 +270,10 @@ impl Bindings {
         self.match_binders.get(id).map(Vec::as_slice)
     }
 
+    pub fn defer_parked_slot(&self, body: &HirId<HirExpr>) -> Option<u8> {
+        self.defer_parked_slots.get(body).copied()
+    }
+
     pub fn match_info(&self, id: &HirId<HirStmt>) -> &MatchInfo {
         &self.match_info[id]
     }
@@ -335,6 +341,9 @@ pub struct Resolver<'a> {
     current_trait: Option<Symbol>,
     /// `true` while validating a standalone `trait` against its declared surface.
     validating_trait: bool,
+    /// How many locals were declared where the `defer` was written, and where
+    /// the body's own locals start.
+    defer_scope: Option<(usize, usize)>,
 }
 
 pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
@@ -349,9 +358,14 @@ pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
         type_index: FnvHashMap::default(),
         current_trait: None,
         validating_trait: false,
+        defer_scope: None,
     };
 
     let root = resolver.hir.get_root();
+    // The script is a frame too, so its own `defer` needs the same slot a function's does.
+    if let Some(body) = resolver.hir.script_body() {
+        resolver.reserve_defer_parked_slot(&body)?;
+    }
     resolver.statement(&root)?;
     Ok(resolver.bindings)
 }
@@ -413,7 +427,7 @@ impl<'a> Resolver<'a> {
                     self.statement(otherwise)?;
                 }
             },
-            HirStmt::Block(body) => self.expression(body)?,
+            HirStmt::Block(body) | HirStmt::Defer(body) => self.expression(body)?,
             HirStmt::Nop => {},
             HirStmt::Match(scrutinee, arms) => {
                 self.expression(scrutinee)?;
@@ -523,8 +537,21 @@ impl<'a> Resolver<'a> {
 
     fn statement_body(&mut self, body: &[HirId<HirStmt>]) -> Result<(), anyhow::Error> {
         self.hoist_declarations(body)?;
+        let mut defers = Vec::new();
         for stmt_id in body {
+            if let HirStmt::Defer(_) = self.hir.get(stmt_id) {
+                defers.push((*stmt_id, self.locals.len()));
+                continue;
+            }
             self.statement(stmt_id)?;
+        }
+
+        // A defer body runs where the block exits.
+        for (stmt_id, visible) in defers.into_iter().rev() {
+            let outer = self.defer_scope.replace((visible, self.locals.len()));
+            let result = self.statement(&stmt_id);
+            self.defer_scope = outer;
+            result?;
         }
         Ok(())
     }

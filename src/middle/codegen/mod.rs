@@ -30,6 +30,14 @@ enum TryCatchPosition {
     Finally
 }
 
+#[derive(Clone, Copy)]
+struct PendingDefer {
+    stmt: HirId<HirStmt>,
+    body: HirId<HirExpr>,
+    handler: Label,
+    unwind_slot_count: usize,
+}
+
 #[derive(Clone)]
 struct TryFrame {
     position: TryCatchPosition,
@@ -70,6 +78,8 @@ pub struct Compiler<'a> {
     /// Each live `?? e =>` binder.
     handle_binder_slots: Vec<(u8, u8)>,
     frame_slot_count: usize,
+    defers: Vec<PendingDefer>,
+    defer_parked_slot: Option<u8>,
     /// The slot table of the frame being compiled, which its bindings record into.
     slot_table: u16,
 }
@@ -99,13 +109,20 @@ impl<'a> Compiler<'a> {
             try_frames: Vec::new(),
             witness_ids: FnvHashMap::default(),
             frame_slot_count: 0,
+            defers: Vec::new(),
+            defer_parked_slot: None,
             handle_binder_slots: Vec::new(),
             slot_table: SLOT_ACCEPTS_SCRIPT_FRAME,
         };
 
         compiler.assign_witness_ids();
         let stmt_id = compiler.hir.get_root();
-        let (_, script) = compiler.with_frame(|c| c.statement(&stmt_id))?;
+        let (_, script) = compiler.with_frame(|c| {
+            if let Some(body) = c.hir.script_body() {
+                c.open_defer_frame(&body);
+            }
+            c.statement(&stmt_id)
+        })?;
         debug_assert_eq!(script, SLOT_ACCEPTS_SCRIPT_FRAME, "the script's frame is the first one opened");
         Ok(compiler.finish())
     }
@@ -114,6 +131,8 @@ impl<'a> Compiler<'a> {
         let caller_slot_count = self.frame_slot_count;
         // A binder names a slot of the frame that made it, so a nested frame starts with none.
         let caller_binders = std::mem::take(&mut self.handle_binder_slots);
+        let caller_defers = std::mem::take(&mut self.defers);
+        let caller_parked_slot = self.defer_parked_slot.take();
         let caller_table = self.slot_table;
         self.slot_table = self.ir.new_slot_accepts_table()?;
         let table = self.slot_table;
@@ -122,6 +141,8 @@ impl<'a> Compiler<'a> {
 
         self.frame_slot_count = caller_slot_count;
         self.handle_binder_slots = caller_binders;
+        self.defers = caller_defers;
+        self.defer_parked_slot = caller_parked_slot;
         self.slot_table = caller_table;
         Ok((result?, table))
     }
@@ -202,6 +223,7 @@ impl<'a> Compiler<'a> {
             Inst::Dup2 => self.frame_slot_count += 2,
             Inst::GetIndex | Inst::GetProperty => self.frame_slot_count = self.frame_slot_count.saturating_sub(1),
             Inst::Pop
+                | Inst::StoreLocalPop(_)
                 | Inst::JumpIfFalseOrPop(_)
                 | Inst::JumpIfTrueOrPop(_)
                 | Inst::JumpIfNotNullOrPop(_) => self.frame_slot_count = self.frame_slot_count.saturating_sub(1),

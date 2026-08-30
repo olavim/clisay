@@ -1,0 +1,6 @@
+// A defer is not a closure, so it reads what the binding holds when it runs.
+{
+    say var x = 1;
+    defer { print(x); } // expect: 2
+    x = 2;
+}

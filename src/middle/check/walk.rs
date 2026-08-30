@@ -90,6 +90,17 @@ impl<'a> Checker<'a> {
                 self.ctx.check_dropped_result(&state.debt, e)?;
             },
             HirStmt::Block(e) => { self.expr(e)?; },
+            HirStmt::Defer(e) => {
+                let outer = std::mem::replace(&mut self.fn_ctx.in_defer, true);
+                let result = self.expr(e);
+                self.fn_ctx.in_defer = outer;
+                result?;
+            },
+            HirStmt::Return(_) if self.fn_ctx.in_defer => {
+                return Err(self.error_help(
+                    "A 'defer' body cannot return".to_string(), stmt,
+                    "a 'defer' runs while its block is already leaving, so there is no return left to make"));
+            },
             HirStmt::Return(opt) => match opt {
                 Some(e) => {
                     let state = self.expr(e)?;
@@ -350,8 +361,11 @@ impl<'a> Checker<'a> {
                 let yielded = resolved.map_or(Debt::Clean, |state| state.debt);
                 self.chain_result_with(&callee.debt, &yielded, expr)
             },
-            // `a?!` discharges the operand on its fall-through path. The enclosing function carries
-            // the obligation instead, recorded in signatures. The yielded value is clean.
+            HirExpr::Propagate(operand) if self.fn_ctx.in_defer => {
+                return Err(self.error_help(
+                    "A 'defer' body cannot propagate with '?!'".to_string(), expr,
+                    "'?!' returns the bad value, and the block is already leaving; handle it with '??' or '!' instead"));
+            },
             HirExpr::Propagate(operand) => {
                 self.mark_handled(operand);
                 let state = self.expr(operand)?;
@@ -733,6 +747,7 @@ impl<'a> Checker<'a> {
             params: decl.params.iter().map(|p| (self.ctx.hir.ident_sym(&p.name), p.pos.clone())).collect(),
             param_confined: confined,
             writes,
+            in_defer: false,
         };
 
         let saved = std::mem::replace(&mut self.fn_ctx, ctx);

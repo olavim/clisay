@@ -16,6 +16,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Try => self.parse_trycatch(),
             TokenType::If => self.parse_if_stmt(),
             TokenType::Match => self.parse_match(),
+            TokenType::Defer => self.parse_defer(),
             TokenType::LeftBrace => self.parse_block_stmt(),
             _ => self.parse_expr_stmt()
         }
@@ -33,6 +34,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             None => None
         };
         Ok(self.node_stmt(Stmt::If(condition, then, otherwise), pos))
+    }
+
+    fn parse_defer(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::Defer)?.pos.clone();
+        let body = self.parse_block_or_stmt()?;
+        Ok(self.node_stmt(Stmt::Defer(body), pos))
     }
 
     pub(super) fn parse_block_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {

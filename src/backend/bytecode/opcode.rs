@@ -105,6 +105,7 @@ opcodes! {
     Halt => HALT,
     Throw => THROW,
     PushTry => PUSH_TRY(Jump),
+    PushDeferTry => PUSH_DEFER_TRY(Jump),
     PopTry => POP_TRY,
     AssertNonNull => ASSERT_NON_NULL,
     AssertImmutable => ASSERT_IMMUTABLE,

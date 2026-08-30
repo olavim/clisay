@@ -68,7 +68,10 @@ pub fn children_of_expr(hir: &Hir, node: &HirId<HirExpr>) -> Vec<Child> {
 pub fn children_of_stmt(hir: &Hir, node: &HirId<HirStmt>) -> Vec<Child> {
     let mut out = Vec::new();
     match hir.get(node) {
-        HirStmt::Expression(e) | HirStmt::Throw(e) | HirStmt::Block(e) => out.push(Child::Expr(*e)),
+        HirStmt::Expression(e)
+        | HirStmt::Throw(e)
+        | HirStmt::Block(e)
+        | HirStmt::Defer(e) => out.push(Child::Expr(*e)),
         HirStmt::Return(opt) => if let Some(e) = opt { out.push(Child::Expr(*e)); },
         HirStmt::While(cond, body) => {
             out.push(Child::Expr(*cond));

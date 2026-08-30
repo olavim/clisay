@@ -3,7 +3,7 @@ use crate::middle::hir::{HirCatchClause, HirExpr, HirFieldInit, HirId, HirStmt};
 use crate::middle::ir::Inst;
 use crate::middle::bind::FnKind;
 
-use super::{Compiler, WriteOwnershipHolderPlace, TryCatchPosition, TryFrame};
+use super::{Compiler, PendingDefer, WriteOwnershipHolderPlace, TryCatchPosition, TryFrame};
 
 
 /// Whether a statement's name takes a slot the hoisting run reserves at the top of its scope.
@@ -43,12 +43,15 @@ impl<'a> Compiler<'a> {
                     if expr.is_some() {
                         compiler_error!(self, stmt_id, "Cannot return a value from a factory");
                     }
+                    self.emit_pending_defers()?;
                     self.emit(Inst::LoadLocal(0), stmt_id);
                     self.emit(Inst::ReturnFac, stmt_id);
                 } else {
                     if let Some(expr) = expr {
                         self.expression(expr)?;
+                        self.emit_defers_over_return_value(stmt_id)?;
                     } else {
+                        self.emit_pending_defers()?;
                         self.emit(Inst::PushNull, stmt_id);
                     }
                     self.emit(Inst::Return, stmt_id);
@@ -171,7 +174,8 @@ impl<'a> Compiler<'a> {
             },
             HirStmt::Block(body) => {
                 self.expression_stmt(body)?;
-            }
+            },
+            HirStmt::Defer(_) => unreachable!("a defer is emitted by the block that registered it"),
             HirStmt::Match(scrutinee, arms) => self.compile_match(scrutinee, arms, stmt_id)?,
         };
 
@@ -235,11 +239,13 @@ impl<'a> Compiler<'a> {
             .filter(|(_, s)| reserves_a_slot(self.hir.get(s)))
             .map(|(i, s)| (i, self.captured_slots(s).max().unwrap_or(0)))
             .collect();
+
         // The hoisting run above reserved every declaration's slot, so those are already live.
         let mut live = body.iter().filter(|s| reserves_a_slot(self.hir.get(s)))
             .map(|s| self.bindings.slot(s)).max().unwrap_or(0);
 
         self.build_ready_declarations(body, &mut waiting, live)?;
+        let defer_mark = self.defers.len();
         for (i, stmt_id) in body.iter().enumerate() {
             match waiting.iter().position(|&(w, _)| w == i) {
                 // A declaration still waiting at its own line is built here.
@@ -248,12 +254,110 @@ impl<'a> Compiler<'a> {
                 None if reserves_a_slot(self.hir.get(stmt_id)) => continue,
                 None => {},
             }
+            if let HirStmt::Defer(defer_body) = self.hir.get(stmt_id) {
+                let handler = self.ir.new_label();
+                // Catches an error.
+                self.emit(Inst::PushDeferTry(handler), stmt_id);
+                self.defers.push(PendingDefer {
+                    stmt: *stmt_id,
+                    body: *defer_body,
+                    handler,
+                    unwind_slot_count: self.frame_slot_count,
+                });
+                continue;
+            }
             self.statement(stmt_id)?;
             if let HirStmt::Say(_) = self.hir.get(stmt_id) {
                 live = live.max(self.bindings.slot(stmt_id));
                 self.build_ready_declarations(body, &mut waiting, live)?;
             }
         }
+
+        // Defers run at scope end, in reverse order.
+        for i in (defer_mark..self.defers.len()).rev() {
+            let pending = self.defers[i];
+            self.emit(Inst::PopTry, &pending.stmt);
+            self.emit_defer_body(&pending)?;
+        }
+        self.emit_defer_try_handlers(defer_mark)?;
+        self.defers.truncate(defer_mark);
+        Ok(())
+    }
+
+    fn emit_defer_body(&mut self, pending: &PendingDefer) -> Result<(), anyhow::Error> {
+        // The frame slots live when the defer runs.
+        let body_base = self.bindings.frame_slot_count_at(&pending.stmt) as usize;
+        self.set_frame_slot_count(body_base, &pending.stmt);
+        self.expression_stmt(&pending.body)?;
+        self.frame_slot_count = body_base;
+        Ok(())
+    }
+
+    fn emit_defer_try_handlers(&mut self, defer_mark: usize) -> Result<(), anyhow::Error> {
+        let Some(&PendingDefer { stmt: site, .. }) = self.defers.get(defer_mark) else { return Ok(()) };
+        let slot = self.parked_slot();
+        let past = self.ir.new_label();
+        self.emit(Inst::Jump(past), &site);
+        let after_block = self.frame_slot_count;
+        for i in (defer_mark..self.defers.len()).rev() {
+            let pending = self.defers[i];
+            self.ir.bind(pending.handler);
+            // The unwind left the error where the body's own locals go, so park it first.
+            self.emit(Inst::StoreLocalPop(slot), &pending.stmt);
+            self.frame_slot_count = pending.unwind_slot_count;
+            self.emit_defer_body(&pending)?;
+            self.emit(Inst::LoadLocal(slot), &pending.stmt);
+            self.emit(Inst::Throw, &pending.stmt);
+        }
+        self.frame_slot_count = after_block;
+        self.ir.bind(past);
+        Ok(())
+    }
+
+    fn parked_slot(&self) -> u8 {
+        self.defer_parked_slot.expect("a frame holding a defer reserved a slot to park values in")
+    }
+
+    pub(super) fn open_defer_frame(&mut self, body: &HirId<HirExpr>) {
+        self.defer_parked_slot = self.bindings.defer_parked_slot(body);
+        if self.defer_parked_slot.is_some() {
+            self.reserve_slots(1, body);
+        }
+    }
+
+    fn emit_pending_defers(&mut self) -> Result<(), anyhow::Error> {
+        let caller_height = self.frame_slot_count;
+
+        for i in (0..self.defers.len()).rev() {
+            let pending = self.defers[i];
+            self.emit(Inst::PopTry, &pending.stmt);
+            self.emit_defer_body(&pending)?;
+        }
+
+        self.frame_slot_count = caller_height;
+        Ok(())
+    }
+
+    fn set_frame_slot_count(&mut self, want: usize, node: &HirId<HirStmt>) {
+        let have = self.frame_slot_count;
+        if want > have {
+            self.reserve_slots(want - have, node);
+        } else {
+            for _ in want..have {
+                self.emit(Inst::Pop, node);
+            }
+        }
+    }
+
+    /// Runs the pending `defer` bodies with the returned value parked in the frame's reserved slot.
+    pub(super) fn emit_defers_over_return_value<T: 'static>(&mut self, node: &HirId<T>) -> Result<(), anyhow::Error> {
+        if self.defers.is_empty() {
+            return Ok(());
+        }
+        let slot = self.parked_slot();
+        self.emit(Inst::StoreLocalPop(slot), node);
+        self.emit_pending_defers()?;
+        self.emit(Inst::LoadLocal(slot), node);
         Ok(())
     }
 

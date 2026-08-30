@@ -1,0 +1,28 @@
+fn f() {
+    defer { print("cleanup"); }
+    print("body"); // expect: body
+    return;
+}
+f(); // expect: cleanup
+
+// @split
+fn f() {
+    defer { print("first"); }
+    defer { print("second"); }
+    return 9;
+}
+print(f()); // expect: second
+// expect: first
+// expect: 9
+
+// @split
+fn f() {
+    defer { print("outer"); }
+    {
+        defer { print("inner"); }
+        return 3;
+    }
+}
+print(f()); // expect: inner
+// expect: outer
+// expect: 3

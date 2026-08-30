@@ -149,6 +149,11 @@ fn arrays(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
+#[test_resources("tests/res/defer")]
+fn defers(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
 #[test_resources("tests/res/assignment")]
 fn assignments(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)

@@ -106,6 +106,7 @@ pub enum Inst {
     Halt,
     Throw,
     PushTry(Label),
+    PushDeferTry(Label),
     PopTry,
     /// Aborts if the top of the stack is null, else leaves it.
     AssertNonNull,

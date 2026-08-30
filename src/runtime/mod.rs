@@ -174,8 +174,15 @@ pub enum WriteOwnershipSource {
     Taken,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum TryKind {
+    Catch,
+    Defer,
+}
+
 #[derive(Clone, Copy)]
 pub struct TryFrame {
+    kind: TryKind,
     origin: *mut CallFrame,
     handler_ip: *const OpCode,
     stack_start: *mut Value,

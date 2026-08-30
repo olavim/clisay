@@ -153,9 +153,10 @@ impl Vm {
     }
 
     pub(super) fn throw_value(&mut self, value: Value) -> Result<(), anyhow::Error> {
-        // A handler further out than this frame means the throw carries the value out of it, which
-        // is the return route under another name.
-        if !self.try_frames.last().is_some_and(|f| f.origin == self.frames.top_ptr()) {
+        let caught_here = self.try_frames.iter().rev()
+            .find(|f| f.kind == TryKind::Catch)
+            .is_some_and(|f| f.origin == self.frames.top_ptr());
+        if !caught_here {
             self.ensure_not_holding_borrow(value)?;
         }
         // A thrown value passes every scope between here and the handler, so none of them may
@@ -176,9 +177,10 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn op_push_try(&mut self) {
+    pub(super) fn op_push_try(&mut self, kind: TryKind) {
         let handler_pos = as_short!(self.read_next(), self.read_next()) as usize;
         self.try_frames.push(TryFrame {
+            kind,
             origin: self.frames.top_ptr(),
             handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
             stack_start: self.stack.top(),

@@ -1,0 +1,17 @@
+fn f() {
+    say var x = 1;
+    defer { x = 2; print("defer ran"); }
+    return x;
+}
+print(f()); // expect: defer ran
+// expect: 1
+
+// @split
+say var x = 1;
+fn f() {
+    defer { x = 2; print("defer ran"); }
+    return x;
+}
+print(f()); // expect: defer ran
+// expect: 1
+print(x); // expect: 2

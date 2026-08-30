@@ -144,6 +144,7 @@ impl<'a> Lowerer<'a> {
                 HirStmt::If(cond, then, otherwise)
             },
             Stmt::Block(body) => HirStmt::Block(self.expr(body)?),
+            Stmt::Defer(body) => HirStmt::Defer(self.expr(body)?),
             Stmt::Match(scrutinee, arms) => {
                 let scrutinee = self.expr(scrutinee)?;
                 let arms = arms.iter().map(|arm| self.lower_match_arm(arm)).collect::<Result<_, _>>()?;

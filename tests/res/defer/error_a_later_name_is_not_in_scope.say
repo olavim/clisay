@@ -1,0 +1,5 @@
+// A defer body sees what was in scope where it was written, not where it runs.
+{
+    defer { print(x); } // error: Undefined variable 'x'
+    say x = 1;
+}

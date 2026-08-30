@@ -112,6 +112,7 @@ impl<'a> Compiler<'a> {
 
         let (_, slot_accepts) = self.with_frame(|c| {
             c.compile_entry_steps(&decl.params)?;
+            c.open_defer_frame(&decl.body);
             c.frame_slot_count = c.bindings.frame_slot_count_at(&decl.body) as usize;
             c.expression(&decl.body)?;
             c.exit_function(&decl.body, kind);

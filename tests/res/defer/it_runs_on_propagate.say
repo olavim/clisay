@@ -1,0 +1,29 @@
+fn g()! { return Err("boom"); }
+fn f()! {
+    defer { print("cleanup"); }
+    say v = g()?!;
+    return v;
+}
+say r = f() ?? "handled"; // expect: cleanup
+print(r); // expect: handled
+
+// @split
+fn g()! { return Err("boom"); }
+fn f()! {
+    defer { say y = "y"; print(y); }
+    say v = g()?!;
+    return v;
+}
+say r = f() ?? "handled"; // expect: y
+print(r); // expect: handled
+
+// @split
+fn g()! { return 5; }
+fn f()! {
+    defer { print("cleanup"); }
+    say v = g()?!;
+    print("clean"); // expect: clean
+    return v;
+}
+print(f()!); // expect: cleanup
+// expect: 5

@@ -3,7 +3,8 @@
 use anyhow::{anyhow, bail};
 
 use crate::core::objects::UpvalueLocation;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirMatcher, Symbol};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirMatcher, HirStmt, Symbol};
+use crate::middle::walk::{visit_body, Child};
 
 use super::{FnFrame, FnKind, Local, Place, Receiver, Resolver};
 
@@ -92,9 +93,33 @@ impl<'a> Resolver<'a> {
         Ok(binders)
     }
 
+    /// Reserves the slot a returned or thrown value waits in while the frame's `defer` bodies run.
+    pub(super) fn reserve_defer_parked_slot(&mut self, body: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let mut defers = false;
+        visit_body(self.hir, body, &mut |child| {
+            if let Child::Stmt(s) = child {
+                defers |= matches!(self.hir.get(&s), HirStmt::Defer(_));
+            }
+        });
+        if defers {
+            let slot = self.declare_temp()?;
+            self.bindings.defer_parked_slots.insert(*body, slot);
+        }
+        Ok(())
+    }
+
     pub(super) fn resolve_local(&self, name: Symbol) -> Option<u8> {
         let start = self.local_offset();
-        self.resolve_local_in_range(name, start, self.locals.len()).map(|i| (i - start) as u8)
+        self.find_local(name).map(|i| (i - start) as u8)
+    }
+
+    fn find_local(&self, name: Symbol) -> Option<usize> {
+        let start = self.local_offset();
+        let Some((visible, body_start)) = self.defer_scope else {
+            return self.resolve_local_in_range(name, start, self.locals.len());
+        };
+        self.resolve_local_in_range(name, body_start, self.locals.len())
+            .or_else(|| self.resolve_local_in_range(name, start, visible.max(start)))
     }
 
     fn resolve_local_in_range(&self, name: Symbol, start: usize, end: usize) -> Option<usize> {
@@ -168,7 +193,7 @@ impl<'a> Resolver<'a> {
 
     pub(super) fn resolve_place(&mut self, name: Symbol, node: &HirId<HirExpr>) -> Result<Place, anyhow::Error> {
         let start = self.local_offset();
-        let place = if let Some(i) = self.resolve_local_in_range(name, start, self.locals.len()) {
+        let place = if let Some(i) = self.find_local(name) {
             self.record_decl(node, self.locals[i].decl);
             Place::Local((i - start) as u8)
         } else if let Some((id, receiver)) = self.this_field(name)? {
@@ -262,6 +287,7 @@ impl<'a> Resolver<'a> {
             self.bindings.match_binders.insert(param.name, binders);
         }
 
+        self.reserve_defer_parked_slot(&decl.body)?;
         self.record_frame_slot_count(&decl.body);
         self.expression(&decl.body)?;
 

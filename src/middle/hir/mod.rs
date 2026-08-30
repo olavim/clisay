@@ -420,6 +420,7 @@ pub enum HirStmt {
     While(HirId<HirExpr>, HirId<HirExpr>),
     If(HirId<HirExpr>, HirId<HirExpr>, Option<HirId<HirStmt>>),
     Block(HirId<HirExpr>),
+    Defer(HirId<HirExpr>),
     Say(HirFieldInit),
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
@@ -585,6 +586,13 @@ impl Hir {
 
     pub fn get_root(&self) -> HirId<HirStmt> {
         HirId { id: self.nodes.len() - 1, _marker: PhantomData }
+    }
+
+    pub fn script_body(&self) -> Option<HirId<HirExpr>> {
+        match self.get(&self.get_root()) {
+            HirStmt::Expression(body) | HirStmt::Block(body) => Some(*body),
+            _ => None,
+        }
     }
 
     pub(crate) fn stmt_at(&self, index: usize) -> Option<HirId<HirStmt>> {
