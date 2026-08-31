@@ -1,6 +1,5 @@
-// Unbounded recursion raises a runtime error instead of corrupting memory.
 fn recurse(n)! {
-    return recurse(n + 1); // error: Stack overflow
+    return 1 + recurse(n + 1); // error: Stack overflow
 }
 
 recurse(0);

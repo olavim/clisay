@@ -69,13 +69,16 @@ impl Vm {
     }
 
     pub(super) fn op_return(&mut self) -> Result<bool, anyhow::Error> {
-        if self.frames.len() == 1 {
+        if unsafe { (*self.frames.top()).closure.is_null() } {
             return Ok(false);
         }
         self.ensure_not_holding_borrow(self.stack.peek(0))?;
 
         let frame = self.frames.pop();
         self.ip = frame.return_ip;
+        if !self.tail_breadcrumbs.is_empty() {
+            self.release_tail_breadcrumbs();
+        }
 
         // Handing a borrowed value back does not end the borrow.
         let handed_back_from = self.stack.offset(0);
@@ -171,6 +174,9 @@ impl Vm {
         self.restore_borrows(frame.borrow_depth);
         self.root_stash.truncate(frame.stash_depth);
         self.frames.set_top(frame.origin);
+        if !self.tail_breadcrumbs.is_empty() {
+            self.release_tail_breadcrumbs();
+        }
         self.unwind_to(frame.stack_start, frame.write_depth, value)?;
         self.ip = frame.handler_ip;
         self.stack.push(value);

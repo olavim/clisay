@@ -1,0 +1,10 @@
+fn count(n)! {
+    if n == 0 { return 0; }
+    return count(n - 1);
+}
+
+say var i = 0;
+while i < 5000 {
+    count(200);
+    i = i + 1;
+}

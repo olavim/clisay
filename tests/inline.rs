@@ -40,8 +40,9 @@ fn discard_params_take_their_slot_without_a_name() {
 
 #[test]
 fn runtime_error_shows_call_stack_trace() {
-    // A runtime error lists each active call frame beneath the source frame.
-    let src = "fn b()! { return 1 + true; }\nfn a()! { return b(); }\na();";
+    // A runtime error lists each active call frame beneath the source frame. `a` calls `b` in a
+    // statement rather than returning it, so it keeps its frame and appears.
+    let src = "fn b()! { return 1 + true; }\nfn a()! { b(); return 0; }\na();";
     let err = clisay::run("trace", src).err().expect("expected a runtime error").to_string();
     assert!(err.contains("\tat b ("), "{err}");
     assert!(err.contains("\tat a ("), "{err}");

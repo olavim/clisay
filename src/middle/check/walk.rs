@@ -742,6 +742,7 @@ impl<'a> Checker<'a> {
             return_unmarked: unmarked,
             return_mut: decl.clause.capability.is_mut(),
             return_admits: self.ctx.sigs.fn_sig_of(callable).map(|s| s.ret.obligations.clone()),
+            returns_void: self.ctx.sigs.fn_sig_of(callable).is_some_and(|s| s.ret.void),
             name: Some(decl.name),
             return_clause: decl.clause.pos.clone(),
             params: decl.params.iter().map(|p| (self.ctx.hir.ident_sym(&p.name), p.pos.clone())).collect(),

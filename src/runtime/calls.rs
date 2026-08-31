@@ -87,6 +87,56 @@ impl Vm {
         Ok(())
     }
 
+    pub(super) fn op_tail_call(&mut self) -> Result<(), anyhow::Error> {
+        let arg_count = self.read_next() as usize;
+        let value = self.stack.peek(arg_count);
+        match self.frame_a_tail_call_may_take(value) {
+            Some(closure) => self.take_frame_for(arg_count, closure),
+            None => self.call(arg_count, value, true),
+        }
+    }
+
+    fn frame_a_tail_call_may_take(&self, value: Value) -> Option<*mut ObjClosure> {
+        if !value.is_object() {
+            return None;
+        }
+        let object = value.as_object();
+        if object.tag() != objects::TAG_CLOSURE {
+            return None;
+        }
+        let frame = self.frames.top();
+        let takeable = unsafe {
+            // The script runs in the one frame with no closure, and has no caller to hand back to.
+            !(*frame).closure.is_null()
+                && self.borrows.len() == (*frame).borrow_depth
+                && self.write_ownerships.len() == (*frame).write_depth
+        };
+        takeable.then(|| object.as_closure_ptr())
+    }
+
+    fn take_frame_for(&mut self, arg_count: usize, closure_ptr: *mut ObjClosure) -> Result<(), anyhow::Error> {
+        let closure = unsafe { &*closure_ptr };
+        check_arity!(self, arg_count, closure.arity, closure.name);
+        let frame = self.frames.top();
+        let stack_start = unsafe { (*frame).stack_start };
+        let callee = self.stack.offset(arg_count);
+        self.close_upvalues(stack_start);
+        unsafe {
+            std::ptr::copy(callee, stack_start, arg_count + 1);
+            self.stack.set_top(stack_start.add(arg_count + 1));
+        }
+        // The transfer answers for the arguments, so it runs while the frame still names the call.
+        self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, closure.param_accepts, stack_start, arg_count, ReceiverSlot::Callee)?;
+        let held = unsafe { (*frame).closure };
+        unsafe {
+            (*frame).closure = closure_ptr;
+            (*frame).seal = true;
+        }
+        self.record_tail_call_breadcrumb(frame, held, closure_ptr);
+        self.ip = unsafe { self.chunk.code.as_ptr().add(closure.ip_start) };
+        Ok(())
+    }
+
     pub(super) fn op_call_mut(&mut self) -> Result<(), anyhow::Error> {
         let arg_count = self.read_next() as usize;
         let value = self.stack.peek(arg_count);
@@ -1070,8 +1120,9 @@ impl Vm {
         let closure = unsafe { &*closure_ptr };
         check_arity!(self, arg_count, closure.arity, closure.name);
         let stack_start = self.stack.offset(arg_count);
-        self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
+        // The transfer names the site it happened at, so it runs before `ip` moves to the callee.
         self.transfer_argument_write_ownership(closure.retain_mask, closure.escape_mask, closure.needs_borrow_mark, closure.param_accepts, stack_start, arg_count, ReceiverSlot::Callee)?;
+        self.push_frame(closure_ptr, stack_start, closure.ip_start, seal)?;
         Ok(())
     }
 

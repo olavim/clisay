@@ -104,6 +104,7 @@ opcodes! {
     ReturnFac => RETURN_FAC,
     Halt => HALT,
     Throw => THROW,
+    TailCall => TAIL_CALL(Byte),
     PushTry => PUSH_TRY(Jump),
     PushDeferTry => PUSH_DEFER_TRY(Jump),
     PopTry => POP_TRY,

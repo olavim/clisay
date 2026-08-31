@@ -7,11 +7,13 @@ fn a()! {
 a();
 // error(full):
 // error: Operator '+' cannot be applied to operands number and boolean
-//  --> runtime_trace.say:2:16
+//  --> runtime_trace.say:3:16
 //   |
-// 1 | fn b()! {
-// 2 |     return 1 + true;
+// 2 | fn b()! {
+// 3 |     return 1 + true;
 //   |                ^^^^
-// 	at b (runtime_trace.say:2)
-// 	at a (runtime_trace.say:5)
-// 	at script (runtime_trace.say:7)
+// 	at b (runtime_trace.say:3)
+// 	at tail calls
+// 	  a (runtime_trace.say:6)
+// 	  b (runtime_trace.say:3)
+// 	at script (runtime_trace.say:8)

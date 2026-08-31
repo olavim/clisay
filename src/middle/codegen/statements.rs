@@ -48,8 +48,10 @@ impl<'a> Compiler<'a> {
                     self.emit(Inst::ReturnFac, stmt_id);
                 } else {
                     if let Some(expr) = expr {
-                        self.expression(expr)?;
-                        self.emit_defers_over_return_value(stmt_id)?;
+                        if !self.emit_as_tail_call(expr)? {
+                            self.expression(expr)?;
+                            self.emit_defers_over_return_value(stmt_id)?;
+                        }
                     } else {
                         self.emit_pending_defers()?;
                         self.emit(Inst::PushNull, stmt_id);
@@ -282,6 +284,18 @@ impl<'a> Compiler<'a> {
         self.emit_defer_try_handlers(defer_mark)?;
         self.defers.truncate(defer_mark);
         Ok(())
+    }
+
+    fn emit_as_tail_call(&mut self, expr: &HirId<HirExpr>) -> Result<bool, anyhow::Error> {
+        let HirExpr::Call(callee, args) = self.hir.get(expr) else { return Ok(false) };
+        if !self.defers.is_empty() || !self.try_frames.is_empty() {
+            return Ok(false);
+        }
+        if let Some(FnKind::Factory) = self.fn_kinds.last() {
+            return Ok(false);
+        }
+        self.call_expression(callee, args, false, true)?;
+        Ok(true)
     }
 
     fn emit_defer_body(&mut self, pending: &PendingDefer) -> Result<(), anyhow::Error> {

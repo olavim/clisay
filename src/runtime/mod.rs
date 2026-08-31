@@ -258,6 +258,7 @@ pub struct Vm {
     /// Values whose element writer slot is held, innermost last.
     write_ownerships: Vec<WriteOwnership>,
     root_stash: Vec<Value>,
+    tail_breadcrumbs: Vec<(*mut CallFrame, *mut ObjClosure)>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
     index_cache: Box<[IndexCache]>,
@@ -396,6 +397,7 @@ impl Vm {
             borrows: Vec::new(),
             write_ownerships: Vec::new(),
             root_stash: Vec::new(),
+            tail_breadcrumbs: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
             index_cache: vec![IndexCache::empty(); INDEX_CACHE_SIZE].into_boxed_slice(),
@@ -581,6 +583,45 @@ impl Vm {
         format!("\tat {} ({})", name, self.source_pos_at(ip))
     }
 
+    pub(super) fn release_tail_breadcrumbs(&mut self) {
+        let live = self.frames.top_ptr();
+        while self.tail_breadcrumbs.last().is_some_and(|&(f, _)| f >= live) {
+            self.tail_breadcrumbs.pop();
+        }
+    }
+
+    #[inline]
+    pub(super) fn record_tail_call_breadcrumb(&mut self, frame: *mut CallFrame, from: *mut ObjClosure, to: *mut ObjClosure) {
+        if self.tail_breadcrumbs.last().is_some_and(|&(f, held)| f == frame && held == to) {
+            return;
+        }
+        self.add_tail_call_breadcrumb(frame, from, to);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn add_tail_call_breadcrumb(&mut self, frame: *mut CallFrame, from: *mut ObjClosure, to: *mut ObjClosure) {
+        // `from` is the previous `to`, so only the first call in a frame has it to add.
+        if !self.tail_breadcrumbs.last().is_some_and(|&(f, _)| f == frame) {
+            self.tail_breadcrumbs.push((frame, from));
+        }
+        if !self.holds_tail_call_breadcrumb(frame, to) {
+            self.tail_breadcrumbs.push((frame, to));
+        }
+    }
+
+    fn holds_tail_call_breadcrumb(&self, frame: *mut CallFrame, closure: *mut ObjClosure) -> bool {
+        for &(f, held) in self.tail_breadcrumbs.iter().rev() {
+            if f != frame {
+                return false;
+            }
+            if held == closure {
+                return true;
+            }
+        }
+        false
+    }
+
     fn stringify_op(&self, ip: *const OpCode) -> String {
         format!("\tat script ({})", self.source_pos_at(ip))
     }
@@ -642,6 +683,10 @@ impl Vm {
         let mut lines = Vec::new();
         for i in (1..frames.len()).rev() {
             lines.push(self.stringify_frame(&frames[i], ip));
+            // The frames are contiguous, so the live address of the one copied at `i` is that far
+            // back from the top.
+            let at = unsafe { self.frames.top().sub(frames.len() - 1 - i) };
+            self.push_rendered_tail_call_breadcrumbs(at, &mut lines);
             ip = frames[i].return_ip;
         }
         // Show the top-level script as the base of the chain, but only when a function frame sits
@@ -655,6 +700,20 @@ impl Vm {
             bail!("{}", diagnostic)
         }
         bail!("{}", diagnostic.with_trace(trace))
+    }
+
+    fn push_rendered_tail_call_breadcrumbs(&self, frame: *mut CallFrame, lines: &mut Vec<String>) {
+        let mut held = self.tail_breadcrumbs.iter().filter(|(f, _)| *f == frame).peekable();
+        if held.peek().is_none() {
+            return;
+        }
+        lines.push("	at tail calls".to_string());
+        for (_, closure) in held {
+            let name = unsafe { &(*(**closure).name).value };
+            // A breadcrumb has no call site, so it names where the function begins.
+            let entry = unsafe { self.chunk.code.as_ptr().add((**closure).ip_start + 1) };
+            lines.push(format!("	  {} ({})", name, self.source_pos_at(entry)));
+        }
     }
 
     fn intern(&mut self, name: impl Into<String>) -> *mut ObjString {
@@ -720,6 +779,11 @@ impl Vm {
             if !frame.closure.is_null() {
                 self.gc.mark_object(frame.closure);
             }
+        }
+
+        // A function named in a trace may be reachable from nothing else.
+        for (_, closure) in &self.tail_breadcrumbs {
+            self.gc.mark_object(*closure);
         }
 
         for (value, _) in &self.borrows {

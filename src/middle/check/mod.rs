@@ -185,6 +185,7 @@ struct FnContext<'a> {
     param_confined: Vec<bool>,
     /// The names this body writes.
     writes: Option<&'a HashSet<Symbol>>,
+    returns_void: bool,
     in_defer: bool,
 }
 

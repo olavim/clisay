@@ -30,7 +30,7 @@ impl<'a> Compiler<'a> {
             HirExpr::Binary(op, left, right) => self.binary_expression(*op, left, right)?,
             HirExpr::Assign(left, right) => self.compile_assign(left, right, false)?,
             HirExpr::CompoundAssign(target, op, value) => self.compile_assign_op(target, Some(*op), value, false)?,
-            HirExpr::Call(callee, args) => self.call_expression(callee, args, false)?,
+            HirExpr::Call(callee, args) => self.call_expression(callee, args, false, false)?,
             HirExpr::Index(target, member, is_dot) => self.index(target, member, *is_dot, IndexOp::Load)?,
             HirExpr::Literal(lit) => self.literal(expr, lit)?,
             HirExpr::Identifier(_) => {
@@ -349,7 +349,7 @@ impl<'a> Compiler<'a> {
             },
             // `mut K(..)` is a factory call left unsealed via CALL_MUT.
             HirExpr::Call(callee, args) if self.barriers.is_construction(inner) => {
-                return self.call_expression(callee, args, true);
+                return self.call_expression(callee, args, true, false);
             },
             _ => {},
         }
@@ -553,7 +553,7 @@ impl<'a> Compiler<'a> {
         }, target_expr, value);
     }
 
-    fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], mutable: bool) -> Result<(), anyhow::Error> {
+    pub(super) fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], mutable: bool, tail: bool) -> Result<(), anyhow::Error> {
         // `this.m()` resolves its member here. It carries a root that a plain call cannot.
         if let Some(target) = self.as_this_invoke(callee) {
             let member_id = self.bindings.member(&target);
@@ -614,7 +614,11 @@ impl<'a> Compiler<'a> {
         }
 
         let n = args.len() as u8;
-        self.emit(if mutable { Inst::CallMut(n) } else { Inst::Call(n) }, callee);
+        self.emit(match (tail, mutable) {
+            (true, _) => Inst::TailCall(n),
+            (false, true) => Inst::CallMut(n),
+            (false, false) => Inst::Call(n),
+        }, callee);
 
         Ok(())
     }

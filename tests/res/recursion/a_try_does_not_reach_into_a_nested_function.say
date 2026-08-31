@@ -1,0 +1,10 @@
+try {
+    fn g()! { return "from g"; }
+    print(g()); // expect: from g
+} finally { print("finally"); } // expect: finally
+
+// @split
+try {
+    fn count(n)! { if (n == 0) { return "done"; } return count(n - 1); }
+    print(count(100000)); // expect: done
+} catch (e) { print("caught"); }

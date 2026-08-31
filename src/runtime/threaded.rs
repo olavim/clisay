@@ -108,6 +108,7 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     match op {
         opcode::CONSTRUCT => vm.op_construct()?,
         opcode::CALL_MUT => vm.op_call_mut()?,
+        opcode::TAIL_CALL => vm.op_tail_call()?,
         opcode::RETURN_FAC => vm.op_return_factory()?,
         opcode::THROW => vm.op_throw()?,
         opcode::PUSH_TRY => vm.op_push_try(TryKind::Catch),

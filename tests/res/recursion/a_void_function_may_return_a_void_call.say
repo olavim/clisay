@@ -1,0 +1,18 @@
+fn a() { return; }
+fn b(x) { if (x) { return; } return a(); }
+b(true);
+b(false);
+print("ok"); // expect: ok
+
+// @split
+fn loop(n) {
+    if (n == 0) { return; }
+    return loop(n - 1);
+}
+loop(200000);
+print("done"); // expect: done
+
+// @split
+fn a() { return; }
+fn b()! { return a(); } // error: Cannot return a void result from a '!' function
+print(b());

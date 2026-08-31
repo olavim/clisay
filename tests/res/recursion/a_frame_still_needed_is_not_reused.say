@@ -1,0 +1,31 @@
+fn boom(n)! { if (n == 0) { throw "bang"; } return boom(n - 1); }
+fn f()! {
+    try { return boom(3); } catch (e) { return "caught"; }
+}
+print(f()); // expect: caught
+
+// @split
+fn count(n)! {
+    defer { print("cleanup"); }
+    if (n == 0) { return "done"; }
+    return count(n - 1);
+}
+print(count(2)); // expect: cleanup
+// expect: cleanup
+// expect: cleanup
+// expect: done
+
+// @split
+fn f(n)! {
+    defer { print("outer"); }
+    {
+        defer { print("inner"); }
+        if (n == 0) { return "done"; }
+        return f(n - 1);
+    }
+}
+print(f(1)); // expect: inner
+// expect: outer
+// expect: inner
+// expect: outer
+// expect: done

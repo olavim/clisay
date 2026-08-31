@@ -120,11 +120,13 @@ impl<'a> Checker<'a> {
 
         if shape == ReturnShape::Inferred || self.fn_ctx.return_unmarked {
             return match debt {
+                Debt::Void if self.fn_ctx.returns_void => Ok(()),
                 Debt::Void => Err(self.error("Cannot return a void result".to_string(), node)),
                 _ => Ok(()),
             };
         }
         match shape {
+            ReturnShape::Void if debt.is_void() => Ok(()),
             ReturnShape::Void if !self.fn_ctx.return_owes => {
                 Err(self.error("A void function cannot return a value".to_string(), node))
             },

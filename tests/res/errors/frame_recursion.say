@@ -5,12 +5,12 @@ fn f(n)! {
 f(2);
 // error(full):
 // error: Operator '+' cannot be applied to operands number and boolean
-//  --> frame_recursion.say:2:26
+//  --> frame_recursion.say:3:26
 //   |
-// 1 | fn f(n)! {
-// 2 |   if n == 0 { return 1 + true; }
+// 2 | fn f(n)! {
+// 3 |   if n == 0 { return 1 + true; }
 //   |                          ^^^^
-// 	at f (frame_recursion.say:2)
 // 	at f (frame_recursion.say:3)
-// 	at f (frame_recursion.say:3)
-// 	at script (frame_recursion.say:5)
+// 	at tail calls
+// 	  f (frame_recursion.say:3)
+// 	at script (frame_recursion.say:6)

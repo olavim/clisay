@@ -132,6 +132,7 @@ impl<'a> Compiler<'a> {
         // A binder names a slot of the frame that made it, so a nested frame starts with none.
         let caller_binders = std::mem::take(&mut self.handle_binder_slots);
         let caller_defers = std::mem::take(&mut self.defers);
+        let caller_try_frames = std::mem::take(&mut self.try_frames);
         let caller_parked_slot = self.defer_parked_slot.take();
         let caller_table = self.slot_table;
         self.slot_table = self.ir.new_slot_accepts_table()?;
@@ -142,6 +143,7 @@ impl<'a> Compiler<'a> {
         self.frame_slot_count = caller_slot_count;
         self.handle_binder_slots = caller_binders;
         self.defers = caller_defers;
+        self.try_frames = caller_try_frames;
         self.defer_parked_slot = caller_parked_slot;
         self.slot_table = caller_table;
         Ok((result?, table))

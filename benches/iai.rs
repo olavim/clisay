@@ -79,9 +79,15 @@ fn store_objects() {
 }
 
 #[cfg(unix)]
+#[library_benchmark]
+fn tail_recursion() {
+    run_say("benches/tail_recursion.say");
+}
+
+#[cfg(unix)]
 library_benchmark_group!(
     name = workloads;
-    benchmarks = fib, loops, deep_sum, method_calls, strings, arrays, alloc_gc, compare_dict, element_stores, field_stores, store_objects
+    benchmarks = fib, loops, deep_sum, method_calls, strings, arrays, alloc_gc, compare_dict, element_stores, field_stores, store_objects, tail_recursion
 );
 
 #[cfg(unix)]

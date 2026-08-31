@@ -71,15 +71,12 @@ pub struct Label(usize);
 pub enum Inst {
     // Control flow
     Call(u8),
-    /// `mut K(args)`: a factory call whose frame is left unsealed, so the result stays mutable.
     CallMut(u8),
-    /// Brace construction `C { f: v, ... }`. The second operand is the seal flag: 1 freezes the
-    /// instance in place, 0 leaves it mutable (`mut K{..}`).
+    TailCall(u8),
+    /// Brace construction `C { f: v, ... }`.
     Construct(u16, u8),
-    /// Fused method call `recv.name(args)`. The last operand is 1 for a `.` access and 0 for a
-    /// `[]` one.
     Invoke(u8, u8, u8, u8, u8),
-    /// Fused `this.name(args)` where the member is known at compile time.
+    /// `this.name(args)`.
     InvokeThis(u8, u8, u8, u8),
     Jump(Label),
     JumpIfFalse(Label),
@@ -108,7 +105,6 @@ pub enum Inst {
     PushTry(Label),
     PushDeferTry(Label),
     PopTry,
-    /// Aborts if the top of the stack is null, else leaves it.
     AssertNonNull,
     AssertImmutable,
     /// Puts the root on top of the stash for a root no binding can name. The
