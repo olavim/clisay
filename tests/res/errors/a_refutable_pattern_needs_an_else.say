@@ -1,0 +1,11 @@
+say xs = [1, 2];
+say [a, b] = xs;
+print(a);
+// error(full):
+// error: a refutable `say` pattern statement must have an `else` branch
+//  --> a_refutable_pattern_needs_an_else.say:2:5
+//   |
+// 1 | say xs = [1, 2];
+// 2 | say [a, b] = xs;
+//   |     ^^^^^^
+//   = help: this pattern does not match every value `xs` might be, so `else` is needed to say what to do when it doesn't match

@@ -3,13 +3,13 @@ fn isEven(n)! { if (n == 0) { return 1 + true; } return isOdd(n - 1); }
 isEven(6);
 // error(full):
 // error: Operator '+' cannot be applied to operands number and boolean
-//  --> tail_call_breadcrumbs.say:3:42
+//  --> tail_call_breadcrumbs.say:2:42
 //   |
-// 2 | fn isOdd(n)! { if (n == 0) { return false; } return isEven(n - 1); }
-// 3 | fn isEven(n)! { if (n == 0) { return 1 + true; } return isOdd(n - 1); }
+// 1 | fn isOdd(n)! { if (n == 0) { return false; } return isEven(n - 1); }
+// 2 | fn isEven(n)! { if (n == 0) { return 1 + true; } return isOdd(n - 1); }
 //   |                                          ^^^^
-// 	at isEven (tail_call_breadcrumbs.say:3)
+// 	at isEven (tail_call_breadcrumbs.say:2)
 // 	at tail calls
-// 	  isEven (tail_call_breadcrumbs.say:3)
-// 	  isOdd (tail_call_breadcrumbs.say:2)
-// 	at script (tail_call_breadcrumbs.say:4)
+// 	  isEven (tail_call_breadcrumbs.say:2)
+// 	  isOdd (tail_call_breadcrumbs.say:1)
+// 	at script (tail_call_breadcrumbs.say:3)

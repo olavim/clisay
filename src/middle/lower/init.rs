@@ -4,15 +4,11 @@ use indexmap::IndexSet;
 
 use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl, SlotClause};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirStmt, UnOp};
+use crate::middle::hir::{HirSlotClause, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirStmt, UnOp};
 
 use super::Lowerer;
 
 impl<'a> Lowerer<'a> {
-    /// Lowers a `type`'s factory. Each field becomes a `mut` field-local. The declared body's
-    /// `this.<field>` accesses read and write those locals. The body ends by copying each local
-    /// onto `this` and verifying `gives`. A type with no user factory that cannot fill every
-    /// non-null field from defaults gets no factory at all, lowered to a `Nop`.
     pub(super) fn lower_factory(&mut self, composer_id: AstId<Stmt>, decl: &TypeDecl, field_inits: &[(Symbol, AstId<Expr>)], type_pos: &SourcePosition) -> Result<HirId<HirStmt>, anyhow::Error> {
         let (params, body_stmts, init_pos): (_, &[AstId<Stmt>], _) = match &decl.init {
             Some(init_id) => {
@@ -107,8 +103,8 @@ impl<'a> Lowerer<'a> {
             None if nullable => HirSlotClause { names: vec![self.opt], ..Default::default() },
             None => HirSlotClause::default(),
         };
-        let field_init = HirFieldInit { name, value, nullable, reassignable: true, clause };
-        self.hir.add(HirStmt::Say(field_init), pos.clone())
+        let decl = HirSayDecl { name, pattern: None, otherwise: None, value, nullable, reassignable: true, clause };
+        self.hir.add(HirStmt::Say(decl), pos.clone())
     }
 
     /// Builds the construction-time verification for each `gives` delegate:

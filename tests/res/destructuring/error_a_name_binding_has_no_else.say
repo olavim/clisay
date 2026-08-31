@@ -1,0 +1,2 @@
+say a = 1 else { print("no"); }; // error: cannot have `else` branch in a patternless `say` statement
+print(a);

@@ -1,5 +1,5 @@
 use crate::compiler_error;
-use crate::middle::hir::{HirCatchClause, HirExpr, HirFieldInit, HirId, HirStmt};
+use crate::middle::hir::{HirCatchClause, HirExpr, HirSayDecl, HirId, HirMatcher, HirStmt};
 use crate::middle::ir::Inst;
 use crate::middle::bind::FnKind;
 
@@ -121,7 +121,7 @@ impl<'a> Compiler<'a> {
             HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
             // Traits emit no runtime type; they exist only for self-containment validation in resolve.
             HirStmt::Trait(_) => {},
-            HirStmt::Say(field @ HirFieldInit { value, .. }) => {
+            HirStmt::Say(field @ HirSayDecl { value, .. }) => {
                 let slot = self.bindings.slot(stmt_id);
                 let accepts = self.accepts_index(&field.clause.owed(), field.nullable)?;
                 self.ir.record_slot_accepts(self.slot_table, slot, accepts);
@@ -136,6 +136,9 @@ impl<'a> Compiler<'a> {
                     Inst::LoadLocal(slot)
                 };
                 self.emit(inst, stmt_id);
+                if let (Some(pattern), Some(value)) = (&field.pattern, value) {
+                    self.compile_say_pattern(pattern, value, stmt_id, &field.otherwise)?;
+                }
             },
             HirStmt::Expression(expr) => {
                 self.expression_stmt(expr)?;
@@ -296,6 +299,24 @@ impl<'a> Compiler<'a> {
         }
         self.call_expression(callee, args, false, true)?;
         Ok(true)
+    }
+
+    fn compile_say_pattern(&mut self, pattern: &HirId<HirMatcher>, value: &HirId<HirExpr>, stmt_id: &HirId<HirStmt>, otherwise: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
+        let binders = self.bindings.match_binders(value).unwrap_or_default();
+        self.reserve_slots(binders.len(), stmt_id);
+        self.emit(Inst::LoadLocal(self.bindings.slot(stmt_id)), stmt_id);
+        self.compile_binding_matcher(pattern, binders, value)?;
+        match (self.hir.get(pattern).is_irrefutable(self.hir), otherwise) {
+            (true, _) => self.emit(Inst::Pop, stmt_id),
+            (false, Some(otherwise)) => {
+                let matched_label = self.emit_pattern_mismatch_jumps(stmt_id);
+                self.expression_stmt(otherwise)?;
+                self.ir.bind(matched_label);
+            },
+            (false, None) => self.abort_on_pattern_mismatch(
+                format!("value does not match `{}`", self.hir.pos(pattern).snippet()), stmt_id)?,
+        }
+        Ok(())
     }
 
     fn emit_defer_body(&mut self, pending: &PendingDefer) -> Result<(), anyhow::Error> {

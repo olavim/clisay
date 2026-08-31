@@ -385,7 +385,7 @@ impl<'a> Lowerer<'a> {
         let mut params = Vec::with_capacity(rf.params.len());
         for p in &rf.params {
             let clause = self.slot_clause(p.nullable, &p.clause);
-            params.push(HirReqParam { pos: p.pos.clone(), clause, pattern: self.entry_pattern(&p.pattern)? });
+            params.push(HirReqParam { pos: p.pos.clone(), clause, pattern: self.pattern_left_to_match(&p.pattern)? });
         }
         let ret = self.slot_clause(rf.ret == ReturnShape::Nullable, &rf.clause);
         let receiver = rf.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause));

@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use crate::core::objects::TypeMember;
 use crate::middle::diagnose::Diagnose;
-use crate::middle::hir::{BinOp, Capability, HirExpr, HirFnDecl, HirId, HirLiteral, HirSlotClause, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::hir::{BinOp, Capability, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 use crate::middle::bind::Place;
 use crate::middle::native::{self, Container};
 use crate::middle::obligations::Obligations;
@@ -13,7 +13,7 @@ use crate::middle::signatures::CallableId;
 use crate::middle::signatures::{Mutability, TypeTag};
 
 use super::scope::FlowSnapshot;
-use super::{BinderSource, Checker, Ctx, Debt, FnContext, Guard, Local, ReceiverFacts, ValueState};
+use super::{PatternBinderSource, Checker, Ctx, Debt, FnContext, Guard, Local, ReceiverFacts, ValueState};
 
 impl<'a> Ctx<'a> {
     pub(super) fn arg_display_name(&self, arg: &HirId<HirExpr>) -> String {
@@ -84,7 +84,7 @@ impl<'a> Checker<'a> {
             },
             HirStmt::Type(decl) => self.type_decl(stmt, Some(*stmt), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
-            HirStmt::Say(field) => self.say(stmt.index(), field.name, &field.clause, field.reassignable, &field.value)?,
+            HirStmt::Say(field) => self.say(stmt.index(), field)?,
             HirStmt::Expression(e) => {
                 let state = self.expr(e)?;
                 self.ctx.check_dropped_result(&state.debt, e)?;
@@ -382,7 +382,7 @@ impl<'a> Checker<'a> {
                 if self.ctx.owes_object_witness(&left.debt) { self.record_witness_test(expr, &left.debt); }
                 let caught = self.ctx.obligations_of(&left.debt);
                 let tag = self.ctx.handle_caught_tag(&caught);
-                let mut binder_local = Local::binder_owing(*binder, caught, BinderSource::Handler);
+                let mut binder_local = Local::binder_owing(*binder, caught, PatternBinderSource::Handler);
                 binder_local.decl = Some(expr.index());
                 binder_local.tag = tag;
                 binder_local.handled = binder_local.owed.clone();
@@ -423,8 +423,9 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub(super) fn say(&mut self, decl: usize, name: Symbol, clause: &HirSlotClause, mutable: bool, value: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
-        let owed = clause.owed();
+    pub(super) fn say(&mut self, decl: usize, field: &'a HirSayDecl) -> Result<(), anyhow::Error> {
+        let (name, mutable, value, pattern) = (field.name, field.reassignable, &field.value, &field.pattern);
+        let owed = field.clause.owed();
         let (assigned, tag, mutability, provenance) = if let Some(value) = value {
             let state = self.expr(value)?;
             self.check_into_slot(&state.debt, &owed, name, value)?;
@@ -438,7 +439,7 @@ impl<'a> Checker<'a> {
             (false, TypeTag::Unknown, Mutability::Unknown, Vec::new())
         };
         let mut local = Local::value(name, owed, mutable, assigned, tag);
-        local.container = clause.container;
+        local.container = field.clause.container;
         local.site = *value;
         local.decl = Some(decl);
         local.alias.mutability = mutability;
@@ -450,7 +451,33 @@ impl<'a> Checker<'a> {
         local.alias.shared_origin = value.is_some_and(|v| self.shared_origin(&v));
         local.alias.may_be_shared = local.alias.reached_from_elsewhere() || value.is_none();
         local.resolved_callable = value.and_then(|v| self.callable_named_by(&v));
+        let tag = local.tag.clone();
+        let binder_mutability = local.alias.mutability;
         self.locals.push(local);
+
+        if let (Some(pattern), Some(value)) = (pattern, value) {
+            self.check_say_pattern_else(pattern, value, &tag, &field.otherwise)?;
+            let scope = self.ctx.say_pattern_binders(pattern, value, binder_mutability, mutable)?;
+            self.push_binders(&scope);
+        }
+
+        Ok(())
+    }
+
+    fn check_say_pattern_else(&mut self, pattern: &HirId<HirMatcher>, value: &HirId<HirExpr>, tag: &TypeTag, otherwise: &Option<HirId<HirExpr>>) -> Result<(), anyhow::Error> {
+        let Some(otherwise) = otherwise else {
+            if self.ctx.pattern_always_matches(pattern, tag) {
+                return Ok(());
+            }
+            return Err(self.ctx.error_help("a refutable `say` pattern statement must have an `else` branch".to_string(), pattern,
+                format!("this pattern does not match every value `{}` might be, so `else` is needed to say what to do when it doesn't match",
+                    self.ctx.hir.pos(value).snippet())));
+        };
+        self.expr(otherwise)?;
+        if !self.ctx.hir.definitely_returns(otherwise) {
+            return Err(self.ctx.error_help("the `else` branch of a `say` pattern statement must diverge".to_string(), otherwise,
+                "the binding's names do not exist below it, so it has to `return` or `throw`"));
+        }
         Ok(())
     }
 
@@ -1004,7 +1031,7 @@ impl<'a> Checker<'a> {
         if self.locals[i].reassignable || !self.locals[i].assigned {
             return Ok(());
         }
-        if self.locals[i].binder.is_some() {
+        if self.locals[i].pattern_binder_source.is_some_and(|source| !source.can_be_var()) {
             return Err(self.error_help(format!("Cannot reassign matcher binder `{text}`"), lhs,
                 format!("copy it into a `say var {text}` first to change it")));
         }

@@ -411,13 +411,23 @@ impl<'a> Resolver<'a> {
             HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
             HirStmt::Trait(decl) => self.trait_declaration(stmt_id, decl)?,
             HirStmt::Say(field) => {
-                // Resolve the initializer before declaring the binding, so a name inside it
-                // refers to the prior (shadowed) binding, not the one being introduced.
                 if let Some(expr) = &field.value {
                     self.expression(expr)?;
                 }
+
+                if let Some(otherwise) = &field.otherwise {
+                    self.expression(otherwise)?;
+                }
+
                 let slot = self.declare_local(field.name, stmt_id.index())?;
                 self.bindings.slots.insert(*stmt_id, slot);
+
+                // A destructuring binding names the whole value, then reads its binders out.
+                if let (Some(pattern), Some(value)) = (&field.pattern, &field.value) {
+                    self.resolve_matcher_types(pattern);
+                    let binders = self.declare_matcher_binders(pattern, stmt_id.index())?;
+                    self.bindings.match_binders.insert(*value, binders);
+                }
             },
             HirStmt::Expression(expr) => self.expression(expr)?,
             HirStmt::While(cond, body) => self.conditioned(cond, body)?,
@@ -525,7 +535,7 @@ impl<'a> Resolver<'a> {
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
                 self.resolve_matcher_types(matcher);
-                let binders = self.declare_binders(matcher, decl)?;
+                let binders = self.declare_matcher_binders(matcher, decl)?;
                 if record && !binders.is_empty() {
                     self.bindings.match_binders.insert(*cond, binders);
                 }

@@ -85,7 +85,7 @@ impl<'a> Resolver<'a> {
         Ok(self.frame_slot(index))
     }
 
-    pub(super) fn declare_binders(&mut self, matcher: &HirId<HirMatcher>, decl: usize) -> Result<Vec<(Symbol, u8)>, anyhow::Error> {
+    pub(super) fn declare_matcher_binders(&mut self, matcher: &HirId<HirMatcher>, decl: usize) -> Result<Vec<(Symbol, u8)>, anyhow::Error> {
         let mut binders = Vec::new();
         for name in self.hir.get(matcher).binders(self.hir) {
             binders.push((name, self.declare_local(name, decl)?));
@@ -283,7 +283,7 @@ impl<'a> Resolver<'a> {
         for param in patterned {
             let pattern = param.pattern.as_ref().expect("only patterned parameters were collected");
             self.resolve_matcher_types(pattern);
-            let binders = self.declare_binders(pattern, pattern.index())?;
+            let binders = self.declare_matcher_binders(pattern, pattern.index())?;
             self.bindings.match_binders.insert(param.name, binders);
         }
 

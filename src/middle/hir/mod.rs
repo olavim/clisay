@@ -260,12 +260,12 @@ impl HirSlotClause {
     }
 }
 
-pub struct HirFieldInit {
+pub struct HirSayDecl {
     pub name: Symbol,
+    pub otherwise: Option<HirId<HirExpr>>,
+    pub pattern: Option<HirId<HirMatcher>>,
     pub value: Option<HirId<HirExpr>>,
-    /// Declared nullable with a `?` marker (`say x?`). Non-null otherwise.
     pub nullable: bool,
-    /// Declared reassignable with a `var` modifier (`say var x`). Fixed otherwise.
     pub reassignable: bool,
     pub clause: HirSlotClause,
 }
@@ -421,7 +421,7 @@ pub enum HirStmt {
     If(HirId<HirExpr>, HirId<HirExpr>, Option<HirId<HirStmt>>),
     Block(HirId<HirExpr>),
     Defer(HirId<HirExpr>),
-    Say(HirFieldInit),
+    Say(HirSayDecl),
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
     Trait(Box<HirTypeDecl>),

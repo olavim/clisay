@@ -1,0 +1,5 @@
+fn x() { return 1; }
+type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
+say p = Point(1, 2);
+say Point { x, y } = p; // error: 'x' already declared in this scope
+print(x);

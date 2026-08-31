@@ -1,0 +1,3 @@
+say a = [1, 2];
+say [x, y] = a; // error: a refutable `say` pattern statement must have an `else` branch
+print(x);

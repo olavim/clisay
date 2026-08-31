@@ -3,7 +3,7 @@ use crate::core::objects::{ObjFn, UpvalueLocation};
 use crate::core::value::Value;
 use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirParam, HirStmt};
 use crate::middle::obligations::Obligations;
-use crate::middle::ir::Inst;
+use crate::middle::ir::{Inst, Label};
 use crate::middle::bind::FnKind;
 
 use super::Compiler;
@@ -54,40 +54,46 @@ impl<'a> Compiler<'a> {
         ParamMasks { retains, escapes, needs_borrow_mark: !retains, receiver_needs_borrow: true }
     }
 
-    /// Matches each pattern parameter against its slot on entry, publishing the pattern's binders
-    /// into slots reserved ahead of the body. A pattern that can fail throws on a non-match.
-    fn compile_entry_steps(&mut self, params: &[HirParam]) -> Result<(), anyhow::Error> {
+    fn compile_pattern_param_checks(&mut self, params: &[HirParam]) -> Result<(), anyhow::Error> {
         for param in params {
             let Some(pattern) = &param.pattern else { continue };
-            let binders = self.bindings.match_binders(&param.name).unwrap_or_default().to_vec();
+            let binders = self.bindings.match_binders(&param.name).unwrap_or_default();
             self.reserve_slots(binders.len(), &param.name);
             self.expression(&param.name)?;
             self.compile_binding_matcher(pattern, &binders, &param.name)?;
             match self.hir.get(pattern).is_irrefutable(self.hir) {
                 true => self.emit(Inst::Pop, &param.name),
-                false => self.abort_on_entry_mismatch(param)?,
+                false => self.abort_on_pattern_param_match_fail(param)?,
             }
         }
         Ok(())
     }
 
-    /// Throws when an entry pattern rejects its argument. The pattern is a precondition the caller
-    /// has to meet, so the blame belongs to the argument. A `try` around the call catches it, since
-    /// it throws rather than ending the run with a diagnostic.
-    fn abort_on_entry_mismatch(&mut self, param: &HirParam) -> Result<(), anyhow::Error> {
+    fn abort_on_pattern_param_match_fail(&mut self, param: &HirParam) -> Result<(), anyhow::Error> {
+        // The parameter's own source spans the binder and the test, so quoting it names both.
+        let message = format!("argument does not match `{}`", param.pos.snippet());
+        self.abort_on_pattern_mismatch(message, &param.name)
+    }
+
+    /// Throws where a pattern rejected the value on the stack. Whatever the check pass proved, the
+    /// runtime is what refuses a value the pattern does not take.
+    pub(super) fn abort_on_pattern_mismatch<T: 'static>(&mut self, message: String, node: &HirId<T>) -> Result<(), anyhow::Error> {
+        let matched_label = self.emit_pattern_mismatch_jumps(node);
+        let message = self.gc.intern(message);
+        let idx = self.ir.add_constant(Value::from(message))?;
+        self.emit(Inst::PushConstant(idx), node);
+        self.emit(Inst::Throw, node);
+        self.ir.bind(matched_label);
+        Ok(())
+    }
+
+    pub(super) fn emit_pattern_mismatch_jumps<T: 'static>(&mut self, node: &HirId<T>) -> Label {
         let matched = self.ir.new_label();
         let failed = self.ir.new_label();
-        self.emit(Inst::JumpIfFalse(failed), &param.name);
-        self.emit(Inst::Jump(matched), &param.name);
-
+        self.emit(Inst::JumpIfFalse(failed), node);
+        self.emit(Inst::Jump(matched), node);
         self.ir.bind(failed);
-        // The parameter's own source spans the binder and the test, so quoting it names both.
-        let message = self.gc.intern(format!("argument does not match `{}`", param.pos.snippet()));
-        let idx = self.ir.add_constant(Value::from(message))?;
-        self.emit(Inst::PushConstant(idx), &param.name);
-        self.emit(Inst::Throw, &param.name);
-        self.ir.bind(matched);
-        Ok(())
+        matched
     }
 
     fn param_accepts(&mut self, callable: CallableId) -> Result<u16, anyhow::Error> {
@@ -111,7 +117,7 @@ impl<'a> Compiler<'a> {
         self.ir.bind(body);
 
         let (_, slot_accepts) = self.with_frame(|c| {
-            c.compile_entry_steps(&decl.params)?;
+            c.compile_pattern_param_checks(&decl.params)?;
             c.open_defer_frame(&decl.body);
             c.frame_slot_count = c.bindings.frame_slot_count_at(&decl.body) as usize;
             c.expression(&decl.body)?;

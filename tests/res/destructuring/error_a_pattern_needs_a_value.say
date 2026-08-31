@@ -1,0 +1,3 @@
+type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
+say Point { x, y }; // error: This pattern has no value to read from
+print(x);

@@ -10,9 +10,9 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
-use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
+use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, Expr, SayDecl, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirSlotClause, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, ObligationWitness, TypeId, UnOp,
+    BinOp, Hir, HirSlotClause, HirMatchArm, HirCatchClause, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, ObligationWitness, TypeId, UnOp,
 };
 use crate::middle::names::NameBindings;
 
@@ -150,7 +150,7 @@ impl<'a> Lowerer<'a> {
                 let arms = arms.iter().map(|arm| self.lower_match_arm(arm)).collect::<Result<_, _>>()?;
                 HirStmt::Match(scrutinee, arms)
             },
-            Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
+            Stmt::Say(field) => HirStmt::Say(self.say_decl(field)?),
             Stmt::Obligation { name, witness, rules } => {
                 let (name, witness, rules) = (*name, *witness, *rules);
                 let witness = match witness {
@@ -508,15 +508,22 @@ impl<'a> Lowerer<'a> {
             Some(name) => name,
             None => self.hir.intern(&format!("{}{index}", crate::middle::hir::SYNTHETIC_PARAM)),
         };
-        Ok((name, self.entry_pattern(&param.pattern)?))
+        Ok((name, self.pattern_left_to_match(&param.pattern)?))
     }
 
-    /// The part of a parameter's pattern an entry step still has to match.
-    pub(super) fn entry_pattern(&mut self, pattern: &AstId<Matcher>) -> Result<Option<HirId<HirMatcher>>, anyhow::Error> {
+    /// What a pattern still has to match once the slot has taken its name. A lone name leaves
+    /// nothing, and `name @ inner` leaves the inner, since the name became the slot.
+    pub(super) fn pattern_left_to_match(&mut self, pattern: &AstId<Matcher>) -> Result<Option<HirId<HirMatcher>>, anyhow::Error> {
         match self.ast.get(pattern) {
             Matcher::Binder(_) | Matcher::Wildcard => Ok(None),
             Matcher::As(_, inner) => Ok(Some(self.lower_matcher(&(*inner))?)),
-            _ => Ok(Some(self.lower_matcher(pattern)?)),
+            // Listed rather than caught, so a new matcher has to answer here.
+            Matcher::Literal(_)
+            | Matcher::Type { .. }
+            | Matcher::Shape(_)
+            | Matcher::Array(_)
+            | Matcher::Or(_)
+            | Matcher::And(_) => Ok(Some(self.lower_matcher(pattern)?)),
         }
     }
 
@@ -540,10 +547,16 @@ impl<'a> Lowerer<'a> {
         self.hir.intern(&name)
     }
 
-    fn field_init(&mut self, field: &FieldInit) -> Result<HirFieldInit, anyhow::Error> {
+    fn say_decl(&mut self, field: &SayDecl) -> Result<HirSayDecl, anyhow::Error> {
         let clause = self.slot_clause(field.nullable, &field.clause);
-        Ok(HirFieldInit {
+        let pattern = match &field.pattern {
+            Some(pattern) => self.pattern_left_to_match(pattern)?,
+            None => None,
+        };
+        Ok(HirSayDecl {
             name: field.name,
+            pattern,
+            otherwise: self.opt_expr(&field.otherwise)?,
             value: self.opt_expr(&field.value)?,
             nullable: clause.names.contains(&self.opt),
             reassignable: field.reassignable,

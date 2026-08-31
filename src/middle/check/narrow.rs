@@ -118,6 +118,24 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    pub(super) fn pattern_always_matches(&self, pattern: &HirId<HirMatcher>, tag: &TypeTag) -> bool {
+        if self.hir.get(pattern).is_irrefutable(self.hir) {
+            return true;
+        }
+
+        let TypeTag::Concrete(decl) = tag else { return false };
+        match self.hir.get(pattern) {
+            HirMatcher::Type { shape, .. } => self.bindings.type_ref(pattern) == Some(*decl)
+                && shape.as_ref().is_none_or(|s| self.matcher_total_over_type(s, decl)),
+            HirMatcher::Shape(_) => self.matcher_total_over_type(pattern, decl),
+            HirMatcher::And(parts) => parts.iter().all(|p| self.pattern_always_matches(p, tag)),
+            HirMatcher::Or(parts) => parts.iter().any(|p| self.pattern_always_matches(p, tag)),
+            HirMatcher::As(_, inner) => self.pattern_always_matches(inner, tag),
+            HirMatcher::Literal(_) | HirMatcher::Array(_) => false,
+            HirMatcher::Binder(_) | HirMatcher::Wildcard => true,
+        }
+    }
+
     pub(super) fn matcher_total_over_type(&self, matcher: &HirId<HirMatcher>, decl: &HirId<HirStmt>) -> bool {
         let HirMatcher::Shape(fields) = self.hir.get(matcher) else { return false };
         fields.iter().all(|field| {

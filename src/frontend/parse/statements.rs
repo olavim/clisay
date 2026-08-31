@@ -56,9 +56,22 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
         let reassignable = self.take_modifier(ContextualKeyword::Var);
         let name_pos = self.tokens.peek(0).pos.clone();
-        let name = self.parse_identifier()?;
-        self.check_name_case(&name, NameKind::Variable, &name_pos)?;
-        let name = self.ast.intern(&name);
+
+        let target = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
+        let (name, pattern) = match self.ast.get(&target) {
+            Matcher::Binder(name) => (*name, None),
+            Matcher::Wildcard => (self.ast.intern("_"), None),
+            Matcher::As(name, _) => (*name, Some(target)),
+            Matcher::Type { nominal: true, name, shape: None } => {
+                let text = self.ast.text(*name).to_string();
+                self.check_name_case(&text, NameKind::Variable, &name_pos)?;
+                (*name, None)
+            },
+            Matcher::Type { .. } | Matcher::Shape(_)
+            | Matcher::Array(_) | Matcher::Literal(_)
+            | Matcher::Or(_) | Matcher::And(_) => (self.ast.intern(SYNTHETIC_BINDING), Some(target)),
+        };
+
         let nullable = self.parse_nullable();
         let clause = self.parse_slot_clause(SlotKind::Local)?;
 
@@ -68,9 +81,25 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             None
         };
 
+        let otherwise = match self.tokens.next_if(TokenType::Else) {
+            Some(_) => Some(self.parse_block()?),
+            None => None,
+        };
+
+        // A pattern reads names out of a value, so with no value it declares nothing.
+        if pattern.is_some() && expr.is_none() {
+            let at = pos.to(&self.tokens.previous().pos);
+            parse_error!(self, &at, "This pattern has no value to read from");
+        }
+
+        if pattern.is_none() && otherwise.is_some() {
+            let at = pos.to(&self.tokens.previous().pos);
+            parse_error!(self, &at, "cannot have `else` branch in a patternless `say` statement");
+        }
+
         self.tokens.expect(TokenType::Semicolon)?;
-        let field_init = FieldInit { name, value: expr, nullable, reassignable, clause };
-        Ok(self.node_stmt(Stmt::Say(field_init), pos))
+        let decl = SayDecl { name, pattern, otherwise, value: expr, nullable, reassignable, clause };
+        Ok(self.node_stmt(Stmt::Say(decl), pos))
     }
 
     /// obligation := "obligation" Name obligation_body

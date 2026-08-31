@@ -39,6 +39,11 @@ fn temp(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
+#[test_resources("tests/res/destructuring")]
+fn destructuring(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
 #[test_resources("tests/res/exceptions")]
 fn exceptions(file: &str) -> Result<(), Failed> {
     common::test_file(file)

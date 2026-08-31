@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Capability, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Capability, Expr, SayDecl, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 /// The statements the program wrote. The compiler declares its own built-ins in the same block.
@@ -257,7 +257,7 @@ fn req_member_marker_and_clause() {
 fn say_slot_clause() {
     let ast = parse("say v: opt; say w: opt fails;");
     let stmts = top_stmts(&ast);
-    let names = |init: &FieldInit| -> Vec<String> {
+    let names = |init: &SayDecl| -> Vec<String> {
         init.clause.names.iter().map(|n| ast.text(*n).to_string()).collect()
     };
     let Stmt::Say(v) = ast.get(&stmts[0]) else { panic!("not a say") };

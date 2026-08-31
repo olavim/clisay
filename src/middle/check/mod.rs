@@ -83,7 +83,7 @@ struct Local {
     tag: TypeTag,
     fn_decl: bool,
     resolved_callable: Option<CallableId>,
-    binder: Option<BinderSource>,
+    pattern_binder_source: Option<PatternBinderSource>,
     /// Whether the binding holds a container whose elements owe `owed`.
     container: bool,
     param: bool,
@@ -102,12 +102,19 @@ struct Local {
 }
 
 #[derive(Clone, Copy, PartialEq, Default)]
-pub(super) enum BinderSource {
+pub(super) enum PatternBinderSource {
     #[default]
     Param,
     Arm,
     Condition,
     Handler,
+    Say,
+}
+
+impl PatternBinderSource {
+    pub(super) fn can_be_var(self) -> bool {
+        matches!(self, PatternBinderSource::Say)
+    }
 }
 
 impl Local {
@@ -120,7 +127,7 @@ impl Local {
     }
 
     fn base(name: Symbol) -> Local {
-        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, fn_decl: false, resolved_callable: None, binder: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal { may_be_shared: true, ..AliasLocal::default() }, unknown: false }
+        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, fn_decl: false, resolved_callable: None, pattern_binder_source: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal { may_be_shared: true, ..AliasLocal::default() }, unknown: false }
     }
 
     fn param(name: Symbol, owed: Obligations, reassignable: bool) -> Local {
@@ -132,8 +139,8 @@ impl Local {
         Local::param(name, owed, false)
     }
 
-    fn binder_owing(name: Symbol, owed: Obligations, source: BinderSource) -> Local {
-        Local { owed, binder: Some(source), ..Local::base(name) }
+    fn binder_owing(name: Symbol, owed: Obligations, source: PatternBinderSource) -> Local {
+        Local { owed, pattern_binder_source: Some(source), ..Local::base(name) }
     }
 
     fn func(name: Symbol, stmt: HirId<HirStmt>) -> Local {

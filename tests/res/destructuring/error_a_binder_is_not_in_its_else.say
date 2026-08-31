@@ -1,0 +1,5 @@
+fn head(xs) {
+  say [a] = xs else { return a; }; // error: Undefined variable 'a'
+  return a;
+}
+print(head([1]));

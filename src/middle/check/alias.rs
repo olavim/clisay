@@ -11,7 +11,7 @@ use anyhow::anyhow;
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::middle::hir::{Capability, HirExpr, HirId, HirLiteral, HirStmt, Symbol, ValueSource};
 
-use super::{BinderSource, Checker, Ctx, Debt, Guard, Mutability, Site, ValueState};
+use super::{PatternBinderSource, Checker, Ctx, Debt, Guard, Mutability, Site, ValueState};
 
 /// Whether a binding's write-ownership is known to have gone, or only might have.
 #[derive(Clone, Copy, PartialEq)]
@@ -543,7 +543,7 @@ impl<'a> Checker<'a> {
 
     fn names_immutable_param_binder(&self, value: &HirId<HirExpr>) -> bool {
         self.local_of(value).is_some_and(|i| {
-            self.locals[i].binder == Some(BinderSource::Param)
+            self.locals[i].pattern_binder_source == Some(PatternBinderSource::Param)
                 && self.locals[i].alias.mutability == Mutability::Immutable
         })
     }

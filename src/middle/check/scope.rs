@@ -3,17 +3,16 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::middle::hir::{HirExpr, HirId, HirMatchArm, HirParam, HirStmt, Symbol};
+use crate::middle::hir::{HirExpr, HirId, HirMatchArm, HirMatcher, HirParam, HirStmt, Symbol};
 use crate::middle::obligations::Obligations;
 use crate::middle::signatures::{CallableId, Mutability, TypeTag};
 
 use super::narrow::collect_whole_value_binders;
 use super::alias::WriteOwnershipTransfer;
-use super::{BinderSource, Checker, Ctx, ElementKey, Local, TransferSite};
+use super::{PatternBinderSource, Checker, Ctx, ElementKey, Local, TransferSite};
 
-/// The binders a condition or match arm introduces, paired with the obligations each owes.
 #[derive(Default)]
-pub(super) struct BinderScope {
+pub(super) struct PatternBinderScope {
     pub(super) names: Vec<Symbol>,
     pub(super) owed: HashMap<Symbol, Obligations>,
     /// The slot each binder was destructured out of.
@@ -23,7 +22,8 @@ pub(super) struct BinderScope {
     /// The binders that read as dynamic-boundary values, no test having proved what they hold.
     pub(super) unknown: HashSet<Symbol>,
     pub(super) mutability: Mutability,
-    pub(super) source: BinderSource,
+    pub(super) reassignable: bool,
+    pub(super) source: PatternBinderSource,
 }
 
 /// The flow state of one local.
@@ -50,19 +50,27 @@ pub(super) struct FlowSnapshot {
 
 
 impl<'a> Ctx<'a> {
-    pub(super) fn param_pattern_binders(&self, param: &HirParam) -> Result<BinderScope, anyhow::Error> {
-        let Some(pattern) = &param.pattern else { return Ok(BinderScope::default()) };
+    pub(super) fn param_pattern_binders(&self, param: &HirParam) -> Result<PatternBinderScope, anyhow::Error> {
+        let Some(pattern) = &param.pattern else { return Ok(PatternBinderScope::default()) };
+        self.pattern_binders(pattern, &param.name, Mutability::param(param.clause.capability), false, PatternBinderSource::Param)
+    }
+
+    fn pattern_binders(&self, pattern: &HirId<HirMatcher>, at: &HirId<HirExpr>, mutability: Mutability, reassignable: bool, source: PatternBinderSource) -> Result<PatternBinderScope, anyhow::Error> {
         let names = self.hir.get(pattern).binders(self.hir);
-        Ok(BinderScope {
+        Ok(PatternBinderScope {
             decls: names.iter().map(|&name| (name, pattern.index())).collect(),
             names,
-            owed: self.collect_matcher_witnessed_obligations(pattern, &param.name)?,
+            owed: self.collect_matcher_witnessed_obligations(pattern, at)?,
             unknown: self.collect_matcher_unknown_binders(pattern),
-            // A parameter is lent for the call, and a borrow hands out no writer slot.
             sources: HashMap::new(),
-            mutability: Mutability::param(param.clause.capability),
-            source: BinderSource::Param,
+            mutability,
+            reassignable,
+            source,
         })
+    }
+
+    pub(super) fn say_pattern_binders(&self, pattern: &HirId<HirMatcher>, value: &HirId<HirExpr>, mutability: Mutability, reassignable: bool) -> Result<PatternBinderScope, anyhow::Error> {
+        self.pattern_binders(pattern, value, mutability, reassignable, PatternBinderSource::Say)
     }
 }
 
@@ -98,18 +106,19 @@ impl<'a> Checker<'a> {
         self.locals.truncate(mark);
     }
 
-    pub(super) fn push_binders(&mut self, scope: &BinderScope) {
+    pub(super) fn push_binders(&mut self, scope: &PatternBinderScope) {
         for &name in &scope.names {
             let mut local = Local::binder_owing(name, scope.owed.get(&name).cloned().unwrap_or_default(), scope.source);
             local.decl = scope.decls.get(&name).copied();
             local.alias.extracted_from = scope.sources.get(&name).map(|&source| (source, None)).into_iter().collect();
             local.alias.mutability = scope.mutability;
             local.unknown = scope.unknown.contains(&name);
+            local.reassignable = scope.reassignable;
             self.locals.push(local);
         }
     }
 
-    pub(super) fn with_binders<T>(&mut self, scope: &BinderScope, at: &HirId<HirExpr>, f: impl FnOnce(&mut Self) -> Result<T, anyhow::Error>) -> Result<T, anyhow::Error> {
+    pub(super) fn with_binders<T>(&mut self, scope: &PatternBinderScope, at: &HirId<HirExpr>, f: impl FnOnce(&mut Self) -> Result<T, anyhow::Error>) -> Result<T, anyhow::Error> {
         let mark = self.locals.len();
         self.push_binders(scope);
         let r = f(self);
@@ -120,16 +129,17 @@ impl<'a> Checker<'a> {
         r
     }
 
-    pub(super) fn condition_pattern_binders(&self, cond: &HirId<HirExpr>) -> Result<BinderScope, anyhow::Error> {
+    pub(super) fn condition_pattern_binders(&self, cond: &HirId<HirExpr>) -> Result<PatternBinderScope, anyhow::Error> {
         let names = self.ctx.hir.condition_pattern_binders(cond);
-        Ok(BinderScope {
+        Ok(PatternBinderScope {
             decls: names.iter().map(|&name| (name, cond.index())).collect(),
             names,
             owed: self.ctx.collect_condition_witness_obligations(cond)?,
             unknown: self.ctx.collect_condition_unknown_binders(cond),
             sources: self.mutable_condition_pattern_binder_sources(cond),
             mutability: Mutability::Unknown,
-            source: BinderSource::Condition,
+            reassignable: false,
+            source: PatternBinderSource::Condition,
         })
     }
 
@@ -142,7 +152,7 @@ impl<'a> Checker<'a> {
             .collect()
     }
 
-    pub(super) fn match_arm_binders(&self, arm: &HirMatchArm, remaining: &Obligations, at: &HirId<HirStmt>, scrutinee: &HirId<HirExpr>) -> Result<BinderScope, anyhow::Error> {
+    pub(super) fn match_arm_binders(&self, arm: &HirMatchArm, remaining: &Obligations, at: &HirId<HirStmt>, scrutinee: &HirId<HirExpr>) -> Result<PatternBinderScope, anyhow::Error> {
         let whole = collect_whole_value_binders(self.ctx.hir, &arm.matcher);
         let witness = self.ctx.collect_matcher_witnessed_obligations(&arm.matcher, at)?;
         let mut names = self.ctx.hir.get(&arm.matcher).binders(self.ctx.hir);
@@ -170,7 +180,7 @@ impl<'a> Checker<'a> {
         if let Some(guard) = &arm.guard {
             unknown.extend(self.ctx.collect_condition_unknown_binders(guard));
         }
-        Ok(BinderScope { names, owed, sources, decls, unknown, mutability: Mutability::Unknown, source: BinderSource::Arm })
+        Ok(PatternBinderScope { names, owed, sources, decls, unknown, mutability: Mutability::Unknown, reassignable: false, source: PatternBinderSource::Arm })
     }
 
     pub(super) fn with_frame<R>(&mut self, params: &[HirParam], at: &HirId<HirExpr>, body: impl FnOnce(&mut Self) -> Result<R, anyhow::Error>) -> Result<R, anyhow::Error> {

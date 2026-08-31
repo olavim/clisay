@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
-use crate::ast::{MatchArm, Ast, AstId, BuiltinType, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Receiver, ReqFn, ReqMember, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
+use crate::ast::{MatchArm, Ast, AstId, SYNTHETIC_BINDING, BuiltinType, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, SayDecl, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Receiver, ReqFn, ReqMember, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
 use crate::frontend::lex::{ContextualKeyword, Diagnostic, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {

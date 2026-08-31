@@ -1,6 +1,7 @@
 //! AST-level name resolution.
 
 use std::collections::{HashMap, HashSet};
+use indexmap::IndexSet;
 
 use anyhow::anyhow;
 
@@ -341,12 +342,25 @@ impl<'a> Resolver<'a> {
     fn block(&mut self, stmts: &[AstId<Stmt>]) -> Result<(), anyhow::Error> {
         self.hoist_types(stmts);
         for stmt in stmts {
-            // The compiler's own declarations are not the program's, so they take no name from it.
             if self.is_builtin_decl(stmt) {
                 continue;
             }
+
             if let Some((name, kind)) = self.decl_name(stmt) {
                 self.declare(name, kind, stmt)?;
+            }
+
+            if let Stmt::Say(field) = self.ast.get(stmt) {
+                if let Some(pattern) = field.pattern {
+                    let binders = self.collect_matcher_binders(&pattern)?;
+                    if binders.is_empty() {
+                        return Err(self.error_help("This pattern binds no name".to_string(), &pattern,
+                            "a binding reads names out of a value; use `_` to ignore the value instead"));
+                    }
+                    for name in binders {
+                        self.declare(name, DeclKind::Say, stmt)?;
+                    }
+                }
             }
             if let Stmt::Type(decl) = self.ast.get(stmt) {
                 self.reject_shadowed_type(decl.name, stmt)?;
@@ -378,6 +392,7 @@ impl<'a> Resolver<'a> {
             Stmt::Say(field) => {
                 self.check_clause_placement(&field.clause, ClauseSite::Other, stmt)?;
                 if let Some(value) = &field.value { self.visit_expr(value)?; }
+                if let Some(otherwise) = &field.otherwise { self.visit_expr(otherwise)?; }
             },
             Stmt::Obligation { name, witness, rules } => {
                 let text = self.ast.text(*name);
@@ -558,12 +573,12 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn collect_matcher_binders(&self, id: &AstId<Matcher>) -> Result<HashSet<Symbol>, anyhow::Error> {
+    fn collect_matcher_binders(&self, id: &AstId<Matcher>) -> Result<IndexSet<Symbol>, anyhow::Error> {
         match self.ast.get(id) {
-            Matcher::Wildcard | Matcher::Literal(_) => Ok(HashSet::new()),
+            Matcher::Wildcard | Matcher::Literal(_) => Ok(IndexSet::new()),
             Matcher::Binder(name) => {
                 self.reject_builtin_name(*name, id)?;
-                Ok(HashSet::from([*name]))
+                Ok(IndexSet::from([*name]))
             },
             Matcher::Type { name, shape, .. } => {
                 if !self.is_type_or_trait(*name) {
@@ -571,11 +586,11 @@ impl<'a> Resolver<'a> {
                 }
                 match shape {
                     Some(shape) => self.collect_matcher_binders(shape),
-                    None => Ok(HashSet::new()),
+                    None => Ok(IndexSet::new()),
                 }
             },
             Matcher::Shape(fields) => {
-                let mut binders = HashSet::new();
+                let mut binders = IndexSet::new();
                 for field in fields {
                     let sub = self.collect_matcher_binders(&field.value)?;
                     self.merge_distinct(&mut binders, sub, id)?;
@@ -583,12 +598,12 @@ impl<'a> Resolver<'a> {
                 Ok(binders)
             },
             Matcher::Array(elements) => {
-                let mut binders = HashSet::new();
+                let mut binders = IndexSet::new();
                 for element in elements {
                     let sub = match element {
                         MatchElem::Elem(matcher) => self.collect_matcher_binders(matcher)?,
                         MatchElem::Rest(Some(binder)) => self.collect_matcher_binders(binder)?,
-                        MatchElem::Rest(None) => HashSet::new(),
+                        MatchElem::Rest(None) => IndexSet::new(),
                     };
                     self.merge_distinct(&mut binders, sub, id)?;
                 }
@@ -598,13 +613,13 @@ impl<'a> Resolver<'a> {
                 // The node starts at the name, so the span is trimmed to it rather than the whole
                 // `name @ m`.
                 self.reject_builtin_at(*name, &self.name_span(*name, id))?;
-                let mut binders = HashSet::from([*name]);
+                let mut binders = IndexSet::from([*name]);
                 let sub = self.collect_matcher_binders(inner)?;
                 self.merge_distinct(&mut binders, sub, id)?;
                 Ok(binders)
             },
             Matcher::And(parts) => {
-                let mut binders = HashSet::new();
+                let mut binders = IndexSet::new();
                 for part in parts {
                     let sub = self.collect_matcher_binders(part)?;
                     self.merge_distinct(&mut binders, sub, id)?;
@@ -614,7 +629,7 @@ impl<'a> Resolver<'a> {
             // Alternatives that bind names must agree on the set. A bindingless alternative may sit
             // beside a destructure if it's an obligation witness.
             Matcher::Or(alternatives) => {
-                let mut binders: Option<HashSet<Symbol>> = None;
+                let mut binders: Option<IndexSet<Symbol>> = None;
                 for alt in alternatives {
                     let set = self.collect_matcher_binders(alt)?;
                     if set.is_empty() { continue; }
@@ -631,7 +646,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Folds one conjunctive part's binders into the running set, rejecting a name bound twice.
-    fn merge_distinct(&self, into: &mut HashSet<Symbol>, from: HashSet<Symbol>, at: &AstId<Matcher>) -> Result<(), anyhow::Error> {
+    fn merge_distinct(&self, into: &mut IndexSet<Symbol>, from: IndexSet<Symbol>, at: &AstId<Matcher>) -> Result<(), anyhow::Error> {
         for name in from {
             if !into.insert(name) {
                 return Err(self.error(format!("binder '{}' is bound more than once in this matcher", self.ast.text(name)), at));

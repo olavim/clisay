@@ -20,7 +20,6 @@ impl Symbol {
         Symbol(id)
     }
 
-    /// The symbol's raw index, used to look its text up in the interning table.
     pub fn index(&self) -> usize {
         self.0 as usize
     }
@@ -32,8 +31,6 @@ pub enum Literal {
     Number(f64),
     String(String),
     Array(Vec<AstId<Expr>>),
-    /// A `dict` literal: `{ key: value, ... }`. Each key is a string-literal expr
-    /// (identifier keys intern to strings); duplicate keys are rejected at parse.
     Dict(Vec<(AstId<Expr>, AstId<Expr>)>),
     Lambda(FnDecl)
 }
@@ -53,47 +50,33 @@ impl fmt::Display for Literal {
 }
 
 pub enum Expr {
-    /// A block body (function/method/lambda/program)
     Block(Vec<AstId<Stmt>>),
-    /// A unary expression: Unary(operator, operand)
     Unary(Operator, AstId<Expr>),
-    /// A binary expression: Binary(operator, left, right)
     Binary(Operator, AstId<Expr>, AstId<Expr>),
-    /// A function call: Call(callee, arguments)
     Call(AstId<Expr>, Vec<AstId<Expr>>),
-    /// An access expression: `Index(target, index, is_dot)`. `is_dot` marks `.name`
-    /// (member access via `.`) versus `[expr]` (data access via `[]`).
     Index(AstId<Expr>, AstId<Expr>, bool),
     Literal(Literal),
     Identifier(Symbol),
-    /// `expr is T`: a nominal capability test against a static type/trait *name*
-    /// resolved at runtime.
     Is(AstId<Expr>, Symbol),
-    /// Brace construction `C(args) { field: value, ... }`. The first expr is the
-    /// constructed callee (`C` or `C(args)`); the list is the brace field initializers.
+    Has(AstId<Expr>, AstId<Matcher>),
+    /// Brace construction `C(args) { field: value, ... }`.
     Construct(AstId<Expr>, Vec<(Symbol, AstId<Expr>)>),
     This,
-    /// The `?` access-guard on a member or index: `a?.b` / `a?[i]`.
+    /// `a?.b` / `a?[i]`
     SafeAccess(AstId<Expr>, AstId<Expr>, bool),
-    /// The `?` access-guard on a call: `cb?(args)`.
+    /// `cb?(args)`
     SafeCall(AstId<Expr>, Vec<AstId<Expr>>),
-    /// The propagate operator `a?!`: exits the enclosing function carrying the bad value.
+    /// `a?!`
     Propagate(AstId<Expr>),
-    /// The handler form `e ?? p => h`: binds the bad value to `p` and yields `h`.
+    /// `e ?? p => h`
     Handle(AstId<Expr>, Symbol, AstId<Expr>),
-    /// The non-null assertion `a!`: yields the value, checking against null at runtime.
+    /// `a!`
     Assert(AstId<Expr>),
-    /// Value mutability minted at a construction: `mut {}`, `mut []`, `mut Ctor()`.
-    /// Not an actual expression, but parsed as one for mechanical convenience.
     Mut(AstId<Expr>),
-    /// `expr is MATCHER` / `expr has MATCHER`: a bindingless matcher test yielding a boolean.
-    Has(AstId<Expr>, AstId<Matcher>),
-    /// The `scrutinee ~ matcher` one-liner. Yields a boolean and, on success, publishes the
-    /// matcher's binders.
+    /// `scrutinee ~ matcher`
     Match(AstId<Expr>, AstId<Matcher>),
 }
 
-/// A scalar literal in a matcher: an equality value (`v == s`) or a shape key.
 #[derive(Clone, PartialEq, Debug)]
 pub enum MatchScalar {
     Null,
@@ -102,70 +85,54 @@ pub enum MatchScalar {
     String(String),
 }
 
-/// A field of a shape matcher `{ key: value }`. The `{ x }` shorthand parses to key `x`
-/// with a binder value.
+/// A field of a shape matcher `{ key: value }`.
 pub struct MatchField {
     pub key: MatchScalar,
     pub value: AstId<Matcher>,
 }
 
-/// An element of an array matcher. `Rest` is `..` or `..name`, at most one per array.
+/// An element of an array matcher.
 #[derive(Clone, Copy)]
 pub enum MatchElem {
     Elem(AstId<Matcher>),
-    /// The name a `..name` binds, as a binder node so it carries its own position.
     Rest(Option<AstId<Matcher>>),
 }
 
 pub enum Matcher {
-    /// `_`: matches anything, binds nothing.
+    /// `_`
     Wildcard,
-    /// A scalar literal compared with `==`.
     Literal(MatchScalar),
-    /// A bare identifier that binds the whole value.
     Binder(Symbol),
-    /// `is T shape?` (nominal) or `has T shape?` (structural).
     Type { nominal: bool, name: Symbol, shape: Option<AstId<Matcher>> },
-    /// A structural shape `{ k: m, ... }`.
     Shape(Vec<MatchField>),
-    /// An array shape `[ ... ]` with at most one rest element.
     Array(Vec<MatchElem>),
-    /// `name @ m`: binds the whole value and also matches `m`.
+    /// `name @ m`
     As(Symbol, AstId<Matcher>),
-    /// `a | b | ...`: alternatives tried left to right.
+    /// `a | b | ...`
     Or(Vec<AstId<Matcher>>),
-    /// `a & b & ...`: all must match.
+    /// `a & b & ...`
     And(Vec<AstId<Matcher>>),
 }
 
-/// What a slot asks of its value, over two independent axes. `mut` demands one that may be written.
-/// `*` takes write-ownership rather than borrowing it for the call.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Capability {
-    /// Borrows, and asks nothing of the value.
     #[default]
     None,
-    /// `mut`: borrows a value that may be written.
     Mut,
-    /// `*`: takes write-ownership, and asks nothing of the value.
     Move,
-    /// `*mut`: takes write-ownership of a value that may be written.
     MoveMut,
 }
 
 impl Capability {
-    /// Whether the marker demands a value it may write.
     pub fn is_mut(self) -> bool {
         matches!(self, Capability::Mut | Capability::MoveMut)
     }
 
-    /// Whether the marker takes its argument, as opposed to borrowing it for the call.
     pub fn is_retain(self) -> bool {
         matches!(self, Capability::Move | Capability::MoveMut)
     }
 }
 
-/// A parsed `:` clause on a slot (a variable, parameter, field, or return).
 #[derive(Default)]
 pub struct SlotClause {
     pub capability: Capability,
@@ -176,32 +143,31 @@ pub struct SlotClause {
     pub pos: Option<SourcePosition>,
 }
 
-pub struct FieldInit {
+/// The name a destructuring binding gives the whole value its binders are read out of. The space
+/// keeps it out of the identifier grammar, so no source name can be it.
+pub const SYNTHETIC_BINDING: &str = "the binding";
+
+pub struct SayDecl {
     pub name: Symbol,
+    pub otherwise: Option<AstId<Expr>>,
+    pub pattern: Option<AstId<Matcher>>,
     pub value: Option<AstId<Expr>>,
-    /// Declared nullable with a `?` marker (`say x?`).
     pub nullable: bool,
-    /// Declared reassignable with a `var` modifier (`say var x`).
     pub reassignable: bool,
-    /// The `:` slot clause
     pub clause: SlotClause,
 }
 
-/// A function/method/lambda parameter: one pattern over its positional slot, plus a slot clause.
-/// A lone binder is the ordinary parameter, `_` discards the slot, and any other pattern is a
-/// precondition on the argument.
+/// A function/method/lambda parameter.
 pub struct Param {
     pub pattern: AstId<Matcher>,
     /// The `pattern[: clause]` span.
     pub pos: SourcePosition,
     pub nullable: bool,
-    /// Reserved for a reassignable parameter. Never parsed today.
     pub reassignable: bool,
     pub clause: SlotClause,
 }
 
 impl Param {
-    /// The name the whole argument binds to, when the pattern is one. A test or `_` names nothing.
     pub fn binder(&self, ast: &Ast) -> Option<Symbol> {
         match ast.get(&self.pattern) {
             Matcher::Binder(name) | Matcher::As(name, _) => Some(*name),
@@ -210,8 +176,7 @@ impl Param {
     }
 }
 
-/// The `this` parameter of an instance method. It names no slot of its own, since the receiver
-/// already occupies slot 0, so it carries only its span and its `:` clause.
+/// The `this` parameter of an instance method.
 pub struct Receiver {
     pub pos: SourcePosition,
     pub clause: SlotClause,
@@ -220,14 +185,12 @@ pub struct Receiver {
 // TODO: fold into SlotClause
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ReturnShape {
-    /// `fn f()!` returns a non-null value.
+    /// `fn f()!`
     NonNull,
-    /// `fn f()?` returns a nullable value.
+    /// `fn f()?`
     Nullable,
-    /// `fn f()` returns no value.
+    /// `fn f()`
     Void,
-    /// A lambda, whose return shape is inferred from its body. Also the neutral value for a
-    /// context with no declared return, so it is checked against nothing.
     #[default]
     Inferred,
 }
@@ -236,7 +199,7 @@ pub struct FnDecl {
     pub name: Symbol,
     /// The `name(params): clause` signature span.
     pub sig_pos: SourcePosition,
-    /// The declared `this`, present on an instance method and absent on a plain function.
+    /// The declared `this`.
     pub receiver: Option<Receiver>,
     pub params: Vec<Param>,
     pub body: AstId<Expr>,
@@ -244,7 +207,7 @@ pub struct FnDecl {
     pub clause: SlotClause,
 }
 
-/// A `req fn f(this, params): clause;` method hole.
+/// `req fn f(this, params): clause;`
 pub struct ReqFn {
     pub name: Symbol,
     /// The `name(params): clause` span.
@@ -255,35 +218,30 @@ pub struct ReqFn {
     pub clause: SlotClause,
 }
 
-/// A `req "var"? name (":" clause)?;` member hole.
+/// `req "var"? name (":" clause)?;`
 pub struct ReqMember {
     pub name: Symbol,
     /// The `var name: clause` span.
     pub pos: SourcePosition,
-    /// Required to be reassignable, with the `var` marker.
     pub reassignable: bool,
     pub clause: SlotClause,
 }
 
-/// A `catch (param) { ... }` clause of a try statement.
+/// `catch (param) { ... }`
 pub struct CatchClause {
     pub param: Option<AstId<Expr>>,
     pub body: AstId<Expr>
 }
 
-/// The header clause a trait reference appeared in, for conflict diagnostics.
 #[derive(Clone, Copy, PartialEq)]
 pub enum TraitClause { With, Req, Gives }
 
-/// One textual mention of a trait in a `with`/`req`/`gives` clause, kept so a
-/// conflict can point a caret at each occurrence.
 pub struct TraitRef {
     pub clause: TraitClause,
     pub trait_sym: Symbol,
     pub pos: SourcePosition,
 }
 
-/// A type whose runtime object the VM builds itself.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinType {
     Err,
@@ -299,21 +257,14 @@ impl BuiltinType {
 
 pub struct TypeDecl {
     pub name: Symbol,
-    /// `true` for a `trait` declaration, `false` for a `type`.
     pub is_trait: bool,
-    /// Which built-in this declares.
     pub builtin: Option<BuiltinType>,
-    /// Traits mixed in via `with T1, T2, ...`.
     pub with_traits: Vec<Symbol>,
-    /// Source spans of every `with`/`req`/`gives` trait mention, for conflict diagnostics.
+    /// Source spans of every `with`/`req`/`gives` trait mention.
     pub trait_refs: Vec<TraitRef>,
-    /// Traits depended on via `req T1, T2, ...`.
     pub req_traits: Vec<Symbol>,
-    /// Method holes declared via `req fn f(params)`.
     pub req_fns: Vec<ReqFn>,
-    /// Member holes declared via `req name`.
     pub req_members: Vec<ReqMember>,
-    /// Delegation fields declared via `field gives Trait`.
     pub gives: Vec<(Symbol, Symbol)>,
     pub init_name: Symbol,
     pub init: Option<AstId<Stmt>>,
@@ -323,7 +274,7 @@ pub struct TypeDecl {
     pub field_clauses: Vec<(Symbol, SlotClause)>,
     /// Where each field is declared.
     pub field_positions: Vec<(Symbol, SourcePosition)>,
-    /// Field defaults (`field = value`), applied by the factory during lowering.
+    /// Field defaults (`field = value`).
     pub field_inits: Vec<(Symbol, AstId<Expr>)>,
     pub methods: Vec<AstId<Stmt>>,
     pub pub_members: IndexSet<Symbol>,
@@ -336,7 +287,6 @@ pub struct MatchArm {
     pub body: AstId<Expr>,
 }
 
-/// The rules an obligation declares.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct ObligationRules {
     /// The value cannot be read until the obligation is discharged.
@@ -352,8 +302,6 @@ pub struct ObligationRules {
     pub no_drop: bool,
 }
 
-/// The rules of the built-in obligations. They have no source declaration to read a rule set from,
-/// so theirs lives here.
 pub fn builtin_obligation_rules(name: &str) -> Option<ObligationRules> {
     Some(match name {
         "opt" => ObligationRules { to_use: true, ..Default::default() },
@@ -374,7 +322,7 @@ pub enum Stmt {
     /// A bare `{ ... }` statement block (wraps an `Expr::Block`).
     Block(AstId<Expr>),
     Defer(AstId<Expr>),
-    Say(FieldInit),
+    Say(SayDecl),
     Fn(FnDecl),
     Type(Box<TypeDecl>),
     Obligation { name: Symbol, witness: Option<Symbol>, rules: ObligationRules },
