@@ -544,24 +544,26 @@ impl<'a> Checker<'a> {
         self.member_access_of(&receiver, target, member)
     }
 
-    pub(super) fn member_access_of(&mut self, receiver: &ValueState, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
+    pub(super) fn member_access_of(&mut self, receiver_state: &ValueState, receiver: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let Some(name) = self.ctx.member_display_name(member) else {
             self.expr(member)?;
             // Reading a container yields a pending element. Presence is tracked, not depth, so the
             // read stays a container.
-            if let Debt::Owed { obligations, container: true, .. } = &receiver.debt {
+            if let Debt::Owed { obligations, container: true, .. } = &receiver_state.debt {
                 return Ok(ValueState::of(Debt::Owed { obligations: obligations.clone(), definite: false, container: true }, TypeTag::Unknown));
             }
             return Ok(ValueState::unknown());
         };
 
-        if matches!(receiver.tag, TypeTag::SelfType) {
+        if matches!(receiver_state.tag, TypeTag::SelfType) {
             return self.trait_member(name, member);
         }
 
+        self.require_member_exists(receiver_state, receiver, name)?;
+
         let Some(field) = self.ctx.hir.symbol_of(name) else { return Ok(ValueState::unknown()) };
-        let narrowing = self.narrowable_field(target, field);
-        if let TypeTag::Concrete(decl) = &receiver.tag {
+        let narrowing = self.narrowable_field(receiver, field);
+        if let TypeTag::Concrete(decl) = &receiver_state.tag {
             if let Some(layout) = self.ctx.layout_of(decl) {
                 if let Some(member_kind) = layout.members.get(&field).copied() {
                     let debt = match member_kind {
@@ -582,7 +584,7 @@ impl<'a> Checker<'a> {
                         TypeMember::Method(_) => Debt::Clean,
                     };
 
-                    return Ok(match receiver.mutability {
+                    return Ok(match receiver_state.mutability {
                         Mutability::Immutable => ValueState::of(debt, TypeTag::Unknown).with_mutability(Mutability::Immutable),
                         _ => ValueState::of(debt, TypeTag::Unknown),
                     });
@@ -590,6 +592,17 @@ impl<'a> Checker<'a> {
             }
         }
         Ok(ValueState::unknown())
+    }
+
+    fn require_member_exists(&self, receiver_state: &ValueState, receiver: &HirId<HirExpr>, name: &str) -> Result<(), anyhow::Error> {
+        if self.ctx.may_have_member(&receiver_state.tag, name) {
+            return Ok(());
+        }
+        // A value confirmed to be the witness it owes reports a missed discharge instead
+        if self.ctx.is_obligation_witness(receiver_state) {
+            self.ctx.require_discharged(receiver_state, receiver)?;
+        }
+        Err(self.ctx.absent_member_error(&receiver_state.tag, name, receiver))
     }
 
     pub(super) fn path_base_receiver(&mut self, target: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
@@ -894,6 +907,7 @@ impl<'a> Checker<'a> {
         if matches!(receiver_typed.tag, TypeTag::SelfType) {
             return self.trait_member(name, member);
         }
+        self.require_member_exists(&receiver_typed, receiver, name)?;
         if let (TypeTag::Concrete(decl), Some(method)) = (&receiver_typed.tag, self.ctx.hir.symbol_of(name)) {
             if let Some(stmt) = self.ctx.sigs.methods_by_type.get(&(*decl, method)).copied() {
                 self.check_receiver(callee, receiver, stmt.into(), &receiver_typed)?;

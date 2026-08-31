@@ -95,6 +95,20 @@ impl<'a> Ctx<'a> {
         })
     }
 
+    pub(super) fn absent_member_error(&self, tag: &TypeTag, name: &str, node: &HirId<HirExpr>) -> anyhow::Error {
+        let owner = match tag {
+            TypeTag::Concrete(decl) => self.type_name_of(decl).map(|n| self.hir.text(n)),
+            _ => None,
+        };
+        self.error(format!("{} doesn't have member \"{name}\"", owner.unwrap_or("This value")), node)
+    }
+
+    pub(super) fn may_have_member(&self, tag: &TypeTag, name: &str) -> bool {
+        let TypeTag::Concrete(decl) = tag else { return true };
+        let Some(layout) = self.layout_of(decl) else { return true };
+        self.hir.symbol_of(name).is_some_and(|field| layout.members.contains_key(&field))
+    }
+
     /// What a fresh instance owes.
     pub(super) fn construction_debt(&self, decl: &HirId<HirStmt>) -> Debt {
         let obligations = match self.hir.get(decl) {
@@ -236,6 +250,10 @@ impl<'a> Ctx<'a> {
 
     pub(super) fn require_usable_value(&self, state: &ValueState, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         debug_assert!(!self.is_obligation_witness(state), "a confirmed witness must be handled at its operation site, not advised to narrow");
+        self.require_discharged(state, operand)
+    }
+
+    pub(super) fn require_discharged(&self, state: &ValueState, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if state.debt.is_void() {
             return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), operand));
         }

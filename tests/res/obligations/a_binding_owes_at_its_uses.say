@@ -1,0 +1,33 @@
+fn load(n)! { if n < 0 { return Err("x"); } return [1, 2]; }
+say r: fails = load(1);
+say n = r.length(); // error: unchecked value owes 'fails'
+print(r ?? 0);
+
+// @split
+say r: fails = [1, 2];
+say n = r.length(); // error: unchecked value owes 'fails'
+print(r ?? 0);
+
+// @split
+fn load()! { return Err("x"); }
+say r: fails = load();
+say n = r.length; // error: unchecked value owes 'fails'
+print(r ?? 0);
+
+// @split
+fn load()! { return Err("x"); }
+say r: fails = load();
+say n = r.length(); // error: unchecked value owes 'fails'
+print(r ?? 0);
+
+// @split
+fn load(n)! { if n < 0 { return Err("x"); } return [1, 2]; }
+say r: fails = load(1);
+say s = r ?? [];
+print(s.length()); // expect: 2
+
+// @split
+fn load()! { return Err("x"); }
+say r: fails = load();
+print(r.value); // expect: x
+print(r ?? 0); // expect: 0

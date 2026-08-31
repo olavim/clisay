@@ -5,4 +5,11 @@ type T {
 }
 say t = T(5);
 print(t.v); // expect: 5
-t.init(9); // error: Invalid index: T doesn't have member "init"
+
+// @split
+type T {
+    pub v;
+    init(this, *v) { this.v = v; }
+}
+say t = T(5);
+t.init(9); // error: T doesn't have member "init"

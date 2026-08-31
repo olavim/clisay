@@ -21,14 +21,14 @@ type Service with Logger { init(this) { this["Logger.log"]("hello"); } } // erro
 trait Logger { fn log(this, m) { print(m); } }
 type Service with Logger {}
 say s = Service();
-s.log("hello"); // error: Invalid index: Service doesn't have member "log"
+s.log("hello"); // error: Service doesn't have member "log"
 
 // @split
 
 trait Logger { fn log(this, m) { print(m); } }
 type Service with Logger {}
 say s = Service();
-s["log"]("hello"); // error: Invalid index: Service doesn't have member "log"
+s["log"]("hello"); // error: Service doesn't have member "log"
 
 // @split
 
