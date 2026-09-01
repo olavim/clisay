@@ -1,5 +1,4 @@
-﻿//! Where a binding lives and how long it lasts: the locals stack, function frames, the binders a
-//! condition or arm introduces, and what a branch saves and merges back.
+﻿//! Where a binding lives and how long it lasts.
 
 use std::collections::{HashMap, HashSet};
 
@@ -8,15 +7,12 @@ use crate::middle::obligations::Obligations;
 use crate::middle::signatures::{CallableId, Mutability, TypeTag};
 
 use super::narrow::collect_whole_value_binders;
-use super::alias::WriteOwnershipTransfer;
-use super::{PatternBinderSource, Checker, Ctx, ElementKey, Local, TransferSite};
+use super::{PatternBinderSource, Checker, Ctx, Local};
 
 #[derive(Default)]
 pub(super) struct PatternBinderScope {
     pub(super) names: Vec<Symbol>,
     pub(super) owed: HashMap<Symbol, Obligations>,
-    /// The slot each binder was destructured out of.
-    pub(super) sources: HashMap<Symbol, usize>,
     /// The node `bind` declared each binder from.
     pub(super) decls: HashMap<Symbol, usize>,
     /// The binders that read as dynamic-boundary values, no test having proved what they hold.
@@ -32,9 +28,6 @@ pub struct LocalFlow {
     pub assigned: bool,
     pub tag: TypeTag,
     pub mutability: Mutability,
-    pub transfer_site: Option<TransferSite>,
-    pub provenance: Vec<usize>,
-    pub extracted_from: Vec<(usize, Option<ElementKey>)>,
     pub discharged: Obligations,
     pub field_discharged: HashMap<Symbol, Obligations>,
     pub resolved_callable: Option<CallableId>,
@@ -51,7 +44,7 @@ pub(super) struct FlowSnapshot {
 impl<'a> Ctx<'a> {
     pub(super) fn param_pattern_binders(&self, param: &HirParam) -> Result<PatternBinderScope, anyhow::Error> {
         let Some(pattern) = &param.pattern else { return Ok(PatternBinderScope::default()) };
-        self.pattern_binders(pattern, &param.name, Mutability::param(param.clause.capability), false, PatternBinderSource::Param)
+        self.pattern_binders(pattern, &param.name, Mutability::of(param.clause.capability), false, PatternBinderSource::Param)
     }
 
     fn pattern_binders(&self, pattern: &HirId<HirMatcher>, at: &HirId<HirExpr>, mutability: Mutability, reassignable: bool, source: PatternBinderSource) -> Result<PatternBinderScope, anyhow::Error> {
@@ -61,7 +54,6 @@ impl<'a> Ctx<'a> {
             names,
             owed: self.collect_matcher_witnessed_obligations(pattern, at)?,
             unknown: self.collect_matcher_unknown_binders(pattern),
-            sources: HashMap::new(),
             mutability,
             reassignable,
             source,
@@ -76,6 +68,29 @@ impl<'a> Ctx<'a> {
 impl<'a> Checker<'a> {
     pub(super) fn frame_locals(&self) -> &[Local] {
         &self.locals[self.frame_start..]
+    }
+
+    pub(super) fn local_of(&self, node: &HirId<HirExpr>) -> Option<usize> {
+        match self.ctx.hir.get(node) {
+            HirExpr::Assert(x) | HirExpr::Propagate(x) | HirExpr::Mut(x) => self.local_of(x),
+            HirExpr::Identifier(name) => self.frame_index_of(*name),
+            _ => None,
+        }
+    }
+
+    pub(super) fn root_local_of(&self, target: &HirId<HirExpr>) -> Option<usize> {
+        match self.ctx.hir.get(target) {
+            HirExpr::Index(base, ..) | HirExpr::SafeAccess(base, ..) => self.root_local_of(base),
+            _ => self.local_of(target),
+        }
+    }
+
+    pub(super) fn upvalue_binding_of(&self, node: &HirId<HirExpr>) -> Option<usize> {
+        let HirExpr::Identifier(name) = self.ctx.hir.get(node) else { return None };
+        if !matches!(self.ctx.bindings.place_of(node), Some(crate::middle::bind::Place::Upvalue(_))) {
+            return None;
+        }
+        self.upvalue_index(*name)
     }
 
     pub(super) fn frame_index_of(&self, name: Symbol) -> Option<usize> {
@@ -94,10 +109,6 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn truncate_locals(&mut self, mark: usize) {
-        self.settle_unshared_stores(mark);
-        self.reclaim_scoped_write_ownership(mark);
-        self.reroot_provenance(mark);
-        self.drop_dead_extractions(mark);
         self.locals.truncate(mark);
     }
 
@@ -105,8 +116,8 @@ impl<'a> Checker<'a> {
         for &name in &scope.names {
             let mut local = Local::binder_owing(name, scope.owed.get(&name).cloned().unwrap_or_default(), scope.source);
             local.decl = scope.decls.get(&name).copied();
-            local.alias.extracted_from = scope.sources.get(&name).map(|&source| (source, None)).into_iter().collect();
-            local.alias.mutability = scope.mutability;
+            local.mutability = scope.mutability;
+            local.writable = scope.source != PatternBinderSource::Param || scope.mutability == Mutability::Mutable;
             local.unknown = scope.unknown.contains(&name);
             local.reassignable = scope.reassignable;
             self.locals.push(local);
@@ -131,23 +142,13 @@ impl<'a> Checker<'a> {
             names,
             owed: self.ctx.collect_condition_witness_obligations(cond)?,
             unknown: self.ctx.collect_condition_unknown_binders(cond),
-            sources: self.mutable_condition_pattern_binder_sources(cond),
             mutability: Mutability::Unknown,
             reassignable: false,
             source: PatternBinderSource::Condition,
         })
     }
 
-    pub(super) fn mutable_condition_pattern_binder_sources(&self, cond: &HirId<HirExpr>) -> HashMap<Symbol, usize> {
-        self.ctx.hir.condition_pattern_binder_sources(cond).into_iter()
-            .filter_map(|(name, scrutinee)| {
-                let source = self.local_of(&scrutinee).filter(|&i| self.holds_mutable(i))?;
-                Some((name, source))
-            })
-            .collect()
-    }
-
-    pub(super) fn match_arm_binders(&self, arm: &HirMatchArm, remaining: &Obligations, at: &HirId<HirStmt>, scrutinee: &HirId<HirExpr>) -> Result<PatternBinderScope, anyhow::Error> {
+    pub(super) fn match_arm_binders(&self, arm: &HirMatchArm, remaining: &Obligations, at: &HirId<HirStmt>) -> Result<PatternBinderScope, anyhow::Error> {
         let whole = collect_whole_value_binders(self.ctx.hir, &arm.matcher);
         let witness = self.ctx.collect_matcher_witnessed_obligations(&arm.matcher, at)?;
         let mut names = self.ctx.hir.get(&arm.matcher).binders(self.ctx.hir);
@@ -162,20 +163,11 @@ impl<'a> Checker<'a> {
             if let Some(obligations) = witness.get(&name) { set.extend(obligations); }
             (name, set)
         }).collect();
-        // A matcher binder names part of the scrutinee. A guard's binders name part of whatever
-        // that guard matched, which it knows itself.
-        let mut sources: HashMap<Symbol, usize> = HashMap::new();
-        if let Some(source) = self.local_of(scrutinee).filter(|&i| self.holds_mutable(i)) {
-            sources.extend(self.ctx.hir.get(&arm.matcher).binders(self.ctx.hir).into_iter().map(|name| (name, source)));
-        }
-        if let Some(guard) = &arm.guard {
-            sources.extend(self.mutable_condition_pattern_binder_sources(guard));
-        }
         let mut unknown = self.ctx.collect_matcher_unknown_binders(&arm.matcher);
         if let Some(guard) = &arm.guard {
             unknown.extend(self.ctx.collect_condition_unknown_binders(guard));
         }
-        Ok(PatternBinderScope { names, owed, sources, decls, unknown, mutability: Mutability::Unknown, reassignable: false, source: PatternBinderSource::Arm })
+        Ok(PatternBinderScope { names, owed, decls, unknown, mutability: Mutability::Unknown, reassignable: false, source: PatternBinderSource::Arm })
     }
 
     pub(super) fn with_frame<R>(&mut self, params: &[HirParam], at: &HirId<HirExpr>, body: impl FnOnce(&mut Self) -> Result<R, anyhow::Error>) -> Result<R, anyhow::Error> {
@@ -184,7 +176,7 @@ impl<'a> Checker<'a> {
         self.frame_start = mark;
         let saved_this_narrowed = std::mem::take(&mut self.this_narrowed);
 
-        for (position, param) in params.iter().enumerate() {
+        for param in params.iter() {
             let name = self.ctx.hir.ident_sym(&param.name);
             let mut owed = param.clause.owed();
 
@@ -197,10 +189,8 @@ impl<'a> Checker<'a> {
             local.decl = Some(param.name.index());
             local.container = param.clause.container;
             local.param = true;
-            local.alias.mutability = Mutability::param(param.clause.capability);
-            local.alias.borrowed = !param.clause.capability.is_retain();
-            local.alias.borrowed_maybe_mutable = !param.clause.capability.is_mut() && !param.clause.capability.is_retain();
-            local.alias.confined = self.fn_ctx.param_confined.get(position).copied().unwrap_or(false);
+            local.mutability = Mutability::of(param.clause.capability);
+            local.writable = param.clause.capability.is_mut();
             local.site = Some(param.name);
 
             if param.pattern.is_some() {
@@ -246,40 +236,17 @@ impl<'a> Checker<'a> {
         self.this_narrowed = flow.this_narrowed.clone();
     }
 
-    pub(super) fn restore_flow_keeping_write_ownership_transfers(&mut self, flow: &FlowSnapshot) {
-        for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
-            let LocalFlow {
-                assigned, tag, mutability, transfer_site, provenance: _kept,
-                extracted_from: _also_kept, discharged, field_discharged, resolved_callable,
-            } = snap;
-
-            if local.resolved_callable != *resolved_callable {
-                local.resolved_callable = None;
-            }
-
-            local.assigned = *assigned;
-            local.tag = tag.clone();
-            local.alias.mutability = *mutability;
-            local.alias.transfer_site = local.alias.transfer_site.or(*transfer_site);
-            local.discharged = discharged.clone();
-            local.field_discharged = field_discharged.clone();
-        }
-        self.this_narrowed = flow.this_narrowed.clone();
-    }
-
     pub(super) fn restore_narrowings(&mut self, flow: &FlowSnapshot) {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             let LocalFlow {
-                assigned: _, tag: _, mutability: _, transfer_site: _, provenance: _,
-                extracted_from: _, discharged, field_discharged, resolved_callable: _,
+                assigned: _, tag: _, mutability: _, discharged, field_discharged, resolved_callable: _,
             } = snap;
             local.discharged.retain(|ob| discharged.contains(ob));
             intersect_narrowings(&mut local.field_discharged, field_discharged);
         }
     }
 
-    /// Merges one outcome's end state into the current flow. Every join is a fold of this, so a
-    /// field it fails to merge is one outcome's fact surviving as if all of them proved it.
+    /// Merges one outcome's end state into the current flow.
     pub(super) fn merge_flow_into_current(&mut self, other: &FlowSnapshot) {
         debug_assert!(other.locals.len() == self.locals.len());
         for (local, snap) in self.locals.iter_mut().zip(&other.locals) {
@@ -295,10 +262,7 @@ pub(super) fn local_flow_of(local: &Local) -> LocalFlow {
     LocalFlow {
         assigned: local.assigned,
         tag: local.tag.clone(),
-        mutability: local.alias.mutability,
-        transfer_site: local.alias.transfer_site,
-        provenance: local.alias.mutable_provenance.clone(),
-        extracted_from: local.alias.extracted_from.clone(),
+        mutability: local.mutability,
         discharged: local.discharged.clone(),
         field_discharged: local.field_discharged.clone(),
         resolved_callable: local.resolved_callable,
@@ -307,15 +271,11 @@ pub(super) fn local_flow_of(local: &Local) -> LocalFlow {
 
 pub(super) fn restore_local_flow(local: &mut Local, flow: &LocalFlow) {
     let LocalFlow {
-        assigned, tag, mutability, transfer_site, provenance,
-        extracted_from, discharged, field_discharged, resolved_callable,
+        assigned, tag, mutability, discharged, field_discharged, resolved_callable,
     } = flow;
     local.assigned = *assigned;
     local.tag = tag.clone();
-    local.alias.mutability = *mutability;
-    local.alias.transfer_site = *transfer_site;
-    local.alias.mutable_provenance = provenance.clone();
-    local.alias.extracted_from = extracted_from.clone();
+    local.mutability = *mutability;
     local.discharged = discharged.clone();
     local.field_discharged = field_discharged.clone();
     local.resolved_callable = *resolved_callable;
@@ -323,50 +283,19 @@ pub(super) fn restore_local_flow(local: &mut Local, flow: &LocalFlow) {
 
 pub fn merge_local_flow(into: &mut LocalFlow, other: &LocalFlow) {
     let LocalFlow {
-        assigned, tag, mutability, transfer_site, provenance,
-        extracted_from, discharged, field_discharged, resolved_callable,
+        assigned, tag, mutability, discharged, field_discharged, resolved_callable,
     } = other;
     into.assigned = into.assigned && *assigned;
     into.tag = if into.tag == *tag { into.tag.clone() } else { TypeTag::Unknown };
     into.mutability = if into.mutability == *mutability { into.mutability } else { Mutability::Unknown };
-    into.transfer_site = merge_transfer_sites(into.transfer_site, *transfer_site);
 
     // Either path could have run, so a name resolves only where both paths reach the same callable.
     if into.resolved_callable != *resolved_callable {
         into.resolved_callable = None;
     }
 
-    // Either branch could have run, so the binding may have come out of any origin either of them
-    // named. An origin is a restriction, so the join keeps them all.
-    for origin in extracted_from {
-        if !into.extracted_from.contains(origin) {
-            into.extracted_from.push(*origin);
-        }
-    }
-
-    // A source is where the write-ownership goes back when the binding dies, and the join above
-    // keeps a move either branch made.
-    for source in provenance {
-        if !into.provenance.contains(source) {
-            into.provenance.push(*source);
-        }
-    }
-
     into.discharged.retain(|ob| discharged.contains(ob));
     intersect_narrowings(&mut into.field_discharged, field_discharged);
-}
-
-fn merge_transfer_sites(into: Option<TransferSite>, other: Option<TransferSite>) -> Option<TransferSite> {
-    match (into, other) {
-        (None, site) | (site, None) => site,
-        (Some(a), Some(b)) if a == b => Some(a),
-        (Some(a), Some(b)) => {
-            // The lower node keeps the blame, so the answer does not depend on which outcome the
-            // caller restored first.
-            let blame = if a.node.index() <= b.node.index() { a.node } else { b.node };
-            Some(TransferSite { node: blame, transfer: WriteOwnershipTransfer::Transferred })
-        },
-    }
 }
 
 pub fn intersect_narrowings(into: &mut HashMap<Symbol, Obligations>, other: &HashMap<Symbol, Obligations>) {

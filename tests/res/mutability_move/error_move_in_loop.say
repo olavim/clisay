@@ -1,8 +1,0 @@
-// A loop body that moves a value consumes it every pass, so the next pass reads a moved value.
-fn consume(*mut x) {}
-say var n = 0;
-say a = mut [1];
-while n < 3 {
-  consume(a); // error: cannot give away `a`, which no longer writes its value
-  n = n + 1;
-}

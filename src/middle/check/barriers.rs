@@ -58,42 +58,25 @@ pub struct Barriers {
     pub(super) seal_checks: HashSet<HirId<HirExpr>>,
     /// Paren-construction `Call` nodes (`K(args)`).
     pub(super) constructions: HashSet<HirId<HirExpr>>,
-    /// Scopes holding an element writer slot, by node index. A scope gives back whatever its own
-    /// locals still hold.
-    pub(super) write_scopes: HashSet<usize>,
-    /// Store targets one name is proven to reach. Their stores skip the one-writer arbitration
-    /// that every other store runs.
-    pub(super) unshared_stores: HashSet<HirId<HirExpr>>,
 }
 
 impl Barriers {
-    /// Whether one name is proven to reach this store's target, so the store needs no arbitration.
-    pub fn store_is_unshared(&self, target: &HirId<HirExpr>) -> bool {
-        self.unshared_stores.contains(target)
-    }
-
-    /// Every runtime check this node carries, in emission order.
     pub fn guards(&self, node: &HirId<HirExpr>) -> &[Guard] {
         self.guards.get(node).map_or(&[], Vec::as_slice)
     }
 
-    /// The runtime checks this node would carry if the pass hadn't proved them unnecessary.
-    /// Empty unless check-forcing is on.
     pub fn elided(&self, node: &HirId<HirExpr>) -> &[Guard] {
         self.elided.get(node).map_or(&[], Vec::as_slice)
     }
 
-    /// The boundary guard for an unknown value at this node, if one is needed.
     pub fn boundary(&self, node: &HirId<HirExpr>) -> Option<&Barrier> {
         self.boundary_barriers.get(node)
     }
 
-    /// Every registered object witness declaration, for the VM's boundary-barrier registry.
     pub fn witness_decls(&self) -> &[TypeId] {
         &self.witness_decls
     }
 
-    /// The witness set a discharge node tests, when its operand owes an object witness.
     pub fn witness_set(&self, node: &HirId<HirExpr>) -> Option<&WitnessSet> {
         self.witness_tests.get(node)
     }
@@ -102,23 +85,14 @@ impl Barriers {
         self.arg_marks.get(callee).map(|m| m.survive.as_slice()).filter(|p| !p.is_empty())
     }
 
-    /// Whether this container literal needs a runtime check that no element is mutable.
     pub fn needs_seal_check(&self, node: &HirId<HirExpr>) -> bool {
         self.seal_checks.contains(node)
     }
 
-    /// Whether this `Call` node is a paren construction `K(args)`.
     pub fn is_construction(&self, node: &HirId<HirExpr>) -> bool {
         self.constructions.contains(node)
     }
 
-    /// Whether this scope has to give back element writer slots on the way out.
-    pub fn releases_write_ownership<T>(&self, scope: &HirId<T>) -> bool {
-        self.write_scopes.contains(&scope.index())
-    }
-
-    /// How many nodes carry a runtime check. A boundary's payload rides its guard, so it is one
-    /// node here however many guards it asks for.
     pub fn len(&self) -> usize {
         self.guards.len()
     }
@@ -129,8 +103,6 @@ impl Barriers {
 }
 
 impl<'a> Checker<'a> {
-    /// Records a runtime check the pass proved unnecessary. A no-op unless check-forcing is on,
-    /// so neither the table nor the walk costs anything in an ordinary run.
     pub(super) fn record_elision(&mut self, node: &HirId<HirExpr>, guard: Guard) {
         if !self.ctx.force_checks {
             return;
@@ -141,8 +113,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Records a runtime check for a node. Guards are kept in emission order, and a node asks for
-    /// each at most once however many times the pass reaches it.
     pub(super) fn record_guard(&mut self, node: &HirId<HirExpr>, guard: Guard) {
         let guards = self.out.guards.entry(*node).or_default();
         if let Err(at) = guards.binary_search(&guard) {
@@ -150,28 +120,18 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Records that an opaque call must assert its callee borrows the given argument positions.
     pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<(u8, Symbol)>) {
         self.out.arg_marks.entry(*callee).or_default().survive = positions;
     }
 
-    /// Marks an immutable container literal whose elements must be checked for mutability at runtime.
     pub(super) fn record_seal_check(&mut self, node: &HirId<HirExpr>) {
         self.out.seal_checks.insert(*node);
     }
 
-    /// Marks a `Call` node as a paren construction `K(args)`.
     pub(super) fn record_construction(&mut self, node: &HirId<HirExpr>) {
         self.out.constructions.insert(*node);
     }
 
-    /// Marks a scope that has to give back element writer slots.
-    pub(super) fn record_write_scope(&mut self, scope: &HirId<HirExpr>) {
-        self.out.write_scopes.insert(scope.index());
-    }
-
-    /// Records the guard for an unknown value reaching a destination accepting `accepted`. The
-    /// guard allows those obligations' witnesses.
     pub(super) fn record_boundary_barrier(&mut self, node: &HirId<HirExpr>, accepted: &Obligations) {
         let null_allowed = accepted.contains(&self.ctx.sigs.opt);
         let mut allow_witnesses = Vec::new();
@@ -184,8 +144,6 @@ impl<'a> Checker<'a> {
         self.record_guard(node, Guard::Boundary);
     }
 
-    /// Classifies a value entering a non-null target. A non-null slot forbids `opt`, so only a
-    /// value owing `opt` violates it. An unknown value records the non-null boundary guard.
     pub(super) fn non_null_violation(&mut self, value: &Debt, target: &HirId<HirExpr>) -> Option<Violation> {
         match value {
             Debt::Clean => None,

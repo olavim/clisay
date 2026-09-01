@@ -1,5 +1,0 @@
-// A bracket write is a use like any other, so it is caught without needing a later read.
-fn eats(*mut x) { }
-say a = mut [0];
-eats(a);
-a[0] = 1; // error: cannot write `a`, which gave its write-ownership away

@@ -23,9 +23,7 @@ fn declared_retains(decl: &HirFnDecl) -> u64 {
 /// What a callable does with each of its arguments.
 #[derive(Clone, Copy)]
 pub(super) struct ParamMasks {
-    /// The arguments the call hands write-ownership of, rather than lending for its duration.
     pub retains: u64,
-    /// The arguments the body lets out of the caller's reach.
     pub escapes: u64,
     /// The borrowed arguments the body hands to a call that might retain them.
     pub needs_borrow_mark: u64,

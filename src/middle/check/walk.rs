@@ -1,8 +1,6 @@
 ﻿//! The walk: `stmt` and `expr` dispatch over the HIR, and each site gathers the
 //! context its rules need and calls them in a fixed order.
 
-use std::collections::HashSet;
-
 use crate::core::objects::TypeMember;
 use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{BinOp, Capability, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
@@ -41,10 +39,6 @@ impl<'a> Ctx<'a> {
 
     pub(super) fn construct_tag(&self, callee: &HirId<HirExpr>) -> TypeTag {
         self.resolved().constructed_tag(callee)
-    }
-
-    pub(super) fn callable_confined(&self, callable: impl Into<CallableId> + Copy, arity: usize) -> Vec<bool> {
-        (0..arity).map(|i| !self.sigs.escapes_beyond_return_at(callable, i)).collect()
     }
 
     pub(super) fn member_display_name(&self, member: &HirId<HirExpr>) -> Option<&'a str> {
@@ -87,8 +81,7 @@ impl<'a> Checker<'a> {
             HirStmt::Fn(decl) => {
                 // Register the name first so the body may call itself.
                 self.locals.push(Local::func(decl.name, *stmt));
-                let confined = self.ctx.callable_confined(stmt, decl.params.len());
-                self.function((*stmt).into(), self.ctx.sigs.writes_of(stmt), confined, decl)?;
+                self.function((*stmt).into(), decl)?;
             },
             HirStmt::Type(decl) => self.type_decl(stmt, Some(*stmt), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
@@ -113,8 +106,6 @@ impl<'a> Checker<'a> {
                     self.check_return_field_move(e)?;
                     self.check_return_mutability(&state, e)?;
                     self.check_return(&state.debt, self.fn_ctx.return_shape, e)?;
-                    // Returning a mutable value moves it out to the caller.
-                    self.transfer_write_ownership(e)?;
                 },
                 // A `!` function falls back to null on a bare return, which it may not.
                 None if self.fn_ctx.return_shape == ReturnShape::NonNull => {
@@ -127,14 +118,14 @@ impl<'a> Checker<'a> {
                 let (body_narrow, _) = self.condition_narrowings(cond)?;
                 let scope = self.condition_pattern_binders(cond)?;
                 let pre = self.snapshot();
-                // Check the body twice. The second pass sees the first pass's moves, so a value the
-                // body reads after moving it is caught as a cross-iteration use. A rebind before the
-                // move clears it first, so rebind-then-move is still accepted.
+                // Check the body twice. A rebind late in the body drops a narrowing an earlier read
+                // relied on, and only the second pass reads that line under a later iteration's
+                // state.
                 for _ in 0..2 {
                     self.apply_narrowings(&body_narrow);
                     self.with_binders(&scope, body, |c| c.expr(body))?;
                     let after_body = self.snapshot();
-                    self.restore_flow_keeping_write_ownership_transfers(&pre);
+                    self.restore_flow(&pre);
                     // The body may have run, so a narrowing a rebind inside it invalidated stays
                     // invalidated after the loop.
                     self.restore_narrowings(&after_body);
@@ -205,7 +196,7 @@ impl<'a> Checker<'a> {
                 let mut exhaustive = false;
                 for arm in arms {
                     self.restore_flow(&baseline);
-                    let scope = self.match_arm_binders(arm, &remaining, stmt, scrutinee)?;
+                    let scope = self.match_arm_binders(arm, &remaining, stmt)?;
                     self.with_binders(&scope, &arm.body, |c| -> Result<(), anyhow::Error> {
                         if let Some(guard) = &arm.guard { c.expr(guard)?; }
                         c.expr(&arm.body)?;
@@ -271,9 +262,6 @@ impl<'a> Checker<'a> {
                 for (name, v) in brace {
                     let state = self.expr(v)?;
                     self.check_construct_field_mutability(immutable, &state, v)?;
-                    if !immutable {
-                        self.store_into_container_guard(v)?;
-                    }
                     if let TypeTag::Concrete(decl) = &tag {
                         self.check_into_brace_field(&decl.clone(), *name, &state.debt, v)?;
                     }
@@ -313,12 +301,8 @@ impl<'a> Checker<'a> {
             },
             HirExpr::Block(stmts) => {
                 let mark = self.locals.len();
-                let handed_over = self.element_write_ownerships_transferred;
                 for s in stmts { self.stmt(s)?; }
                 let dropped = self.check_dropped(mark, expr);
-                if self.scope_holds_write_ownership(mark, handed_over) {
-                    self.record_write_scope(expr);
-                }
                 self.truncate_locals(mark);
                 dropped?;
                 ValueState::unknown()
@@ -350,7 +334,7 @@ impl<'a> Checker<'a> {
                 let arg_types: Vec<ValueState> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
                 let resolved = self.resolved_call(expr, callee_id, args, &arg_types, immutable)?;
                 if resolved.is_none() {
-                    self.note_opaque_call_args(callee_id, args, &arg_types);
+                    self.note_opaque_call_args(callee_id, &arg_types);
                 }
                 self.invalidate_rebound_fields(callee_id);
                 let yielded = resolved.map_or(Debt::Clean, |state| state.debt);
@@ -425,32 +409,21 @@ impl<'a> Checker<'a> {
     pub(super) fn say(&mut self, decl: usize, field: &'a HirSayDecl) -> Result<(), anyhow::Error> {
         let (name, mutable, value, pattern) = (field.name, field.reassignable, &field.value, &field.pattern);
         let owed = field.clause.owed();
-        let (assigned, tag, mutability, provenance) = if let Some(value) = value {
+        let (assigned, tag, mutability) = if let Some(value) = value {
             let state = self.expr(value)?;
             self.check_into_slot(&state.debt, &owed, name, value)?;
-            // The move records the sources feeding the value, so the slot reuses that walk for its
-            // provenance and adds the closure captures a bare walk would miss.
-            let mut provenance = self.transfer_write_ownership(value)?;
-            provenance.extend(self.captured_sources(value));
-            (true, state.tag, state.mutability, provenance)
+            (true, state.tag, state.mutability)
         } else {
-            (false, TypeTag::Unknown, Mutability::Unknown, Vec::new())
+            (false, TypeTag::Unknown, Mutability::Unknown)
         };
         let mut local = Local::value(name, owed, mutable, assigned, tag);
         local.container = field.clause.container;
         local.site = *value;
         local.decl = Some(decl);
-        local.alias.mutability = mutability;
-        local.alias.borrowed_maybe_mutable = value.is_some_and(|v| self.holds_borrowed_maybe_mutable(&v));
-        local.alias.confined = value.is_some_and(|v| self.value_is_confined(&v));
-        local.alias.borrowed = value.is_some_and(|v| self.arg_is_borrowed(&v));
-        local.alias.mutable_provenance = provenance;
-        local.alias.extracted_from = value.and_then(|v| self.extraction_of(&v)).into_iter().collect();
-        local.alias.shared_origin = value.is_some_and(|v| self.shared_origin(&v));
-        local.alias.may_be_shared = local.alias.reached_from_elsewhere() || value.is_none();
+        local.mutability = mutability;
         local.resolved_callable = value.and_then(|v| self.callable_named_by(&v));
         let tag = local.tag.clone();
-        let binder_mutability = local.alias.mutability;
+        let binder_mutability = local.mutability;
         self.locals.push(local);
 
         if let (Some(pattern), Some(value)) = (pattern, value) {
@@ -498,34 +471,25 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    fn note_read(&mut self, i: usize, may_be_shared: bool) {
+    fn note_read(&mut self, i: usize) {
         self.locals[i].used = true;
-        if may_be_shared {
-            self.locals[i].alias.may_be_shared = true;
-        }
     }
 
     pub(super) fn identifier(&mut self, name: Symbol, expr: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let Some(i) = self.frame_index_of(name) else {
             // A read that resolves to an enclosing frame is a closure capture.
             if let Some(j) = self.upvalue_index(name) {
-                self.note_read(j, true);
+                self.note_read(j);
             }
-            self.escape_via_capture_error(name, expr)?;
-            self.capture_enclosing(name, expr);
+            self.refuse_capture_of_persisting_value(name, expr)?;
             return Ok(self.captured_read(name));
         };
 
-        let may_be_shared = self.path_base.take() != Some(*expr);
-        self.note_read(i, may_be_shared);
+        self.note_read(i);
 
         if self.locals[i].fn_decl {
             return Ok(ValueState::unknown());
         }
-
-        // A read needs no write-ownership, so giving a value away leaves the name readable. Only an
-        // opaque give is settled here, since its runtime proof rides the read.
-        self.settle_unknown_transfer(i, expr);
 
         if !self.locals[i].assigned && !self.locals[i].owed.contains(&self.ctx.sigs.opt) {
             let text = self.ctx.binding_display_name(name);
@@ -537,13 +501,12 @@ impl<'a> Checker<'a> {
         let debt = self.locals[i].read_debt(owed);
 
         Ok(ValueState::of(debt, self.locals[i].tag.clone())
-            .with_mutability(self.locals[i].alias.mutability)
-            .with_writable(self.write_permission(i)))
+            .with_mutability(self.locals[i].mutability))
     }
 
     /// Member or data access `target.member` / `target[member]`.
     pub(super) fn member_access(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
-        let receiver = self.path_base_receiver(target)?;
+        let receiver = self.receiver(target)?;
         self.member_access_of(&receiver, target, member)
     }
 
@@ -608,13 +571,6 @@ impl<'a> Checker<'a> {
         Err(self.ctx.absent_member_error(&receiver_state.tag, name, receiver))
     }
 
-    pub(super) fn path_base_receiver(&mut self, target: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
-        self.path_base = Some(*target);
-        let read = self.receiver(target);
-        self.path_base = None;
-        read
-    }
-
     pub(super) fn receiver(&mut self, receiver: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let state = match self.ctx.hir.get(receiver) {
             HirExpr::This => self.this_valuestate(),
@@ -638,7 +594,7 @@ impl<'a> Checker<'a> {
             BinOp::And | BinOp::Or => {
                 self.expr(l)?;
                 let into_right = self.narrowings(l, matches!(op, BinOp::And));
-                self.narrow_branch_keeping_moves(&into_right, |c| c.expr(r))?;
+                self.narrow_branch(&into_right, |c| c.expr(r))?;
                 Ok(ValueState::nonnull())
             },
             BinOp::Equal | BinOp::NotEqual => {
@@ -688,7 +644,7 @@ impl<'a> Checker<'a> {
 
         match local.reassignable {
             true => ValueState::of(debt, TypeTag::Unknown),
-            false => ValueState::of(debt, local.tag.clone()).with_mutability(local.alias.mutability),
+            false => ValueState::of(debt, local.tag.clone()).with_mutability(local.mutability),
         }
     }
 
@@ -716,7 +672,7 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    pub(super) fn function(&mut self, callable: CallableId, writes: Option<&'a HashSet<Symbol>>, confined: Vec<bool>, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
+    pub(super) fn function(&mut self, callable: CallableId, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
         // An unmarked return is inferred whole from the body. When it can both finish with no value
         // and return a bad value, the mixed shape must be declared.
         let unmarked = decl.is_unmarked();
@@ -780,9 +736,6 @@ impl<'a> Checker<'a> {
             returns_void: self.ctx.sigs.fn_sig_of(callable).is_some_and(|s| s.ret.void),
             name: Some(decl.name),
             return_clause: decl.clause.pos.clone(),
-            params: decl.params.iter().map(|p| (self.ctx.hir.ident_sym(&p.name), p.pos.clone())).collect(),
-            param_confined: confined,
-            writes,
             in_defer: false,
         };
 
@@ -803,22 +756,21 @@ impl<'a> Checker<'a> {
 
     pub(super) fn method_stmt(&mut self, stmt: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
         if let HirStmt::Fn(decl) = self.ctx.hir.get(stmt) {
-            let confined = self.ctx.callable_confined(stmt, decl.params.len());
-            self.function((*stmt).into(), self.ctx.sigs.writes_of(stmt), confined, decl)?;
+            self.function((*stmt).into(), decl)?;
         }
         Ok(())
     }
 
     pub(super) fn lambda(&mut self, decl: &HirFnDecl, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let confined = self.ctx.callable_confined(node, decl.params.len());
-        self.function((*node).into(), self.ctx.sigs.writes_of(node), confined, decl)
+        self.function((*node).into(), decl)
     }
 
     pub(super) fn receiver_facts(&self, decl: &HirFnDecl) -> ReceiverFacts {
         match &decl.receiver {
             Some(_) if self.checking_factory => ReceiverFacts::default(),
             Some(clause) => ReceiverFacts {
-                mutability: Mutability::param(clause.capability),
+                mutability: Mutability::of(clause.capability),
+                writable: clause.capability.is_mut(),
                 owed: clause.owed(),
             },
             None => self.fn_ctx.receiver.clone(),
@@ -832,7 +784,7 @@ impl<'a> Checker<'a> {
         match self.resolved_call(expr, callee, args, &arg_types, immutable)? {
             Some(state) => Ok(state),
             None => {
-                self.note_opaque_call_args(callee, args, &arg_types);
+                self.note_opaque_call_args(callee, &arg_types);
                 self.indirect_call(callee)
             },
         }
@@ -860,9 +812,6 @@ impl<'a> Checker<'a> {
                         for (i, (state, arg)) in arg_types.iter().zip(args).enumerate() {
                             if self.ctx.sigs.param_escapes_at(&init, i) {
                                 self.check_construct_field_mutability(immutable, state, arg)?;
-                                if !immutable {
-                                    self.store_into_container_guard(arg)?;
-                                }
                             }
                         }
                     }
@@ -913,10 +862,9 @@ impl<'a> Checker<'a> {
         // A native-type method resolves by name when no user method matches the receiver.
         if let Some(sig) = native::native_method(name) {
             if sig.effect.mutates_receiver {
-                if receiver_typed.writable == Mutability::Immutable {
+                if !self.may_write_through(receiver, &receiver_typed) {
                     return Err(self.immutable_receiver_error(callee, receiver, "mutates its receiver"));
                 }
-                self.claim_receiver_write_ownership(receiver)?;
             }
             self.check_native_args(callee, &sig, arg_types, args)?;
             if sig.container == Container::Preserves {
@@ -942,16 +890,8 @@ impl<'a> Checker<'a> {
         if !marker.is_mut() {
             return Ok(());
         }
-        if receiver_typed.writable == Mutability::Immutable {
+        if !self.may_write_through(receiver, receiver_typed) {
             return Err(self.immutable_receiver_error(callee, receiver, "declares `mut this`"));
-        }
-        self.claim_receiver_write_ownership(receiver)?;
-        if marker.is_retain() {
-            // A borrow cannot be given away, so it may not feed a consuming receiver.
-            if self.arg_is_borrowed(receiver) {
-                return Err(self.consumes_borrow_error(callee, receiver));
-            }
-            self.transfer_write_ownership(receiver)?;
         }
         Ok(())
     }
@@ -964,7 +904,6 @@ impl<'a> Checker<'a> {
         self.check_arg_mutability(callee, &sig.param_markers, arg_types, args)?;
         self.check_arg_obligations(callee, &sig.param_clauses, arg_types, args)?;
         self.check_args(callee, &sig.param_clauses, arg_types, args)?;
-        self.consume_move_args(&sig.param_markers, args)?;
         Ok(())
     }
 
@@ -1004,19 +943,7 @@ impl<'a> Checker<'a> {
                     self.locals[i].assigned = true;
                     self.locals[i].resolved_callable = self.callable_named_by(rhs);
                     self.locals[i].tag = state.tag.clone();
-                    self.locals[i].alias.mutability = state.mutability;
-                    self.locals[i].alias.borrowed_maybe_mutable = self.holds_borrowed_maybe_mutable(rhs);
-                    self.locals[i].alias.confined = self.value_is_confined(rhs);
-                    self.locals[i].alias.borrowed = self.arg_is_borrowed(rhs);
-                    self.reclaim_on_rebind(i);
-                    self.locals[i].alias.transfer_site = None;
-                    self.locals[i].alias.mutable_provenance = self.provenance_of(rhs);
-                    self.locals[i].alias.extracted_from = self.extraction_of(rhs).into_iter().collect();
-                    self.locals[i].alias.shared_origin = self.shared_origin(rhs);
-                    self.locals[i].alias.may_be_shared |= self.locals[i].alias.reached_from_elsewhere();
-                    if self.locals[i].alias.first_written_at.take().is_some() {
-                        self.locals[i].alias.holds_write_ownership = false;
-                    }
+                    self.locals[i].mutability = state.mutability;
                     self.locals[i].used = used;
                     self.reset_narrowing(i, matches!(state.debt, Debt::Clean));
                 } else if self.ctx.sigs.is_type(name) {
@@ -1035,7 +962,6 @@ impl<'a> Checker<'a> {
             _ => {},
         }
         // A store hands the value to a new holder, so a mutable right side moves.
-        self.transfer_write_ownership(rhs)?;
         Ok(state)
     }
 
@@ -1063,33 +989,15 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
 
-        self.attach_field_provenance(target, rhs);
-
         let slot = self.local_of(target);
 
-        if let Some(i) = slot.filter(|&i| self.write_permission(i) == Mutability::Immutable) {
+        let binding = slot.or_else(|| self.upvalue_binding_of(target));
+        if let Some(i) = binding.filter(|&i| !self.binding_is_writable(i)) {
             return Err(self.immutable_mutation_error(target, i));
-        }
-
-        if slot.is_none() {
-            let captured = self.upvalue_binding_of(target)
-                .filter(|&i| self.locals[i].alias.mutability == Mutability::Immutable);
-            if let Some(i) = captured {
-                return Err(self.immutable_mutation_error(target, i));
-            }
         }
 
         if slot.is_none() && self.is_readonly(target) {
             return Err(self.readonly_write_error(target));
-        }
-
-        match slot {
-            Some(i) => {
-                self.settle_unknown_transfer(i, target);
-                self.claim_element_write_ownership(i, target)?;
-                self.record_unshared_store(i, target);
-            },
-            None => {},
         }
 
         // A bracket index `obj[expr] = ...` is the dynamic data path.
@@ -1097,13 +1005,10 @@ impl<'a> Checker<'a> {
             if slot.is_none() {
                 self.receiver(target)?;
             }
-            if let (None, HirExpr::Identifier(name)) = (slot, self.ctx.hir.get(target)) {
-                self.capture_enclosing(*name, target);
-            }
             return Ok(());
         }
 
-        let receiver = self.path_base_receiver(target)?;
+        let receiver = self.receiver(target)?;
         let Some(field) = self.ctx.string_member(member) else { return Ok(()) };
         if let TypeTag::Concrete(decl) = &receiver.tag {
             self.assign_field_external(&decl.clone(), field, value, lhs, rhs)?;
@@ -1131,7 +1036,7 @@ impl<'a> Checker<'a> {
         let this = self.this_valuestate();
         self.ctx.require_usable_value(&this, lhs)?;
 
-        if !self.checking_factory && this.mutability == Mutability::Immutable {
+        if !self.this_is_writable() {
             return Err(self.readonly_receiver_error(&type_stmt, field, lhs));
         }
 

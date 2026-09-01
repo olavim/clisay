@@ -1,6 +1,6 @@
 //! Flow-sensitive semantic checks: what a program does on the way to each point.
 
-pub(crate) mod alias;
+mod immutable;
 mod barriers;
 mod conform;
 mod narrow;
@@ -20,7 +20,6 @@ use crate::middle::obligations::{Obligations, ObligationRule, Site};
 use crate::middle::signatures::Resolved;
 use crate::middle::signatures::{CallableId, Mutability, Signatures, TypeTag};
 
-use alias::{AliasLocal, ElementKey, TransferSite};
 
 pub use barriers::{Barrier, Barriers, Guard, WitnessSet};
 
@@ -59,8 +58,6 @@ struct ValueState {
     tag: TypeTag,
     /// What the value is: whether anything may mutate it at all.
     mutability: Mutability,
-    /// Whether this name may write it. A binding that a closure took write-permission from may not.
-    writable: Mutability,
     stored: bool,
 }
 
@@ -70,7 +67,6 @@ impl ValueState {
             debt: Debt::Unknown,
             tag: TypeTag::Unknown,
             mutability: Mutability::Unknown,
-            writable: Mutability::Unknown,
             stored: false,
         }
     }
@@ -80,7 +76,6 @@ impl ValueState {
             debt: Debt::Clean,
             tag: TypeTag::Unknown,
             mutability: Mutability::Unknown,
-            writable: Mutability::Unknown,
             stored: false,
         }
     }
@@ -90,7 +85,6 @@ impl ValueState {
             debt,
             tag,
             mutability: Mutability::Unknown,
-            writable: Mutability::Unknown,
             stored: false,
         }
     }
@@ -102,10 +96,8 @@ impl ValueState {
 
     fn with_mutability(mut self, mutability: Mutability) -> ValueState {
         self.mutability = mutability;
-        self.writable = mutability;
         self
     }
-    fn with_writable(mut self, writable: Mutability) -> ValueState { self.writable = writable; self }
 }
 
 struct Local {
@@ -129,7 +121,8 @@ struct Local {
     site: Option<HirId<HirExpr>>,
     /// The node that declared the binding.
     decl: Option<usize>,
-    alias: AliasLocal,
+    mutability: Mutability,
+    writable: bool,
     unknown: bool,
 }
 
@@ -175,7 +168,8 @@ impl Local {
             field_discharged: HashMap::new(),
             site: None,
             decl: None,
-            alias: AliasLocal { may_be_shared: true, ..AliasLocal::default() },
+            mutability: Mutability::Unknown,
+            writable: true,
             unknown: false
         }
     }
@@ -225,11 +219,12 @@ enum NarrowFact {
 #[derive(Default, Clone)]
 struct ReceiverFacts {
     mutability: Mutability,
+    writable: bool,
     owed: Obligations,
 }
 
 #[derive(Default)]
-struct FnContext<'a> {
+struct FnContext {
     return_shape: ReturnShape,
     return_owes: bool,
     return_unmarked: bool,
@@ -240,11 +235,6 @@ struct FnContext<'a> {
     /// The function's name.
     name: Option<Symbol>,
     return_clause: Option<SourcePosition>,
-    params: Vec<(Symbol, SourcePosition)>,
-    /// Per parameter, whether the escape summary clears it of ever leaving the call.
-    param_confined: Vec<bool>,
-    /// The names this body writes.
-    writes: Option<&'a HashSet<Symbol>>,
     returns_void: bool,
     in_defer: bool,
 }
@@ -317,8 +307,6 @@ impl<'a> Ctx<'a> {
 struct Checker<'a> {
     ctx: Ctx<'a>,
     out: Barriers,
-    /// The identifier a member access is about to read as its path base.
-    path_base: Option<HirId<HirExpr>>,
     locals: Vec<Local>,
     frame_start: usize,
     current_type: Option<HirId<HirStmt>>,
@@ -326,12 +314,10 @@ struct Checker<'a> {
     resolved_callees: HashMap<HirId<HirExpr>, CallableId>,
     this_narrowed: HashMap<Symbol, Obligations>,
     current_trait_surface: Option<IndexSet<Symbol>>,
-    fn_ctx: FnContext<'a>,
+    fn_ctx: FnContext,
     pub(super) mut_construction: bool,
     /// Locals a call in the expression being walked may have rebound.
     rebound_in_expr: HashSet<usize>,
-    /// How many times an element's write-ownership has been handed to a container.
-    element_write_ownerships_transferred: usize,
 }
 
 impl<'a> Diagnose for Checker<'a> {
@@ -344,7 +330,6 @@ impl<'a> Checker<'a> {
             ctx: Ctx { hir, bindings, sigs, force_checks: config.force_checks, drop_escape_refusal: config.drop_escape_refusal },
             resolved_callees: HashMap::new(),
             rebound_in_expr: HashSet::new(),
-            element_write_ownerships_transferred: 0,
             locals: Vec::new(),
             frame_start: 0,
             current_type: None,
@@ -353,7 +338,6 @@ impl<'a> Checker<'a> {
             current_trait_surface: None,
             fn_ctx: FnContext::default(),
             out: Barriers::default(),
-            path_base: None,
             mut_construction: false,
         }
     }

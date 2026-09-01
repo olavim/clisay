@@ -610,23 +610,6 @@ impl Hir {
             .collect()
     }
 
-    pub fn condition_pattern_binder_sources(&self, cond: &HirId<HirExpr>) -> Vec<(Symbol, HirId<HirExpr>)> {
-        match self.get(cond) {
-            HirExpr::Match(scrutinee, matcher) => self.get(matcher).binders(self).into_iter().map(|n| (n, *scrutinee)).collect(),
-            HirExpr::Binary(BinOp::And, left, right) => {
-                let mut out = self.condition_pattern_binder_sources(left);
-                out.extend(self.condition_pattern_binder_sources(right));
-                out
-            },
-            // An `or` binds the same names on both sides, so either side names their sources.
-            HirExpr::Binary(BinOp::Or, left, _) => match self.condition_pattern_binders(cond).is_empty() {
-                true => Vec::new(),
-                false => self.condition_pattern_binder_sources(left),
-            },
-            _ => Vec::new(),
-        }
-    }
-
     pub fn condition_pattern_binders(&self, cond: &HirId<HirExpr>) -> Vec<Symbol> {
         match self.get(cond) {
             HirExpr::Match(_, matcher) => self.get(matcher).binders(self),

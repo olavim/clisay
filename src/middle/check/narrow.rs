@@ -8,7 +8,6 @@ use crate::middle::native;
 use crate::middle::obligations::Obligations;
 use crate::middle::signatures::Witness;
 
-use super::scope::FlowSnapshot;
 use super::{Checker, Ctx, Local, NarrowFact, NarrowTarget, TypeTag};
 
 /// What the compiler can tell about a condition's truth without running it.
@@ -481,19 +480,10 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn narrow_branch<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> R {
-        self.narrow_under(facts, f, Checker::restore_flow)
-    }
-
-    pub(super) fn narrow_branch_keeping_moves<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> R {
-        self.narrow_under(facts, f, Checker::restore_flow_keeping_write_ownership_transfers)
-    }
-
-    fn narrow_under<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R,
-                       unwind: fn(&mut Self, &FlowSnapshot)) -> R {
         let pre = self.snapshot();
         self.apply_narrowings(facts);
         let r = f(self);
-        unwind(self, &pre);
+        self.restore_flow(&pre);
         r
     }
 

@@ -1,5 +1,0 @@
-// A borrowed `mut` parameter cannot be moved into a consuming `*mut` parameter.
-fn sink(*mut xs) { }
-fn launder(mut ys) {
-  sink(ys); // error: cannot move borrowed value `ys`
-}

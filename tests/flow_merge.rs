@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use clisay::internals::{
-    intersect_narrowings, merge_local_flow, symbol, ElementKey, LocalFlow, WriteOwnershipTransfer, TransferSite,
+    intersect_narrowings, merge_local_flow, symbol, LocalFlow,
     CallableId, Mutability, Obligations, Symbol, TypeTag, HirId,
 };
 
@@ -23,13 +23,6 @@ const SAMPLE: usize = 120;
 // Node and slot numbers.
 const TYPE_A: usize = 0;
 const TYPE_B: usize = 1;
-const TRANSFER_SITE_A: usize = 0;
-const TRANSFER_SITE_B: usize = 1;
-const CONTAINER_A: usize = 0;
-const CONTAINER_B: usize = 1;
-const SOURCE_A: usize = 0;
-const SOURCE_B: usize = 1;
-const CALLEE: usize = 2;
 
 fn obligations(ids: &[u32]) -> Obligations {
     ids.iter().map(|&id| symbol(id)).collect()
@@ -54,36 +47,6 @@ fn tags() -> Vec<TypeTag> {
 
 fn mutabilities() -> Vec<Mutability> {
     vec![Mutability::Mutable, Mutability::Immutable, Mutability::Unknown]
-}
-
-fn moves() -> Vec<Option<TransferSite>> {
-    vec![
-        None,
-        Some(TransferSite { node: HirId::from_index(TRANSFER_SITE_A), transfer: WriteOwnershipTransfer::Transferred }),
-        Some(TransferSite { node: HirId::from_index(TRANSFER_SITE_B), transfer: WriteOwnershipTransfer::Transferred }),
-        Some(TransferSite { node: HirId::from_index(TRANSFER_SITE_A), transfer: WriteOwnershipTransfer::Unknown(HirId::from_index(CALLEE), 0) }),
-    ]
-}
-
-fn extractions() -> Vec<Vec<(usize, Option<ElementKey>)>> {
-    vec![
-        vec![],
-        vec![(CONTAINER_A, None)],
-        vec![(CONTAINER_B, Some(ElementKey::Null))],
-        vec![(CONTAINER_A, Some(ElementKey::Number(1.0)))],
-        vec![(CONTAINER_B, Some(ElementKey::Bool(true)))],
-        vec![(CONTAINER_A, Some(ElementKey::Name(HirId::from_index(CALLEE))))],
-        vec![(CONTAINER_A, None), (CONTAINER_B, Some(ElementKey::Null))],
-    ]
-}
-
-fn provenances() -> Vec<Vec<usize>> {
-    vec![
-        vec![],
-        vec![SOURCE_A],
-        vec![SOURCE_B],
-        vec![SOURCE_A, SOURCE_B],
-    ]
 }
 
 fn sets() -> Vec<Obligations> {
@@ -114,9 +77,6 @@ fn base() -> LocalFlow {
         assigned: true,
         tag: tags()[0].clone(),
         mutability: mutabilities()[0],
-        transfer_site: moves()[0],
-        provenance: provenances()[0].clone(),
-        extracted_from: extractions()[0].clone(),
         discharged: sets()[0].clone(),
         field_discharged: field_sets()[0].clone(),
         resolved_callable: resolutions()[0],
@@ -128,8 +88,8 @@ fn domain() -> Vec<LocalFlow> {
     for assigned in [true, false] {
         for tag in &tags() {
             for mutability in &mutabilities() {
-                for transfer_site in &moves() {
-                    for extracted_from in &extractions() {
+                    {
+                    {
                         for discharged in &sets() {
                             for field_discharged in &field_sets() {
                                 for resolves_to in &resolutions() {
@@ -137,9 +97,6 @@ fn domain() -> Vec<LocalFlow> {
                                         assigned,
                                         tag: tag.clone(),
                                         mutability: *mutability,
-                                        transfer_site: *transfer_site,
-                                        provenance: provenances()[0].clone(),
-                                        extracted_from: extracted_from.clone(),
                                         discharged: discharged.clone(),
                                         field_discharged: field_discharged.clone(),
                                         resolved_callable: *resolves_to,
@@ -164,9 +121,6 @@ fn one_field_apart() -> Vec<LocalFlow> {
     out.push(LocalFlow { assigned: false, ..base() });
     out.extend(tags().into_iter().map(|tag| LocalFlow { tag, ..base() }));
     out.extend(mutabilities().into_iter().map(|mutability| LocalFlow { mutability, ..base() }));
-    out.extend(moves().into_iter().map(|transfer_site| LocalFlow { transfer_site, ..base() }));
-    out.extend(extractions().into_iter().map(|extracted_from| LocalFlow { extracted_from, ..base() }));
-    out.extend(provenances().into_iter().map(|provenance| LocalFlow { provenance, ..base() }));
     out.extend(sets().into_iter().map(|discharged| LocalFlow { discharged, ..base() }));
     out.extend(field_sets().into_iter().map(|field_discharged| LocalFlow { field_discharged, ..base() }));
     out
@@ -175,20 +129,10 @@ fn one_field_apart() -> Vec<LocalFlow> {
 /// One field turned into a string.
 type Key = fn(&LocalFlow) -> String;
 
-const FIELD_KEYS: [(&str, Key); 8] = [
+const FIELD_KEYS: [(&str, Key); 5] = [
     ("assigned", |f| format!("{}", f.assigned)),
     ("tag", |f| match &f.tag { TypeTag::Concrete(id) => format!("c{}", id.index()), _ => "other".into() }),
     ("mutability", |f| format!("{}{}", f.mutability == Mutability::Mutable, f.mutability == Mutability::Immutable)),
-    ("transfer_site", |f| f.transfer_site.map_or("none".into(), |m| match m.transfer {
-        WriteOwnershipTransfer::Transferred => format!("value@{}", m.node.index()),
-        WriteOwnershipTransfer::Unknown(callee, pos) => format!("opaque@{}:{}:{}", m.node.index(), callee.index(), pos),
-    })),
-    ("extracted_from", |f| {
-        let mut origins: Vec<String> = f.extracted_from.iter().map(origin_key).collect();
-        origins.sort();
-        origins.join("+")
-    }),
-    ("provenance", |f| format!("{:?}", f.provenance)),
     ("discharged", |f| set_key(&f.discharged)),
     ("field_discharged", |f| {
         let mut entries: Vec<String> = f.field_discharged.iter()
@@ -198,17 +142,6 @@ const FIELD_KEYS: [(&str, Key); 8] = [
         entries.join("|")
     }),
 ];
-
-fn origin_key(origin: &(usize, Option<ElementKey>)) -> String {
-    let key = match origin.1 {
-        None => "any".to_string(),
-        Some(ElementKey::Null) => "null".to_string(),
-        Some(ElementKey::Bool(b)) => format!("bool{b}"),
-        Some(ElementKey::Number(n)) => format!("num{n}"),
-        Some(ElementKey::Name(id)) => format!("name{}", id.index()),
-    };
-    format!("c{}:{key}", origin.0)
-}
 
 fn set_key(set: &Obligations) -> String {
     set.iter().map(|s| s.index().to_string()).collect::<Vec<_>>().join(",")
@@ -256,11 +189,7 @@ fn merging_is_commutative() {
     domain.extend(discharge_domain());
     for a in domain.iter() {
         for b in domain.iter() {
-            let (mut ab, mut ba) = (merged(a, b), merged(b, a));
-            ab.extracted_from.sort_by_key(origin_key);
-            ba.extracted_from.sort_by_key(origin_key);
-            ab.provenance.sort();
-            ba.provenance.sort();
+            let (ab, ba) = (merged(a, b), merged(b, a));
             assert!(ab == ba, "the join depends on the order of its outcomes");
         }
     }
@@ -295,32 +224,6 @@ fn folding_another_outcome_never_resolves_more() {
                 }
                 assert!(three.field_discharged.len() <= two.field_discharged.len(),
                     "a fold grew the field narrowings");
-            }
-        }
-    }
-}
-
-#[test]
-fn a_restriction_survives_a_merge_from_either_side() {
-    let domain = one_field_apart();
-    for a in domain.iter() {
-        for b in domain.iter() {
-            let out = merged(a, b);
-            assert!(out.transfer_site.is_some() == (a.transfer_site.is_some() || b.transfer_site.is_some()),
-                "a move was lost or invented by the join");
-            for origin in a.extracted_from.iter().chain(&b.extracted_from) {
-                assert!(out.extracted_from.contains(origin), "an origin was lost by the join");
-            }
-            for origin in &out.extracted_from {
-                assert!(a.extracted_from.contains(origin) || b.extracted_from.contains(origin),
-                    "an origin was invented by the join");
-            }
-            for source in a.provenance.iter().chain(&b.provenance) {
-                assert!(out.provenance.contains(source), "a source was lost by the join");
-            }
-            for source in &out.provenance {
-                assert!(a.provenance.contains(source) || b.provenance.contains(source),
-                    "a source was invented by the join");
             }
         }
     }
@@ -401,15 +304,6 @@ fn the_domain_carries_every_variant() {
 
     let full = domain();
     fn count<T>(seen: std::collections::HashSet<Discriminant<T>>) -> usize { seen.len() }
-
-    let kinds = count(full.iter().filter_map(|f| f.transfer_site).map(|m| discriminant(&m.transfer)).collect());
-    assert!(kinds == variant_count::<WriteOwnershipTransfer>(),
-        "the domain carries {kinds} of {} `WriteOwnershipTransfer` variants", variant_count::<WriteOwnershipTransfer>());
-
-    let keys = count(full.iter().flat_map(|f| &f.extracted_from).filter_map(|(_, k)| k.as_ref())
-        .map(discriminant).collect());
-    assert!(keys == variant_count::<ElementKey>(),
-        "the domain carries {keys} of {} `ElementKey` variants", variant_count::<ElementKey>());
 
     let tags = count(full.iter().map(|f| discriminant(&f.tag)).collect());
     assert!(tags == variant_count::<TypeTag>(),

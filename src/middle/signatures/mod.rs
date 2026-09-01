@@ -67,38 +67,31 @@ pub(crate) struct ParamFact {
     pub escape_site: Option<HirId<HirExpr>>,
 }
 
-/// A function's return: the obligations its result carries and whether any path returns a value.
+/// A function's return.
 #[derive(Clone, Default)]
 pub struct RetSig {
     pub obligations: Obligations,
     pub void: bool,
 }
 
-/// A function's per-parameter obligation set and its return signature.
 pub struct FnSig {
-    /// The capability the receiver requires, on a method.
     pub receiver_marker: Option<Capability>,
     pub param_clauses: Vec<Obligations>,
     pub param_markers: Vec<Capability>,
     pub ret: RetSig,
 }
 
-/// The value-mutability a value carries as it flows: the capability lattice the check pass tracks,
-/// distinct from `Capability`, the syntactic `mut`/`*mut` marker a clause declares.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mutability {
-    /// A `mut` parameter or a `: mut` return: the value may be mutated.
     Mutable,
-    /// Frozen, or an untagged return auto-frozen on the way out.
     Immutable,
     #[default]
     Unknown,
 }
 
 impl Mutability {
-    /// The mutability a parameter's clause marker grants its binding.
-    pub fn param(capability: Capability) -> Mutability {
-        if capability.is_mut() { Mutability::Mutable } else { Mutability::Immutable }
+    pub fn of(capability: Capability) -> Mutability {
+        if capability.is_mut() { Mutability::Mutable } else { Mutability::Unknown }
     }
 }
 
@@ -179,10 +172,6 @@ impl Signatures {
             methods_by_type: HashMap::new(),
             method_owner: HashMap::new(),
         }
-    }
-
-    pub(crate) fn writes_of(&self, callable: impl Into<CallableId>) -> Option<&HashSet<Symbol>> {
-        self.writes.get(&callable.into())
     }
 
     pub(crate) fn ret_tag_of(&self, callable: impl Into<CallableId>) -> Option<&TypeTag> {
@@ -284,14 +273,6 @@ impl Signatures {
 
     pub(crate) fn escape_site_at(&self, func: impl Into<CallableId>, param: usize) -> Option<HirId<HirExpr>> {
         self.param_fact(func, param).escape_site
-    }
-
-    pub(crate) fn returns_outer_names(&self, callable: impl Into<CallableId>) -> &[Symbol] {
-        self.returns_upvalues.get(&callable.into()).map_or(&[], Vec::as_slice)
-    }
-
-    pub(crate) fn hands_back_itself_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
-        self.param_fact(func, param).hands_back_itself
     }
 
     pub(crate) fn param_mutates_at(&self, func: impl Into<CallableId>, param: usize) -> bool {

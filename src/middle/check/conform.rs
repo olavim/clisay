@@ -9,7 +9,7 @@ use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{builtin_obligation_rules, BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt, Symbol};
 use crate::middle::obligations::{quoted_obligation_list, sorted_obligation_names, Obligations};
 use crate::middle::native::{self, NativeSig};
-use crate::middle::signatures::{CallableId, Mutability, RetSig, TypeTag, Witness};
+use crate::middle::signatures::{CallableId, RetSig, TypeTag, Witness};
 use crate::middle::hir::TypeId;
 
 use super::narrow::collect_whole_value_binders;
@@ -367,7 +367,6 @@ impl<'a> Ctx<'a> {
         obligations.iter().copied().filter(|o| self.sigs.witness_of(*o).is_none()).collect()
     }
 
-    /// The type or trait that witnesses an obligation at runtime, if it has one.
     pub(super) fn witness_name(&self, obligation: Symbol) -> Option<&'a str> {
         match self.sigs.witness_of(obligation)? {
             Witness::Type(id) | Witness::Trait(id) => self.hir.type_info(*id).map(|info| self.hir.text(info.name)),
@@ -375,8 +374,6 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The witness obligations each binder inherits from a bindingless alternative sharing its
-    /// or-group. In `Node { next } | null` the `next` binder owes `opt`.
     pub(super) fn collect_matcher_witnessed_obligations<T>(&self, matcher: &HirId<HirMatcher>, at: &HirId<T>) -> Result<HashMap<Symbol, Obligations>, anyhow::Error> {
         match self.hir.get(matcher) {
             HirMatcher::Or(alternatives) => self.collect_or_matcher_witnessed_obligations(alternatives, at),
@@ -441,6 +438,42 @@ impl<'a> Ctx<'a> {
 }
 
 impl<'a> Checker<'a> {
+    pub(super) fn store_into_container(&mut self, debt: &Debt, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        self.ctx.obligation_rule_reject_at(debt, ObligationRule::NoPersist, Site::Container, expr)
+    }
+
+    pub(super) fn refuse_capture_of_persisting_value(&self, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Some(i) = self.upvalue_index(name) else { return Ok(()) };
+        let owed = self.locals[i].owed.clone();
+        self.ctx.obligation_rule_reject_at(&Debt::Owed { obligations: owed, definite: false, container: false },
+            ObligationRule::NoPersist, Site::Capture, node)
+    }
+
+    pub(super) fn note_opaque_call_args(&mut self, callee: &HirId<HirExpr>, arg_types: &[ValueState]) {
+        let survive: Vec<(u8, Symbol)> = arg_types.iter().enumerate()
+            .filter_map(|(i, state)| self.ctx.obligation_preventing_escape(&state.debt).map(|owed| (i as u8, owed)))
+            .collect();
+        if !survive.is_empty() {
+            self.record_survive_barrier(callee, survive);
+        }
+    }
+
+    pub(super) fn transfer_obligations_into_receiver(&mut self, receiver: &HirId<HirExpr>, values: &[ValueState]) {
+        let mut obligations = HashSet::new();
+        for state in values {
+            if let Debt::Owed { obligations: o, .. } = &state.debt {
+                obligations.extend(o.iter().copied());
+            }
+        }
+        if obligations.is_empty() {
+            return;
+        }
+        let HirExpr::Identifier(name) = self.ctx.hir.get(receiver) else { return };
+        let Some(i) = self.frame_index_of(*name) else { return };
+        self.locals[i].owed.extend(obligations);
+        self.locals[i].container = true;
+    }
+
     /// Records which witnesses a discharge node must test at runtime.
     pub(super) fn record_witness_test(&mut self, node: &HirId<HirExpr>, debt: &Debt) {
         let Debt::Owed { obligations, .. } = debt else { return };
@@ -535,14 +568,6 @@ impl<'a> Checker<'a> {
     pub(super) fn check_native_args(&mut self, callee: &HirId<HirExpr>, sig: &NativeSig, arg_types: &[ValueState], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         let accepts: Vec<Obligations> = sig.params.iter().map(|p| self.ctx.native_obligations(*p)).collect();
         self.check_args(callee, &accepts, arg_types, args)
-    }
-
-    /// Downgrades a frozen argument's slot to immutable.
-    pub(super) fn discharge_freeze(&mut self, arg: &HirId<HirExpr>) {
-        let HirExpr::Identifier(name) = self.ctx.hir.get(arg) else { return };
-        if let Some(i) = self.frame_index_of(*name) {
-            self.locals[i].alias.mutability = Mutability::Immutable;
-        }
     }
 
     /// Checks a value moving into a field.
