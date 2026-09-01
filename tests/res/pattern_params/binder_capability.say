@@ -2,7 +2,7 @@
 type Box { pub data; init(this, *d) { this.data = d; } }
 
 fn peek(x @ Box { data }) {
-    data.push(2); // error: expected mutable receiver
+    data[0] = 2; // error: cannot mutate an immutable value
 }
 peek(mut Box(mut [1]));
 

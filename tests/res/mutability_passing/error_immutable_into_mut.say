@@ -1,5 +1,3 @@
-// A known-immutable value cannot satisfy a `mut` parameter that will mutate it.
 fn fill(mut x) { x["k"] = 1; }
-say m = mut {};
-freeze(m);
+say m = {};
 fill(m); // error: expected mutable argument

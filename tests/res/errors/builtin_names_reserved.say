@@ -40,11 +40,11 @@ fn f(time) { }
 //   |      ^^^^
 
 // @split
-fn g() { fn freeze(mut x) {} }
+fn g() { fn gcCollect(mut x) {} }
 
 // error(full):
-// error: 'freeze' is a built-in and cannot be redeclared
+// error: 'gcCollect' is a built-in and cannot be redeclared
 //  --> builtin_names_reserved.say:1:10
 //   |
-// 1 | fn g() { fn freeze(mut x) {} }
-//   |          ^^^^^^^^^^^^^^^^^^^
+// 1 | fn g() { fn gcCollect(mut x) {} }
+//   |          ^^^^^^^^^^^^^^^^^^^^^^

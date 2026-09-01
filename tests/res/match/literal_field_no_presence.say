@@ -8,22 +8,22 @@ match v {
 // expect asm:
 // 0: PUSH_CONSTANT "k"
 // 2: PUSH_CONSTANT 5
-// 4: DICT <1> <1>
-// 7: STORE_LOCAL L0
-// 9: LOAD_LOCAL L0
-// 11: LOAD_LOCAL L1
-// 13: GET_INDEX_OR_NULL "k"
-// 15: PUSH_CONSTANT 5
-// 17: JUMP_IF_NEQ <23>
-// 20: JUMP <26>
-// 23: JUMP <32>
-// 26: PUSH_CONSTANT 0
-// 28: POP
-// 29: JUMP <38>
-// 32: PUSH_CONSTANT 0
-// 34: POP
-// 35: JUMP <38>
-// 38: POP_SCOPE <1> <2>
-// 41: POP_SCOPE <1> <1>
-// 44: PUSH_NULL
-// 45: HALT
+// 4: DICT <1>
+// 6: STORE_LOCAL L0
+// 8: LOAD_LOCAL L0
+// 10: LOAD_LOCAL L1
+// 12: GET_INDEX_OR_NULL "k"
+// 14: PUSH_CONSTANT 5
+// 16: JUMP_IF_NEQ <22>
+// 19: JUMP <25>
+// 22: JUMP <31>
+// 25: PUSH_CONSTANT 0
+// 27: POP
+// 28: JUMP <37>
+// 31: PUSH_CONSTANT 0
+// 33: POP
+// 34: JUMP <37>
+// 37: POP_SCOPE <1> <2>
+// 40: POP_SCOPE <1> <1>
+// 43: PUSH_NULL
+// 44: HALT

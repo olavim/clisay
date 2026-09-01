@@ -43,10 +43,9 @@ impl Vm {
         self.stack.push(over);
     }
 
-    fn unwind_to(&mut self, stack_start: *mut Value, _leaving: Value) -> Result<(), anyhow::Error> {
+    fn unwind_to(&mut self, stack_start: *mut Value) {
         self.close_upvalues(stack_start);
         self.stack.set_top(stack_start);
-        Ok(())
     }
 
     pub(super) fn op_return(&mut self) -> Result<bool, anyhow::Error> {
@@ -61,7 +60,7 @@ impl Vm {
         }
 
         let value = self.stack.pop();
-        self.unwind_to(frame.stack_start, value)?;
+        self.unwind_to(frame.stack_start);
         self.stack.push(value);
         Ok(true)
     }
@@ -71,10 +70,7 @@ impl Vm {
         self.ip = frame.return_ip;
 
         let value = self.stack.pop();
-        self.unwind_to(frame.stack_start, value)?;
-        if frame.seal {
-            crate::core::objects::freeze_value(value, self.current_pos_index());
-        }
+        self.unwind_to(frame.stack_start);
         self.stack.push(value);
         Ok(())
     }
@@ -94,7 +90,7 @@ impl Vm {
         if !self.tail_breadcrumbs.is_empty() {
             self.release_tail_breadcrumbs();
         }
-        self.unwind_to(frame.stack_start, value)?;
+        self.unwind_to(frame.stack_start);
         self.ip = frame.handler_ip;
         self.stack.push(value);
         Ok(())
@@ -208,9 +204,8 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn op_array(&mut self) -> Result<(), anyhow::Error> {
+    pub(super) fn op_array(&mut self) {
         let len = self.read_next() as usize;
-        let seal = self.read_next() != 0;
         // Copy the elements without popping them first: they must stay on the stack
         // and remain GC roots because the allocation below can trigger a collection.
         let values = unsafe {
@@ -218,36 +213,8 @@ impl Vm {
             std::slice::from_raw_parts(start, len).to_vec()
         };
         let array = self.alloc(ObjArray::new(values));
-        let container = Value::from(array);
-        self.take_elements(container, len, 1, seal)?;
         self.stack.truncate(len);
-        self.push_built_container(container, seal);
-        Ok(())
-    }
-
-    /// Refuses a mutable element in a sealed literal, which is all a container asks of what it takes.
-    fn take_elements(&mut self, _container: Value, count: usize, step: usize, seal: bool) -> Result<(), anyhow::Error> {
-        if !seal {
-            return Ok(());
-        }
-        for i in (0..count).step_by(step) {
-            if objects::is_mutable_container(unsafe { *self.stack.offset(i) }) {
-                return self.mutable_in_immutable_error();
-            }
-        }
-        Ok(())
-    }
-
-    fn push_immutable(&mut self, value: Value) {
-        value.as_object().set_immutable(self.current_pos_index());
-        self.stack.push(value);
-    }
-
-    fn push_built_container(&mut self, value: Value, seal: bool) {
-        match seal {
-            true => self.push_immutable(value),
-            false => self.stack.push(value),
-        }
+        self.stack.push(Value::from(array));
     }
 
     /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
@@ -267,15 +234,13 @@ impl Vm {
             return;
         };
         let values = source[prefix..end].to_vec();
-        // A slice holds only what it copied, so the elements answer rather than the source.
         let array = self.alloc(ObjArray::new(values));
         self.stack.truncate(1);
-        self.push_immutable(Value::from(array));
+        self.stack.push(Value::from(array));
     }
 
-    pub(super) fn op_dict(&mut self) -> Result<(), anyhow::Error> {
+    pub(super) fn op_dict(&mut self) {
         let count = self.read_next() as usize;
-        let seal = self.read_next() != 0;
         let n = count * 2;
         // Build the entry map from the key/value pairs still on the stack; they
         // stay rooted there until after the allocation (which may collect).
@@ -288,35 +253,8 @@ impl Vm {
             }
         }
         let dict = self.alloc(ObjDict::new(entries));
-        let container = Value::from(dict);
-        // Every second slot is a value, counting from the top where the last pair's value sits.
-        self.take_elements(container, n, 2, seal)?;
         self.stack.truncate(n);
-        self.push_built_container(container, seal);
-        Ok(())
-    }
-
-    /// Clears the immutable bit on the value on top of the stack.
-    pub(super) fn op_mut(&mut self) {
-        let value = self.stack.peek(0);
-        if value.is_object() {
-            value.as_object().set_mutable();
-        }
-    }
-
-    pub(super) fn op_seal_check(&mut self) -> Result<(), anyhow::Error> {
-        let container = self.stack.peek(0);
-        let mutable = match container.kind() {
-            ValueKind::Object(ObjectKind::Array) =>
-                unsafe { &(*container.as_object().as_array_ptr()).values }.iter().any(|v| crate::core::objects::is_mutable_container(*v)),
-            ValueKind::Object(ObjectKind::Dict) =>
-                unsafe { (*container.as_object().as_dict_ptr()).entries.values() }.any(|v| crate::core::objects::is_mutable_container(*v)),
-            _ => false,
-        };
-        if mutable {
-            return self.mutable_in_immutable_error();
-        }
-        Ok(())
+        self.stack.push(Value::from(dict));
     }
 
     pub(super) fn op_push_type(&mut self) {

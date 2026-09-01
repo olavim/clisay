@@ -1,4 +1,3 @@
-// An immutable hole is met by a satisfier that returns an auto-frozen mut value.
 trait Source {
     req fn read(this): opt;
 }

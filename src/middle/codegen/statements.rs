@@ -36,8 +36,6 @@ impl<'a> Compiler<'a> {
                     self.try_frames[idx].position = pos;
                 }
 
-                // A factory populates the pre-allocated `this` and hands it back via `RETURN_FAC`,
-                // which seals it per the frame bit.
                 if let FnKind::Factory = *self.fn_kinds.last().unwrap() {
                     if expr.is_some() {
                         compiler_error!(self, stmt_id, "Cannot return a value from a factory");
@@ -293,7 +291,7 @@ impl<'a> Compiler<'a> {
         if let Some(FnKind::Factory) = self.fn_kinds.last() {
             return Ok(false);
         }
-        self.call_expression(callee, args, false, true)?;
+        self.call_expression(callee, args, true)?;
         Ok(true)
     }
 

@@ -74,11 +74,10 @@ impl<'a> Checker<'a> {
         Err(self.error_help(
             format!("Cannot return the mutable field '{field}'; it would move out of the receiver"),
             node,
-            "freeze or copy it before returning"))
+            "copy it before returning"))
     }
 
-    /// Checks a returned value against the obligations the return admits. An unmarked return infers
-    /// its obligations from the body instead, so it admits whatever the body produces.
+    /// Checks a returned value against the obligations the return declares.
     pub(super) fn check_return_obligations(&self, debt: &Debt, admits: &Obligations, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if self.fn_ctx.return_unmarked {
             return Ok(());

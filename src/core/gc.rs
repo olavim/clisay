@@ -5,7 +5,7 @@ use fnv::FnvHashMap;
 #[cfg(debug_assertions)]
 use fnv::FnvHashSet;
 
-use super::objects::{ObjClosure, ObjString, ObjUpvalue, ObjectHeader, ObjectKind, Object, FLAG_MARKED};
+use super::objects::{ObjClosure, ObjString, ObjUpvalue, ObjectHeader, ObjectKind, Object};
 
 /// Every heap object is `repr(align(8))`, so a freed block can back any later
 /// object of the same size regardless of its concrete type. Blocks are bucketed
@@ -123,7 +123,6 @@ impl Gc {
         ip_start: usize,
         upvalues: &[*mut ObjUpvalue],
         retains: u64,
-        mut_receiver: bool,
         param_accepts: u16,
         slot_accepts: u16
     ) -> *mut ObjClosure {
@@ -139,7 +138,6 @@ impl Gc {
                 name,
                 arity,
                 upvalue_count: count as u8,
-                mut_receiver,
                 ip_start,
                 param_accepts,
                 slot_accepts
@@ -187,8 +185,8 @@ impl Gc {
         #[cfg(debug_assertions)]
         self.assert_not_freed(obj);
         unsafe {
-            if !(*obj.as_header_ptr()).has(FLAG_MARKED) {
-                (*obj.as_header_ptr()).set(FLAG_MARKED, true);
+            if !(*obj.as_header_ptr()).marked {
+                (*obj.as_header_ptr()).marked = true;
                 self.reachable_refs.push(obj);
             }
         }
@@ -227,7 +225,7 @@ impl Gc {
     }
 
     fn sweep_strings(&mut self) {
-        self.strings.retain(|_, &mut obj_ptr| unsafe { (*obj_ptr).header.has(FLAG_MARKED) });
+        self.strings.retain(|_, &mut obj_ptr| unsafe { (*obj_ptr).header.marked });
     }
 
     /// Frees the unmarked and recounts what survived; An object can grow after it's allocated.
@@ -236,8 +234,8 @@ impl Gc {
         for i in (0..self.refs.len()).rev() {
             let obj = self.refs[i];
             unsafe {
-                if (*obj.as_header_ptr()).has(FLAG_MARKED) {
-                    (*obj.as_header_ptr()).set(FLAG_MARKED, false);
+                if (*obj.as_header_ptr()).marked {
+                    (*obj.as_header_ptr()).marked = false;
                     live += obj.size();
                 } else {
                     self.free(i);

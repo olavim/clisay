@@ -5,25 +5,11 @@ use nohash_hasher::{IntMap, IntSet};
 
 use super::gc::{Gc, GcTraceable};
 use super::host::Host;
-use super::value::{DictKey, Value, ValueKind};
+use super::value::{DictKey, Value};
 
-/// The runtime diagnostic raised when a mutation hits an immutable value.
-pub const IMMUTABLE_MUTATION: &str = "cannot mutate an immutable value";
-
-/// The runtime diagnostic raised when a mutable value of unknown capability lands in an immutable
-/// container at construction.
-pub const MUTABLE_IN_IMMUTABLE: &str = "cannot store a mutable value in an immutable container";
-
-/// Sentinel for `ObjectHeader::immutable_origin`: the value is mutable, or no site was recorded.
-pub const NO_ORIGIN: u32 = u32::MAX;
-
-
-/// The runtime diagnostic raised when an opaque call would retain a value the caller still owes an
-/// obligation on. Named after the obligation, so it reads like the refusal a resolved call gets.
 pub fn retained_owed_value(owed: &str) -> String {
     format!("cannot pass a value owing '{owed}' to a callee that retains it")
 }
-
 
 #[inline]
 pub fn mask_holds(mask: u64, position: usize) -> bool {
@@ -35,61 +21,18 @@ pub fn arguments_may_carry_witness(stack_start: *mut Value, arity: usize) -> boo
     (0..arity).any(|i| may_carry_witness(unsafe { *stack_start.add(i + 1) }))
 }
 
-pub fn is_mutable_container(value: Value) -> bool {
-    matches!(value.kind(), ValueKind::Object(ObjectKind::Array | ObjectKind::Dict | ObjectKind::Instance))
-        && !value.as_object().is_immutable()
-}
-
-pub fn freeze_value(value: Value, origin: u32) {
-    let ValueKind::Object(kind) = value.kind() else { return };
-    let object = value.as_object();
-    if object.is_immutable() {
-        return;
-    }
-    object.set_immutable(origin);
-    match kind {
-        ObjectKind::Array => for &v in unsafe { &(*object.as_array_ptr()).values } { freeze_value(v, origin); },
-        ObjectKind::Dict => for &v in unsafe { (*object.as_dict_ptr()).entries.values() } { freeze_value(v, origin); },
-        ObjectKind::Instance => {
-            let instance = unsafe { &*object.as_instance_ptr() };
-            let ty = unsafe { &*instance.ty };
-            for id in 0..ty.field_count { freeze_value(instance.get(id), origin); }
-        },
-        _ => {},
-    }
-}
-
 /// A type or trait declaration's runtime identity.
 pub type TypeId = u16;
-
-/// Reached by the collector this cycle.
-pub const FLAG_MARKED: u8 = 1 << 0;
-/// Frozen, so a store through it traps.
-pub const FLAG_IMMUTABLE: u8 = 1 << 1;
 
 #[repr(C)]
 pub struct ObjectHeader {
     pub kind: ObjectKind,
-    flags: u8,
-    pub immutable_origin: u32
+    pub marked: bool,
 }
 
 impl ObjectHeader {
     pub fn new(kind: ObjectKind) -> ObjectHeader {
-        ObjectHeader { kind, flags: 0, immutable_origin: NO_ORIGIN }
-    }
-
-    #[inline]
-    pub fn has(&self, flag: u8) -> bool {
-        self.flags & flag != 0
-    }
-
-    #[inline]
-    pub fn set(&mut self, flag: u8, on: bool) {
-        match on {
-            true => self.flags |= flag,
-            false => self.flags &= !flag,
-        }
+        ObjectHeader { kind, marked: false }
     }
 }
 
@@ -230,40 +173,6 @@ impl Object {
     }
 
     #[inline]
-    pub fn is_immutable(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_IMMUTABLE) }
-    }
-
-    #[inline]
-    pub fn set_immutable(&self, origin: u32) {
-        let header = unsafe { &mut *self.as_header_ptr() };
-        header.set(FLAG_IMMUTABLE, true);
-        header.immutable_origin = origin;
-    }
-
-    #[inline]
-    pub fn set_mutable(&self) {
-        let header = unsafe { &mut *self.as_header_ptr() };
-        header.set(FLAG_IMMUTABLE, false);
-        header.immutable_origin = NO_ORIGIN;
-    }
-
-    /// The code index of the site that made this value immutable, if one was recorded.
-    #[inline]
-    pub fn immutable_origin(&self) -> Option<u32> {
-        match unsafe { (*self.as_header_ptr()).immutable_origin } {
-            NO_ORIGIN => None,
-            origin => Some(origin)
-        }
-    }
-
-    /// Whether the last trace reached this object. Only meaningful between a trace and its sweep.
-    #[inline]
-    pub fn is_marked(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_MARKED) }
-    }
-
-    #[inline]
     pub fn as_string(&self) -> &String {
         unsafe { &(*self.as_string_ptr()).value }
     }
@@ -322,14 +231,13 @@ pub struct UpvalueLocation {
 #[repr(C)]
 pub struct ObjFn {
     pub header: ObjectHeader,
-    pub name: *mut ObjString,
     pub arity: u8,
-    pub mut_receiver: bool,
+    pub param_accepts: u16,
+    pub slot_accepts: u16,
+    pub name: *mut ObjString,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>,
     pub retain_mask: u64,
-    pub param_accepts: u16,
-    pub slot_accepts: u16
 }
 
 impl ObjFn {
@@ -337,12 +245,11 @@ impl ObjFn {
         mask_holds(self.retain_mask, position)
     }
 
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, retain_mask: u64, mut_receiver: bool, param_accepts: u16, slot_accepts: u16) -> ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, retain_mask: u64, param_accepts: u16, slot_accepts: u16) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
             arity,
-            mut_receiver,
             ip_start,
             upvalues,
             retain_mask,
@@ -406,14 +313,13 @@ impl GcTraceable for ObjNativeFn {
 #[repr(C)]
 pub struct ObjClosure {
     pub header: ObjectHeader,
-    pub name: *mut ObjString,
     pub arity: u8,
     pub upvalue_count: u8,
-    pub mut_receiver: bool,
+    pub param_accepts: u16,
+    pub slot_accepts: u16,
+    pub name: *mut ObjString,
     pub ip_start: usize,
     pub retain_mask: u64,
-    pub param_accepts: u16,
-    pub slot_accepts: u16
 }
 
 impl ObjClosure {
@@ -727,9 +633,9 @@ impl GcTraceable for ObjInstance {
 #[repr(C)]
 pub struct ObjUpvalue {
     pub header: ObjectHeader,
+    pub accepts: u16,
     pub location: *mut Value,
     pub closed: Value,
-    pub accepts: u16
 }
 
 impl ObjUpvalue {

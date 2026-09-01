@@ -106,7 +106,6 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     vm.ip = ip;
     match op {
         opcode::CONSTRUCT => vm.op_construct()?,
-        opcode::CALL_MUT => vm.op_call_mut()?,
         opcode::TAIL_CALL => vm.op_tail_call()?,
         opcode::RETURN_FAC => vm.op_return_factory()?,
         opcode::THROW => vm.op_throw()?,
@@ -120,17 +119,14 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::JUMP_IF_BAD => vm.op_jump_if_bad(),
         opcode::JUMP_IF_IS => vm.op_jump_if_is(),
         opcode::ASSERT_NON_NULL => vm.op_assert_non_null()?,
-        opcode::ASSERT_IMMUTABLE => vm.op_assert_immutable()?,
         opcode::DUP2 => vm.op_dup2(),
         opcode::BARRIER_GUARD => vm.op_barrier_guard()?,
         opcode::ASSERT_NO_RETAIN => vm.op_assert_no_retain()?,
         opcode::POP_SCOPE => vm.op_pop_scope(),
         opcode::CLOSE_UPVALUE => vm.op_close_upvalue(),
         opcode::CLOSE_SLOT_UPVALUE => vm.op_close_slot_upvalue(),
-        opcode::ARRAY => vm.op_array()?,
-        opcode::DICT => vm.op_dict()?,
-        opcode::MUT => vm.op_mut(),
-        opcode::SEAL_CHECK => vm.op_seal_check()?,
+        opcode::ARRAY => vm.op_array(),
+        opcode::DICT => vm.op_dict(),
         opcode::PUSH_CLOSURE => vm.op_push_closure()?,
         opcode::PUSH_TYPE => vm.op_push_type(),
         opcode::BUILD_TYPE => vm.op_build_type()?,
@@ -524,7 +520,7 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     } else {
         vm.stack.set_top(top);
         vm.ip = ip;
-        vm.call(arg_count, value, true)?;
+        vm.call(arg_count, value)?;
         let top = vm.stack.top();
         let base = unsafe { (*vm.frames.top()).stack_start };
         become dispatch(vm, vm.ip, top, base);
@@ -537,7 +533,7 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     }
 
     let stack_start = unsafe { top.sub(arg_count + 1) };
-    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true });
+    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start });
     // The check names the site it happened at, so `ip` has to be current for the diagnostic.
     if arg_count != 0 {
         vm.stack.set_top(top);

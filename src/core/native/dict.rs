@@ -1,8 +1,7 @@
 use crate::core::gc::Gc;
 use crate::core::host::Host;
-use anyhow::bail;
 
-use crate::core::objects::{NativeFn, ObjNativeFn, ObjString, IMMUTABLE_MUTATION};
+use crate::core::objects::{NativeFn, ObjNativeFn, ObjString};
 use crate::core::value::{DictKey, Value};
 
 use super::NativeType;
@@ -24,9 +23,6 @@ impl NativeDict {
     }
 
     fn remove(host: &mut dyn Host, target: Value, key: Value) -> Result<(), anyhow::Error> {
-        if target.as_object().is_immutable() {
-            bail!("{IMMUTABLE_MUTATION}");
-        }
         let dict = unsafe { &mut *target.as_object().as_dict_ptr() };
         let removed = dict.entries.remove(&DictKey(key)).unwrap_or(Value::NULL);
         host.push(removed);

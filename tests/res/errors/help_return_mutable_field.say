@@ -10,4 +10,4 @@ type Holder {
 // 3 |   init(this) { this.data = mut []; }
 // 4 |   pub fn leak(this): mut { return this.data; }
 //   |                                   ^^^^^^^^^
-//   = help: freeze or copy it before returning
+//   = help: copy it before returning

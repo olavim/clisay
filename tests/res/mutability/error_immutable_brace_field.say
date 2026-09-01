@@ -1,4 +1,0 @@
-// An immutable value is immutable all the way down, so a mutable field value is refused at the
-// construction rather than frozen by its seal.
-type Box { pub data; }
-say b = Box{data: mut [0]}; // error: cannot store a mutable value in an immutable container

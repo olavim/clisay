@@ -60,7 +60,6 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     Ok(chunk)
 }
 
-/// Writes a barrier's guarded positions as a count byte followed by one byte each.
 fn write_positions(ir: &Ir, chunk: &mut BytecodeChunk, idx: u16, pos: &SourcePosition) {
     let positions = ir.survive_positions(idx);
     chunk.write(positions.len() as u8, pos);
@@ -69,15 +68,13 @@ fn write_positions(ir: &Ir, chunk: &mut BytecodeChunk, idx: u16, pos: &SourcePos
     }
 }
 
-/// Writes a declaration id as two little-endian bytes.
 fn write_u16(chunk: &mut BytecodeChunk, value: u16, pos: &SourcePosition) {
     for byte in value.to_le_bytes() {
         chunk.write(byte, pos);
     }
 }
 
-/// The encoded byte length of an instruction: its opcode plus operand bytes. A
-/// variable-length `List` operand is sized from the instruction's own data.
+/// The encoded byte length of an instruction: its opcode plus operand bytes.
 fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
     let op = opcode::opcode_of(inst);
     let mut len = 1;
@@ -85,7 +82,7 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
         match operand.size() {
             Some(sz) => len += sz,
             None => match *inst {
-                Inst::Construct(fields_idx, _) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
+                Inst::Construct(fields_idx) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
                 Inst::AssertNoRetain(_, _, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
                 _ => unreachable!("only Construct and AssertNoRetain have a List operand"),
             },
@@ -108,7 +105,6 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Throw
         | PopTry
         | AssertNonNull
-        | AssertImmutable
         | Pop | Dup | Dup2
         | PushNull | PushTrue | PushFalse
         | GetIndex
@@ -117,10 +113,9 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
         | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
         | IsShaped | ArrayLen
-        | SetIndex | SetProperty
-        | Mut | SealCheck => {}
+        | SetIndex | SetProperty => {}
 
-        Call(b) | CallMut(b) | TailCall(b)
+        Call(b) | TailCall(b)
         | PushConstant(b) | PushClosure(b) | PushType(b) | BuildType(b)
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
         | CloseUpvalue(b) | CloseSlotUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
@@ -185,13 +180,12 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(is_dot, pos);
         }
 
-        Construct(fields_idx, seal) => {
+        Construct(fields_idx) => {
             let fields = ir.construct_fields(fields_idx);
             chunk.write(fields.len() as u8, pos);
             for &id in fields {
                 chunk.write(id, pos);
             }
-            chunk.write(seal, pos);
         }
 
         BarrierGuard(idx) => {
@@ -203,12 +197,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             write_u16(chunk, idx, pos);
         }
 
-        Array(a, b) | Dict(a, b) => {
-            chunk.write(a, pos);
-            chunk.write(b, pos);
-        }
-
-        SetField(member) | SetFieldPop(member) => chunk.write(member, pos),
+        Array(n) | Dict(n) | SetField(n) | SetFieldPop(n) => chunk.write(n, pos),
 
         SubConstLocal(c, local) | AddConstLocal(c, local) => {
             chunk.write(c, pos);

@@ -35,7 +35,6 @@ pub struct NativeSig {
     pub params: &'static [ObSet],
     pub ret: RetSig,
     pub container: Container,
-    pub mutates_receiver: bool,
 }
 
 impl NativeSig {
@@ -44,7 +43,6 @@ impl NativeSig {
             params,
             ret,
             container: Container::None,
-            mutates_receiver: false,
         }
     }
 }
@@ -56,7 +54,6 @@ pub fn builtin(name: &str) -> Option<NativeSig> {
         "gcHeapSize" => NativeSig::new(&[], RetSig::CLEAN),
         "gcCollect" => NativeSig::new(&[], RetSig::VOID),
         "gcStress" => NativeSig::new(&[ObSet::CLEAN], RetSig::VOID),
-        "freeze" => NativeSig::new(&[ObSet::ANY], RetSig::CLEAN),
         _ => return None,
     };
     Some(sig)
@@ -67,8 +64,8 @@ pub fn native_method(name: &str) -> Option<NativeSig> {
         "length" => NativeSig::new(&[], RetSig::CLEAN),
         "size" => NativeSig::new(&[], RetSig::CLEAN),
         "has" => NativeSig::new(&[ObSet::ANY], RetSig::CLEAN),
-        "remove" => NativeSig { mutates_receiver: true, ..NativeSig::new(&[ObSet::ANY], RetSig::OPT) },
-        "push" => NativeSig { container: Container::Preserves, mutates_receiver: true, ..NativeSig::new(&[ObSet::ANY], RetSig::VOID) },
+        "remove" => NativeSig::new(&[ObSet::ANY], RetSig::OPT),
+        "push" => NativeSig { container: Container::Preserves, ..NativeSig::new(&[ObSet::ANY], RetSig::VOID) },
         _ => return None,
     };
     Some(sig)

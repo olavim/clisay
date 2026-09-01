@@ -314,7 +314,6 @@ struct Checker<'a> {
     this_narrowed: HashMap<Symbol, Obligations>,
     current_trait_surface: Option<IndexSet<Symbol>>,
     fn_ctx: FnContext,
-    pub(super) mut_construction: bool,
     /// Locals a call in the expression being walked may have rebound.
     rebound_in_expr: HashSet<usize>,
 }
@@ -337,7 +336,6 @@ impl<'a> Checker<'a> {
             current_trait_surface: None,
             fn_ctx: FnContext::default(),
             out: Barriers::default(),
-            mut_construction: false,
         }
     }
 

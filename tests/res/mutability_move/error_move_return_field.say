@@ -1,4 +1,3 @@
-// Returning a mutable field would move it out of the borrowed receiver; freeze or copy instead.
 type Holder {
   pub var data;
   init(this) { this.data = mut []; }

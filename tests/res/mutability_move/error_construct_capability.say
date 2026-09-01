@@ -1,6 +1,3 @@
-// A constructor applies the passing rule to its arguments: a frozen value is rejected at a `mut`
-// init parameter, just as at a `mut` function parameter.
 type Box { init(this, mut x) { x[0] = 1; } }
-say f = mut [1];
-freeze(f);
+say f = [1];
 say b = Box(f); // error: expected mutable argument

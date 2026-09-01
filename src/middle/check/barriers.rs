@@ -1,6 +1,6 @@
 use crate::middle::diagnose::Diagnose;
 use crate::middle::obligations::{obligation_atoms, quoted_obligation_list};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::middle::hir::{HirExpr, HirId, Symbol, TypeId};
 use crate::middle::obligations::Obligations;
@@ -25,10 +25,8 @@ pub struct Barrier {
 pub enum Guard {
     /// An unknown value against the witnesses its destination refuses.
     Boundary,
-    /// A `!` operand owing only `opt`, where a null check alone suffices.
+    /// A `!` operand owing only `opt`.
     NonNull,
-    /// A value entering an immutable construction.
-    Immutable,
 }
 
 #[derive(Default)]
@@ -53,11 +51,6 @@ pub struct Barriers {
     /// Every registered object witness declaration, the VM's registry for recognizing a crossing
     /// value as a witness at a boundary barrier.
     pub(super) witness_decls: Vec<TypeId>,
-    /// Immutable container literals with an unknown-capability element, whose elements are checked
-    /// for mutability at construction so a mutable value cannot land in an immutable container.
-    pub(super) seal_checks: HashSet<HirId<HirExpr>>,
-    /// Paren-construction `Call` nodes (`K(args)`).
-    pub(super) constructions: HashSet<HirId<HirExpr>>,
 }
 
 impl Barriers {
@@ -83,14 +76,6 @@ impl Barriers {
 
     pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[(u8, Symbol)]> {
         self.arg_marks.get(callee).map(|m| m.survive.as_slice()).filter(|p| !p.is_empty())
-    }
-
-    pub fn needs_seal_check(&self, node: &HirId<HirExpr>) -> bool {
-        self.seal_checks.contains(node)
-    }
-
-    pub fn is_construction(&self, node: &HirId<HirExpr>) -> bool {
-        self.constructions.contains(node)
     }
 
     pub fn len(&self) -> usize {
@@ -122,14 +107,6 @@ impl<'a> Checker<'a> {
 
     pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<(u8, Symbol)>) {
         self.out.arg_marks.entry(*callee).or_default().survive = positions;
-    }
-
-    pub(super) fn record_seal_check(&mut self, node: &HirId<HirExpr>) {
-        self.out.seal_checks.insert(*node);
-    }
-
-    pub(super) fn record_construction(&mut self, node: &HirId<HirExpr>) {
-        self.out.constructions.insert(*node);
     }
 
     pub(super) fn record_boundary_barrier(&mut self, node: &HirId<HirExpr>, accepted: &Obligations) {

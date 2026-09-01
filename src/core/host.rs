@@ -9,5 +9,4 @@ pub trait Host {
     /// Run a garbage collection.
     fn collect(&mut self);
     fn print(&mut self, text: String);
-    fn code_index(&self) -> u32;
 }

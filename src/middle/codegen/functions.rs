@@ -98,11 +98,8 @@ impl<'a> Compiler<'a> {
             })
             .collect();
 
-        // A method declaring `mut this` needs the call to prove its receiver is mutable.
-        let mut_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_mut());
-
         let param_accepts = self.param_accepts(callable)?;
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, declared_retains(decl), mut_receiver, param_accepts, slot_accepts));
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, declared_retains(decl), param_accepts, slot_accepts));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))
@@ -111,7 +108,6 @@ impl<'a> Compiler<'a> {
     fn exit_function(&mut self, body_id: &HirId<HirExpr>, kind: FnKind) {
         if matches!(self.hir.get(body_id), HirExpr::Block(_)) {
             if !matches!(self.ir.code().last(), Some(Inst::Return | Inst::ReturnFac)) {
-                // A factory hands back `this` via `RETURN_FAC`, which seals it per the frame bit.
                 if let FnKind::Factory = kind {
                     self.emit(Inst::LoadLocal(0), body_id);
                     self.emit(Inst::ReturnFac, body_id);

@@ -92,8 +92,6 @@ pub struct CallFrame {
     closure: *mut ObjClosure,
     return_ip: *const OpCode,
     stack_start: *mut Value,
-    /// Whether a factory returning from this frame should seal (deep-freeze) its instance.
-    seal: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -201,10 +199,6 @@ impl Host for Vm {
         self.out.push(text.clone());
         Output::println(text);
     }
-
-    fn code_index(&self) -> u32 {
-        self.current_pos_index()
-    }
 }
 
 impl Vm {
@@ -250,7 +244,6 @@ impl Vm {
             closure: std::ptr::null_mut(),
             return_ip: std::ptr::null(),
             stack_start: vm.stack.top(),
-            seal: false,
         });
 
         vm.define_native("print", 1, |vm, _target, args| {
@@ -288,12 +281,6 @@ impl Vm {
         vm.define_native("gcStress", 1, |vm, _target, args| {
             vm.gc().stress = args[0].as_bool();
             vm.push(Value::NULL);
-            Ok(())
-        });
-
-        vm.define_native("freeze", 1, |vm, _target, args| {
-            objects::freeze_value(args[0], vm.code_index());
-            vm.push(args[0]);
             Ok(())
         });
 
@@ -401,39 +388,6 @@ impl Vm {
 
     fn error_labeled(&self, message: impl Into<String>, label: impl Into<String>) -> Result<(), anyhow::Error> {
         self.raise(Diagnostic::new(message, self.get_source_position().clone()).with_label(label))
-    }
-
-    fn immutable_error(&self, target: Value) -> Result<(), anyhow::Error> {
-        let mut diagnostic = Diagnostic::new(objects::IMMUTABLE_MUTATION, self.get_source_position().clone())
-            .with_label("this value is immutable");
-        if let Some(origin) = target.as_object().immutable_origin() {
-            let pos = self.chunk.code_pos[origin as usize].clone();
-            diagnostic = diagnostic.with_context_span(pos, "value made immutable here");
-        }
-        self.raise(diagnostic)
-    }
-
-    pub(super) fn readonly_receiver_error(&self, name: *mut ObjString, target: Value) -> Result<(), anyhow::Error> {
-        let method = unsafe { &(*name).value };
-        let mut diagnostic = Diagnostic::new(format!("`{method}` declares `mut this`, but its receiver is immutable"),
-            self.get_source_position().clone())
-            .with_label("this receiver cannot be mutated");
-        if let Some(origin) = target.as_object().immutable_origin() {
-            let pos = self.chunk.code_pos[origin as usize].clone();
-            diagnostic = diagnostic.with_context_span(pos, "value made immutable here");
-        }
-        self.raise(diagnostic)
-    }
-
-    #[inline]
-    pub(super) fn receiver_rejects_mut(&self, target: Value) -> bool {
-        matches!(target.kind(), ValueKind::Object(_)) && target.as_object().is_immutable()
-    }
-
-    fn mutable_in_immutable_error(&self) -> Result<(), anyhow::Error> {
-        self.raise(Diagnostic::new(objects::MUTABLE_IN_IMMUTABLE, self.get_source_position().clone())
-            .with_label("this container is immutable")
-            .with_help("an element is mutable; freeze it, or mark the container `mut`"))
     }
 
     fn raise(&self, diagnostic: Diagnostic) -> Result<(), anyhow::Error> {
@@ -562,9 +516,5 @@ impl Vm {
 
     pub fn get_source_position(&self) -> &SourcePosition {
         self.source_pos_at(self.ip)
-    }
-
-    pub fn current_pos_index(&self) -> u32 {
-        self.code_index_at(self.ip) as u32
     }
 }

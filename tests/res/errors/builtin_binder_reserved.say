@@ -13,15 +13,15 @@ match (x) { print => print(2), _ => print(3), }
 
 // @split
 say a = [1, 2, 3];
-match (a) { [first, ..freeze] => print(first), _ => print(0), }
+match (a) { [first, ..gcCollect] => print(first), _ => print(0), }
 
 // error(full):
-// error: 'freeze' is a built-in and cannot be redeclared
+// error: 'gcCollect' is a built-in and cannot be redeclared
 //  --> builtin_binder_reserved.say:2:23
 //   |
 // 1 | say a = [1, 2, 3];
-// 2 | match (a) { [first, ..freeze] => print(first), _ => print(0), }
-//   |                       ^^^^^^
+// 2 | match (a) { [first, ..gcCollect] => print(first), _ => print(0), }
+//   |                       ^^^^^^^^^
 
 // @split
 say v = 1;

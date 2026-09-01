@@ -40,7 +40,6 @@ pub struct RetSig {
 }
 
 pub struct FnSig {
-    pub receiver_marker: Option<Capability>,
     pub param_clauses: Vec<Obligations>,
     pub param_markers: Vec<Capability>,
     pub ret: RetSig,

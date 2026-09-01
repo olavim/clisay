@@ -55,10 +55,9 @@ pub struct Label(usize);
 pub enum Inst {
     // Control flow
     Call(u8),
-    CallMut(u8),
     TailCall(u8),
     /// Brace construction `C { f: v, ... }`.
-    Construct(u16, u8),
+    Construct(u16),
     Invoke(u8, u8, u8),
     /// `this.name(args)`.
     InvokeThis(u8, u8),
@@ -82,7 +81,6 @@ pub enum Inst {
     JumpIfLeLocalConst(Label, u8, u8),
     JumpIfLtLocalConst(Label, u8, u8),
     Return,
-    /// A factory's return: deep-freezes the returned instance if the call frame's seal bit is set.
     ReturnFac,
     Halt,
     Throw,
@@ -90,7 +88,6 @@ pub enum Inst {
     PushDeferTry(Label),
     PopTry,
     AssertNonNull,
-    AssertImmutable,
     BarrierGuard(u16),
     AssertNoRetain(u8, u16, u16),
     PopScope(u8, u8),
@@ -129,13 +126,8 @@ pub enum Inst {
     GetField(u8),
     SetField(u8),
     SetFieldPop(u8),
-    /// Element count, then whether the literal seals itself immutable.
-    Array(u8, u8),
-    Dict(u8, u8),
-    /// Clears the immutable bit on the object on top of the stack.
-    Mut,
-    /// Asserts every element of the immutable container on top of the stack is immutable.
-    SealCheck,
+    Array(u8),
+    Dict(u8),
 
     // Arithmetic
     Add,

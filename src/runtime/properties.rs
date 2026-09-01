@@ -56,38 +56,11 @@ impl Vm {
     }
 
     fn invoke_method(&mut self, method: Object, arg_count: usize) -> Result<(), anyhow::Error> {
-
-        // A capturing method is already a closure bound to the frame that declared its type. Any
-        // other method captures nothing and is closed here.
-        let is_bound = method.tag() == objects::TAG_CLOSURE;
-        let (name, arity, ip_start, mut_receiver) = match is_bound {
-            true => {
-                let closure = unsafe { &*method.as_closure_ptr() };
-                (closure.name, closure.arity, closure.ip_start, closure.mut_receiver)
-            },
-            false => {
-                let func = unsafe { &*method.as_function_ptr() };
-                (func.name, func.arity, func.ip_start, func.mut_receiver)
-            },
-        };
-        if mut_receiver {
-            let target = self.stack.peek(arg_count);
-            if self.receiver_rejects_mut(target) {
-                return self.readonly_receiver_error(name, target);
-            }
-        }
-        if arg_count != arity as usize {
-            let text = unsafe { &(*name).value };
-            return self.error(format!("{} expects {} arguments, but was called with {}", text, arity, arg_count));
-        }
-        let closure_ptr = match is_bound {
+        let closure_ptr = match method.tag() == objects::TAG_CLOSURE {
             true => method.as_closure_ptr(),
             false => self.create_closure(method.as_function_ptr()).as_closure_ptr(),
         };
-        let stack_start = self.stack.offset(arg_count);
-        self.check_arguments_accepted(unsafe { (*closure_ptr).param_accepts }, stack_start, arg_count)?;
-        self.push_frame(closure_ptr, stack_start, ip_start, true)?;
-        Ok(())
+        self.enter_closure(arg_count, closure_ptr)
     }
 
     pub(super) fn op_invoke_this(&mut self) -> Result<(), anyhow::Error> {
@@ -116,8 +89,7 @@ impl Vm {
         let instance_ref = receiver.as_object().as_instance_ptr();
         let callable = self.get_property_by_id(instance_ref, member_id);
         self.stack.set(arg_count, callable);
-        let called = self.call(arg_count, callable, true);
-        called
+        self.call(arg_count, callable)
     }
 
     fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize, is_dot: bool) -> Result<(), anyhow::Error> {
@@ -135,8 +107,7 @@ impl Vm {
         // The callable takes the receiver's slot, which is where a call reads it from.
         let callable = self.stack.pop();
         self.stack.set(arg_count, callable);
-        let called = self.call(arg_count, callable, true);
-        called
+        self.call(arg_count, callable)
     }
 
     fn get_instance_property(&mut self, instance_ptr: *mut ObjInstance, prop: *mut ObjString) -> Option<Value> {
@@ -268,7 +239,6 @@ impl Vm {
         }
     }
 
-    #[cold]
     fn store_field(&mut self, instance_ref: *mut ObjInstance, field: u8, value: Value) -> Result<(), anyhow::Error> {
         #[cfg(debug_assertions)]
         assert_field_slot(unsafe { &*instance_ref }, field);
@@ -278,9 +248,7 @@ impl Vm {
         Ok(())
     }
 
-    /// Refuses a value the field does not accept.
-    #[cold]
-    /// What a field accepts. A field id the type does not have refuses nothing.
+    #[inline]
     pub(super) fn field_accepts(&self, instance_ref: *mut ObjInstance, field: u8) -> u16 {
         let ty = unsafe { &*(*instance_ref).ty };
         ty.field_accepts.get(field as usize).copied().unwrap_or(ir::SLOT_ACCEPTS_ANYTHING)
@@ -325,18 +293,14 @@ impl Vm {
         if !matches!(target.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         }
-        self.ensure_mutable(target)?;
 
         let instance_ref = target.as_object().as_instance_ptr();
 
-        // Ask before the pop, which would prune the mark this reads.
-        let slot = self.stack.offset(0);
-        let value = unsafe { *slot };
+        let value = self.stack.peek(0);
         if POP {
             self.stack.pop();
         }
 
-        // Record before storing, so a store this refuses has not already mutated the instance.
         self.store_field(instance_ref, member_id, value)
     }
 
@@ -371,8 +335,8 @@ impl Vm {
     }
 
     #[inline]
-    fn store_operands(&self) -> (Value, Value, Value) {
-        (self.stack.peek(2), self.stack.peek(1), self.stack.peek(0))
+    fn store_operands(&self) -> (Value, Value) {
+        (self.stack.peek(2), self.stack.peek(1))
     }
 
     #[inline]
@@ -383,22 +347,11 @@ impl Vm {
         self.stack.set(0, value);
     }
 
-    fn ensure_mutable(&self, target: Value) -> Result<(), anyhow::Error> {
-        if !matches!(target.kind(), ValueKind::Object(_)) {
-            return Ok(());
-        }
-        if target.as_object().is_immutable() {
-            return self.immutable_error(target);
-        }
-        Ok(())
-    }
-
     pub(super) fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
-        let (target, prop, _stored) = self.store_operands();
+        let (target, prop) = self.store_operands();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
-        self.ensure_mutable(target)?;
         self.drop_store_path();
 
         match object_kind {
@@ -461,11 +414,10 @@ impl Vm {
 
     /// Dotted store `target.name = v`.
     pub(super) fn op_set_property(&mut self) -> Result<(), anyhow::Error> {
-        let (target, prop, _stored) = self.store_operands();
+        let (target, prop) = self.store_operands();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
-        self.ensure_mutable(target)?;
         self.drop_store_path();
 
         match object_kind {

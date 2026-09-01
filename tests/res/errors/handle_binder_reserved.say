@@ -1,10 +1,10 @@
 // A handler's binder takes a name like every other binding form.
 
-say r = null ?? freeze => 7;
+say r = null ?? gcCollect => 7;
 
 // error(full):
-// error: 'freeze' is a built-in and cannot be redeclared
+// error: 'gcCollect' is a built-in and cannot be redeclared
 //  --> handle_binder_reserved.say:3:9
 //   |
-// 3 | say r = null ?? freeze => 7;
-//   |         ^^^^^^^^^^^^^^^^^^^
+// 3 | say r = null ?? gcCollect => 7;
+//   |         ^^^^^^^^^^^^^^^^^^^^^^

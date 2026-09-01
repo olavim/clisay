@@ -30,16 +30,15 @@ impl<'a> Compiler<'a> {
             HirExpr::Binary(op, left, right) => self.binary_expression(*op, left, right)?,
             HirExpr::Assign(left, right) => self.compile_assign(left, right, false)?,
             HirExpr::CompoundAssign(target, op, value) => self.compile_assign_op(target, Some(*op), value, false)?,
-            HirExpr::Call(callee, args) => self.call_expression(callee, args, false, false)?,
+            HirExpr::Call(callee, args) => self.call_expression(callee, args, false)?,
             HirExpr::Index(target, member, is_dot) => self.index(target, member, *is_dot, IndexOp::Load)?,
             HirExpr::Literal(lit) => self.literal(expr, lit)?,
             HirExpr::Identifier(_) => {
                 let place = self.place(expr);
                 self.emit_load(place, expr)?;
             },
-            // A plain brace seals inline (seal flag 1).
-            HirExpr::Construct(callee, brace) => self.construct_expression(expr, callee, brace, 1)?,
-            HirExpr::Mut(inner) => self.mut_expression(expr, inner)?,
+            HirExpr::Construct(callee, brace) => self.construct_expression(expr, callee, brace)?,
+            HirExpr::Mut(inner) => self.expression(inner)?,
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
                 match self.bindings.match_binders(expr) {
@@ -80,7 +79,6 @@ impl<'a> Compiler<'a> {
                 self.emit_boundary_barrier(node, barrier)?;
             },
             Guard::NonNull => self.emit(Inst::AssertNonNull, node),
-            Guard::Immutable => self.emit(Inst::AssertImmutable, node),
         }
         Ok(())
     }
@@ -249,33 +247,14 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn construct_expression(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, brace: &[(Symbol, HirId<HirExpr>)], seal: u8) -> Result<(), anyhow::Error> {
+    fn construct_expression(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, brace: &[(Symbol, HirId<HirExpr>)]) -> Result<(), anyhow::Error> {
         self.expression(callee)?;
         for (_, value) in brace {
             self.expression(value)?;
         }
         let field_ids = self.bindings.construct_fields(expr).to_vec();
         let fields_idx = self.ir.add_construct_fields(field_ids)?;
-        self.emit(Inst::Construct(fields_idx, seal), expr);
-        Ok(())
-    }
-
-    fn mut_expression(&mut self, expr: &HirId<HirExpr>, inner: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        match self.hir.get(inner) {
-            // `mut K{..}` builds the brace unsealed (seal flag 0), so it stays mutable.
-            HirExpr::Construct(callee, brace) => return self.construct_expression(inner, callee, brace, 0),
-            // `mut [..]` and `mut {..}` build unsealed.
-            HirExpr::Literal(literal @ (HirLiteral::Array(_) | HirLiteral::Dict(_))) => {
-                return self.container_literal(inner, literal, 0);
-            },
-            // `mut K(..)` is a factory call left unsealed via CALL_MUT.
-            HirExpr::Call(callee, args) if self.barriers.is_construction(inner) => {
-                return self.call_expression(callee, args, true, false);
-            },
-            _ => {},
-        }
-        self.expression(inner)?;
-        self.emit(Inst::Mut, expr);
+        self.emit(Inst::Construct(fields_idx), expr);
         Ok(())
     }
 
@@ -468,7 +447,7 @@ impl<'a> Compiler<'a> {
         }, target_expr, value);
     }
 
-    pub(super) fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], mutable: bool, tail: bool) -> Result<(), anyhow::Error> {
+    pub(super) fn call_expression(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], tail: bool) -> Result<(), anyhow::Error> {
         // `this.m()` resolves its member here. It carries a root that a plain call cannot.
         if let Some(target) = self.as_this_invoke(callee) {
             let member_id = self.bindings.member(&target);
@@ -509,10 +488,9 @@ impl<'a> Compiler<'a> {
         }
 
         let n = args.len() as u8;
-        self.emit(match (tail, mutable) {
-            (true, _) => Inst::TailCall(n),
-            (false, true) => Inst::CallMut(n),
-            (false, false) => Inst::Call(n),
+        self.emit(match tail {
+            true => Inst::TailCall(n),
+            false => Inst::Call(n),
         }, callee);
 
         Ok(())
@@ -538,39 +516,6 @@ impl<'a> Compiler<'a> {
         return Ok(());
     }
 
-    /// Emits a runtime check that an immutable container holds no mutable element.
-    fn seal_check(&mut self, expr: &HirId<HirExpr>) {
-        if self.barriers.needs_seal_check(expr) && !self.drop_guards {
-            self.emit(Inst::SealCheck, expr);
-        }
-    }
-
-
-    fn container_literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral, seal: u8) -> Result<(), anyhow::Error> {
-        match literal {
-            HirLiteral::Array(elements) => {
-                let count = self.operand_count(elements.len(), "an array literal", "elements", expr)?;
-                for element in elements {
-                    self.expression(element)?;
-                }
-                self.emit(Inst::Array(count, seal), expr);
-            },
-            HirLiteral::Dict(pairs) => {
-                let count = self.operand_count(pairs.len(), "a dict literal", "entries", expr)?;
-                for (key, value) in pairs {
-                    self.expression(key)?;
-                    self.expression(value)?;
-                }
-                self.emit(Inst::Dict(count, seal), expr);
-            },
-            _ => unreachable!("only an array or dict literal builds a container"),
-        }
-        if seal != 0 {
-            self.seal_check(expr);
-        }
-        Ok(())
-    }
-
     pub (super) fn literal(&mut self, expr: &HirId<HirExpr>, literal: &HirLiteral) -> Result<(), anyhow::Error> {
         match literal {
             HirLiteral::Number(num) => {
@@ -585,7 +530,21 @@ impl<'a> Compiler<'a> {
             HirLiteral::Null => { self.emit(Inst::PushNull, expr); },
             HirLiteral::Boolean(true) => { self.emit(Inst::PushTrue, expr); },
             HirLiteral::Boolean(false) => { self.emit(Inst::PushFalse, expr); },
-            HirLiteral::Array(_) | HirLiteral::Dict(_) => self.container_literal(expr, literal, 1)?,
+            HirLiteral::Array(elements) => {
+                let count = self.operand_count(elements.len(), "an array literal", "elements", expr)?;
+                for element in elements {
+                    self.expression(element)?;
+                }
+                self.emit(Inst::Array(count), expr);
+            },
+            HirLiteral::Dict(pairs) => {
+                let count = self.operand_count(pairs.len(), "a dict literal", "entries", expr)?;
+                for (key, value) in pairs {
+                    self.expression(key)?;
+                    self.expression(value)?;
+                }
+                self.emit(Inst::Dict(count), expr);
+            },
             HirLiteral::Lambda(decl) => self.lambda(expr, decl, FnKind::Function)?
         };
 

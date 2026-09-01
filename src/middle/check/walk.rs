@@ -61,14 +61,6 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Backtick-quoted name of a method call's receiver.
-    pub(super) fn receiver_subject(&self, receiver: &HirId<HirExpr>) -> String {
-        match self.hir.get(receiver) {
-            HirExpr::This => "`this`".to_string(),
-            _ => self.arg_display_name(receiver),
-        }
-    }
-
     pub(super) fn string_member(&self, member: &HirId<HirExpr>) -> Option<Symbol> {
         self.member_display_name(member).and_then(|name| self.hir.symbol_of(name))
     }
@@ -238,9 +230,7 @@ impl<'a> Checker<'a> {
         Ok(match self.ctx.hir.get(expr) {
             HirExpr::Literal(HirLiteral::Null) => ValueState::of(self.ctx.opt_debt(true), TypeTag::Unknown).with_mutability(Mutability::Immutable),
             HirExpr::Literal(lit) => {
-                // A plain container literal is immutable by default, so its children are checked
-                // for deep immutability. Every literal is an immutable value.
-                self.literal_children(lit, expr, true)?;
+                self.literal_children(lit, expr)?;
                 ValueState::nonnull().with_mutability(Mutability::Immutable)
             },
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
@@ -251,17 +241,14 @@ impl<'a> Checker<'a> {
                 self.assign(lhs, rhs)?
             },
             HirExpr::Call(callee, args) => {
-                let state = self.call(expr, callee, args)?;
+                let state = self.call(callee, args)?;
                 self.invalidate_rebound_bindings(callee);
                 state
             },
             HirExpr::Construct(callee, brace) => {
-                // A plain brace is immutable, so a mutable field value is refused here.
-                let immutable = !std::mem::take(&mut self.mut_construction);
                 let tag = self.ctx.construct_tag(callee);
                 for (name, v) in brace {
                     let state = self.expr(v)?;
-                    self.check_construct_field_mutability(immutable, &state, v)?;
                     if let TypeTag::Concrete(decl) = &tag {
                         self.check_into_brace_field(&decl.clone(), *name, &state.debt, v)?;
                     }
@@ -273,22 +260,7 @@ impl<'a> Checker<'a> {
                 };
                 ValueState::of(debt, tag).with_mutability(Mutability::Immutable)
             },
-            HirExpr::Mut(inner) => {
-                // A mutable container may hold mutable elements, so its children skip the
-                // immutable-container check that a plain literal applies.
-                match self.ctx.hir.get(inner) {
-                    HirExpr::Literal(lit @ (HirLiteral::Array(_) | HirLiteral::Dict(_))) => {
-                        self.literal_children(lit, inner, false)?;
-                        ValueState::nonnull().with_mutability(Mutability::Mutable)
-                    },
-                    _ => {
-                        let saved = std::mem::replace(&mut self.mut_construction, true);
-                        let state = self.expr(inner);
-                        self.mut_construction = saved;
-                        state?.with_mutability(Mutability::Mutable)
-                    },
-                }
-            },
+            HirExpr::Mut(inner) => self.expr(inner)?.with_mutability(Mutability::Mutable),
             HirExpr::Index(target, member, _) => self.member_access(target, member)?,
             HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
             HirExpr::Unary(op, x) => self.unary(*op, x)?,
@@ -330,9 +302,8 @@ impl<'a> Checker<'a> {
             HirExpr::SafeCall(callee_id, args) => {
                 let callee = self.expr(callee_id)?;
                 self.ctx.require_witnessed_operand(&callee.debt, callee_id)?;
-                self.mut_construction = false;
                 let arg_types: Vec<ValueState> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
-                let resolved = self.resolved_call(expr, callee_id, args, &arg_types)?;
+                let resolved = self.resolved_call(callee_id, args, &arg_types)?;
                 if resolved.is_none() {
                     self.note_opaque_call_args(callee_id, &arg_types);
                 }
@@ -452,17 +423,15 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    pub(super) fn literal_children(&mut self, lit: &HirLiteral, node: &HirId<HirExpr>, immutable: bool) -> Result<(), anyhow::Error> {
+    fn literal_children(&mut self, lit: &HirLiteral, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         match lit {
             HirLiteral::Array(elems) => for e in elems {
                 let t = self.expr(e)?;
-                self.check_container_element_mutability(immutable, &t, e, node)?;
                 self.store_into_container(&t.debt, e)?;
             },
             HirLiteral::Dict(pairs) => for (k, v) in pairs {
                 self.expr(k)?;
                 let t = self.expr(v)?;
-                self.check_container_element_mutability(immutable, &t, v, node)?;
                 self.store_into_container(&t.debt, v)?;
             },
             HirLiteral::Lambda(decl) => self.lambda(decl, node)?,
@@ -737,11 +706,10 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub(super) fn call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<ValueState, anyhow::Error> {
-        self.mut_construction = false;
+    pub(super) fn call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<ValueState, anyhow::Error> {
         let arg_types: Vec<ValueState> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
 
-        match self.resolved_call(expr, callee, args, &arg_types)? {
+        match self.resolved_call(callee, args, &arg_types)? {
             Some(state) => Ok(state),
             None => {
                 self.note_opaque_call_args(callee, &arg_types);
@@ -753,7 +721,7 @@ impl<'a> Checker<'a> {
     /// The checks for a callee this pass can resolve, with the arguments already walked. `None`
     /// means it resolved nothing, which leaves validating the callee to the form that called it:
     /// a plain call requires a usable value, a `?` call tolerates a null one.
-    fn resolved_call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[ValueState]) -> Result<Option<ValueState>, anyhow::Error> {
+    fn resolved_call(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[ValueState]) -> Result<Option<ValueState>, anyhow::Error> {
         match self.ctx.hir.get(callee) {
             HirExpr::Identifier(name) => {
                 let name = *name;
@@ -771,8 +739,6 @@ impl<'a> Checker<'a> {
                         self.check_call_args(callee, init.into(), arg_types, args)?;
                     }
 
-                    // Record the construction so codegen tells `mut K(..)` (CALL_MUT) from `mut f()`.
-                    self.record_construction(expr);
                     return Ok(Some(ValueState::of(self.ctx.construction_debt(&decl), TypeTag::Concrete(decl)).with_mutability(Mutability::Immutable)));
                 }
                 if let Some(callable) = self.callable_of(name) {
@@ -784,12 +750,6 @@ impl<'a> Checker<'a> {
                     if let Some(sig) = native::builtin(self.ctx.hir.text(name)) {
                         self.check_native_args(callee, &sig, arg_types, args)?;
                         let result = ValueState::of(self.ctx.native_ret_debt(sig.ret), TypeTag::Unknown);
-                        // `freeze(x)` also discharges the mutation capability, handing its
-                        // argument back immutable.
-                        if self.ctx.hir.text(name) == "freeze" {
-                            if let Some(arg) = args.first() { self.discharge_freeze(arg); }
-                            return Ok(Some(result.with_mutability(Mutability::Immutable)));
-                        }
                         return Ok(Some(result));
                     }
                 }
@@ -809,18 +769,12 @@ impl<'a> Checker<'a> {
         self.require_member_exists(&receiver_typed, receiver, name)?;
         if let (TypeTag::Concrete(decl), Some(method)) = (&receiver_typed.tag, self.ctx.hir.symbol_of(name)) {
             if let Some(stmt) = self.ctx.sigs.methods_by_type.get(&(*decl, method)).copied() {
-                self.check_receiver(callee, receiver, stmt.into(), &receiver_typed)?;
                 self.check_call_args(callee, stmt.into(), arg_types, args)?;
                 return Ok(self.ctx.call_result(stmt.into(), &receiver_typed.tag));
             }
         }
         // A native-type method resolves by name when no user method matches the receiver.
         if let Some(sig) = native::native_method(name) {
-            if sig.mutates_receiver {
-                if !self.may_write_through(receiver, &receiver_typed) {
-                    return Err(self.immutable_receiver_error(callee, receiver, "mutates its receiver"));
-                }
-            }
             self.check_native_args(callee, &sig, arg_types, args)?;
             if sig.container == Container::Preserves {
                 for (state, arg) in arg_types.iter().zip(args) {
@@ -831,18 +785,6 @@ impl<'a> Checker<'a> {
             return Ok(ValueState::of(self.ctx.native_ret_debt(sig.ret), TypeTag::Unknown));
         }
         Ok(ValueState::unknown())
-    }
-
-    pub(super) fn check_receiver(&mut self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>, callable: CallableId, receiver_typed: &ValueState) -> Result<(), anyhow::Error> {
-        let Some(sig) = self.ctx.sigs.fn_sig_of(callable) else { return Ok(()) };
-        let Some(marker) = sig.receiver_marker else { return Ok(()) };
-        if !marker.is_mut() {
-            return Ok(());
-        }
-        if !self.may_write_through(receiver, receiver_typed) {
-            return Err(self.immutable_receiver_error(callee, receiver, "declares `mut this`"));
-        }
-        Ok(())
     }
 
     pub(super) fn check_call_args(&mut self, callee: &HirId<HirExpr>, callable: CallableId, arg_types: &[ValueState], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
