@@ -9,12 +9,6 @@ macro_rules! check_arity {
     }
 }
 
-/// Forcing is debug-only, so a release build compiles no oracle. The empty bodies fold away at
-/// every call site.
-#[cfg(not(debug_assertions))]
-impl Vm {
-}
-
 impl Vm {
     #[cold]
     #[inline(never)]
@@ -131,8 +125,6 @@ impl Vm {
         }
     }
 
-    pub(super) fn op_stash_root(&mut self) {}
-
     pub(super) fn op_assert_no_retain(&mut self) -> Result<(), anyhow::Error> {
         let arg_count = self.read_next() as usize;
         let owed_idx = u16::from_le_bytes([self.read_next(), self.read_next()]);
@@ -151,33 +143,8 @@ impl Vm {
         Ok(())
     }
 
-    /// A container taking the writer slot for an element it is given. The slot names the container
-    /// rather than holding it yet, since a construction takes its elements before it is assigned.
-    pub(super) fn op_transfer_write_ownership(&mut self) -> Result<(), anyhow::Error> {
-        let _slot = self.read_next();
-        Ok(())
-    }
-
-    /// A container taking the writer slot for an element it is given, for a container the body
-    /// reaches as an upvalue. That one is built already, so the claim names the container itself.
-    pub(super) fn op_transfer_write_ownership_up(&mut self) -> Result<(), anyhow::Error> {
-        let _idx = self.read_next();
-        Ok(())
-    }
-
-    /// A container taking the writer slot for an element it is given, where no binding names the
-    /// container. It is still on the stack, `depth` below the element.
-    pub(super) fn op_transfer_write_ownership_at(&mut self) -> Result<(), anyhow::Error> {
-        let _depth = self.read_next();
-        Ok(())
-    }
-
     pub(super) fn slot_addr(&self, slot: usize) -> *mut Value {
         unsafe { (*self.frames.top()).stack_start.add(slot) }
-    }
-
-    pub(super) fn op_release_write_ownership(&mut self) {
-        let _count = self.read_next();
     }
 
     pub(super) fn op_pop_scope(&mut self) {

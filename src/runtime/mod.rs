@@ -32,8 +32,7 @@ const CALL_CACHE_SIZE: usize = 1024;
 
 #[derive(Clone, Copy)]
 struct IndexCache {
-    /// The bytecode site, or `EMPTY_SITE` for an entry that answers nothing. A live site is an
-    /// instruction pointer.
+    /// The bytecode site, or `EMPTY_SITE`.
     site: usize,
     /// The member asked for.
     prop: *mut ObjString,
@@ -54,7 +53,6 @@ struct CallCache {
     needs_borrow_mark: u64
 }
 
-/// A site no instruction pointer can be, which is how an entry says it answers nothing.
 const EMPTY_SITE: usize = usize::MAX;
 
 impl IndexCache {
@@ -64,7 +62,6 @@ impl IndexCache {
 }
 
 impl CallCache {
-    /// An entry naming nothing. A collection resets to this, since what it named may be freed.
     const fn empty() -> CallCache {
         CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0, retain_mask: 0, needs_borrow_mark: u64::MAX }
     }
@@ -131,8 +128,6 @@ pub struct Vm {
     index_cache: Box<[IndexCache]>,
     call_cache: Box<[CallCache]>,
     out: Vec<String>,
-    /// Whether the receiver of the native about to run is a slot the calling frame declared.
-    native_receiver_is_frame_local: bool,
     /// One bit per argument of the running native, set where its slot was borrowed at the call.
     native_borrowed_arguments: u64
 }
@@ -222,10 +217,6 @@ impl Host for Vm {
         self.current_pos_index()
     }
 
-    fn receiver_is_frame_local(&self) -> bool {
-        self.native_receiver_is_frame_local
-    }
-
     fn argument_is_borrowed(&self, position: usize) -> bool {
         objects::mask_holds(self.native_borrowed_arguments, position)
     }
@@ -265,7 +256,6 @@ impl Vm {
             call_cache: vec![CallCache::empty(); CALL_CACHE_SIZE].into_boxed_slice(),
             elisions_reached: FnvHashSet::default(),
             out: Vec::new(),
-            native_receiver_is_frame_local: false,
             native_borrowed_arguments: 0
         };
 

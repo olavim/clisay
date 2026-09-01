@@ -1,11 +1,11 @@
 use crate::compiler_error;
 use crate::core::value::Value;
 use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, Symbol, TypeId, UnOp};
-use crate::middle::ir::{Inst, Label, WRITE_ROOT_LOCAL, WRITE_ROOT_NONE, WRITE_ROOT_RECEIVER, WRITE_ROOT_RECEIVER_UP, WRITE_ROOT_STASH, WRITE_ROOT_UNSHARED, WRITE_ROOT_UPVALUE};
+use crate::middle::ir::{Inst, Label};
 use crate::middle::bind::{FnKind, Place, Receiver};
 use crate::middle::check::{Barrier, Guard, WitnessSet};
 
-use super::{Compiler, WriteOwnershipHolderPlace, PathRoot};
+use super::Compiler;
 
 #[derive(Clone, Copy)]
 enum IndexOp {
@@ -56,12 +56,6 @@ impl<'a> Compiler<'a> {
             HirExpr::Assert(operand) => self.assert(expr, operand)?,
         };
 
-        // Indexing consumes the root. The store receives the root while it is still on the stack.
-        if self.stash_root == Some(*expr) {
-            self.stash_root = None;
-            self.emit(Inst::StashRoot, expr);
-        }
-
         // Each runtime check this node carries, in the order the check pass put them in.
         for guard in self.barriers.guards(expr) {
             self.emit_guard(expr, *guard)?;
@@ -76,71 +70,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn mark_path_root(&mut self, target: &HirId<HirExpr>) {
-        let (root, kind) = self.path_root(target);
-        // A node that is its own root would be compared against itself. The move rule keeps a
-        // container from ever holding itself, so the store asks a different question for it.
-        if kind == PathRoot::Unnamed && root != *target {
-            debug_assert!(self.stash_root.is_none(), "a path root was marked and never stashed");
-            self.stash_root = Some(root);
-        }
-    }
-
-    fn path_root(&self, node: &HirId<HirExpr>) -> (HirId<HirExpr>, PathRoot) {
-        let mut current = *node;
-        loop {
-            match self.hir.get(&current) {
-                HirExpr::Index(target, _, _) | HirExpr::SafeAccess(target, _, _) => current = *target,
-                HirExpr::Assert(inner) | HirExpr::Propagate(inner) | HirExpr::Mut(inner) => current = *inner,
-                HirExpr::Identifier(_) | HirExpr::This => return (current, match self.place(&current) {
-                    Place::Local(slot) => PathRoot::Local(slot),
-                    Place::Upvalue(idx) => PathRoot::Upvalue(idx),
-                    _ => PathRoot::Unnamed,
-                }),
-                _ => return (current, PathRoot::Unnamed),
-            }
-        }
-    }
-
-    fn root_holder(&self, node: &HirId<HirExpr>) -> Option<WriteOwnershipHolderPlace> {
-        match self.path_root(node).1 {
-            PathRoot::Local(slot) => Some(WriteOwnershipHolderPlace::Local(slot)),
-            PathRoot::Upvalue(idx) => Some(WriteOwnershipHolderPlace::Upvalue(idx)),
-            PathRoot::Unnamed => None,
-        }
-    }
-
-    fn receiver_root_operands(receiver: Receiver) -> (u8, u8) {
-        match receiver {
-            Receiver::Slot => (WRITE_ROOT_RECEIVER, 0),
-            Receiver::Upvalue(idx) => (WRITE_ROOT_RECEIVER_UP, idx),
-        }
-    }
-
-    fn write_root_operands(&self, node: &HirId<HirExpr>) -> (u8, u8) {
-        let (kind, operand) = self.root_operands(node);
-        match self.barriers.store_is_unshared(node) {
-            true => (kind | WRITE_ROOT_UNSHARED, operand),
-            false => (kind, operand),
-        }
-    }
-
-    fn root_operands(&self, node: &HirId<HirExpr>) -> (u8, u8) {
-        let (root, place) = self.path_root(node);
-        // A path rooted in `this` reaches through the receiver.
-        let receiver = matches!(self.hir.get(&root), HirExpr::This);
-        match place {
-            PathRoot::Local(slot) if receiver => (WRITE_ROOT_RECEIVER, slot),
-            PathRoot::Upvalue(idx) if receiver => (WRITE_ROOT_RECEIVER_UP, idx),
-            PathRoot::Local(slot) => (WRITE_ROOT_LOCAL, slot),
-            PathRoot::Upvalue(idx) => (WRITE_ROOT_UPVALUE, idx),
-            // The path consumed a root and it is on the stash. A path that is its own root
-            // reaches the target directly.
-            PathRoot::Unnamed if root != *node => (WRITE_ROOT_STASH, 0),
-            PathRoot::Unnamed => (WRITE_ROOT_NONE, 0),
-        }
-    }
-
     fn emit_guard(&mut self, node: &HirId<HirExpr>, guard: Guard) -> Result<(), anyhow::Error> {
         // `!` asks for its check in the source, so it's the operation rather than a safety guard.
         if self.drop_guards && guard != Guard::NonNull {
@@ -151,14 +80,6 @@ impl<'a> Compiler<'a> {
                 self.emit_boundary_barrier(node, barrier)?;
             },
             Guard::NonNull => self.emit(Inst::AssertNonNull, node),
-            // The receiving container takes the element's writer slot, so the aggregate it came
-            // from keeps reading it and stops writing it.
-            Guard::StoreIntoContainer => match self.receiving_slot {
-                Some(WriteOwnershipHolderPlace::Local(slot)) => self.emit(Inst::TransferWriteOwnership(slot), node),
-                Some(WriteOwnershipHolderPlace::Upvalue(idx)) => self.emit(Inst::TransferWriteOwnershipUp(idx), node),
-                Some(WriteOwnershipHolderPlace::Stack(depth)) => self.emit(Inst::TransferWriteOwnershipAt(depth), node),
-                None => {},
-            },
             Guard::Immutable => self.emit(Inst::AssertImmutable, node),
         }
         Ok(())
@@ -393,10 +314,9 @@ impl<'a> Compiler<'a> {
             },
             Place::Field(id, receiver) => {
                 self.emit_receiver(receiver, node);
-                let (kind, operand) = Self::receiver_root_operands(receiver);
                 self.emit_store_inst(match discarded {
-                    true => Inst::SetFieldPop(id, kind, operand),
-                    false => Inst::SetField(id, kind, operand),
+                    true => Inst::SetFieldPop(id),
+                    false => Inst::SetField(id),
                 }, node, value);
             },
             Place::Global(_) => unreachable!("assignment to a global is rejected during resolution"),
@@ -475,14 +395,12 @@ impl<'a> Compiler<'a> {
                 self.emit(if is_dot { Inst::GetProperty } else { Inst::GetIndex }, target);
             },
             IndexOp::Store { rhs, discarded } => {
-                self.mark_path_root(target);
                 self.expression(target)?;
                 self.expression(member_expr_id)?;
                 self.expression(&rhs)?;
                 self.emit_path_store(target, is_dot, &rhs, discarded);
             },
             IndexOp::Update { op, rhs, discarded } => {
-                self.mark_path_root(target);
                 self.expression(target)?;
                 self.expression(member_expr_id)?;
                 self.emit(Inst::Dup2, target);
@@ -511,10 +429,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_path_store(&mut self, target: &HirId<HirExpr>, is_dot: bool, value: &HirId<HirExpr>, discarded: bool) {
-        let (root_kind, root_operand) = self.write_root_operands(target);
         let store = match is_dot {
-            true => Inst::SetProperty(root_kind, root_operand),
-            false => Inst::SetIndex(root_kind, root_operand),
+            true => Inst::SetProperty,
+            false => Inst::SetIndex,
         };
         self.emit_store_inst(store, target, value);
         if discarded {
@@ -530,7 +447,6 @@ impl<'a> Compiler<'a> {
             },
             IndexOp::Store { rhs, discarded } => {
                 self.expression(&rhs)?;
-                self.mark_path_root(target_expr);
                 self.expression(target_expr)?;
                 self.emit_field_store(target_expr, member_id, &rhs, discarded);
             },
@@ -546,10 +462,9 @@ impl<'a> Compiler<'a> {
     }
 
     fn emit_field_store(&mut self, target_expr: &HirId<HirExpr>, member_id: u8, value: &HirId<HirExpr>, discarded: bool) {
-        let (kind, operand) = self.write_root_operands(target_expr);
         self.emit_store_inst(match discarded {
-            true => Inst::SetFieldPop(member_id, kind, operand),
-            false => Inst::SetField(member_id, kind, operand),
+            true => Inst::SetFieldPop(member_id),
+            false => Inst::SetField(member_id),
         }, target_expr, value);
     }
 
@@ -558,38 +473,20 @@ impl<'a> Compiler<'a> {
         if let Some(target) = self.as_this_invoke(callee) {
             let member_id = self.bindings.member(&target);
             self.expression(&target)?;
-            let holder = self.root_holder(&target);
-            let saved = std::mem::replace(&mut self.receiving_slot, holder);
-            let compiled = args.iter().try_for_each(|arg| self.expression(arg));
-            self.receiving_slot = saved;
-            compiled?;
-            let (kind, operand) = self.write_root_operands(&target);
-            self.emit(Inst::InvokeThis(member_id, args.len() as u8, kind, operand), callee);
+            args.iter().try_for_each(|arg| self.expression(arg))?;
+            self.emit(Inst::InvokeThis(member_id, args.len() as u8), callee);
             return Ok(());
         }
 
         // Fuse `recv.name(args)` into a single INVOKE.
         if let Some((target, name, is_dot)) = self.as_method_invoke(callee) {
-            self.mark_path_root(&target);
             self.expression(&target)?;
 
-            let receiver = self.root_holder(&target);
-            let saved = std::mem::replace(&mut self.receiving_slot, receiver);
-            let compiled = args.iter().enumerate().try_for_each(|(i, arg)| {
-                if receiver.is_none() {
-                    self.receiving_slot = Some(WriteOwnershipHolderPlace::Stack(i as u8 + 1));
-                }
-                self.expression(arg)
-            });
-
-            self.receiving_slot = saved;
-            compiled?;
+            args.iter().try_for_each(|arg| self.expression(arg))?;
 
             let name_ref = self.gc.intern(name);
             let idx = self.ir.add_constant(Value::from(name_ref))?;
-            // A method that writes its receiver asks the write-ownership question.
-            let (kind, operand) = self.write_root_operands(&target);
-            self.emit(Inst::Invoke(idx, args.len() as u8, kind, operand, is_dot as u8), callee);
+            self.emit(Inst::Invoke(idx, args.len() as u8, is_dot as u8), callee);
             return Ok(());
         }
 
@@ -605,9 +502,7 @@ impl<'a> Compiler<'a> {
                 .map(|&(p, _)| (p, self.hir.pos(&args[p as usize]).clone()))
                 .collect();
             // The obligation rides along so the failure can name what the caller still has to do.
-            let owed: Box<[_]> = positions.iter()
-                .filter_map(|&(p, owed)| owed.map(|o| (p, self.hir.text(o).into())))
-                .collect();
+            let owed: Box<[_]> = positions.iter().map(|&(p, o)| (p, self.hir.text(o).into())).collect();
             let owed_idx = self.ir.add_owed_names(owed)?;
             let idx = self.ir.add_survive_positions(entries)?;
             self.emit(Inst::AssertNoRetain(args.len() as u8, owed_idx, idx), callee);

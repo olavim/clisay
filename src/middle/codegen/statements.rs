@@ -3,8 +3,7 @@ use crate::middle::hir::{HirCatchClause, HirExpr, HirSayDecl, HirId, HirMatcher,
 use crate::middle::ir::Inst;
 use crate::middle::bind::FnKind;
 
-use super::{Compiler, PendingDefer, WriteOwnershipHolderPlace, TryCatchPosition, TryFrame};
-
+use super::{Compiler, PendingDefer, TryCatchPosition, TryFrame};
 
 /// Whether a statement's name takes a slot the hoisting run reserves at the top of its scope.
 fn reserves_a_slot(stmt: &HirStmt) -> bool {
@@ -127,10 +126,7 @@ impl<'a> Compiler<'a> {
                 self.ir.record_slot_accepts(self.slot_table, slot, accepts);
 
                 let inst = if let Some(expr) = value {
-                    let saved = self.receiving_slot.replace(WriteOwnershipHolderPlace::Local(slot));
-                    let compiled = self.expression(expr);
-                    self.receiving_slot = saved;
-                    compiled?;
+                    self.expression(expr)?;
                     Inst::StoreLocal(slot)
                 } else {
                     Inst::LoadLocal(slot)

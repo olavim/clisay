@@ -644,7 +644,6 @@ impl<'a> Checker<'a> {
 
     pub(super) fn store_into_container_guard(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if self.extraction_of(expr).is_some() || self.may_be_an_element(expr) {
-            self.record_guard(expr, Guard::StoreIntoContainer);
             self.element_write_ownerships_transferred += 1;
         }
         Ok(())
@@ -682,24 +681,10 @@ impl<'a> Checker<'a> {
             ObligationRule::NoPersist, Site::Capture, node)
     }
 
-    pub(super) fn note_opaque_call_args(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[ValueState]) {
-        let mut survive = Vec::new();
-        for (i, state) in arg_types.iter().enumerate() {
-            if let Some(owed) = self.ctx.obligation_preventing_escape(&state.debt) {
-                survive.push((i as u8, Some(owed)));
-                continue;
-            }
-            if state.mutability != Mutability::Mutable {
-                continue;
-            }
-            if self.arg_is_borrowed(&args[i]) {
-                survive.push((i as u8, None));
-                continue;
-            }
-            // An owned mutable may be retained by the callee or merely borrowed, and this pass
-            // cannot tell which.
-            self.transfer_write_ownership_as(&args[i], WriteOwnershipTransfer::Unknown(*callee, i as u8));
-        }
+    pub(super) fn note_opaque_call_args(&mut self, callee: &HirId<HirExpr>, _args: &[HirId<HirExpr>], arg_types: &[ValueState]) {
+        let survive: Vec<(u8, Symbol)> = arg_types.iter().enumerate()
+            .filter_map(|(i, state)| self.ctx.obligation_preventing_escape(&state.debt).map(|owed| (i as u8, owed)))
+            .collect();
         if !survive.is_empty() {
             self.record_survive_barrier(callee, survive);
         }

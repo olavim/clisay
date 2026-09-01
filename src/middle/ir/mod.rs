@@ -46,22 +46,6 @@ fn intern_row(pool: &mut Vec<Box<[u16]>>, row: Box<[u16]>, what: &str) -> Result
     Ok((pool.len() - 1) as u16)
 }
 
-// How a store names the root its write reaches through.
-pub const WRITE_ROOT_NONE: u8 = 0;
-pub const WRITE_ROOT_LOCAL: u8 = 1;
-pub const WRITE_ROOT_UPVALUE: u8 = 2;
-pub const WRITE_ROOT_RECEIVER: u8 = 3;
-pub const WRITE_ROOT_RECEIVER_UP: u8 = 4;
-/// A root without a binding name. `StashRoot` puts it on the stash for the store to use.
-pub const WRITE_ROOT_STASH: u8 = 5;
-/// Set on a store's root kind where one name is proven to reach the target. The store then skips
-/// the one-writer arbitration that every other store runs.
-pub const WRITE_ROOT_UNSHARED: u8 = 0x80;
-
-pub const fn write_root_kind(kind: u8) -> u8 {
-    kind & !WRITE_ROOT_UNSHARED
-}
-
 /// A symbolic jump target, resolved to a byte offset at assembly time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Label(usize);
@@ -75,9 +59,9 @@ pub enum Inst {
     TailCall(u8),
     /// Brace construction `C { f: v, ... }`.
     Construct(u16, u8),
-    Invoke(u8, u8, u8, u8, u8),
+    Invoke(u8, u8, u8),
     /// `this.name(args)`.
-    InvokeThis(u8, u8, u8, u8),
+    InvokeThis(u8, u8),
     Jump(Label),
     JumpIfFalse(Label),
     JumpIfFalseOrPop(Label),
@@ -107,16 +91,8 @@ pub enum Inst {
     PopTry,
     AssertNonNull,
     AssertImmutable,
-    /// Puts the root on top of the stash for a root no binding can name. The
-    /// stack is left alone. The path builds over the root as if no barrier existed.
-    StashRoot,
     BarrierGuard(u16),
     AssertNoRetain(u8, u16, u16),
-    TransferWriteOwnership(u8),
-    TransferWriteOwnershipUp(u8),
-    /// The container is on the stack, this far below the element it is given.
-    TransferWriteOwnershipAt(u8),
-    ReleaseWriteOwnership(u8),
     PopScope(u8, u8),
 
     // Stack / constants
@@ -144,22 +120,21 @@ pub enum Inst {
     CloseUpvalue(u8),
     CloseSlotUpvalue(u8),
     GetIndex,
-    SetIndex(u8, u8),
+    SetIndex,
     GetIndexOrNull(u8),
     /// Dynamic member access by name (`.name`).
     GetProperty,
-    SetProperty(u8, u8),
+    SetProperty,
     /// Instance member access by resolved layout id (`this.x`), skipping the name lookup.
     GetField(u8),
-    SetField(u8, u8, u8),
-    SetFieldPop(u8, u8, u8),
+    SetField(u8),
+    SetFieldPop(u8),
     /// Element count, then whether the literal seals itself immutable.
     Array(u8, u8),
     Dict(u8, u8),
     /// Clears the immutable bit on the object on top of the stack.
     Mut,
-    /// Asserts every element of the immutable container on top of the stack is immutable, so a
-    /// mutable value of unknown capability cannot land in an immutable container.
+    /// Asserts every element of the immutable container on top of the stack is immutable.
     SealCheck,
 
     // Arithmetic

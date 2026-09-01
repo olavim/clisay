@@ -73,8 +73,8 @@ opcodes! {
     Call => CALL(Byte),
     CallMut => CALL_MUT(Byte),
     Construct => CONSTRUCT(List, Byte),
-    Invoke => INVOKE(Const, Byte, Byte, Byte, Byte),
-    InvokeThis => INVOKE_THIS(Byte, Byte, Byte, Byte),
+    Invoke => INVOKE(Const, Byte, Byte),
+    InvokeThis => INVOKE_THIS(Byte, Byte),
     Jump => JUMP(Jump),
     JumpIfFalse => JUMP_IF_FALSE(Jump),
     JumpIfFalseOrPop => JUMP_IF_FALSE_OR_POP(Jump),
@@ -110,13 +110,8 @@ opcodes! {
     PopTry => POP_TRY,
     AssertNonNull => ASSERT_NON_NULL,
     AssertImmutable => ASSERT_IMMUTABLE,
-    StashRoot => STASH_ROOT,
     BarrierGuard => BARRIER_GUARD(Pool),
     AssertNoRetain => ASSERT_NO_RETAIN(Byte, Pool, List),
-    TransferWriteOwnership => TRANSFER_WRITE_OWNERSHIP(Byte),
-    TransferWriteOwnershipUp => TRANSFER_WRITE_OWNERSHIP_UP(Byte),
-    TransferWriteOwnershipAt => TRANSFER_WRITE_OWNERSHIP_AT(Byte),
-    ReleaseWriteOwnership => RELEASE_WRITE_OWNERSHIP(Byte),
     PopScope => POP_SCOPE(Byte, Byte),
 
     // Explicit stack manipulation
@@ -143,13 +138,13 @@ opcodes! {
 
     // Object access: by key (`[]`), by name (`.`), or by resolved member id
     GetIndex => GET_INDEX,
-    SetIndex => SET_INDEX(Byte, Byte),
+    SetIndex => SET_INDEX,
     GetIndexOrNull => GET_INDEX_OR_NULL(Const),
     GetProperty => GET_PROPERTY,
-    SetProperty => SET_PROPERTY(Byte, Byte),
+    SetProperty => SET_PROPERTY,
     GetField => GET_FIELD(Byte),
-    SetField => SET_FIELD(Byte, Byte, Byte),
-    SetFieldPop => SET_FIELD_POP(Byte, Byte, Byte),
+    SetField => SET_FIELD(Byte),
+    SetFieldPop => SET_FIELD_POP(Byte),
 
     // Arithmetic
     Add => ADD,

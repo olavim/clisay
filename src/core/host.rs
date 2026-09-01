@@ -10,7 +10,5 @@ pub trait Host {
     fn collect(&mut self);
     fn print(&mut self, text: String);
     fn code_index(&self) -> u32;
-    /// Whether the running native's receiver is a slot the calling frame declared.
-    fn receiver_is_frame_local(&self) -> bool;
     fn argument_is_borrowed(&self, position: usize) -> bool;
 }

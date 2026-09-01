@@ -44,20 +44,6 @@ struct TryFrame {
     finally: Option<HirId<HirExpr>>
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum PathRoot {
-    Local(u8),
-    Upvalue(u8),
-    Unnamed,
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum WriteOwnershipHolderPlace {
-    Local(u8),
-    Upvalue(u8),
-    Stack(u8),
-}
-
 /// Lowers a resolved HIR to IR.
 pub struct Compiler<'a> {
     ir: Ir,
@@ -70,10 +56,6 @@ pub struct Compiler<'a> {
     try_frames: Vec<TryFrame>,
     /// The id of each registered object witness.
     witness_ids: FnvHashMap<TypeId, u16>,
-    /// The slot that will hold the container being built.
-    receiving_slot: Option<WriteOwnershipHolderPlace>,
-    /// The root node of a path whose write barrier compares against it.
-    stash_root: Option<HirId<HirExpr>>,
     drop_guards: bool,
     /// Each live `?? e =>` binder.
     handle_binder_slots: Vec<(u8, u8)>,
@@ -96,8 +78,6 @@ impl<'a> Compiler<'a> {
 
     pub fn compile<'b>(hir: &'b Hir, gc: &'b mut Gc, bindings: &'b Bindings, barriers: &'b Barriers, sigs: &'b Signatures, drop_guards: bool) -> Result<Ir, anyhow::Error> {
         let mut compiler = Compiler {
-            receiving_slot: None,
-            stash_root: None,
             drop_guards,
             ir: Ir::new(),
             hir,
@@ -203,8 +183,6 @@ impl<'a> Compiler<'a> {
         ids.into_boxed_slice()
     }
 
-    /// The ids these declarations are numbered as. `ObjType::witness_ids` lists what a type
-    /// provides, and null is not among them.
     pub(super) fn witness_id_set(&self, decls: &[TypeId]) -> Box<[u16]> {
         let mut ids: Vec<u16> = decls.iter().filter_map(|decl| self.witness_ids.get(decl)).copied().collect();
         ids.sort_unstable();
@@ -259,8 +237,6 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
         let slot_count = self.bindings.exit_frame_slot_count_at(node_id);
-        // Bind says how many slots survive the exit, so the rest stop answering here whatever
-        // binding form took them.
         let first_dead = slot_count.saturating_sub(count as u8);
         self.ir.end_slot_accepts_from(self.slot_table, first_dead);
         self.emit(Inst::PopScope(count, slot_count), node_id);

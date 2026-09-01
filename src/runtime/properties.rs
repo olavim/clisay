@@ -39,8 +39,6 @@ impl Vm {
     pub(super) fn op_invoke(&mut self) -> Result<(), anyhow::Error> {
         let name_idx = self.read_next() as usize;
         let arg_count = self.read_next() as usize;
-        let root_kind = self.read_next();
-        let root_operand = self.read_next();
         let is_dot = self.read_next() != 0;
         let name = self.chunk.constants[name_idx].as_object().as_string_ptr();
         let receiver = self.stack.peek(arg_count);
@@ -50,16 +48,16 @@ impl Vm {
             if let Some(TypeMember::Method(id)) = self.resolve_cached_type_property(type_ptr, name) {
                 let method = unsafe { &*type_ptr }.get_method(id);
                 if matches!(method.tag(), objects::TAG_FUNCTION | objects::TAG_CLOSURE) {
-                    return self.invoke_method(method, arg_count, root_kind, root_operand);
+                    return self.invoke_method(method, arg_count);
                 }
             }
         }
 
-        self.invoke_member_slow(name, arg_count, root_kind, root_operand, is_dot)
+        self.invoke_member_slow(name, arg_count, is_dot)
     }
 
     /// Pushes a frame for an instance method without allocating a bound method.
-    fn invoke_method(&mut self, method: Object, arg_count: usize, _root_kind: u8, _root_operand: u8) -> Result<(), anyhow::Error> {
+    fn invoke_method(&mut self, method: Object, arg_count: usize) -> Result<(), anyhow::Error> {
 
         // A capturing method is already a closure bound to the frame that declared its type. Any
         // other method captures nothing and is closed here.
@@ -98,8 +96,6 @@ impl Vm {
     pub(super) fn op_invoke_this(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
         let arg_count = self.read_next() as usize;
-        let root_kind = self.read_next();
-        let root_operand = self.read_next();
         let receiver = self.stack.peek(arg_count);
         let ValueKind::Object(ObjectKind::Instance) = receiver.kind() else {
             return self.error(format!("Invalid property access: {}", receiver.fmt()));
@@ -111,28 +107,24 @@ impl Vm {
         if member_id >= ty.field_count {
             if let Some(method) = ty.methods.get(&member_id).copied() {
                 if matches!(method.tag(), objects::TAG_FUNCTION | objects::TAG_CLOSURE) {
-                    return self.invoke_method(method, arg_count, root_kind, root_operand);
+                    return self.invoke_method(method, arg_count);
                 }
             }
         }
 
-        self.invoke_this_field(receiver, member_id, arg_count, root_kind, root_operand)
+        self.invoke_this_field(receiver, member_id, arg_count)
     }
 
-    /// Calls a field that holds a callable, such as `this.cb()`. The call does not
-    /// bind a receiver. The value is called as it is. A bound method still carries
-    /// its original receiver.
-    fn invoke_this_field(&mut self, receiver: Value, member_id: u8, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
+    /// Invokes `this.name(args)`.
+    fn invoke_this_field(&mut self, receiver: Value, member_id: u8, arg_count: usize) -> Result<(), anyhow::Error> {
         let instance_ref = receiver.as_object().as_instance_ptr();
         let callable = self.get_property_by_id(instance_ref, member_id);
         self.stack.set(arg_count, callable);
-        self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
         let called = self.call(arg_count, callable, true);
-        self.native_receiver_is_frame_local = false;
         called
     }
 
-    fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize, root_kind: u8, root_operand: u8, is_dot: bool) -> Result<(), anyhow::Error> {
+    fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize, is_dot: bool) -> Result<(), anyhow::Error> {
 
         // Resolving the property allocates a bound method, which can collect. The arguments stay
         // on the stack across it, since a copy held anywhere else would not be a root.
@@ -149,9 +141,7 @@ impl Vm {
         // The callable takes the receiver's slot, which is where a call reads it from.
         let callable = self.stack.pop();
         self.stack.set(arg_count, callable);
-        self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
         let called = self.call(arg_count, callable, true);
-        self.native_receiver_is_frame_local = false;
         called
     }
 
@@ -218,8 +208,7 @@ impl Vm {
         let instance_ref = target.as_object().as_instance_ptr();
         let ty = unsafe { &*(*instance_ref).ty };
 
-        // A type instance is indexed only by member name (a string). `inst["x"]` reads the same
-        // member as `inst.x`; any non-string key is an error (instances have no keyed data).
+        // A type instance is indexed only by member name (a string).
         if !matches!(prop.kind(), ValueKind::Object(ObjectKind::String)) {
             return self.error(format!(
                 "Invalid index: {} is indexed by member name, not {}",
@@ -228,8 +217,7 @@ impl Vm {
         }
 
         let prop_str = prop.as_object().as_string_ptr();
-        // Only externally-visible members are in the name map: private/`inner` members aren't
-        // found here (internal `this.x` resolves to a member id and never reaches this path).
+        // Only externally-visible members are in the name map.
         if let Some(value) = self.get_instance_property(instance_ref, prop_str) {
             self.stack.push(value);
             return Ok(());
@@ -339,8 +327,6 @@ impl Vm {
 
     fn set_field<const POP: bool>(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
-        // The store still carries the root operands, and no longer reads them.
-        let (_, _) = (self.read_next(), self.read_next());
         let target = self.stack.pop();
         if !matches!(target.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", target.fmt()));
@@ -413,26 +399,7 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn root_is_frame_local(&self, kind: u8, operand: u8) -> bool {
-        ir::write_root_kind(kind) == ir::WRITE_ROOT_LOCAL
-            && self.frame_arity().is_some_and(|arity| operand as usize > arity)
-    }
-
-    fn frame_arity(&self) -> Option<usize> {
-        let frame = self.frames.top();
-        if frame.is_null() {
-            return None;
-        }
-        let closure = unsafe { (*frame).closure };
-        match closure.is_null() {
-            true => None,
-            false => Some(unsafe { (*closure).arity } as usize),
-        }
-    }
-
     pub(super) fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
-        // The store still carries the root operands, and no longer reads them.
-        let (_, _) = (self.read_next(), self.read_next());
         let (target, prop, _stored) = self.store_operands();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
@@ -500,8 +467,6 @@ impl Vm {
 
     /// Dotted store `target.name = v`.
     pub(super) fn op_set_property(&mut self) -> Result<(), anyhow::Error> {
-        // The store still carries the root operands, and no longer reads them.
-        let (_, _) = (self.read_next(), self.read_next());
         let (target, prop, _stored) = self.store_operands();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
@@ -529,9 +494,7 @@ impl Vm {
         let receiver = self.stack.pop();
 
         let admits = match self.member_value(receiver, key) {
-            // A method is a reference, never null and never a witness, so it always admits.
             MemberValue::Method => true,
-            // A surface asks for a member, so a receiver without one exposes no surface.
             MemberValue::Absent => false,
             MemberValue::Value(value) => self.accepts_value(value, allowed),
         };

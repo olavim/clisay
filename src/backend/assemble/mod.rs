@@ -109,7 +109,6 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | PopTry
         | AssertNonNull
         | AssertImmutable
-        | StashRoot
         | Pop | Dup | Dup2
         | PushNull | PushTrue | PushFalse
         | GetIndex
@@ -118,6 +117,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
         | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
         | IsShaped | ArrayLen
+        | SetIndex | SetProperty
         | Mut | SealCheck => {}
 
         Call(b) | CallMut(b) | TailCall(b)
@@ -125,8 +125,6 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
         | CloseUpvalue(b) | CloseSlotUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
         | GetField(b)
-        | TransferWriteOwnership(b) | TransferWriteOwnershipUp(b) | TransferWriteOwnershipAt(b)
-        | ReleaseWriteOwnership(b)
         | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
 
         PopScope(count, depth) => {
@@ -176,18 +174,14 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             write_positions(ir, chunk, idx, pos);
         }
 
-        InvokeThis(member, arg_count, kind, operand) => {
+        InvokeThis(member, arg_count) => {
             chunk.write(member, pos);
             chunk.write(arg_count, pos);
-            chunk.write(kind, pos);
-            chunk.write(operand, pos);
         }
 
-        Invoke(member, arg_count, kind, operand, is_dot) => {
+        Invoke(member, arg_count, is_dot) => {
             chunk.write(member, pos);
             chunk.write(arg_count, pos);
-            chunk.write(kind, pos);
-            chunk.write(operand, pos);
             chunk.write(is_dot, pos);
         }
 
@@ -214,16 +208,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(b, pos);
         }
 
-        SetIndex(kind, operand) | SetProperty(kind, operand) => {
-            chunk.write(kind, pos);
-            chunk.write(operand, pos);
-        }
-
-        SetField(member, kind, operand) | SetFieldPop(member, kind, operand) => {
-            chunk.write(member, pos);
-            chunk.write(kind, pos);
-            chunk.write(operand, pos);
-        }
+        SetField(member) | SetFieldPop(member) => chunk.write(member, pos),
 
         SubConstLocal(c, local) | AddConstLocal(c, local) => {
             chunk.write(c, pos);

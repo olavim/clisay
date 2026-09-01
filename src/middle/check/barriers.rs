@@ -1,5 +1,3 @@
-//! What codegen must check at runtime, and the record the pass hands it.
-
 use crate::middle::diagnose::Diagnose;
 use crate::middle::obligations::{obligation_atoms, quoted_obligation_list};
 use std::collections::{HashMap, HashSet};
@@ -9,49 +7,36 @@ use crate::middle::obligations::Obligations;
 
 use super::{Checker, Debt, Violation};
 
-/// The runtime witnesses a discharge node must test: `null` for `opt`, and one type/trait name
-/// per object witness.
 #[derive(Clone)]
 pub struct WitnessSet {
     pub null: bool,
-    /// The witness declarations the set tests.
     pub witnesses: Vec<TypeId>,
-    /// Whether the set names a witness other than the built-in `Err`, so codegen must use the
-    /// `is` test rather than the fast bad/clean ops.
     pub contains_user_witnesses: bool,
 }
 
-/// The witnesses a destination allows (a slot or a `!`). Its boundary guard throws any registered
-/// witness it does not allow when an unknown value reaches it.
+/// The witnesses a destination allows (a slot or a `!`).
 pub struct Barrier {
     pub null_allowed: bool,
     pub allow_witnesses: Vec<TypeId>,
 }
 
-/// A runtime check codegen emits for a node, once that node's value is on the stack. The order
-/// here is the order they are emitted, so a node carrying several asks them in a fixed sequence.
+/// A runtime check codegen emits.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Guard {
     /// An unknown value against the witnesses its destination refuses.
     Boundary,
     /// A `!` operand owing only `opt`, where a null check alone suffices.
     NonNull,
-    /// A store handing an element to a container, which takes its write-ownership.
-    StoreIntoContainer,
     /// A value entering an immutable construction.
     Immutable,
 }
 
-/// What a call does to its arguments.
 #[derive(Default)]
 pub struct ArgMarks {
-    /// Positions an opaque call must assert its callee borrows rather than keeps, each with the
-    /// obligation that demands it. A borrowed argument has none: the borrow is the reason itself.
-    survive: Vec<(u8, Option<Symbol>)>,
+    survive: Vec<(u8, Symbol)>,
 }
 
-/// The runtime checks codegen emits. A barrier tests an unknown value against the witnesses its
-/// destination does not allow, whether the value enters a slot or is asserted clean by `!`.
+/// The runtime checks codegen emits.
 #[derive(Default)]
 pub struct Barriers {
     /// Every per-node runtime check, in the order codegen emits them.
@@ -113,7 +98,7 @@ impl Barriers {
         self.witness_tests.get(node)
     }
 
-    pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[(u8, Option<Symbol>)]> {
+    pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[(u8, Symbol)]> {
         self.arg_marks.get(callee).map(|m| m.survive.as_slice()).filter(|p| !p.is_empty())
     }
 
@@ -166,7 +151,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Records that an opaque call must assert its callee borrows the given argument positions.
-    pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<(u8, Option<Symbol>)>) {
+    pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<(u8, Symbol)>) {
         self.out.arg_marks.entry(*callee).or_default().survive = positions;
     }
 
