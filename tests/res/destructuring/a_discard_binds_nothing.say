@@ -1,0 +1,29 @@
+fn f() { print("ran"); return 5; } // expect: ran
+say _ = f();
+
+// @split
+fn f() { return 5; }
+say _ = f();
+print(_); // error: Undefined variable '_'
+
+// @split
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+say _ = mayFail(1);
+print("ran"); // expect: ran
+
+// @split
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+say r = mayFail(1); // error: cannot assign a value owing 'fails' to 'r'
+print("ran");
+
+// @split
+say xs = mut [1];
+say _ = xs;
+xs.push(2);
+print(xs.length()); // expect: 2
+
+// @split
+say _; // error: `say _` needs a value to discard
+
+// @split
+say var _ = 1; // error: `say _` binds nothing, so it takes no marker or clause

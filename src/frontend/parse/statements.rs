@@ -58,6 +58,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let name_pos = self.tokens.peek(0).pos.clone();
 
         let target = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
+        let discard = matches!(self.ast.get(&target), Matcher::Wildcard);
         let (name, pattern) = match self.ast.get(&target) {
             Matcher::Binder(name) => (*name, None),
             Matcher::Wildcard => (self.ast.intern("_"), None),
@@ -95,6 +96,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         if pattern.is_none() && otherwise.is_some() {
             let at = pos.to(&self.tokens.previous().pos);
             parse_error!(self, &at, "cannot have `else` branch in a patternless `say` statement");
+        }
+
+        if discard {
+            let at = pos.to(&self.tokens.previous().pos);
+            if reassignable || nullable || !clause.names.is_empty() || clause.void {
+                parse_error!(self, &at, "`say _` binds nothing, so it takes no marker or clause");
+            }
+            let Some(expr) = expr else { parse_error!(self, &at, "`say _` needs a value to discard") };
+            self.tokens.expect(TokenType::Semicolon)?;
+            return Ok(self.node_stmt(Stmt::Discard(expr), pos));
         }
 
         self.tokens.expect(TokenType::Semicolon)?;

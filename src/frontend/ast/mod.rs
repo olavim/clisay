@@ -323,6 +323,8 @@ pub enum Stmt {
     Block(AstId<Expr>),
     Defer(AstId<Expr>),
     Say(SayDecl),
+    /// `say _ = expr;`
+    Discard(AstId<Expr>),
     Fn(FnDecl),
     Type(Box<TypeDecl>),
     Obligation { name: Symbol, witness: Option<Symbol>, rules: ObligationRules },

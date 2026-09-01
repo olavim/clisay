@@ -389,6 +389,7 @@ impl<'a> Resolver<'a> {
                 if let Some(otherwise) = otherwise { self.visit_stmt(otherwise)?; }
             },
             Stmt::Block(body) | Stmt::Defer(body) => self.visit_expr(body)?,
+            Stmt::Discard(value) => self.visit_expr(value)?,
             Stmt::Say(field) => {
                 self.check_clause_placement(&field.clause, ClauseSite::Other, stmt)?;
                 if let Some(value) = &field.value { self.visit_expr(value)?; }

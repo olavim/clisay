@@ -140,7 +140,7 @@ impl<'a> Compiler<'a> {
                     self.compile_say_pattern(pattern, value, stmt_id, &field.otherwise)?;
                 }
             },
-            HirStmt::Expression(expr) => {
+            HirStmt::Expression(expr) | HirStmt::Discard(expr) => {
                 self.expression_stmt(expr)?;
             },
             HirStmt::While(cond, body) => {

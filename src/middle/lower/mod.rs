@@ -122,6 +122,7 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(stmt_id).clone();
         let kind = match self.ast.get(stmt_id) {
             Stmt::Expression(expr) => HirStmt::Expression(self.expr(expr)?),
+            Stmt::Discard(value) => HirStmt::Discard(self.expr(value)?),
             Stmt::Return(expr) => HirStmt::Return(self.opt_expr(expr)?),
             Stmt::Throw(expr) => HirStmt::Throw(self.expr(expr)?),
             Stmt::Try(body, catch, finally) => {

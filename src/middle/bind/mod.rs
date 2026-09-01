@@ -429,7 +429,7 @@ impl<'a> Resolver<'a> {
                     self.bindings.match_binders.insert(*value, binders);
                 }
             },
-            HirStmt::Expression(expr) => self.expression(expr)?,
+            HirStmt::Expression(expr) | HirStmt::Discard(expr) => self.expression(expr)?,
             HirStmt::While(cond, body) => self.conditioned(cond, body)?,
             HirStmt::If(cond, then, otherwise) => {
                 self.conditioned(cond, then)?;

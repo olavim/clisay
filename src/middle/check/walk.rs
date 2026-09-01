@@ -89,6 +89,7 @@ impl<'a> Checker<'a> {
                 let state = self.expr(e)?;
                 self.ctx.check_dropped_result(&state.debt, e)?;
             },
+            HirStmt::Discard(e) => { self.expr(e)?; },
             HirStmt::Block(e) => { self.expr(e)?; },
             HirStmt::Defer(e) => {
                 let outer = std::mem::replace(&mut self.fn_ctx.in_defer, true);

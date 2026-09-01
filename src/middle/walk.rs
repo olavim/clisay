@@ -88,6 +88,7 @@ pub fn children_of_stmt(hir: &Hir, node: &HirId<HirStmt>) -> Vec<Child> {
             if let Some(f) = finally { out.push(Child::Expr(*f)); }
         },
         HirStmt::Say(field) => if let Some(v) = field.value { out.push(Child::Expr(v)); },
+        HirStmt::Discard(value) => out.push(Child::Expr(*value)),
         HirStmt::Match(scrutinee, arms) => {
             out.push(Child::Expr(*scrutinee));
             for arm in arms {

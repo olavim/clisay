@@ -422,6 +422,7 @@ pub enum HirStmt {
     Block(HirId<HirExpr>),
     Defer(HirId<HirExpr>),
     Say(HirSayDecl),
+    Discard(HirId<HirExpr>),
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
     Trait(Box<HirTypeDecl>),
