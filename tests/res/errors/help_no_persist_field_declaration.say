@@ -1,0 +1,13 @@
+type Held { } obligation held { witness Held; discharge to use; no persist; }
+type Box {
+    r: held;
+    init(this, v) { this.r = v; }
+}
+// error(full):
+// error: A field cannot owe 'held'
+//  --> help_no_persist_field_declaration.say:3:8
+//   |
+// 2 | type Box {
+// 3 |     r: held;
+//   |        ^^^^
+//   = help: `held` declares `no persist`, which prevents storing it in a field

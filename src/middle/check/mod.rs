@@ -61,12 +61,45 @@ struct ValueState {
     mutability: Mutability,
     /// Whether this name may write it. A binding that a closure took write-permission from may not.
     writable: Mutability,
+    stored: bool,
 }
 
 impl ValueState {
-    fn unknown() -> ValueState { ValueState { debt: Debt::Unknown, tag: TypeTag::Unknown, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
-    fn nonnull() -> ValueState { ValueState { debt: Debt::Clean, tag: TypeTag::Unknown, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
-    fn of(debt: Debt, tag: TypeTag) -> ValueState { ValueState { debt, tag, mutability: Mutability::Unknown, writable: Mutability::Unknown } }
+    fn unknown() -> ValueState {
+        ValueState {
+            debt: Debt::Unknown,
+            tag: TypeTag::Unknown,
+            mutability: Mutability::Unknown,
+            writable: Mutability::Unknown,
+            stored: false,
+        }
+    }
+
+    fn nonnull() -> ValueState {
+        ValueState {
+            debt: Debt::Clean,
+            tag: TypeTag::Unknown,
+            mutability: Mutability::Unknown,
+            writable: Mutability::Unknown,
+            stored: false,
+        }
+    }
+
+    fn of(debt: Debt, tag: TypeTag) -> ValueState {
+        ValueState {
+            debt,
+            tag,
+            mutability: Mutability::Unknown,
+            writable: Mutability::Unknown,
+            stored: false,
+        }
+    }
+
+    fn as_stored(mut self) -> ValueState {
+        self.stored = true;
+        self
+    }
+
     fn with_mutability(mut self, mutability: Mutability) -> ValueState {
         self.mutability = mutability;
         self.writable = mutability;
@@ -87,8 +120,7 @@ struct Local {
     /// Whether the binding holds a container whose elements owe `owed`.
     container: bool,
     param: bool,
-    /// The obligations settled on this binding.
-    handled: Obligations,
+    used: bool,
     /// The obligations discharged on this binding.
     discharged: Obligations,
     /// The obligations discharged per field of this binding.
@@ -127,16 +159,38 @@ impl Local {
     }
 
     fn base(name: Symbol) -> Local {
-        Local { name, owed: Obligations::new(), reassignable: false, assigned: true, tag: TypeTag::Unknown, fn_decl: false, resolved_callable: None, pattern_binder_source: None, container: false, param: false, handled: Obligations::new(), discharged: Obligations::new(), field_discharged: HashMap::new(), site: None, decl: None, alias: AliasLocal { may_be_shared: true, ..AliasLocal::default() }, unknown: false }
+        Local {
+            name,
+            owed: Obligations::new(),
+            reassignable: false,
+            assigned: true,
+            tag: TypeTag::Unknown,
+            fn_decl: false,
+            resolved_callable: None,
+            pattern_binder_source: None,
+            container: false,
+            param: false,
+            used: false,
+            discharged: Obligations::new(),
+            field_discharged: HashMap::new(),
+            site: None,
+            decl: None,
+            alias: AliasLocal { may_be_shared: true, ..AliasLocal::default() },
+            unknown: false
+        }
     }
 
     fn param(name: Symbol, owed: Obligations, reassignable: bool) -> Local {
         Local { owed, reassignable, ..Local::base(name) }
     }
 
-    /// A caught value.
     fn catch(name: Symbol, owed: Obligations) -> Local {
         Local::param(name, owed, false)
+    }
+
+    fn as_used(mut self) -> Local {
+        self.used = true;
+        self
     }
 
     fn binder_owing(name: Symbol, owed: Obligations, source: PatternBinderSource) -> Local {
@@ -152,7 +206,6 @@ impl Local {
     }
 }
 
-/// Where a narrowing applies.
 #[derive(Clone, Copy, PartialEq)]
 enum NarrowTarget {
     Local(usize),

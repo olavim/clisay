@@ -297,7 +297,7 @@ pub struct ObligationRules {
     /// The value may not leave its frame by `return`, so its lifetime is the call.
     pub no_return: bool,
     /// The binding must be discharged before its scope ends.
-    pub before_drop: bool,
+    pub must_use: bool,
     /// Reserved for typestate.
     pub no_drop: bool,
 }
@@ -305,7 +305,7 @@ pub struct ObligationRules {
 pub fn builtin_obligation_rules(name: &str) -> Option<ObligationRules> {
     Some(match name {
         "opt" => ObligationRules { to_use: true, ..Default::default() },
-        "fails" => ObligationRules { to_use: true, no_persist: true, before_drop: true, ..Default::default() },
+        "fails" => ObligationRules { to_use: true, no_persist: true, must_use: true, ..Default::default() },
         _ => return None,
     })
 }

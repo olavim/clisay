@@ -1,0 +1,13 @@
+type Held { } obligation held { witness Held; discharge to use; no persist; }
+type Box {
+    r: held; // error: A field cannot owe 'held'
+    init(this, v) { this.r = v; }
+}
+
+// @split
+type Held { } obligation held { witness Held; must use; }
+type Box {
+    pub r: held;
+    init(this, *v: held) { this.r = v; }
+}
+print("declared"); // expect: declared

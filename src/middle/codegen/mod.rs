@@ -188,7 +188,7 @@ impl<'a> Compiler<'a> {
 
     pub(super) fn accepts_index(&mut self, owed: &Obligations, nullable: bool) -> Result<u16, anyhow::Error> {
         let witnesses: Vec<TypeId> = self.sigs.object_witnesses()
-            .filter(|(ob, _)| owed.contains(ob) || !self.sigs.obligation_rules_of(*ob).before_drop)
+            .filter(|(ob, _)| owed.contains(ob) || !self.sigs.obligation_rules_of(*ob).must_use)
             .map(|(_, id)| id)
             .collect();
         let accepts = self.accepted_witness_set(&witnesses, nullable || owed.contains(&self.sigs.opt));

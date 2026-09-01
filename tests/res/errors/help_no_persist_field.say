@@ -1,0 +1,14 @@
+type Held { } obligation held { witness Held; no persist; }
+type Box { pub var item; init(this) { this.item = 0; } }
+fn stash(x: held) {
+    say b = mut Box();
+    b.item = x;
+}
+// error(full):
+// error: cannot store value owing 'held' in a field
+//  --> help_no_persist_field.say:5:14
+//   |
+// 4 |     say b = mut Box();
+// 5 |     b.item = x;
+//   |              ^
+//   = help: `held` declares `no persist`, which prevents storing it in a field

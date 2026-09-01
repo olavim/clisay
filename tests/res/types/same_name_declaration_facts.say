@@ -1,5 +1,3 @@
-// A value's declared facts come from the declaration it was built from, not from another one
-// sharing the name. Mutability, nullability, and what a construction owes all read that declaration.
 fn other() { type T { pub var x; init(this) { this.x = 1; } } say u = mut T(); u.x = 5; }
 fn mk() {
     type T { pub x; init(this) { this.x = 1; } }
@@ -16,7 +14,6 @@ fn mk() {
 }
 
 // @split
-// The same disagreement the other way round: the value's own declaration allows the write.
 fn other() { type T { pub x; init(this) { this.x = 1; } } }
 fn mk() {
     type T { pub var x; init(this) { this.x = 1; } }
@@ -27,10 +24,8 @@ fn mk() {
 mk();
 
 // @split
-// Constructing a type that mixes a trait sharing no name with the witness owes nothing, since it
-// is not the witness.
 trait Wt { }
-obligation warned { witness Wt; discharge before drop; }
+obligation warned { witness Wt; must use; }
 fn f() {
     trait Other { }
     type W2 with Other { }

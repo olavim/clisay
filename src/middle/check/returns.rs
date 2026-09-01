@@ -1,9 +1,7 @@
 //! What a body owes on the way out: return shape, definite return, and results left undischarged.
 
-use anyhow::anyhow;
 
 use crate::middle::diagnose::Diagnose;
-use crate::frontend::lex::Diagnostic;
 use crate::middle::obligations::{quoted_obligation_list, obligation_atoms, ObligationRule, Site};
 use crate::middle::hir::{HirFnDecl, HirExpr, HirId, ReturnShape};
 use crate::middle::signatures::CallableId;
@@ -12,20 +10,19 @@ use crate::middle::obligations::Obligations;
 use super::{Checker, Ctx, Mutability, Debt, ValueState, Violation};
 
 impl<'a> Ctx<'a> {
-    /// Rejects a statement result that owes a `discharge before drop` obligation and is thrown away.
-    pub(super) fn check_dropped_result(&self, debt: &Debt, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if matches!(self.hir.get(node), HirExpr::Assign(..) | HirExpr::Assert(_) | HirExpr::Propagate(_)) {
-            return Ok(());
-        }
+    pub(super) fn pending_must_use(&self, obligations: &Obligations) -> Obligations {
+        obligations.iter().copied().filter(|o| self.sigs.obligation_rules_of(*o).must_use).collect()
+    }
 
+    pub(super) fn check_unused_must_use(&self, debt: &Debt, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let Debt::Owed { obligations, .. } = debt else { return Ok(()) };
-        let pending: Obligations = obligations.iter().copied().filter(|o| self.sigs.obligation_rules_of(*o).before_drop).collect();
+        let pending = self.pending_must_use(obligations);
         if pending.is_empty() {
             return Ok(());
         }
 
         let owed = quoted_obligation_list(self.hir, &pending);
-        let help = self.obligation_rule_prevents_help(&pending, ObligationRule::BeforeDrop, Site::Drop);
+        let help = self.obligation_rule_prevents_help(&pending, ObligationRule::MustUse, Site::Drop);
         Err(self.error_help(Site::Drop.refusal(&owed), node, help))
     }
 
@@ -116,7 +113,6 @@ impl<'a> Checker<'a> {
         };
         self.check_return_obligations(debt, &admits, node)?;
         self.ctx.obligation_rule_reject_at(debt, super::ObligationRule::NoReturn, super::Site::Return, node)?;
-        self.mark_settled(node, &admits);
 
         if shape == ReturnShape::Inferred || self.fn_ctx.return_unmarked {
             return match debt {
@@ -149,25 +145,20 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Rejects a binding that reaches the end of its scope still owing a `discharge before drop` obligation.
     pub(super) fn check_dropped(&self, mark: usize, at: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         for local in &self.locals[mark..] {
-            if local.fn_decl || local.owed.is_empty() {
+            if local.fn_decl || local.used || local.owed.is_empty() {
                 continue;
             }
-            let pending: Obligations = local.owed.iter().copied()
-                .filter(|o| self.ctx.sigs.obligation_rules_of(*o).before_drop && !local.handled.contains(o))
-                .collect();
+            let pending = self.ctx.pending_must_use(&local.owed);
             if pending.is_empty() {
                 continue;
             }
             let owed = quoted_obligation_list(self.ctx.hir, &pending);
             let text = self.ctx.binding_display_name(local.name);
-            let help = self.ctx.obligation_rule_prevents_help(&pending, ObligationRule::BeforeDrop, Site::ScopeEnd);
-            let pos = self.ctx.hir.pos(local.site.as_ref().unwrap_or(at)).clone();
-            return Err(anyhow!("{}", Diagnostic::new(format!("'{text}' owes {owed} and is never discharged"), pos)
-                .with_label(format!("owes {owed} from here"))
-                .with_help(help)));
+            let help = self.ctx.obligation_rule_prevents_help(&pending, ObligationRule::MustUse, Site::ScopeEnd);
+            return Err(self.ctx.error_labeled_help(format!("'{text}' owes {owed} and is never used"),
+                local.site.as_ref().unwrap_or(at), format!("owes {owed} from here"), help));
         }
         Ok(())
     }

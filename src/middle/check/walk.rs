@@ -13,6 +13,14 @@ use crate::middle::signatures::CallableId;
 use crate::middle::signatures::{Mutability, TypeTag};
 
 use super::scope::FlowSnapshot;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Dropped {
+    /// `say _ = e;`
+    OnPurpose,
+    Silently
+}
+
 use super::{PatternBinderSource, Checker, Ctx, Debt, FnContext, Guard, Local, ReceiverFacts, ValueState};
 
 impl<'a> Ctx<'a> {
@@ -85,11 +93,8 @@ impl<'a> Checker<'a> {
             HirStmt::Type(decl) => self.type_decl(stmt, Some(*stmt), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
             HirStmt::Say(field) => self.say(stmt.index(), field)?,
-            HirStmt::Expression(e) => {
-                let state = self.expr(e)?;
-                self.ctx.check_dropped_result(&state.debt, e)?;
-            },
-            HirStmt::Discard(e) => { self.expr(e)?; },
+            HirStmt::Expression(e) => self.statement_result(e, Dropped::Silently)?,
+            HirStmt::Discard(e) => self.statement_result(e, Dropped::OnPurpose)?,
             HirStmt::Block(e) => { self.expr(e)?; },
             HirStmt::Defer(e) => {
                 let outer = std::mem::replace(&mut self.fn_ctx.in_defer, true);
@@ -141,13 +146,13 @@ impl<'a> Checker<'a> {
                 let then_snap = self.narrow_branch(&then_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
                     c.with_binders(&scope, then, |c| c.expr(then))?;
                     Ok(c.snapshot())
-                }).0?;
+                })?;
                 let else_snap = self.narrow_branch(&else_narrow, |c| -> Result<FlowSnapshot, anyhow::Error> {
                     if let Some(otherwise) = otherwise {
                         c.stmt(otherwise)?;
                     }
                     Ok(c.snapshot())
-                }).0?;
+                })?;
 
                 // A branch that returns or throws never reaches the code after the if, so its end
                 // state is not merged.
@@ -192,7 +197,6 @@ impl<'a> Checker<'a> {
                 // A match discharges by ruling out witnesses. A guard-free arm total over a witness
                 // clears it for the arms below.
                 let mut remaining = self.ctx.obligations_of(&state.debt);
-                let mut settled = Obligations::new();
 
                 // Arms are mutually exclusive, so each runs from the same pre-match state and only
                 // the arms that fall through decide the state after the match.
@@ -216,7 +220,6 @@ impl<'a> Checker<'a> {
                     // An irrefutable guardless arm always matches, so no value slips past unmatched.
                     exhaustive |= arm.guard.is_none() && self.ctx.hir.get(&arm.matcher).is_irrefutable(self.ctx.hir);
                     let ruled = self.ctx.obligations_ruled_out_by_match_arm(arm, &remaining);
-                    settled.extend(self.ctx.obligations_examined_by_match_arm(arm, &remaining));
                     remaining.retain(|w| !ruled.contains(w));
                 }
 
@@ -235,10 +238,6 @@ impl<'a> Checker<'a> {
                     },
                     None => self.restore_flow(&baseline),
                 }
-
-                // After the join, since restoring the arms' snapshots would undo it. The match
-                // settles what its arms actually ruled out; a lone catch-all rules out nothing.
-                self.mark_settled(scrutinee, &settled);
             },
         }
         Ok(())
@@ -255,7 +254,7 @@ impl<'a> Checker<'a> {
             },
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
             HirExpr::This => self.this_valuestate(),
-            HirExpr::Assign(lhs, rhs) => self.assign(lhs, rhs)?,
+            HirExpr::Assign(lhs, rhs) => self.assign(lhs, rhs)?.as_stored(),
             HirExpr::CompoundAssign(lhs, _, rhs) => {
                 self.expr(lhs)?;
                 self.assign(lhs, rhs)?
@@ -305,12 +304,8 @@ impl<'a> Checker<'a> {
             HirExpr::Index(target, member, _) => self.member_access(target, member)?,
             HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
             HirExpr::Unary(op, x) => self.unary(*op, x)?,
-            HirExpr::Match(scrutinee, matcher) => {
+            HirExpr::Match(scrutinee, _) => {
                 let state = self.expr(scrutinee)?;
-                if let Debt::Owed { obligations, .. } = &state.debt {
-                    let settled = self.ctx.obligations_settled_by_matcher(matcher, obligations);
-                    self.mark_settled(scrutinee, &settled);
-                }
                 if state.debt.is_void() {
                     return Err(self.error("This call returns no value, so its result cannot be matched here".to_string(), scrutinee));
                 }
@@ -331,7 +326,6 @@ impl<'a> Checker<'a> {
             // `a ?? b` discharges the whole obligation set: the fallback runs on any bad value, so
             // a possibly-bad left crosses with no barrier. The result is `a` when clean, else `b`.
             HirExpr::Coalesce(l, r) => {
-                self.mark_handled(l);
                 let left = self.expr(l)?;
                 self.ctx.require_witnessed_operand(&left.debt, l)?;
                 if self.ctx.owes_object_witness(&left.debt) { self.record_witness_test(expr, &left.debt); }
@@ -368,7 +362,6 @@ impl<'a> Checker<'a> {
                     "'?!' returns the bad value, and the block is already leaving; handle it with '??' or '!' instead"));
             },
             HirExpr::Propagate(operand) => {
-                self.mark_handled(operand);
                 let state = self.expr(operand)?;
                 self.ctx.require_witnessed_operand(&state.debt, operand)?;
                 if self.ctx.owes_object_witness(&state.debt) { self.record_witness_test(expr, &state.debt); }
@@ -377,16 +370,14 @@ impl<'a> Checker<'a> {
             // `a ?? p => h` binds the caught bad value to `p`, which still owes what `a` owed. A
             // single type witness narrows `p`'s tag, so a caught `Err` is usable as one.
             HirExpr::Handle(left_id, binder, handler) => {
-                self.mark_handled(left_id);
                 let left = self.expr(left_id)?;
                 self.ctx.require_witnessed_operand(&left.debt, left_id)?;
                 if self.ctx.owes_object_witness(&left.debt) { self.record_witness_test(expr, &left.debt); }
                 let caught = self.ctx.obligations_of(&left.debt);
                 let tag = self.ctx.handle_caught_tag(&caught);
-                let mut binder_local = Local::binder_owing(*binder, caught, PatternBinderSource::Handler);
+                let mut binder_local = Local::binder_owing(*binder, caught, PatternBinderSource::Handler).as_used();
                 binder_local.decl = Some(expr.index());
                 binder_local.tag = tag;
-                binder_local.handled = binder_local.owed.clone();
                 let mark = self.locals.len();
                 self.locals.push(binder_local);
                 let h = self.expr(handler)?;
@@ -398,7 +389,6 @@ impl<'a> Checker<'a> {
             // `a!` asserts the value is clean, keeping its type tag. A barrier guards it unless
             // the operand is already proven clean.
             HirExpr::Assert(x) => {
-                self.mark_handled(x);
                 let state = self.expr(x)?;
                 self.ctx.require_witnessed_operand(&state.debt, x)?;
                 if self.ctx.owes_object_witness(&state.debt) {
@@ -414,6 +404,14 @@ impl<'a> Checker<'a> {
                 ValueState::of(self.ctx.discharged_debt(&state.debt), state.tag)
             },
         })
+    }
+
+    fn statement_result(&mut self, e: &HirId<HirExpr>, dropped: Dropped) -> Result<(), anyhow::Error> {
+        let state = self.expr(e)?;
+        if dropped == Dropped::OnPurpose || state.stored {
+            return Ok(());
+        }
+        self.ctx.check_unused_must_use(&state.debt, e)
     }
 
     fn callable_named_by(&self, value: &HirId<HirExpr>) -> Option<CallableId> {
@@ -432,7 +430,6 @@ impl<'a> Checker<'a> {
             self.check_into_slot(&state.debt, &owed, name, value)?;
             // The move records the sources feeding the value, so the slot reuses that walk for its
             // provenance and adds the closure captures a bare walk would miss.
-            self.mark_settled(value, &owed);
             let mut provenance = self.transfer_write_ownership(value)?;
             provenance.extend(self.captured_sources(value));
             (true, state.tag, state.mutability, provenance)
@@ -501,21 +498,26 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    fn note_read(&mut self, i: usize, may_be_shared: bool) {
+        self.locals[i].used = true;
+        if may_be_shared {
+            self.locals[i].alias.may_be_shared = true;
+        }
+    }
+
     pub(super) fn identifier(&mut self, name: Symbol, expr: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         let Some(i) = self.frame_index_of(name) else {
             // A read that resolves to an enclosing frame is a closure capture.
             if let Some(j) = self.upvalue_index(name) {
-                self.locals[j].alias.may_be_shared = true;
+                self.note_read(j, true);
             }
             self.escape_via_capture_error(name, expr)?;
             self.capture_enclosing(name, expr);
             return Ok(self.captured_read(name));
         };
 
-        // Every read but a path base hands the value somewhere this pass does not follow.
-        if self.path_base.take() != Some(*expr) {
-            self.locals[i].alias.may_be_shared = true;
-        }
+        let may_be_shared = self.path_base.take() != Some(*expr);
+        self.note_read(i, may_be_shared);
 
         if self.locals[i].fn_decl {
             return Ok(ValueState::unknown());
@@ -635,16 +637,8 @@ impl<'a> Checker<'a> {
             // Short-circuit operators narrow their left operand into the right operand.
             BinOp::And | BinOp::Or => {
                 self.expr(l)?;
-                let runs_when = matches!(op, BinOp::And);
-                let (_, on_skip) = self.narrow_branch(&self.narrowings(l, !runs_when), |_| ());
-                let into_right = self.narrowings(l, runs_when);
-                let (result, on_run) = self.narrow_branch_keeping_moves(&into_right, |c| c.expr(r));
-                result?;
-                // A left that cannot skip the right leaves one path through the condition.
-                match self.ctx.has_truthiness(l, runs_when) {
-                    true => self.mark_obligations_handled_when_resolved_on_every_path(&[on_run]),
-                    false => self.mark_obligations_handled_when_resolved_on_every_path(&[on_skip, on_run]),
-                }
+                let into_right = self.narrowings(l, matches!(op, BinOp::And));
+                self.narrow_branch_keeping_moves(&into_right, |c| c.expr(r))?;
                 Ok(ValueState::nonnull())
             },
             BinOp::Equal | BinOp::NotEqual => {
@@ -985,6 +979,11 @@ impl<'a> Checker<'a> {
         Ok(ValueState::unknown())
     }
 
+    fn used_before_read(&self, expr: &HirId<HirExpr>) -> bool {
+        let HirExpr::Identifier(name) = self.ctx.hir.get(expr) else { return false };
+        self.frame_index_of(*name).is_some_and(|i| self.locals[i].used)
+    }
+
     pub(super) fn assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         if self.checking_factory {
             if let Some(field) = self.never_initialized_factory_field(lhs, rhs) {
@@ -993,6 +992,7 @@ impl<'a> Checker<'a> {
             }
         }
 
+        let used = self.used_before_read(rhs);
         let state = self.expr(rhs)?;
         match self.ctx.hir.get(lhs) {
             HirExpr::Identifier(name) => {
@@ -1017,6 +1017,7 @@ impl<'a> Checker<'a> {
                     if self.locals[i].alias.first_written_at.take().is_some() {
                         self.locals[i].alias.holds_write_ownership = false;
                     }
+                    self.locals[i].used = used;
                     self.reset_narrowing(i, matches!(state.debt, Debt::Clean));
                 } else if self.ctx.sigs.is_type(name) {
                     // A type binding names a declaration, not a reassignable slot.

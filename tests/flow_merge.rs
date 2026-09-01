@@ -117,7 +117,6 @@ fn base() -> LocalFlow {
         transfer_site: moves()[0],
         provenance: provenances()[0].clone(),
         extracted_from: extractions()[0].clone(),
-        handled: sets()[0].clone(),
         discharged: sets()[0].clone(),
         field_discharged: field_sets()[0].clone(),
         resolved_callable: resolutions()[0],
@@ -131,10 +130,9 @@ fn domain() -> Vec<LocalFlow> {
             for mutability in &mutabilities() {
                 for transfer_site in &moves() {
                     for extracted_from in &extractions() {
-                        for handled in &sets() {
-                            for discharged in &sets() {
-                                for field_discharged in &field_sets() {
-                                    for resolves_to in &resolutions() {
+                        for discharged in &sets() {
+                            for field_discharged in &field_sets() {
+                                for resolves_to in &resolutions() {
                                     out.push(LocalFlow {
                                         assigned,
                                         tag: tag.clone(),
@@ -142,12 +140,10 @@ fn domain() -> Vec<LocalFlow> {
                                         transfer_site: *transfer_site,
                                         provenance: provenances()[0].clone(),
                                         extracted_from: extracted_from.clone(),
-                                        handled: handled.clone(),
                                         discharged: discharged.clone(),
                                         field_discharged: field_discharged.clone(),
                                         resolved_callable: *resolves_to,
                                     });
-                                    }
                                 }
                             }
                         }
@@ -159,14 +155,8 @@ fn domain() -> Vec<LocalFlow> {
     out
 }
 
-fn coupled_domain() -> Vec<LocalFlow> {
-    let mut out = Vec::new();
-    for handled in &sets() {
-        for discharged in &sets() {
-            out.push(LocalFlow { handled: handled.clone(), discharged: discharged.clone(), ..base() });
-        }
-    }
-    out
+fn discharge_domain() -> Vec<LocalFlow> {
+    sets().into_iter().map(|discharged| LocalFlow { discharged, ..base() }).collect()
 }
 
 fn one_field_apart() -> Vec<LocalFlow> {
@@ -177,7 +167,6 @@ fn one_field_apart() -> Vec<LocalFlow> {
     out.extend(moves().into_iter().map(|transfer_site| LocalFlow { transfer_site, ..base() }));
     out.extend(extractions().into_iter().map(|extracted_from| LocalFlow { extracted_from, ..base() }));
     out.extend(provenances().into_iter().map(|provenance| LocalFlow { provenance, ..base() }));
-    out.extend(sets().into_iter().map(|handled| LocalFlow { handled, ..base() }));
     out.extend(sets().into_iter().map(|discharged| LocalFlow { discharged, ..base() }));
     out.extend(field_sets().into_iter().map(|field_discharged| LocalFlow { field_discharged, ..base() }));
     out
@@ -225,20 +214,14 @@ fn set_key(set: &Obligations) -> String {
     set.iter().map(|s| s.index().to_string()).collect::<Vec<_>>().join(",")
 }
 
-fn coupled_key(flow: &LocalFlow) -> String {
-    format!("{}/{}", set_key(&flow.handled), set_key(&flow.discharged))
-}
-
 fn merged(a: &LocalFlow, b: &LocalFlow) -> LocalFlow {
     let mut out = a.clone();
-    merge_local_flow(&mut out, &owed(), b);
+    merge_local_flow(&mut out, b);
     out
 }
 
 fn resolved(flow: &LocalFlow) -> Vec<Symbol> {
-    owed().iter().copied()
-        .filter(|ob| flow.handled.contains(ob) || flow.discharged.contains(ob))
-        .collect()
+    owed().iter().copied().filter(|ob| flow.discharged.contains(ob)).collect()
 }
 
 #[test]
@@ -248,7 +231,6 @@ fn merging_an_outcome_with_itself_settles_nothing_new() {
         assert!(resolved(&once) == resolved(&a), "merging an outcome into itself changed what it settled");
         assert!(merged(&once, &a) == once, "merging an outcome into itself is not a fixed point");
         let mut untouched = a.clone();
-        untouched.handled = once.handled.clone();
         untouched.discharged = once.discharged.clone();
         assert!(once == untouched, "merging an outcome into itself changed a field the join should leave alone");
     }
@@ -256,7 +238,7 @@ fn merging_an_outcome_with_itself_settles_nothing_new() {
 
 #[test]
 fn a_merge_resolves_only_what_both_outcomes_resolved() {
-    let domain = coupled_domain();
+    let domain = discharge_domain();
     for a in domain.iter() {
         for b in domain.iter() {
             let out = merged(a, b);
@@ -271,7 +253,7 @@ fn a_merge_resolves_only_what_both_outcomes_resolved() {
 #[test]
 fn merging_is_commutative() {
     let mut domain = one_field_apart();
-    domain.extend(coupled_domain());
+    domain.extend(discharge_domain());
     for a in domain.iter() {
         for b in domain.iter() {
             let (mut ab, mut ba) = (merged(a, b), merged(b, a));
@@ -287,7 +269,7 @@ fn merging_is_commutative() {
 
 #[test]
 fn merging_is_associative() {
-    let domain = coupled_domain();
+    let domain = discharge_domain();
     for a in &domain {
         for b in &domain {
             for c in &domain {
@@ -301,7 +283,7 @@ fn merging_is_associative() {
 
 #[test]
 fn folding_another_outcome_never_resolves_more() {
-    let domain = coupled_domain();
+    let domain = discharge_domain();
     for a in &domain {
         for b in &domain {
             for c in &domain {
@@ -411,20 +393,7 @@ fn each_rule_is_decided_by_its_own_field_alone() {
             }
         }
     }
-
-    // And the one coupled field is coupled to one other field, not to a third.
-    let mut seen: HashMap<(String, String), String> = HashMap::new();
-    for (a, b) in &pairs {
-        let inputs = (coupled_key(a), coupled_key(b));
-        let result = set_key(&merged(a, b).handled);
-        if let Some(previous) = seen.insert(inputs, result.clone()) {
-            assert!(previous == result,
-                "`handled` is decided by more than `handled` and `discharged`: the same inputs \
-                 merged to {previous:?} and to {result:?}");
-        }
-    }
 }
-
 
 #[test]
 fn the_domain_carries_every_variant() {

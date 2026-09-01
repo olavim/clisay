@@ -1,5 +1,6 @@
 fn f(): opt fails { return Err("b"); }
 fn g() {
-    say x: opt fails = f(); // error: 'x' owes 'fails' and is never discharged
+    say x: opt fails = f();
     if x == null { }
+    say y = x; // error: cannot assign a value owing 'fails' to 'y'
 }

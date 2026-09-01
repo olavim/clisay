@@ -1,0 +1,35 @@
+type Wt { pub a; pub b; init(this, *x) { this.a = x; this.b = x; } }
+obligation warned { witness Wt; must use; }
+fn f() {
+    say b: warned = Wt(1);
+    match (b) { Wt { a: 5 } => print("five"), _ => print("other") }
+}
+f(); // expect: other
+
+// @split
+type Wt { pub a; pub b; init(this, *x) { this.a = x; this.b = x; } }
+obligation warned { witness Wt; must use; }
+fn f() {
+    say b: warned = Wt(1);
+    match (b) { Wt { a: _ } => print("shape"), _ => print("other") }
+}
+f(); // expect: shape
+
+// @split
+trait Wt { }
+obligation warned { witness Wt; must use; }
+type W2 with Wt { }
+fn f() {
+    say b: warned = W2 { };
+    if (b ~ W2 | null) { print("or"); }
+}
+f(); // expect: or
+
+// @split
+trait Wt { }
+obligation warned { witness Wt; must use; }
+type W2 with Wt { }
+fn f() {
+    say b: warned = W2 { };
+    if (b ~ seen @ W2) { print("as"); } // error: 'seen' owes 'warned' and is never used
+}

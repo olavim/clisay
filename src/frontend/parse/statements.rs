@@ -154,7 +154,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok((witness, rules))
     }
 
-    /// entry := ("witness" Name | "discharge" ("to" "use" | "before" "drop") | "no" ("persist" | "return" | "drop")) ";"
+    /// entry := ("witness" Name | "discharge" "to" "use" | "must" "use" | "no" ("persist" | "return" | "drop")) ";"
     fn parse_obligation_entry(&mut self, witness: &mut Option<Symbol>, rules: &mut ObligationRules) -> Result<(), anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         match self.parse_identifier()?.as_str() {
@@ -163,16 +163,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let name = self.parse_identifier()?;
                 *witness = Some(self.ast.intern(&name));
             },
-            "discharge" => match self.parse_identifier()?.as_str() {
-                "to" => {
-                    self.expect_word("use", &pos)?;
-                    self.set_rule(&mut rules.to_use, "discharge to use", &pos)?;
-                },
-                "before" => {
-                    self.expect_word("drop", &pos)?;
-                    self.set_rule(&mut rules.before_drop, "discharge before drop", &pos)?;
-                },
-                _ => return Err(self.obligation_rule_error(&pos)),
+            "discharge" => {
+                self.expect_word("to", &pos)?;
+                self.expect_word("use", &pos)?;
+                self.set_rule(&mut rules.to_use, "discharge to use", &pos)?;
+            },
+            "must" => {
+                self.expect_word("use", &pos)?;
+                self.set_rule(&mut rules.must_use, "must use", &pos)?;
             },
             // `return` is a keyword, so it does not arrive as an identifier like the other rules.
             "no" if self.tokens.next_if(TokenType::Return).is_some() => {
@@ -208,7 +206,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn obligation_rule_error(&self, pos: &SourcePosition) -> anyhow::Error {
         self.error_help("Invalid obligation rule", pos,
-            "a rule is `witness T`, `discharge to use`, `discharge before drop`, `no persist`, `no return`, or `no drop`")
+            "a rule is `witness T`, `discharge to use`, `must use`, `no persist`, `no return`, or `no drop`")
     }
 
     pub(super) fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {

@@ -100,9 +100,8 @@ impl<'a> IntoIterator for &'a Obligations {
     }
 }
 
-/// A rule an obligation may declare, paired with how a refusal spells it.
 #[derive(Clone, Copy)]
-pub enum ObligationRule { NoPersist, NoReturn, BeforeDrop }
+pub enum ObligationRule { NoPersist, NoReturn, MustUse }
 
 impl ObligationRule {
     /// Whether these rules declare it.
@@ -110,7 +109,7 @@ impl ObligationRule {
         match self {
             ObligationRule::NoPersist => rules.no_persist,
             ObligationRule::NoReturn => rules.no_return,
-            ObligationRule::BeforeDrop => rules.before_drop,
+            ObligationRule::MustUse => rules.must_use,
         }
     }
 
@@ -119,7 +118,7 @@ impl ObligationRule {
         match self {
             ObligationRule::NoPersist => "no persist",
             ObligationRule::NoReturn => "no return",
-            ObligationRule::BeforeDrop => "discharge before drop",
+            ObligationRule::MustUse => "must use",
         }
     }
 }
@@ -138,8 +137,8 @@ impl Site {
             Site::Container => format!("cannot store value owing {owed} in a container"),
             Site::Capture => format!("cannot capture value owing {owed}"),
             Site::Return => format!("cannot return value owing {owed}"),
-            Site::Drop => format!("this result owes {owed} and is never discharged"),
-            Site::ScopeEnd => format!("value owing {owed} is never discharged"),
+            Site::Drop => format!("this result owes {owed} and is never used"),
+            Site::ScopeEnd => format!("value owing {owed} is never used"),
         }
     }
 

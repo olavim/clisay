@@ -331,7 +331,7 @@ fn obligation_declaration() {
     let Stmt::Obligation { name, witness, rules } = ast.get(&stmts[0]) else { panic!("not an obligation") };
     assert_eq!(ast.text(*name), "tainted");
     assert!(witness.is_none());
-    assert!(rules.to_use && !rules.no_persist && !rules.before_drop);
+    assert!(rules.to_use && !rules.no_persist && !rules.must_use);
 
     let Stmt::Obligation { witness, rules, .. } = ast.get(&stmts[1]) else { panic!("not an obligation") };
     let Some(w) = *witness else { panic!("witness form has no witness") };
@@ -348,12 +348,12 @@ fn obligation_declaration() {
 
 #[test]
 fn obligation_rules_compose() {
-    let ast = parse("obligation fails { witness Err; discharge to use; no persist; no return; discharge before drop; }");
+    let ast = parse("obligation fails { witness Err; discharge to use; no persist; no return; must use; }");
     let stmts = top_stmts(&ast);
     let Stmt::Obligation { witness, rules, .. } = ast.get(&stmts[0]) else { panic!("not an obligation") };
     let Some(w) = *witness else { panic!("no witness") };
     assert_eq!(ast.text(w), "Err");
-    assert!(rules.to_use && rules.no_persist && rules.no_return && rules.before_drop && !rules.no_drop);
+    assert!(rules.to_use && rules.no_persist && rules.no_return && rules.must_use && !rules.no_drop);
 }
 
 #[test]

@@ -10,6 +10,7 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::middle::hir::{Capability, HirExpr, HirId, HirLiteral, HirStmt, Symbol, ValueSource};
+use crate::middle::obligations::ObligationRule;
 
 use super::{PatternBinderSource, Checker, Ctx, Debt, Guard, Mutability, Site, ValueState};
 
@@ -635,7 +636,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn store_into_container(&mut self, debt: &Debt, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        self.ctx.reject_outliving(debt, Site::Container, expr)?;
+        self.ctx.obligation_rule_reject_at(debt, ObligationRule::NoPersist, Site::Container, expr)?;
         self.store_into_container_guard(expr)?;
         self.transfer_write_ownership(expr)?;
         Ok(())
@@ -677,7 +678,8 @@ impl<'a> Checker<'a> {
                 format!("declare the parameter `*{text}` to retain it, or `*mut {text}` if the closure writes it")));
         }
         let owed = self.locals[i].owed.clone();
-        self.ctx.reject_outliving(&Debt::Owed { obligations: owed, definite: false, container: false }, Site::Capture, node)
+        self.ctx.obligation_rule_reject_at(&Debt::Owed { obligations: owed, definite: false, container: false },
+            ObligationRule::NoPersist, Site::Capture, node)
     }
 
     pub(super) fn note_opaque_call_args(&mut self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[ValueState]) {

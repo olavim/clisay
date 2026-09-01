@@ -26,7 +26,7 @@ impl<'a> Ctx<'a> {
         let Debt::Owed { obligations, .. } = debt else { return None };
         obligations.iter().copied().find(|&o| {
             let rules = self.sigs.obligation_rules_of(o);
-            rules.no_persist || rules.before_drop
+            rules.no_persist || rules.must_use
         })
     }
 
@@ -230,12 +230,6 @@ impl<'a> Ctx<'a> {
         let owed = quoted_obligation_list(self.hir, &blocked);
         let help = self.obligation_rule_prevents_help(&blocked, rule, site);
         Err(self.error_help(site.refusal(&owed), node, help))
-    }
-
-    /// Refuses a value that would outlive its binding.
-    pub(super) fn reject_outliving(&self, debt: &Debt, site: Site, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        self.obligation_rule_reject_at(debt, ObligationRule::BeforeDrop, site, node)?;
-        self.obligation_rule_reject_at(debt, ObligationRule::NoPersist, site, node)
     }
 
     pub(super) fn reject_receiver_witnessed_obligations(&self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
@@ -490,14 +484,11 @@ impl<'a> Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
-    pub(super) fn check_arg_obligations(&mut self, callee: &HirId<HirExpr>, clauses: &[Obligations], arg_types: &[ValueState], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
-        let mut handed: Vec<usize> = Vec::new();
+    pub(super) fn check_arg_obligations(&self, callee: &HirId<HirExpr>, clauses: &[Obligations], arg_types: &[ValueState], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         for (i, admits) in clauses.iter().enumerate() {
             let Some(state) = arg_types.get(i) else { break };
             let undeclared = self.ctx.unadmitted_obligations(&state.debt, admits);
             if undeclared.is_empty() {
-                // The debt moves to the callee, but only for what this parameter declares.
-                handed.push(i);
                 continue;
             }
             let owed = quoted_obligation_list(self.ctx.hir, &undeclared);
@@ -508,9 +499,6 @@ impl<'a> Checker<'a> {
                 self.ctx.hir.pos(&args[i]), format!("{subject} owes {owed}"),
                 self.ctx.hir.pos(callee), format!("{c} does not declare {owed} here"),
                 "discharge it before the call, or declare it on the parameter"));
-        }
-        for i in handed {
-            self.mark_settled(&args[i], &clauses[i]);
         }
         Ok(())
     }
@@ -560,7 +548,7 @@ impl<'a> Checker<'a> {
     /// Checks a value moving into a field.
     pub(super) fn check_into_field(&mut self, debt: &Debt, field_nullable: bool, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // Storing into a field persists the value, which a `no persist` value forbids.
-        self.ctx.reject_outliving(debt, super::Site::Field, node)?;
+        self.ctx.obligation_rule_reject_at(debt, ObligationRule::NoPersist, super::Site::Field, node)?;
         let text = self.ctx.hir.text(field);
         let void = || format!("Cannot assign a void result to field '{text}'; the call returns no value");
         if field_nullable {
@@ -606,21 +594,4 @@ impl<'a> Checker<'a> {
         }
         self.ctx.string_member(member)
     }
-
-    /// Records a discharge that guards every witness the binding owes, such as `??`, `!` or `?!`.
-    pub(super) fn mark_handled(&mut self, node: &HirId<HirExpr>) {
-        let Some(i) = self.local_of(node) else { return };
-        let mut handled = std::mem::take(&mut self.locals[i].handled);
-        handled.extend(self.locals[i].owed.iter().copied());
-        self.locals[i].handled = handled;
-    }
-
-    /// Records what a partial act settled: a test that rules out one witness, or a transfer into a
-    /// slot declaring part of the debt.
-    pub(super) fn mark_settled(&mut self, node: &HirId<HirExpr>, settled: &Obligations) {
-        if let Some(i) = self.local_of(node) {
-            self.locals[i].handled.extend(settled.iter().copied());
-        }
-    }
-
 }

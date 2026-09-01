@@ -1,0 +1,63 @@
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+fn f() { say r: fails = mayFail(1); return 0; } // error: 'r' owes 'fails' and is never used
+print(f());
+
+// @split
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+fn take(v: fails) { return v ?? 0; }
+fn f() { say r: fails = mayFail(1); return take(r); }
+print(f()); // expect: 1
+
+// @split
+type Held { } obligation held { witness Held; must use; }
+type Box { pub var item; init(this) { this.item = 0; } }
+fn f(x: held) { say b = mut Box(); b.item = x; return 1; }
+print(f(2)); // expect: 1
+
+// @split
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+fn f() { say _ = mayFail(1); return 1; }
+print(f()); // expect: 1
+
+// @split
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+fn f() { mayFail(1); return 1; } // error: this result owes 'fails' and is never used
+print(f());
+
+// @split
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+fn f() { say var r: fails = mayFail(1); r = 5; return 0; } // error: 'r' owes 'fails' and is never used
+print(f());
+
+// @split
+type Held { } obligation held { witness Held; must use; }
+fn f(x: held) { say g = () => x!; return g(); }
+print(f(5)); // expect: 5
+
+// @split
+type Held { } obligation held { witness Held; must use; }
+fn f(x: held) { say g = () => 1; return g(); } // error: 'x' owes 'held' and is never used
+print(f(5));
+
+// @split
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+fn f() { say var r: fails = mayFail(1); print(r ?? 0); r = mayFail(-1); return 0; } // error: 'r' owes 'fails' and is never used
+print(f());
+
+// @split
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+fn f() { say var r: fails = mayFail(1); print(r ?? 0); r = mayFail(-1); return r ?? 0; }
+print(f()); // expect: 1
+// expect: 0
+
+// @split
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+fn f() { say a: fails = mayFail(1); say var r: fails = mayFail(1); print(r ?? 0); r = a; return 0; } // error: 'r' owes 'fails' and is never used
+print(f());
+
+// @split
+fn mayFail(n)! { if n < 0 { return Err("x"); } return 1; }
+fn f() { say a: fails = mayFail(1); print(a ?? 0); say var r: fails = mayFail(1); print(r ?? 0); r = a; return 0; }
+print(f()); // expect: 1
+// expect: 1
+// expect: 0

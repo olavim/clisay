@@ -1,7 +1,6 @@
-// A lone catch-all arm rules nothing out, so it settles nothing. The arm binds nothing, so the
-// scrutinee is the only binding left owing.
 fn f(): opt fails { return Err("b"); }
 fn g() {
-    say x: opt fails = f(); // error: 'x' owes 'fails' and is never discharged
+    say x: opt fails = f();
     match x { _ => 1 }
+    say y = x; // error: cannot assign a value owing 'fails' to 'y'
 }

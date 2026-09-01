@@ -1,6 +1,5 @@
-// A callee this pass cannot read may not take a value the caller still has to discharge.
 trait Wt { }
-obligation warned { witness Wt; discharge before drop; }
+obligation warned { witness Wt; must use; }
 type W with Wt { }
 say sink = mut [];
 fn stash(*v) { sink.push(v); }
@@ -12,9 +11,8 @@ fn f(g) {
 f(stash);
 
 // @split
-// The resolved spelling of the same program, which was already refused.
 trait Wt { }
-obligation warned { witness Wt; discharge before drop; }
+obligation warned { witness Wt; must use; }
 type W with Wt { }
 say sink = mut [];
 fn stash(*v) { sink.push(v); }
@@ -26,8 +24,6 @@ fn f() {
 f();
 
 // @split
-// An obligation that may be persisted has nothing to keep, so it still passes through an opaque
-// call. The rule is what the obligation declares, not that it owes anything at all.
 type Token { pub v; init(this, *x) { this.v = x; } }
 obligation parsed { witness Token; discharge to use; }
 say sink = mut [];

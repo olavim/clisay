@@ -1,6 +1,4 @@
-// A short-circuit inside a lambda resolves that lambda's own locals. Reaching past the frame would
-// mark an enclosing local resolved from outside any branch, where no restore can undo it.
 fn f(): fails { return Err("e"); }
-say x: fails = f(); // error: 'x' owes 'fails' and is never discharged
+say x: fails = f(); // error: 'x' owes 'fails' and is never used
 say h = (p) => { say b = p && p; return b; };
 print("end");

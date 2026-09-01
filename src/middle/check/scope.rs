@@ -35,7 +35,6 @@ pub struct LocalFlow {
     pub transfer_site: Option<TransferSite>,
     pub provenance: Vec<usize>,
     pub extracted_from: Vec<(usize, Option<ElementKey>)>,
-    pub handled: Obligations,
     pub discharged: Obligations,
     pub field_discharged: HashMap<Symbol, Obligations>,
     pub resolved_callable: Option<CallableId>,
@@ -77,10 +76,6 @@ impl<'a> Ctx<'a> {
 impl<'a> Checker<'a> {
     pub(super) fn frame_locals(&self) -> &[Local] {
         &self.locals[self.frame_start..]
-    }
-
-    pub(super) fn frame_locals_mut(&mut self) -> &mut [Local] {
-        &mut self.locals[self.frame_start..]
     }
 
     pub(super) fn frame_index_of(&self, name: Symbol) -> Option<usize> {
@@ -208,9 +203,8 @@ impl<'a> Checker<'a> {
             local.alias.confined = self.fn_ctx.param_confined.get(position).copied().unwrap_or(false);
             local.site = Some(param.name);
 
-            // A pattern tests the argument on entry, which is a discharge of the slot it names.
             if param.pattern.is_some() {
-                local.handled = local.owed.clone();
+                local = local.as_used();
             }
 
             self.locals.push(local);
@@ -256,7 +250,7 @@ impl<'a> Checker<'a> {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             let LocalFlow {
                 assigned, tag, mutability, transfer_site, provenance: _kept,
-                extracted_from: _also_kept, handled, discharged, field_discharged, resolved_callable,
+                extracted_from: _also_kept, discharged, field_discharged, resolved_callable,
             } = snap;
 
             if local.resolved_callable != *resolved_callable {
@@ -267,7 +261,6 @@ impl<'a> Checker<'a> {
             local.tag = tag.clone();
             local.alias.mutability = *mutability;
             local.alias.transfer_site = local.alias.transfer_site.or(*transfer_site);
-            local.handled = handled.clone();
             local.discharged = discharged.clone();
             local.field_discharged = field_discharged.clone();
         }
@@ -278,7 +271,7 @@ impl<'a> Checker<'a> {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             let LocalFlow {
                 assigned: _, tag: _, mutability: _, transfer_site: _, provenance: _,
-                extracted_from: _, handled: _, discharged, field_discharged, resolved_callable: _,
+                extracted_from: _, discharged, field_discharged, resolved_callable: _,
             } = snap;
             local.discharged.retain(|ob| discharged.contains(ob));
             intersect_narrowings(&mut local.field_discharged, field_discharged);
@@ -291,7 +284,7 @@ impl<'a> Checker<'a> {
         debug_assert!(other.locals.len() == self.locals.len());
         for (local, snap) in self.locals.iter_mut().zip(&other.locals) {
             let mut merged = local_flow_of(local);
-            merge_local_flow(&mut merged, &local.owed, snap);
+            merge_local_flow(&mut merged, snap);
             restore_local_flow(local, &merged);
         }
         intersect_narrowings(&mut self.this_narrowed, &other.this_narrowed);
@@ -306,7 +299,6 @@ pub(super) fn local_flow_of(local: &Local) -> LocalFlow {
         transfer_site: local.alias.transfer_site,
         provenance: local.alias.mutable_provenance.clone(),
         extracted_from: local.alias.extracted_from.clone(),
-        handled: local.handled.clone(),
         discharged: local.discharged.clone(),
         field_discharged: local.field_discharged.clone(),
         resolved_callable: local.resolved_callable,
@@ -316,7 +308,7 @@ pub(super) fn local_flow_of(local: &Local) -> LocalFlow {
 pub(super) fn restore_local_flow(local: &mut Local, flow: &LocalFlow) {
     let LocalFlow {
         assigned, tag, mutability, transfer_site, provenance,
-        extracted_from, handled, discharged, field_discharged, resolved_callable,
+        extracted_from, discharged, field_discharged, resolved_callable,
     } = flow;
     local.assigned = *assigned;
     local.tag = tag.clone();
@@ -324,16 +316,15 @@ pub(super) fn restore_local_flow(local: &mut Local, flow: &LocalFlow) {
     local.alias.transfer_site = *transfer_site;
     local.alias.mutable_provenance = provenance.clone();
     local.alias.extracted_from = extracted_from.clone();
-    local.handled = handled.clone();
     local.discharged = discharged.clone();
     local.field_discharged = field_discharged.clone();
     local.resolved_callable = *resolved_callable;
 }
 
-pub fn merge_local_flow(into: &mut LocalFlow, owed: &Obligations, other: &LocalFlow) {
+pub fn merge_local_flow(into: &mut LocalFlow, other: &LocalFlow) {
     let LocalFlow {
         assigned, tag, mutability, transfer_site, provenance,
-        extracted_from, handled, discharged, field_discharged, resolved_callable,
+        extracted_from, discharged, field_discharged, resolved_callable,
     } = other;
     into.assigned = into.assigned && *assigned;
     into.tag = if into.tag == *tag { into.tag.clone() } else { TypeTag::Unknown };
@@ -361,14 +352,6 @@ pub fn merge_local_flow(into: &mut LocalFlow, owed: &Obligations, other: &LocalF
         }
     }
 
-    // An outcome resolves an obligation either by handling it or by proving the value is not in its
-    // bad state. Only what every outcome resolved survives the join.
-    let both: Obligations = owed.iter().copied()
-        .filter(|ob| (into.handled.contains(ob) || into.discharged.contains(ob))
-            && (handled.contains(ob) || discharged.contains(ob)))
-        .collect();
-
-    into.handled = both;
     into.discharged.retain(|ob| discharged.contains(ob));
     intersect_narrowings(&mut into.field_discharged, field_discharged);
 }

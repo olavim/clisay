@@ -166,13 +166,6 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    pub(super) fn obligations_examined_by_match_arm(&self, arm: &HirMatchArm, remaining: &Obligations) -> Obligations {
-        match self.match_arm_always_runs(arm) {
-            true => self.obligations_settled_by_matcher(&arm.matcher, remaining),
-            false => Obligations::new(),
-        }
-    }
-
     fn eval_truthiness(&self, cond: &HirId<HirExpr>) -> Truthiness {
         use Truthiness::{Falsy, Truthy, Unknown};
         match self.hir.get(cond) {
@@ -208,41 +201,6 @@ impl<'a> Ctx<'a> {
         matches!(self.hir.get(expr), HirExpr::Literal(HirLiteral::Null))
     }
 
-    fn obligations_asked_by_matcher(&self, matcher: &HirId<HirMatcher>, remaining: &Obligations) -> Obligations {
-        match self.hir.get(matcher) {
-            HirMatcher::As(_, inner) => self.obligations_asked_by_matcher(inner, remaining),
-            // `And` stops at the first part that fails, so only that one is sure to run.
-            HirMatcher::And(parts) => parts.first()
-                .map_or_else(Obligations::new, |part| self.obligations_asked_by_matcher(part, remaining)),
-            // `Or` tries alternatives until one matches, so whichever it stops at has to answer.
-            // An alternative answers by asking, or by ruling the witness out if it matches. An
-            // alternative that only rules out asked nothing, so at least one has to ask.
-            HirMatcher::Or(parts) => remaining.iter().copied()
-                .filter(|o| {
-                    let answers = |p: &HirId<HirMatcher>| self.obligations_asked_by_matcher(p, remaining).contains(o);
-                    parts.iter().any(answers)
-                        && parts.iter().all(|p| self.matcher_disjoint_from_obligation(p, *o) || answers(p))
-                })
-                .collect(),
-            HirMatcher::Type { nominal: true, shape, .. } => {
-                let Some((stmt, decl)) = self.matcher_type_decl(matcher) else { return Obligations::new() };
-                // A shape that can fail on a real witness may never run, so it asks nothing.
-                if !shape.as_ref().is_none_or(|s| self.matcher_total_over_type(s, &stmt)) {
-                    return Obligations::new();
-                }
-                let witnessed = self.sigs.obligations_witnessed_by_decl(decl);
-                remaining.iter().copied().filter(|o| witnessed.contains(o)).collect()
-            },
-            _ => Obligations::new(),
-        }
-    }
-
-    pub(super) fn obligations_settled_by_matcher(&self, matcher: &HirId<HirMatcher>, remaining: &Obligations) -> Obligations {
-        let mut out = self.obligations_ruled_out_by_matcher(matcher, remaining);
-        out.extend(self.obligations_asked_by_matcher(matcher, remaining));
-        out
-    }
-
     fn names_type(&self, callee: &HirId<HirExpr>) -> bool {
         matches!(self.hir.get(callee), HirExpr::Identifier(name) if self.sigs.is_type(*name))
     }
@@ -276,13 +234,6 @@ impl<'a> Ctx<'a> {
             }
         }
         out
-    }
-
-    pub(super) fn has_truthiness(&self, expr: &HirId<HirExpr>, truthy: bool) -> bool {
-        match truthy {
-            true => self.is_truthy(expr),
-            false => self.is_falsy(expr),
-        }
     }
 }
 
@@ -529,37 +480,21 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub(super) fn obligations_handled_by_local(&self) -> Vec<Obligations> {
-        self.frame_locals().iter()
-            .map(|l| l.owed.iter().copied().filter(|o| l.handled.contains(o) || l.discharged.contains(o)).collect())
-            .collect()
-    }
-
-    pub(super) fn mark_obligations_handled_when_resolved_on_every_path(&mut self, paths: &[Vec<Obligations>]) {
-        for (i, local) in self.frame_locals_mut().iter_mut().enumerate() {
-            local.handled.extend(obligations_resolved_on_every_path(paths, i));
-        }
-    }
-
-    /// Applies flow facts, runs `f` under them, then restores the prior flow state.
-    pub(super) fn narrow_branch<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> (R, Vec<Obligations>) {
+    pub(super) fn narrow_branch<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> R {
         self.narrow_under(facts, f, Checker::restore_flow)
     }
 
-    /// Applies flow facts, runs `f` under them, then restores the prior flow state but keeps each
-    /// local's move site and give-back sources.
-    pub(super) fn narrow_branch_keeping_moves<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> (R, Vec<Obligations>) {
+    pub(super) fn narrow_branch_keeping_moves<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R) -> R {
         self.narrow_under(facts, f, Checker::restore_flow_keeping_write_ownership_transfers)
     }
 
     fn narrow_under<R>(&mut self, facts: &[NarrowFact], f: impl FnOnce(&mut Self) -> R,
-                       unwind: fn(&mut Self, &FlowSnapshot)) -> (R, Vec<Obligations>) {
+                       unwind: fn(&mut Self, &FlowSnapshot)) -> R {
         let pre = self.snapshot();
         self.apply_narrowings(facts);
         let r = f(self);
-        let resolved = self.obligations_handled_by_local();
         unwind(self, &pre);
-        (r, resolved)
+        r
     }
 
 }
@@ -595,10 +530,3 @@ pub(crate) fn collect_whole_value_binders(hir: &Hir, matcher: &HirId<HirMatcher>
     }
 }
 
-fn obligations_resolved_on_every_path(paths: &[Vec<Obligations>], i: usize) -> Obligations {
-    let Some((first, rest)) = paths.split_first() else { return Obligations::new() };
-    let Some(resolved) = first.get(i) else { return Obligations::new() };
-    resolved.iter().copied()
-        .filter(|o| rest.iter().all(|p| p.get(i).is_some_and(|r| r.contains(o))))
-        .collect()
-}

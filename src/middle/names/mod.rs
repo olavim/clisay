@@ -281,12 +281,9 @@ impl<'a> Resolver<'a> {
             "declare it with `obligation` first, or name a built-in (`opt`, `fails`)"))
     }
 
-    /// A slot may not declare an obligation whose rules forbid the values it would hold. Each rule
-    /// refuses for its own reason, so an obligation carrying one of them needs no other alongside it.
+    /// A slot may not declare an obligation whose rules forbid the values it would hold.
     fn check_clause_placement<T>(&self, clause: &SlotClause, site: ClauseSite, at: &AstId<T>) -> Result<(), anyhow::Error> {
         let pos = clause.pos.as_ref().unwrap_or_else(|| self.ast.pos(at));
-        // A container and a field both outlive the binding, which is `no persist`'s reason, and
-        // neither can discharge, which is `discharge before drop`'s. A return has its own rule.
         let (outlives, prevents, header) = if clause.container {
             (true, "storing it in a container", "A container cannot hold values owing")
         } else if site == ClauseSite::Field {
@@ -301,7 +298,6 @@ impl<'a> Resolver<'a> {
             let rules = self.rules_of(name, pos)?;
             let rule = match (outlives, ret) {
                 (true, _) if rules.no_persist => "no persist",
-                (true, _) if rules.before_drop => "discharge before drop",
                 (_, true) if rules.no_return => "no return",
                 _ => continue,
             };
@@ -409,7 +405,7 @@ impl<'a> Resolver<'a> {
                 }
                 match witness {
                     Some(witness) => self.declare_witness(*name, *witness, stmt)?,
-                    None if rules.to_use || rules.before_drop => {
+                    None if rules.to_use || rules.must_use => {
                         return Err(self.error_help(
                             format!("Obligation '{}' declares a `discharge` rule with no witness", self.ast.text(*name)), stmt,
                             format!("name the bad state it is about, as in `obligation {} {{ witness <Type>; ... }}`", self.ast.text(*name))));
