@@ -1,21 +1,15 @@
-// An immutable construction is immutable all the way down. A mutable value entering one is refused
-// at the construction, rather than deep-frozen by the seal while another name still holds it.
 type T { pub x; }
 say a = mut [mut [0]];
 say t = T{ x: a[0] }; // error: cannot store a mutable value in an immutable container
 a[0][0] = 1;
 
 // @split
-// Marking the construction `mut` is the way to hold a mutable value, so long as it is one the
-// construction is given rather than one another container already holds.
 type T { pub x; }
 say t = mut T{ x: mut [0] };
 t.x[0] = 1;
 print(t.x[0]); // expect: 1
 
 // @split
-// A `mut` construction may take an element another container holds. It takes the writer slot with
-// it, so the container it came from reads it and no longer writes it.
 type T { pub x; }
 say a = mut [mut [0]];
 say t = mut T{ x: a[0] };
@@ -23,27 +17,24 @@ t.x[0] = 1;
 print(a[0][0]); // expect: 1
 
 // @split
-// A plain construction nested inside a `mut` one is still a plain one.
 type U { pub y; }
 type T { pub x; }
 say a = mut [mut [0]];
 say t = mut T{ x: U{ y: a[0] } }; // error: cannot store a mutable value in an immutable container
 
 // @split
-// An immutable value entering an immutable construction is what the rule is for.
 type T { pub x; }
 say a = [[0]];
 say t = T{ x: a[0] };
 print(t.x[0]); // expect: 0
 
 // @split
-// A factory seals the same way, so an argument it keeps answers the same.
 type T { pub x; init(this, *x) { this.x = x; } }
 say a = mut [mut [0]];
-say t = T(a[0]); // error: cannot store a mutable value in an immutable container
+say t = T(a[0]);
+a[0][0] = 1; // error: cannot mutate an immutable value
 
 // @split
-// An argument the factory does not keep is never sealed over.
 type T { pub x; init(this, x) { this.x = 0; } }
 say a = mut [mut [0]];
 say t = T(a[0]);
@@ -51,7 +42,6 @@ a[0][0] = 1;
 print(a[0][0]); // expect: 1
 
 // @split
-// `freeze` still converts a mutable on request, which is its whole job.
 say a = mut [mut [0]];
 freeze(a);
 print(a[0][0]); // expect: 0

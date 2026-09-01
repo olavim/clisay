@@ -1,8 +1,0 @@
-fn f(mut x) { throw mut [x]; } // error: cannot retain a borrowed argument
-say m = mut [1];
-try { f(m); } catch (e) { print("caught"); }
-
-// @split
-fn f(mut x) { defer { print("cleanup"); } throw mut [x]; } // error: cannot retain a borrowed argument
-say m = mut [1];
-try { f(m); } catch (e) { print("caught"); }

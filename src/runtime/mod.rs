@@ -49,8 +49,6 @@ struct CallCache {
     callee: Value,
     closure: *mut ObjClosure,
     ip_start: usize,
-    retain_mask: u64,
-    needs_borrow_mark: u64
 }
 
 const EMPTY_SITE: usize = usize::MAX;
@@ -63,7 +61,7 @@ impl IndexCache {
 
 impl CallCache {
     const fn empty() -> CallCache {
-        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0, retain_mask: 0, needs_borrow_mark: u64::MAX }
+        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0 }
     }
 }
 
@@ -98,15 +96,8 @@ pub struct CallFrame {
     seal: bool,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum TryKind {
-    Catch,
-    Defer,
-}
-
 #[derive(Clone, Copy)]
 pub struct TryFrame {
-    kind: TryKind,
     origin: *mut CallFrame,
     handler_ip: *const OpCode,
     stack_start: *mut Value,
@@ -128,8 +119,6 @@ pub struct Vm {
     index_cache: Box<[IndexCache]>,
     call_cache: Box<[CallCache]>,
     out: Vec<String>,
-    /// One bit per argument of the running native, set where its slot was borrowed at the call.
-    native_borrowed_arguments: u64
 }
 
 macro_rules! as_short {
@@ -216,11 +205,6 @@ impl Host for Vm {
     fn code_index(&self) -> u32 {
         self.current_pos_index()
     }
-
-    fn argument_is_borrowed(&self, position: usize) -> bool {
-        objects::mask_holds(self.native_borrowed_arguments, position)
-    }
-
 }
 
 impl Vm {
@@ -256,7 +240,6 @@ impl Vm {
             call_cache: vec![CallCache::empty(); CALL_CACHE_SIZE].into_boxed_slice(),
             elisions_reached: FnvHashSet::default(),
             out: Vec::new(),
-            native_borrowed_arguments: 0
         };
 
         vm.stack.init();

@@ -33,7 +33,6 @@ impl Vm {
     }
 
     pub(super) fn write_upvalue(&mut self, accepted: AcceptedUpvalueWrite) {
-        objects::record_escape(accepted.value);
         unsafe { *(*accepted.upvalue).location = accepted.value };
     }
 

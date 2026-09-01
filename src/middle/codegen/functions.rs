@@ -1,57 +1,20 @@
 use crate::middle::signatures::CallableId;
 use crate::core::objects::{ObjFn, UpvalueLocation};
 use crate::core::value::Value;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirParam, HirStmt};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirParam};
 use crate::middle::obligations::Obligations;
 use crate::middle::ir::{Inst, Label};
 use crate::middle::bind::FnKind;
 
 use super::Compiler;
 
-/// A bitmask with one bit set per parameter the predicate holds for, capped at 64.
-fn param_bits(flags: impl IntoIterator<Item = bool>) -> u64 {
-    flags.into_iter().take(64).enumerate()
-        .filter(|(_, set)| *set)
-        .fold(0u64, |mask, (i, _)| mask | (1u64 << i))
-}
-
-/// The parameters a declaration takes by `*`. Parameters past 63 are read as borrowing.
 fn declared_retains(decl: &HirFnDecl) -> u64 {
-    param_bits(decl.params.iter().map(|p| p.clause.capability.is_retain()))
-}
-
-/// What a callable does with each of its arguments.
-#[derive(Clone, Copy)]
-pub(super) struct ParamMasks {
-    pub retains: u64,
-    pub escapes: u64,
-    /// The borrowed arguments the body hands to a call that might retain them.
-    pub needs_borrow_mark: u64,
-    /// Whether the body may hand `this` to a call that retains it.
-    pub receiver_needs_borrow: bool,
+    decl.params.iter().take(64).enumerate()
+        .filter(|(_, p)| p.clause.capability.is_retain())
+        .fold(0u64, |bits, (i, _)| bits | (1u64 << i))
 }
 
 impl<'a> Compiler<'a> {
-    /// What a callable does with each argument.
-    pub(super) fn declared_masks(&self, stmt: &HirId<HirStmt>, decl: &HirFnDecl) -> ParamMasks {
-        let escapes = param_bits((0..decl.params.len()).map(|i| self.sigs.param_escapes_at(stmt, i)));
-        let handed_on = param_bits((0..decl.params.len()).map(|i| self.sigs.param_needs_borrow_mark_at(stmt, i)));
-        // A taken parameter is not borrowed, so it never wants the mark that says it is.
-        let retains = declared_retains(decl);
-        let receiver = decl.params.len();
-        let receiver_needs_borrow = decl.receiver.is_some()
-            && (self.sigs.param_needs_borrow_mark_at(stmt, receiver)
-                || self.sigs.escapes_beyond_return_at(stmt, receiver));
-        ParamMasks { retains, escapes, needs_borrow_mark: handed_on & !retains, receiver_needs_borrow }
-    }
-
-    pub(super) fn lambda_masks(&self, expr: &HirId<HirExpr>, decl: &HirFnDecl) -> ParamMasks {
-        let arity = decl.params.len();
-        let escapes = param_bits((0..arity).map(|i| self.sigs.param_escapes_at(expr, i)));
-        let retains = declared_retains(decl);
-        ParamMasks { retains, escapes, needs_borrow_mark: !retains, receiver_needs_borrow: true }
-    }
-
     fn compile_pattern_param_checks(&mut self, params: &[HirParam]) -> Result<(), anyhow::Error> {
         for param in params {
             let Some(pattern) = &param.pattern else { continue };
@@ -103,7 +66,7 @@ impl<'a> Compiler<'a> {
         self.ir.add_param_accepts(out.into_boxed_slice())
     }
 
-    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, callable: CallableId, decl: &HirFnDecl, kind: FnKind, masks: ParamMasks) -> Result<u8, anyhow::Error> {
+    pub (super) fn function<T: 'static>(&mut self, node_id: &HirId<T>, callable: CallableId, decl: &HirFnDecl, kind: FnKind) -> Result<u8, anyhow::Error> {
         self.fn_kinds.push(kind);
 
         // Add a jump over the function's body after declaration.
@@ -135,14 +98,11 @@ impl<'a> Compiler<'a> {
             })
             .collect();
 
-        let escape_mask = masks.retains | masks.escapes;
-
         // A method declaring `mut this` needs the call to prove its receiver is mutable.
         let mut_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_mut());
-        let retain_receiver = decl.receiver.as_ref().is_some_and(|r| r.capability.is_retain());
 
         let param_accepts = self.param_accepts(callable)?;
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, escape_mask, masks.retains, masks.needs_borrow_mark, mut_receiver, retain_receiver, masks.receiver_needs_borrow, param_accepts, slot_accepts));
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, declared_retains(decl), mut_receiver, param_accepts, slot_accepts));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))

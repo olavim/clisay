@@ -214,7 +214,7 @@ impl<'a> Ctx<'a> {
 
     /// Whether a call could rebind this binding.
     fn reachable_by_a_rebind(&self, local: &Local) -> bool {
-        self.sigs.any_rebind.contains(&local.name)
+        self.bindings.rebound_through_capture(local.name)
             && local.decl.is_none_or(|decl| self.bindings.is_captured(decl))
     }
 
@@ -375,8 +375,8 @@ impl<'a> Checker<'a> {
     }
 
     /// Drops the narrowings of every binding a call may rebind.
-    pub(super) fn invalidate_rebound_fields(&mut self, callee: &HirId<HirExpr>) {
-        if self.ctx.sigs.any_rebind.is_empty() || self.callee_is_builtin(callee) {
+    pub(super) fn invalidate_rebound_bindings(&mut self, callee: &HirId<HirExpr>) {
+        if !self.ctx.bindings.any_rebind_through_capture() || self.callee_is_builtin(callee) {
             return;
         }
         let hit: Vec<usize> = self.locals.iter().enumerate()

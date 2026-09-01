@@ -10,5 +10,4 @@ pub trait Host {
     fn collect(&mut self);
     fn print(&mut self, text: String);
     fn code_index(&self) -> u32;
-    fn argument_is_borrowed(&self, position: usize) -> bool;
 }

@@ -121,12 +121,11 @@ pub struct RunConfig {
     /// Whether codegen emits the checks the check pass proved unnecessary.
     pub force_checks: bool,
     pub drop_guards: bool,
-    pub drop_escape_refusal: bool,
 }
 
 impl Default for RunConfig {
     fn default() -> RunConfig {
-        RunConfig { optimize: true, force_checks: false, drop_guards: false, drop_escape_refusal: false }
+        RunConfig { optimize: true, force_checks: false, drop_guards: false }
     }
 }
 

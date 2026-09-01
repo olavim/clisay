@@ -3,7 +3,7 @@
 
 use crate::core::objects::TypeMember;
 use crate::middle::diagnose::Diagnose;
-use crate::middle::hir::{BinOp, Capability, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
+use crate::middle::hir::{BinOp, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirStmt, HirTypeDecl, ReturnShape, Symbol, UnOp};
 use crate::middle::bind::Place;
 use crate::middle::native::{self, Container};
 use crate::middle::obligations::Obligations;
@@ -252,7 +252,7 @@ impl<'a> Checker<'a> {
             },
             HirExpr::Call(callee, args) => {
                 let state = self.call(expr, callee, args)?;
-                self.invalidate_rebound_fields(callee);
+                self.invalidate_rebound_bindings(callee);
                 state
             },
             HirExpr::Construct(callee, brace) => {
@@ -330,13 +330,13 @@ impl<'a> Checker<'a> {
             HirExpr::SafeCall(callee_id, args) => {
                 let callee = self.expr(callee_id)?;
                 self.ctx.require_witnessed_operand(&callee.debt, callee_id)?;
-                let immutable = !std::mem::take(&mut self.mut_construction);
+                self.mut_construction = false;
                 let arg_types: Vec<ValueState> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
-                let resolved = self.resolved_call(expr, callee_id, args, &arg_types, immutable)?;
+                let resolved = self.resolved_call(expr, callee_id, args, &arg_types)?;
                 if resolved.is_none() {
                     self.note_opaque_call_args(callee_id, &arg_types);
                 }
-                self.invalidate_rebound_fields(callee_id);
+                self.invalidate_rebound_bindings(callee_id);
                 let yielded = resolved.map_or(Debt::Clean, |state| state.debt);
                 self.chain_result_with(&callee.debt, &yielded, expr)
             },
@@ -684,46 +684,6 @@ impl<'a> Checker<'a> {
             }
         }
 
-        {
-            for (i, param) in decl.params.iter().enumerate() {
-                let cap = param.clause.capability;
-                if !cap.is_retain() && !self.ctx.drop_escape_refusal && self.ctx.sigs.escapes_beyond_return_at(callable, i) {
-                    let text = self.ctx.hir.text(self.ctx.hir.ident_sym(&param.name));
-                    let barred = param.clause.names.iter().copied().find(|&o| self.ctx.sigs.obligation_rules_of(o).no_persist);
-                    let help = match barred {
-                        Some(owed) => format!("`{}` declares `no persist`, so `*{text}` cannot help; freeze or copy it before persisting", self.ctx.hir.text(owed)),
-                        None => format!("declare it `*{text}` to retain it, or freeze or copy it before persisting"),
-                    };
-                    let Some(site) = self.ctx.sigs.escape_site_at(callable, i) else {
-                        return Err(self.error_labeled_help(
-                            "cannot retain a borrowed argument".to_string(),
-                            &param.name,
-                            format!("`{text}` is borrowed"),
-                            help));
-                    };
-                    return Err(self.error_ctx_help(
-                        "cannot retain a borrowed argument",
-                        self.ctx.hir.pos(&site),
-                        format!("`{text}` is retained here"),
-                        self.ctx.hir.pos(&param.name),
-                        format!("`{text}` is borrowed here"),
-                        help));
-                }
-            }
-
-            let cap = decl.receiver.as_ref().map_or(Capability::None, |r| r.capability);
-            if decl.receiver.is_some() && !cap.is_retain() && !self.ctx.drop_escape_refusal
-                    && self.ctx.sigs.escapes_beyond_return_at(callable, decl.params.len()) {
-                let own = match cap.is_mut() {
-                    true => "*mut this",
-                    false => "*this",
-                };
-                return Err(self.error_help(
-                    "a borrowing receiver cannot let the instance escape".to_string(),
-                    &decl.body,
-                    format!("take the receiver by `{own}` to own it, or capture the values it holds instead of `this`")));
-            }
-        }
         self.ctx.reject_receiver_witnessed_obligations(decl)?;
 
         let ctx = FnContext {
@@ -778,10 +738,10 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Result<ValueState, anyhow::Error> {
-        let immutable = !std::mem::take(&mut self.mut_construction);
+        self.mut_construction = false;
         let arg_types: Vec<ValueState> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
 
-        match self.resolved_call(expr, callee, args, &arg_types, immutable)? {
+        match self.resolved_call(expr, callee, args, &arg_types)? {
             Some(state) => Ok(state),
             None => {
                 self.note_opaque_call_args(callee, &arg_types);
@@ -793,7 +753,7 @@ impl<'a> Checker<'a> {
     /// The checks for a callee this pass can resolve, with the arguments already walked. `None`
     /// means it resolved nothing, which leaves validating the callee to the form that called it:
     /// a plain call requires a usable value, a `?` call tolerates a null one.
-    fn resolved_call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[ValueState], immutable: bool) -> Result<Option<ValueState>, anyhow::Error> {
+    fn resolved_call(&mut self, expr: &HirId<HirExpr>, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>], arg_types: &[ValueState]) -> Result<Option<ValueState>, anyhow::Error> {
         match self.ctx.hir.get(callee) {
             HirExpr::Identifier(name) => {
                 let name = *name;
@@ -809,11 +769,6 @@ impl<'a> Checker<'a> {
 
                     if let Some(init) = self.ctx.constructor_init(callee) {
                         self.check_call_args(callee, init.into(), arg_types, args)?;
-                        for (i, (state, arg)) in arg_types.iter().zip(args).enumerate() {
-                            if self.ctx.sigs.param_escapes_at(&init, i) {
-                                self.check_construct_field_mutability(immutable, state, arg)?;
-                            }
-                        }
                     }
 
                     // Record the construction so codegen tells `mut K(..)` (CALL_MUT) from `mut f()`.
@@ -861,7 +816,7 @@ impl<'a> Checker<'a> {
         }
         // A native-type method resolves by name when no user method matches the receiver.
         if let Some(sig) = native::native_method(name) {
-            if sig.effect.mutates_receiver {
+            if sig.mutates_receiver {
                 if !self.may_write_through(receiver, &receiver_typed) {
                     return Err(self.immutable_receiver_error(callee, receiver, "mutates its receiver"));
                 }
@@ -880,13 +835,7 @@ impl<'a> Checker<'a> {
 
     pub(super) fn check_receiver(&mut self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>, callable: CallableId, receiver_typed: &ValueState) -> Result<(), anyhow::Error> {
         let Some(sig) = self.ctx.sigs.fn_sig_of(callable) else { return Ok(()) };
-        let (marker, params) = (sig.receiver_marker, sig.param_markers.len());
-        if !marker.is_some_and(|m| m.is_retain())
-            && receiver_typed.mutability == Mutability::Mutable
-            && self.ctx.sigs.param_stored_at(callable, params) {
-            return Err(self.ctx.keeps_receiver_error(callee, receiver));
-        }
-        let Some(marker) = marker else { return Ok(()) };
+        let Some(marker) = sig.receiver_marker else { return Ok(()) };
         if !marker.is_mut() {
             return Ok(());
         }

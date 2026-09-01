@@ -14,15 +14,6 @@ impl<'a> Ctx<'a> {
             format!("you can make `{name}` reassignable by declaring it as `{};`", self.var_decl_error_hint(decl, field)))
     }
 
-    pub(super) fn keeps_receiver_error(&self, callee: &HirId<HirExpr>, receiver: &HirId<HirExpr>) -> anyhow::Error {
-        let subject = self.quoted_subject(receiver);
-        let c = self.callee_display_name(callee);
-        self.error_ctx(
-            format!("{subject} is mutable and this method stores its receiver; freeze or copy it, or take the receiver by '*mut'"),
-            self.hir.pos(receiver), format!("{subject} is mutable"),
-            self.hir.pos(callee), format!("{c} stores its receiver"))
-    }
-
     pub(super) fn method_assign_error(&self, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
         self.error(format!("Cannot assign to method '{}'", self.hir.text(field)), lhs)
     }

@@ -42,7 +42,6 @@ fn overflowed(vm: &mut Vm, ip: *const OpCode, top: *mut Value) -> R {
 macro_rules! pop {
     ($vm:ident, $top:ident) => {{
         $top = unsafe { $top.sub(1) };
-        if $top < $vm.stack.borrowed_end() { $vm.stack.prune_borrowed($top); }
         unsafe { *$top }
     }}
 }
@@ -111,8 +110,7 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::TAIL_CALL => vm.op_tail_call()?,
         opcode::RETURN_FAC => vm.op_return_factory()?,
         opcode::THROW => vm.op_throw()?,
-        opcode::PUSH_TRY => vm.op_push_try(TryKind::Catch),
-        opcode::PUSH_DEFER_TRY => vm.op_push_try(TryKind::Defer),
+        opcode::PUSH_TRY | opcode::PUSH_DEFER_TRY => vm.op_push_try(),
         opcode::POP_TRY => vm.op_pop_try(),
         opcode::JUMP_IF_FALSE_OR_POP => vm.op_jump_if_false_or_pop(),
         opcode::JUMP_IF_TRUE_OR_POP => vm.op_jump_if_true_or_pop(),
@@ -179,10 +177,6 @@ fn load_local(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value)
     let mut top = top;
     let idx = rb!(ip) as usize;
     let from = unsafe { base.add(idx) };
-    debug_assert!(!vm.stack.is_borrowed(top), "a push destination carried a stale borrow mark");
-    if vm.stack.is_borrowed(from) {
-        vm.stack.mark_borrowed(top, vm.stack.borrow_origin(from));
-    }
     push!(vm, ip, top, unsafe { *from });
     become dispatch(vm, ip, top, base)
 }
@@ -191,7 +185,6 @@ fn store_local(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value
     let mut ip = ip;
     let idx = rb!(ip) as usize;
     let value = peek!(top, 0);
-    vm.carry_borrowed(unsafe { top.sub(1) }, unsafe { base.add(idx) });
     let accepted = vm.accept_slot_write(base, idx as u8, ip, top, value)?;
     vm.write_slot(accepted);
     become dispatch(vm, ip, top, base)
@@ -201,8 +194,6 @@ fn store_local_pop(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut V
     let mut ip = ip;
     let mut top = top;
     let idx = rb!(ip) as usize;
-    let into = unsafe { base.add(idx) };
-    vm.carry_borrowed(unsafe { top.sub(1) }, into);
     let value = pop!(vm, top);
     let accepted = vm.accept_slot_write(base, idx as u8, ip, top, value)?;
     vm.write_slot(accepted);
@@ -270,7 +261,6 @@ fn push_false(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value)
 
 fn pop_op(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let top = unsafe { top.sub(1) };
-    vm.stack.prune_borrowed(top);
     become dispatch(vm, ip, top, base)
 }
 
@@ -484,7 +474,6 @@ macro_rules! num_binop_fn {
             let a = peek!(top, 1);
             if a.is_number() && b.is_number() {
                 top = unsafe { top.sub(2) };
-                vm.stack.prune_borrowed(top);
                 push!(vm, ip, top, Value::from(a.as_number() $op b.as_number()));
             } else {
                 vm.stack.set_top(top);
@@ -503,14 +492,14 @@ num_binop_fn!(multiply, *, op_multiply);
 num_binop_fn!(divide, /, op_divide);
 
 #[inline]
-fn closure_call(value: Value, arg_count: usize) -> Option<(*mut ObjClosure, usize, u64, u64)> {
+fn closure_call(value: Value, arg_count: usize) -> Option<(*mut ObjClosure, usize)> {
     if value.is_callable() {
         let object = value.as_object();
         if object.tag() == objects::TAG_CLOSURE {
             let ptr = object.as_closure_ptr();
             let closure = unsafe { &*ptr };
             if arg_count == closure.arity as usize {
-                return Some((ptr, closure.ip_start, closure.retain_mask, closure.needs_borrow_mark));
+                return Some((ptr, closure.ip_start));
             }
         }
     }
@@ -527,11 +516,11 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
 
     // Resolve the callee: a cache hit skips the checks and closure deref.
     let cache = unsafe { *vm.call_cache.get_unchecked(slot) };
-    let (closure, ip_start, _retain_mask, _needs_borrow_mark) = if cache.site == site && cache.callee == value {
-        (cache.closure, cache.ip_start, cache.retain_mask, cache.needs_borrow_mark)
-    } else if let Some((closure, ip_start, retain_mask, needs_borrow_mark)) = closure_call(value, arg_count) {
-        unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start, retain_mask, needs_borrow_mark } };
-        (closure, ip_start, retain_mask, needs_borrow_mark)
+    let (closure, ip_start) = if cache.site == site && cache.callee == value {
+        (cache.closure, cache.ip_start)
+    } else if let Some((closure, ip_start)) = closure_call(value, arg_count) {
+        unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start } };
+        (closure, ip_start)
     } else {
         vm.stack.set_top(top);
         vm.ip = ip;
@@ -569,20 +558,7 @@ fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R 
         let frame = vm.frames.pop();
         let returned_from = unsafe { top.sub(1) };
         let value = unsafe { *returned_from };
-
-        // Handing a borrowed value back does not end the borrow.
-        let handed_back_borrow = returned_from < vm.stack.borrowed_end()
-            && !value.is_object()
-            && vm.stack.borrow_outlives(returned_from, frame.stack_start);
-
-        // The result lands in the callee slot, which the call may have marked borrowed.
-        vm.stack.prune_borrowed(frame.stack_start);
         unsafe { *frame.stack_start = value };
-
-        if handed_back_borrow {
-            vm.stack.mark_borrowed(frame.stack_start, vm.stack.borrow_origin(returned_from));
-        }
-
         let top = unsafe { frame.stack_start.add(1) };
         let base = unsafe { (*vm.frames.top()).stack_start };
         become dispatch(vm, frame.return_ip, top, base);

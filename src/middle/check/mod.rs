@@ -245,7 +245,6 @@ pub(super) struct Ctx<'a> {
     bindings: &'a Bindings,
     sigs: &'a Signatures,
     force_checks: bool,
-    drop_escape_refusal: bool,
 }
 
 impl<'a> Diagnose for Ctx<'a> {
@@ -327,7 +326,7 @@ impl<'a> Diagnose for Checker<'a> {
 impl<'a> Checker<'a> {
     fn new(hir: &'a Hir, bindings: &'a Bindings, sigs: &'a Signatures, config: RunConfig) -> Checker<'a> {
         Checker {
-            ctx: Ctx { hir, bindings, sigs, force_checks: config.force_checks, drop_escape_refusal: config.drop_escape_refusal },
+            ctx: Ctx { hir, bindings, sigs, force_checks: config.force_checks },
             resolved_callees: HashMap::new(),
             rebound_in_expr: HashSet::new(),
             locals: Vec::new(),

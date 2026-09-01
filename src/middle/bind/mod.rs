@@ -153,8 +153,7 @@ pub struct Bindings {
     defer_parked_slots: FnvHashMap<HirId<HirExpr>, u8>,
     /// Type declarations => their member layout.
     types: FnvHashMap<HirId<HirStmt>, TypeLayout>,
-    /// Type/trait declaration => its public member names, for the `x has T` surface form. A type
-    /// contributes its public members; a trait its declared surface.
+    /// Type/trait declaration => its public member names.
     surfaces: FnvHashMap<HirId<HirStmt>, Vec<Symbol>>,
     /// Statements and function bodies (by HIR node index) => frame slots live where they begin.
     frame_slot_counts: FnvHashMap<usize, u8>,
@@ -162,13 +161,12 @@ pub struct Bindings {
     exit_frame_slot_counts: FnvHashMap<usize, u8>,
     /// Scope nodes (by HIR node index) => how many locals die on exit.
     cleanups: FnvHashMap<usize, u8>,
-    /// Declaration nodes whose binding some nested body captures. A binding absent here is named by
-    /// nothing but its own frame.
     captured: FnvHashSet<usize>,
+    /// Every name some body rebinds through a capture.
+    rebound_through_capture: FnvHashSet<Symbol>,
     /// Each type test => the type or trait declaration its name resolves to.
     type_refs: FnvHashMap<HirId<HirMatcher>, HirId<HirStmt>>,
-    /// Each identifier naming a type => that declaration, so a construction and the tag it
-    /// produces name one declaration rather than a name several may share.
+    /// Each identifier naming a type => that declaration.
     expr_types: FnvHashMap<HirId<HirExpr>, HirId<HirStmt>>,
     /// Brace-construction expressions => the resolved member ids of their brace fields.
     construct_fields: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
@@ -179,7 +177,6 @@ pub struct Bindings {
     match_info: FnvHashMap<HirId<HirStmt>, MatchInfo>,
     /// `e ?? p => h` handler nodes => the local slot binding the bad value.
     handle_binders: FnvHashMap<HirId<HirExpr>, u8>,
-    /// Every node this pass declared a binding from.
     #[cfg(debug_assertions)]
     declared: FnvHashSet<usize>,
 }
@@ -210,6 +207,14 @@ impl Bindings {
 
     pub fn place(&self, id: &HirId<HirExpr>) -> Place {
         self.places[id]
+    }
+
+    pub fn any_rebind_through_capture(&self) -> bool {
+        !self.rebound_through_capture.is_empty()
+    }
+
+    pub fn rebound_through_capture(&self, name: Symbol) -> bool {
+        self.rebound_through_capture.contains(&name)
     }
 
     /// The binding of an identifier node.
@@ -699,6 +704,9 @@ impl<'a> Resolver<'a> {
                 let place = self.resolve_place(name, lhs)?;
                 if let Place::Global(_) = place {
                     compiler_error!(self, lhs, "Cannot assign to undefined variable '{}'", self.hir.text(name));
+                }
+                if let Place::Upvalue(_) = place {
+                    self.bindings.rebound_through_capture.insert(name);
                 }
                 self.bindings.places.insert(*lhs, place);
                 self.expression(rhs)?;

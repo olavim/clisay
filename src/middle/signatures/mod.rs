@@ -2,11 +2,10 @@
 //! and infers each function's return tag.
 
 mod collect;
-mod escape;
 mod propagate;
 mod returns;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::middle::bind::Bindings;
 use crate::middle::hir::{builtin_obligation_rules, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatcher, HirStmt, HirTypeDecl, ObligationRules, Symbol, TypeId};
@@ -16,15 +15,6 @@ use crate::middle::obligations::Obligations;
 pub enum CallableId {
     Fn(HirId<HirStmt>),
     Lambda(HirId<HirExpr>),
-}
-
-impl CallableId {
-    fn sort_key(&self) -> (u8, usize) {
-        match self {
-            CallableId::Fn(s) => (0, s.index()),
-            CallableId::Lambda(e) => (1, e.index()),
-        }
-    }
 }
 
 impl From<HirId<HirStmt>> for CallableId {
@@ -43,31 +33,6 @@ impl From<&HirId<HirExpr>> for CallableId {
     fn from(id: &HirId<HirExpr>) -> CallableId { CallableId::Lambda(*id) }
 }
 
-/// What one parameter's argument undergoes in the body it is passed to.
-#[derive(Clone, Copy, Default, PartialEq)]
-pub(crate) struct ParamFact {
-    /// The body keeps the argument past the call.
-    pub escapes: bool,
-    /// The body puts it where the caller cannot reach it again. A return is excluded, since that
-    /// hands the value back to the caller that supplied it.
-    pub escapes_beyond_return: bool,
-    /// The body mutates it in place. A read-only borrow leaves its argument untouched, so a mutable
-    /// value is admitted only where this is false.
-    pub mutates: bool,
-    /// The body's result keeps the argument reachable, so a caller that persists the result persists
-    /// the argument. Read while the rows are built, to see a borrow through a call.
-    pub hands_back: bool,
-    /// The body's result may be the argument itself rather than something holding it. Binding the
-    /// result then names that argument a second time.
-    pub hands_back_itself: bool,
-    /// The body stores it where a second name can write it.
-    pub stored_away: bool,
-    /// The param is borrowed and the body might hand it to a call that retains it.
-    pub needs_borrow_mark: bool,
-    pub escape_site: Option<HirId<HirExpr>>,
-}
-
-/// A function's return.
 #[derive(Clone, Default)]
 pub struct RetSig {
     pub obligations: Obligations,
@@ -112,8 +77,6 @@ impl TypeTag {
     }
 }
 
-/// How a running program tells that a slot still owes an obligation. `null` is the built-in value
-/// witness; a type witness is tested by tag, a trait witness by trait-set membership.
 #[derive(Clone)]
 pub enum Witness {
     Null,
@@ -124,47 +87,29 @@ pub enum Witness {
 pub struct Signatures {
     pub(crate) opt: Symbol,
     pub(crate) fails: Symbol,
-    /// Each obligation's witness. Built-ins are seeded here; user obligations extend it.
     pub(crate) witnesses: HashMap<Symbol, Witness>,
-    /// Each user obligation's rule.
-    pub(crate) rules: HashMap<Symbol, ObligationRules>,
+    pub(crate) obligation_rules: HashMap<Symbol, ObligationRules>,
     pub(crate) fns: HashMap<CallableId, FnSig>,
     pub(crate) ret_tags: HashMap<CallableId, TypeTag>,
     pub(crate) ret_mut: HashMap<CallableId, Mutability>,
-    pub(crate) params: HashMap<CallableId, Vec<ParamFact>>,
-    pub(crate) returns_upvalues: HashMap<CallableId, Vec<Symbol>>,
-    /// Names each callable's body writes.
-    pub(crate) writes: HashMap<CallableId, HashSet<Symbol>>,
-    /// Every name some body rebinds through a capture or a global.
-    pub(crate) any_rebind: HashSet<Symbol>,
-
-    // Name-to-declaration lookups.
-    /// Every declaration of each type name.
     pub(crate) types_by_name: HashMap<Symbol, Vec<HirId<HirStmt>>>,
-    /// The trait declarations each name stands for.
     pub(crate) traits_by_name: HashMap<Symbol, Vec<HirId<HirStmt>>>,
-    /// The declaration each identity stands for.
     pub(crate) decls_by_id: HashMap<TypeId, HirId<HirStmt>>,
     pub(crate) fns_by_name: HashMap<Symbol, HirId<HirStmt>>,
     pub(crate) methods_by_type: HashMap<(HirId<HirStmt>, Symbol), HirId<HirStmt>>,
-    /// The type declaration each method belongs to.
     pub(crate) method_owner: HashMap<HirId<HirStmt>, HirId<HirStmt>>,
 }
 
 impl Signatures {
     fn new(opt: Symbol, fails: Symbol) -> Signatures {
         Signatures {
-            returns_upvalues: HashMap::new(),
             opt,
             fails,
             witnesses: HashMap::from([(opt, Witness::Null)]),
-            rules: HashMap::new(),
+            obligation_rules: HashMap::new(),
             fns: HashMap::new(),
             ret_tags: HashMap::new(),
             ret_mut: HashMap::new(),
-            params: HashMap::new(),
-            writes: HashMap::new(),
-            any_rebind: HashSet::new(),
             types_by_name: HashMap::new(),
             traits_by_name: HashMap::new(),
             decls_by_id: HashMap::new(),
@@ -251,36 +196,8 @@ impl Signatures {
         out.into_iter()
     }
 
-    fn param_fact(&self, func: impl Into<CallableId>, param: usize) -> ParamFact {
-        self.params.get(&func.into()).and_then(|row| row.get(param)).copied().unwrap_or_default()
-    }
-
-    pub(crate) fn param_escapes_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
-        self.param_fact(func, param).escapes
-    }
-
-    pub(crate) fn param_stored_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
-        self.param_fact(func, param).stored_away
-    }
-
-    pub(crate) fn param_needs_borrow_mark_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
-        self.param_fact(func, param).needs_borrow_mark
-    }
-
-    pub(crate) fn escapes_beyond_return_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
-        self.param_fact(func, param).escapes_beyond_return
-    }
-
-    pub(crate) fn escape_site_at(&self, func: impl Into<CallableId>, param: usize) -> Option<HirId<HirExpr>> {
-        self.param_fact(func, param).escape_site
-    }
-
-    pub(crate) fn param_mutates_at(&self, func: impl Into<CallableId>, param: usize) -> bool {
-        self.param_fact(func, param).mutates
-    }
-
     pub(crate) fn obligation_rules_of(&self, obligation: Symbol) -> ObligationRules {
-        self.rules.get(&obligation).copied().unwrap_or_default()
+        self.obligation_rules.get(&obligation).copied().unwrap_or_default()
     }
 
 }
@@ -293,8 +210,6 @@ pub(crate) struct Resolved<'a> {
 }
 
 impl<'a> Resolved<'a> {
-    /// The obligations a matcher admits on the value it matches: one per bindingless witness among
-    /// its alternatives. `Node | null` admits `opt`, so a name bound to that value owes `opt`.
     pub(crate) fn admitted_obligations(&self, matcher: &HirId<HirMatcher>) -> Obligations {
         match self.hir.get(matcher) {
             HirMatcher::Or(alternatives) => alternatives.iter()
@@ -306,8 +221,6 @@ impl<'a> Resolved<'a> {
         }
     }
 
-    /// The obligations a bindingless alternative witnesses. `null` witnesses `opt`. A bare witness
-    /// type witnesses its own. A non-witness alternative yields nothing.
     pub(crate) fn bindingless_witness_obligations(&self, alt: &HirId<HirMatcher>) -> Obligations {
         match self.hir.get(alt) {
             HirMatcher::Literal(HirLiteral::Null) => Obligations::from([self.sigs.opt]),
@@ -316,7 +229,6 @@ impl<'a> Resolved<'a> {
         }
     }
 
-    /// The obligations the declaration a type test names witnesses.
     fn obligations_witnessed_by_test(&self, matcher: &HirId<HirMatcher>) -> Obligations {
         let Some(stmt) = self.bindings.type_ref(matcher) else { return Obligations::new() };
         match self.hir.get(&stmt) {
@@ -325,13 +237,11 @@ impl<'a> Resolved<'a> {
         }
     }
 
-    /// The declaration a callee names, when it is an identifier naming a declared type.
     pub(crate) fn type_named(&self, callee: &HirId<HirExpr>) -> Option<HirId<HirStmt>> {
         let decl = self.bindings.expr_type(callee)?;
         matches!(self.hir.get(&decl), HirStmt::Type(_)).then_some(decl)
     }
 
-    /// The tag a construction on this callee produces. A callee naming no type says nothing.
     pub(crate) fn constructed_tag(&self, callee: &HirId<HirExpr>) -> TypeTag {
         self.type_named(callee).map_or(TypeTag::Unknown, TypeTag::Concrete)
     }
@@ -342,14 +252,13 @@ pub fn collect(hir: &Hir, bindings: &Bindings) -> Signatures {
     let opt = hir.symbol_of("opt").expect("lowering interns the opt obligation");
     let fails = hir.symbol_of("fails").expect("lowering interns the fails obligation");
     let err = hir.symbol_of("Err");
-    let this = hir.symbol_of("this").expect("lowering interns the receiver name");
     let mut sigs = Signatures::new(opt, fails);
     for (name, sym) in [("opt", opt), ("fails", fails)] {
         if let Some(rules) = builtin_obligation_rules(name) {
-            sigs.rules.insert(sym, rules);
+            sigs.obligation_rules.insert(sym, rules);
         }
     }
-    let mut collector = Collector { hir, bindings, opt, fails, err, this, sigs, returns: HashMap::new(), lambda_captures: HashMap::new() };
+    let mut collector = Collector { hir, bindings, opt, fails, err, sigs, returns: HashMap::new() };
     collector.stmt(&hir.get_root());
 
     if let Some(id) = err.and_then(|err| collector.sigs.type_decl(err)).map(|decl| match hir.get(&decl) {
@@ -365,8 +274,6 @@ pub fn collect(hir: &Hir, bindings: &Bindings) -> Signatures {
     collector.infer_ret_tags();
     collector.infer_ret_mut();
     collector.infer_propagated();
-    collector.collect_lambda_captures();
-    collector.infer_escape_summaries();
     collector.sigs
 }
 
@@ -376,10 +283,6 @@ struct Collector<'a> {
     opt: Symbol,
     fails: Symbol,
     err: Option<Symbol>,
-    /// The receiver's reserved name, which the escape rows track it under.
-    this: Symbol,
     sigs: Signatures,
     returns: HashMap<CallableId, Vec<HirId<HirExpr>>>,
-    /// Each lambda's captured names, resolved once so a closure mentioned many times is walked once.
-    lambda_captures: HashMap<HirId<HirExpr>, Vec<Symbol>>,
 }

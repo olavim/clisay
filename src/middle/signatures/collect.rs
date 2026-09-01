@@ -68,7 +68,7 @@ impl<'a> Collector<'a> {
     /// Registers each user obligation's witness and rule.
     pub(super) fn register_obligations(&mut self) {
         for (name, decl) in self.hir.obligations() {
-            self.sigs.rules.insert(name, decl.rules);
+            self.sigs.obligation_rules.insert(name, decl.rules);
             if let Some(witness) = &decl.witness {
                 let w = match self.hir.is_trait(witness.id) {
                     true => Witness::Trait(witness.id),

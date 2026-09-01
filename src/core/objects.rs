@@ -36,22 +36,8 @@ pub fn arguments_may_carry_witness(stack_start: *mut Value, arity: usize) -> boo
 }
 
 pub fn is_mutable_container(value: Value) -> bool {
-    is_container(value) && !value.as_object().is_immutable()
-}
-
-pub fn is_container(value: Value) -> bool {
     matches!(value.kind(), ValueKind::Object(ObjectKind::Array | ObjectKind::Dict | ObjectKind::Instance))
-}
-
-pub fn can_own_writes(value: Value) -> bool {
-    is_mutable_container(value)
-        || matches!(value.kind(), ValueKind::Object(ObjectKind::Closure))
-}
-
-pub fn record_escape(value: Value) {
-    if can_own_writes(value) {
-        unsafe { (*value.as_object().as_header_ptr()).set(FLAG_ESCAPED, true); }
-    }
+        && !value.as_object().is_immutable()
 }
 
 pub fn freeze_value(value: Value, origin: u32) {
@@ -80,8 +66,6 @@ pub type TypeId = u16;
 pub const FLAG_MARKED: u8 = 1 << 0;
 /// Frozen, so a store through it traps.
 pub const FLAG_IMMUTABLE: u8 = 1 << 1;
-/// Set where a value left the frame that built it.
-pub const FLAG_ESCAPED: u8 = 1 << 4;
 
 #[repr(C)]
 pub struct ObjectHeader {
@@ -279,12 +263,6 @@ impl Object {
         unsafe { (*self.as_header_ptr()).has(FLAG_MARKED) }
     }
 
-    /// Whether this value left its frame by a route no container records.
-    #[inline]
-    pub fn is_escaped(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_ESCAPED) }
-    }
-
     #[inline]
     pub fn as_string(&self) -> &String {
         unsafe { &(*self.as_string_ptr()).value }
@@ -347,41 +325,27 @@ pub struct ObjFn {
     pub name: *mut ObjString,
     pub arity: u8,
     pub mut_receiver: bool,
-    pub retain_receiver: bool,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>,
-    pub escape_mask: u64,
     pub retain_mask: u64,
-    pub needs_borrow_mark: u64,
-    pub receiver_needs_borrow: bool,
     pub param_accepts: u16,
     pub slot_accepts: u16
 }
 
 impl ObjFn {
-    #[inline]
-    pub fn escapes(&self, position: usize) -> bool {
-        mask_holds(self.escape_mask, position)
+    pub fn retains_at(&self, position: usize) -> bool {
+        mask_holds(self.retain_mask, position)
     }
 
-    pub fn call_masks(&self) -> CallMasks {
-        CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark, param_accepts: self.param_accepts }
-    }
-
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, needs_borrow_mark: u64, mut_receiver: bool, retain_receiver: bool, receiver_needs_borrow: bool, param_accepts: u16, slot_accepts: u16) -> ObjFn {
-        debug_assert_eq!(needs_borrow_mark & retain_mask, 0, "a taken parameter asked for a borrow mark");
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, retain_mask: u64, mut_receiver: bool, param_accepts: u16, slot_accepts: u16) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
             arity,
             mut_receiver,
-            retain_receiver,
             ip_start,
             upvalues,
-            escape_mask,
             retain_mask,
-            needs_borrow_mark,
-            receiver_needs_borrow,
             param_accepts,
             slot_accepts
         }
@@ -410,26 +374,15 @@ pub struct ObjNativeFn {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
     pub arity: u8,
-    /// Whether the method writes its receiver.
-    pub mutates: bool,
     pub function: NativeFn
 }
 
 impl ObjNativeFn {
     pub fn new(name: *mut ObjString, arity: u8, function: NativeFn) -> ObjNativeFn {
-        ObjNativeFn::of(name, arity, false, function)
-    }
-
-    pub fn mutating(name: *mut ObjString, arity: u8, function: NativeFn) -> ObjNativeFn {
-        ObjNativeFn::of(name, arity, true, function)
-    }
-
-    fn of(name: *mut ObjString, arity: u8, mutates: bool, function: NativeFn) -> ObjNativeFn {
         ObjNativeFn {
             header: ObjectHeader::new(ObjectKind::NativeFunction),
             name,
             arity,
-            mutates,
             function
         }
     }
@@ -457,36 +410,19 @@ pub struct ObjClosure {
     pub arity: u8,
     pub upvalue_count: u8,
     pub mut_receiver: bool,
-    pub retain_receiver: bool,
     pub ip_start: usize,
-    pub escape_mask: u64,
     pub retain_mask: u64,
-    pub needs_borrow_mark: u64,
-    pub receiver_needs_borrow: bool,
     pub param_accepts: u16,
     pub slot_accepts: u16
 }
 
-#[derive(Clone, Copy)]
-pub struct CallMasks {
-    pub retain_mask: u64,
-    pub escape_mask: u64,
-    pub needs_borrow_mark: u64,
-    pub param_accepts: u16,
-}
-
 impl ObjClosure {
-    pub fn call_masks(&self) -> CallMasks {
-        CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark, param_accepts: self.param_accepts }
+    pub fn retains_at(&self, position: usize) -> bool {
+        mask_holds(self.retain_mask, position)
     }
 
     /// Byte offset of the trailing upvalue array.
     const UPVALUES_OFFSET: usize = mem::size_of::<ObjClosure>();
-
-    #[inline]
-    pub fn escapes(&self, position: usize) -> bool {
-        mask_holds(self.escape_mask, position)
-    }
 
     #[inline]
     pub fn alloc_size(count: usize) -> usize {

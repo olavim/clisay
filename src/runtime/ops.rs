@@ -60,19 +60,9 @@ impl Vm {
             self.release_tail_breadcrumbs();
         }
 
-        // Handing a borrowed value back does not end the borrow.
-        let handed_back_from = self.stack.offset(0);
-        let handed_back_borrow = !self.stack.peek(0).is_object()
-            && self.stack.borrow_outlives(handed_back_from, frame.stack_start);
         let value = self.stack.pop();
-        // The value outlives this frame, so the scope releases below must not let go of it.
-        objects::record_escape(value);
         self.unwind_to(frame.stack_start, value)?;
         self.stack.push(value);
-        if handed_back_borrow {
-            let into = self.stack.offset(0);
-            self.stack.mark_borrowed(into, self.stack.borrow_origin(handed_back_from));
-        }
         Ok(true)
     }
 
@@ -81,7 +71,6 @@ impl Vm {
         self.ip = frame.return_ip;
 
         let value = self.stack.pop();
-        objects::record_escape(value);
         self.unwind_to(frame.stack_start, value)?;
         if frame.seal {
             crate::core::objects::freeze_value(value, self.current_pos_index());
@@ -96,20 +85,11 @@ impl Vm {
     }
 
     pub(super) fn throw_value(&mut self, value: Value) -> Result<(), anyhow::Error> {
-        let caught_here = self.try_frames.iter().rev()
-            .find(|f| f.kind == TryKind::Catch)
-            .is_some_and(|f| f.origin == self.frames.top_ptr());
-        if !caught_here {
-        }
-        // A thrown value passes every scope between here and the handler, so none of them may
-        // let go of it.
-        objects::record_escape(value);
         if self.try_frames.len() == 0 {
             return self.error(format!("Uncaught exception: {}", value.fmt()));
         }
 
         let frame = self.try_frames.pop().unwrap();
-        // Restore borrows marked since the `try` began, whose frame exits the unwind skips.
         self.frames.set_top(frame.origin);
         if !self.tail_breadcrumbs.is_empty() {
             self.release_tail_breadcrumbs();
@@ -120,10 +100,9 @@ impl Vm {
         Ok(())
     }
 
-    pub(super) fn op_push_try(&mut self, kind: TryKind) {
+    pub(super) fn op_push_try(&mut self) {
         let handler_pos = as_short!(self.read_next(), self.read_next()) as usize;
         self.try_frames.push(TryFrame {
-            kind,
             origin: self.frames.top_ptr(),
             handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
             stack_start: self.stack.top(),

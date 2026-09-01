@@ -533,7 +533,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn lambda(&mut self, expr: &HirId<HirExpr>, decl: &HirFnDecl, kind: FnKind) -> Result<(), anyhow::Error> {
-        let const_idx = self.function(expr, (*expr).into(), decl, kind, self.lambda_masks(expr, decl))?;
+        let const_idx = self.function(expr, (*expr).into(), decl, kind)?;
         self.emit(Inst::PushClosure(const_idx), expr);
         return Ok(());
     }

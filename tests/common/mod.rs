@@ -42,13 +42,6 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
         }
         return Ok(());
     }
-
-    if std::env::var_os("CLISAY_DROP_ESCAPE_REFUSAL").is_some() {
-        for section in sections {
-            require_still_refused(name, section, RunConfig { drop_escape_refusal: true, ..RunConfig::default() })?;
-        }
-        return Ok(());
-    }
     for section in sections {
         check_section(name, section, RunConfig { force_checks, ..RunConfig::default() }, !force_checks)?;
         check_section(name, section, RunConfig { optimize: false, force_checks, ..RunConfig::default() }, false)

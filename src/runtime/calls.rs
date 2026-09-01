@@ -118,13 +118,6 @@ impl Vm {
             .with_help("an immutable value is immutable all the way down; freeze this value, or mark the construction `mut`"))
     }
 
-    pub(super) fn carry_borrowed(&mut self, from: *mut Value, into: *mut Value) {
-        match self.stack.is_borrowed(from) {
-            true => self.stack.mark_borrowed(into, self.stack.borrow_origin(from)),
-            false => self.stack.clear_borrowed(into),
-        }
-    }
-
     pub(super) fn op_assert_no_retain(&mut self) -> Result<(), anyhow::Error> {
         let arg_count = self.read_next() as usize;
         let owed_idx = u16::from_le_bytes([self.read_next(), self.read_next()]);
@@ -133,7 +126,7 @@ impl Vm {
         for _ in 0..count {
             let position = self.read_next() as usize;
             if let Some(owed) = self.owed_at(owed_idx, position) {
-                if self.callee_escapes(callee, position) {
+                if self.callee_retains(callee, position) {
                     let name = self.get_source_position().snippet();
                     return self.error_labeled(objects::retained_owed_value(owed),
                         format!("`{name}` owes '{owed}' but the callee retains it"));
@@ -171,20 +164,20 @@ impl Vm {
             .map(|(_, name)| &**name)
     }
 
-    fn callee_escapes(&self, callee: Value, position: usize) -> bool {
+    fn callee_retains(&self, callee: Value, position: usize) -> bool {
         if !callee.is_callable() {
             return false;
         }
         let object = callee.as_object();
         match object.tag() {
-            objects::TAG_CLOSURE => unsafe { &*object.as_closure_ptr() }.escapes(position),
+            objects::TAG_CLOSURE => unsafe { &*object.as_closure_ptr() }.retains_at(position),
             objects::TAG_BOUND_METHOD => {
                 let method = unsafe { &*object.as_bound_method_ptr() }.method;
-                method.tag() == objects::TAG_CLOSURE && unsafe { &*method.as_closure_ptr() }.escapes(position)
+                method.tag() == objects::TAG_CLOSURE && unsafe { &*method.as_closure_ptr() }.retains_at(position)
             },
             objects::TAG_TYPE => {
                 let init = unsafe { &*object.as_type_ptr() }.factory();
-                matches!(init, Some(obj) if callable_escapes(obj, position))
+                matches!(init, Some(obj) if callable_retains(obj, position))
             },
             _ => false,
         }
@@ -337,10 +330,10 @@ impl Vm {
     }
 }
 
-fn callable_escapes(obj: Object, position: usize) -> bool {
+fn callable_retains(obj: Object, position: usize) -> bool {
     match obj.tag() {
-        objects::TAG_FUNCTION => unsafe { &*obj.as_function_ptr() }.escapes(position),
-        objects::TAG_CLOSURE => unsafe { &*obj.as_closure_ptr() }.escapes(position),
+        objects::TAG_FUNCTION => unsafe { &*obj.as_function_ptr() }.retains_at(position),
+        objects::TAG_CLOSURE => unsafe { &*obj.as_closure_ptr() }.retains_at(position),
         _ => false,
     }
 }

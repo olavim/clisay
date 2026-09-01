@@ -47,9 +47,9 @@ impl Vm {
         let fn_ref = unsafe { &*function };
         let upvalue_count = fn_ref.upvalues.len();
 
-        // Gather the captured upvalues into a stack-resident scratch buffer first,
-        // then allocate the exact-sized closure in one shot. Capturing must happen
-        // before allocation since capturing can trigger GC.
+        // Gather the captured upvalues into a scratch buffer first, then allocate
+        // the closure in one shot. Capturing must happen before allocation since
+        // capturing can trigger GC.
         let (table, at) = (self.running_slot_table(), self.code_index_at(self.ip));
         let mut upvalues: SmallVec<[*mut ObjUpvalue; 8]> = SmallVec::with_capacity(upvalue_count);
         for i in 0..upvalue_count {
@@ -60,23 +60,18 @@ impl Vm {
                 self.get_upvalue(fn_upval.location as usize)
             };
 
-            // The closure can outlive the frame the capture came from, so a scope exit there must
-            // not release what the captured value holds.
-            objects::record_escape(unsafe { *(*upvalue).location });
             upvalues.push(upvalue);
         }
 
         let (name, arity, ip_start) = (fn_ref.name, fn_ref.arity, fn_ref.ip_start);
-        let (escape_mask, retain_mask, needs_borrow_mark) = (fn_ref.escape_mask, fn_ref.retain_mask, fn_ref.needs_borrow_mark);
-        let receiver_needs_borrow = fn_ref.receiver_needs_borrow;
+        let retains = fn_ref.retain_mask;
         let mut_receiver = fn_ref.mut_receiver;
-        let retain_receiver = fn_ref.retain_receiver;
         let param_accepts = fn_ref.param_accepts;
         let slot_accepts = fn_ref.slot_accepts;
         if self.gc.should_collect() {
             self.start_gc();
         }
-        let closure: Object = self.gc.alloc_closure(name, arity, ip_start, &upvalues, escape_mask, retain_mask, needs_borrow_mark, mut_receiver, retain_receiver, receiver_needs_borrow, param_accepts, slot_accepts).into();
+        let closure: Object = self.gc.alloc_closure(name, arity, ip_start, &upvalues, retains, mut_receiver, param_accepts, slot_accepts).into();
         closure
     }
 

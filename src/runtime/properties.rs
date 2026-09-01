@@ -35,7 +35,6 @@ impl Vm {
         }
     }
 
-    /// Fused method call (`INVOKE`). Fast-paths an instance method call.
     pub(super) fn op_invoke(&mut self) -> Result<(), anyhow::Error> {
         let name_idx = self.read_next() as usize;
         let arg_count = self.read_next() as usize;
@@ -56,20 +55,19 @@ impl Vm {
         self.invoke_member_slow(name, arg_count, is_dot)
     }
 
-    /// Pushes a frame for an instance method without allocating a bound method.
     fn invoke_method(&mut self, method: Object, arg_count: usize) -> Result<(), anyhow::Error> {
 
         // A capturing method is already a closure bound to the frame that declared its type. Any
         // other method captures nothing and is closed here.
         let is_bound = method.tag() == objects::TAG_CLOSURE;
-        let (name, arity, ip_start, mut_receiver, _retain_receiver) = match is_bound {
+        let (name, arity, ip_start, mut_receiver) = match is_bound {
             true => {
                 let closure = unsafe { &*method.as_closure_ptr() };
-                (closure.name, closure.arity, closure.ip_start, closure.mut_receiver, closure.retain_receiver)
+                (closure.name, closure.arity, closure.ip_start, closure.mut_receiver)
             },
             false => {
                 let func = unsafe { &*method.as_function_ptr() };
-                (func.name, func.arity, func.ip_start, func.mut_receiver, func.retain_receiver)
+                (func.name, func.arity, func.ip_start, func.mut_receiver)
             },
         };
         if mut_receiver {
@@ -92,7 +90,6 @@ impl Vm {
         Ok(())
     }
 
-    /// Invokes `this.name(args)`.
     pub(super) fn op_invoke_this(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
         let arg_count = self.read_next() as usize;
@@ -115,7 +112,6 @@ impl Vm {
         self.invoke_this_field(receiver, member_id, arg_count)
     }
 
-    /// Invokes `this.name(args)`.
     fn invoke_this_field(&mut self, receiver: Value, member_id: u8, arg_count: usize) -> Result<(), anyhow::Error> {
         let instance_ref = receiver.as_object().as_instance_ptr();
         let callable = self.get_property_by_id(instance_ref, member_id);
@@ -125,9 +121,7 @@ impl Vm {
     }
 
     fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize, is_dot: bool) -> Result<(), anyhow::Error> {
-
-        // Resolving the property allocates a bound method, which can collect. The arguments stay
-        // on the stack across it, since a copy held anywhere else would not be a root.
+        // Resolving the property allocates a bound method, which can collect.
         let receiver = self.stack.peek(arg_count);
         self.stack.push(receiver);
         self.stack.push(Value::from(name));

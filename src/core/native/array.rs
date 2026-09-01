@@ -71,7 +71,7 @@ impl NativeType for NativeArray {
         let push = gc.intern("push");
         vec![
             (length, ObjNativeFn::new(length, 0, (|host, target, _args| Self::length(host, target)) as NativeFn)),
-            (push, ObjNativeFn::mutating(push, 1, (|host, target, args| Self::push(host, target, args[0])) as NativeFn)),
+            (push, ObjNativeFn::new(push, 1, (|host, target, args| Self::push(host, target, args[0])) as NativeFn)),
         ]
     }
 

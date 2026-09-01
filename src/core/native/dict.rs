@@ -46,7 +46,7 @@ impl NativeType for NativeDict {
         vec![
             (size, ObjNativeFn::new(size, 0, (|host, target, _args| Self::size(host, target)) as NativeFn)),
             (contains_key, ObjNativeFn::new(contains_key, 1, (|host, target, args| Self::contains_key(host, target, args[0])) as NativeFn)),
-            (remove, ObjNativeFn::mutating(remove, 1, (|host, target, args| Self::remove(host, target, args[0])) as NativeFn)),
+            (remove, ObjNativeFn::new(remove, 1, (|host, target, args| Self::remove(host, target, args[0])) as NativeFn)),
         ]
     }
 }
