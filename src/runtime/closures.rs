@@ -77,11 +77,6 @@ impl Vm {
             self.start_gc();
         }
         let closure: Object = self.gc.alloc_closure(name, arity, ip_start, &upvalues, escape_mask, retain_mask, needs_borrow_mark, mut_receiver, retain_receiver, receiver_needs_borrow, param_accepts, slot_accepts).into();
-        // A capture is a store into the closure, so the closure takes what an array would: the
-        // write-ownership of each captured value, and the answer for any borrow among them.
-        for &upvalue in upvalues.iter() {
-            objects::closure_captured(self, Value::from(closure), unsafe { *(*upvalue).location });
-        }
         closure
     }
 

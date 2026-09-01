@@ -1,6 +1,5 @@
 use std::{fmt, mem};
 
-use anyhow::bail;
 use fnv::FnvHashMap;
 use nohash_hasher::{IntMap, IntSet};
 
@@ -18,8 +17,6 @@ pub const MUTABLE_IN_IMMUTABLE: &str = "cannot store a mutable value in an immut
 /// Sentinel for `ObjectHeader::immutable_origin`: the value is mutable, or no site was recorded.
 pub const NO_ORIGIN: u32 = u32::MAX;
 
-/// The runtime diagnostic raised when an opaque call would let a borrowed argument escape.
-pub const RETAINED_BORROW: &str = "cannot pass a borrowed argument to a callee that retains it";
 
 /// The runtime diagnostic raised when an opaque call would retain a value the caller still owes an
 /// obligation on. Named after the obligation, so it reads like the refusal a resolved call gets.
@@ -27,18 +24,15 @@ pub fn retained_owed_value(owed: &str) -> String {
     format!("cannot pass a value owing '{owed}' to a callee that retains it")
 }
 
-/// The runtime diagnostic raised when a borrowed value is persisted at a store site.
-pub const PERSISTED_BORROW: &str = "cannot persist a borrowed value";
-pub const SECOND_ELEMENT_WRITER: &str = "cannot write an element another name already writes";
-pub const WROTE_GIVEN_ELEMENT: &str = "cannot write an element whose write-ownership moved to another container";
-pub const WROTE_TRANSFERRED_ELEMENT: &str = "cannot write a value whose write-ownership was given away";
-pub const GAVE_TRANSFERRED_ELEMENT: &str = "cannot give away a value whose write-ownership was given away";
-/// A call that would retain a value an earlier retain already took the write-ownership of.
-pub const RETAINED_TWICE: &str = "cannot retain a value whose write-ownership was already taken";
 
 #[inline]
 pub fn mask_holds(mask: u64, position: usize) -> bool {
     position < 64 && mask & (1u64 << position) != 0
+}
+
+#[inline]
+pub fn arguments_may_carry_witness(stack_start: *mut Value, arity: usize) -> bool {
+    (0..arity).any(|i| may_carry_witness(unsafe { *stack_start.add(i + 1) }))
 }
 
 pub fn is_mutable_container(value: Value) -> bool {
@@ -57,82 +51,6 @@ pub fn can_own_writes(value: Value) -> bool {
 pub fn record_escape(value: Value) {
     if can_own_writes(value) {
         unsafe { (*value.as_object().as_header_ptr()).set(FLAG_ESCAPED, true); }
-    }
-}
-
-pub fn carries_borrow(value: Value) -> bool {
-    value.is_object() && unsafe { (*value.as_object().as_header_ptr()).has(FLAG_BORROWED | FLAG_HOLDS_BORROW) }
-}
-
-pub fn mark_holds_borrow(container: Value) {
-    if container.is_object() {
-        unsafe { (*container.as_object().as_header_ptr()).set(FLAG_HOLDS_BORROW, true); }
-    }
-}
-
-/// Records that a borrow reached `container` if `value` carries a borrow.
-pub fn container_took<H: Host + ?Sized>(host: &mut H, container: Value, value: Value, borrowed: bool) -> Result<(), anyhow::Error> {
-    host.note_containment(container, value);
-    if borrowed {
-        mark_holds_borrow(container);
-    }
-    give_container_write_ownership(container, value)
-}
-
-/// A closure taking write-ownership of what it captured.
-pub fn closure_captured<H: Host + ?Sized>(host: &mut H, closure: Value, value: Value) {
-    let _ = container_took(host, closure, value, carries_borrow(value));
-}
-
-pub enum RecordedHolder {
-    Container,
-    Nobody,
-}
-
-pub fn recorded_holder(value: Value) -> RecordedHolder {
-    match value.as_object().container_write_owner() {
-        owner if owner.is_object() => RecordedHolder::Container,
-        _ => RecordedHolder::Nobody,
-    }
-}
-
-fn give_container_write_ownership(container: Value, value: Value) -> Result<(), anyhow::Error> {
-    if !is_mutable_container(value) || value == container {
-        return Ok(());
-    }
-    // A retired value has no write-ownership to give.
-    if value.as_object().is_write_retired() {
-        bail!("{GAVE_TRANSFERRED_ELEMENT}");
-    }
-    value.as_object().set_container_write_owner(container);
-    Ok(())
-}
-
-pub fn write_ownership_reaches(value: Value, root: Value) -> bool {
-    // The root is the target. No intermediate container exists to cause a conflict.
-    if value == root {
-        return true;
-    }
-    if !root.is_object() {
-        return false;
-    }
-    // Two walkers at different speeds. A container reachable from its own element is a cycle a
-    // single walker would follow forever.
-    let (mut slow, mut fast) = (value, value);
-    loop {
-        for _ in 0..2 {
-            if !fast.is_object() {
-                return false;
-            }
-            fast = fast.as_object().container_write_owner();
-            if fast == root {
-                return true;
-            }
-        }
-        slow = slow.as_object().container_write_owner();
-        if slow == fast {
-            return false;
-        }
     }
 }
 
@@ -162,19 +80,8 @@ pub type TypeId = u16;
 pub const FLAG_MARKED: u8 = 1 << 0;
 /// Frozen, so a store through it traps.
 pub const FLAG_IMMUTABLE: u8 = 1 << 1;
-/// Lent as a borrow to an active call, so a store of it traps.
-pub const FLAG_BORROWED: u8 = 1 << 2;
-/// Set while one name holds the writer slot for this value, so a second writer traps.
-pub const FLAG_WRITE_OWNED: u8 = 1 << 3;
-/// Set where a value left the frame that built it. A return, a throw, a store through an upvalue,
-/// and a capture all do that. Never cleared, so the bit only ever holds back a release a scope exit
-/// would have made.
+/// Set where a value left the frame that built it.
 pub const FLAG_ESCAPED: u8 = 1 << 4;
-/// Set where the value's write-ownership went to a `*mut` parameter that never handed it on, so
-/// every write to it traps.
-pub const FLAG_WRITE_RETIRED: u8 = 1 << 5;
-/// Set where a borrowed value went into this aggregate.
-pub const FLAG_HOLDS_BORROW: u8 = 1 << 6;
 
 #[repr(C)]
 pub struct ObjectHeader {
@@ -366,16 +273,6 @@ impl Object {
         }
     }
 
-    #[inline]
-    pub fn is_borrowed(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_BORROWED) }
-    }
-
-    #[inline]
-    pub fn set_borrowed(&self, value: bool) {
-        unsafe { (*self.as_header_ptr()).set(FLAG_BORROWED, value); }
-    }
-
     /// Whether the last trace reached this object. Only meaningful between a trace and its sweep.
     #[inline]
     pub fn is_marked(&self) -> bool {
@@ -386,57 +283,6 @@ impl Object {
     #[inline]
     pub fn is_escaped(&self) -> bool {
         unsafe { (*self.as_header_ptr()).has(FLAG_ESCAPED) }
-    }
-
-    #[inline]
-    pub fn is_write_owned(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_WRITE_OWNED) }
-    }
-
-    #[inline]
-    pub fn set_write_owned(&self, value: bool) {
-        unsafe { (*self.as_header_ptr()).set(FLAG_WRITE_OWNED, value); }
-    }
-
-    #[inline]
-    pub fn is_write_retired(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_WRITE_RETIRED) }
-    }
-
-    #[inline]
-    pub fn set_write_retired(&self, value: bool) {
-        unsafe { (*self.as_header_ptr()).set(FLAG_WRITE_RETIRED, value); }
-    }
-
-    /// Whether a borrow was put into this aggregate at some point in its life.
-    #[inline]
-    pub fn holds_borrow(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_HOLDS_BORROW) }
-    }
-
-    /// The container this value was last stored into, or null.
-    #[inline]
-    pub fn container_write_owner(&self) -> Value {
-        unsafe {
-            match (*self.as_header_ptr()).kind {
-                ObjectKind::Array => (*self.as_array_ptr()).container_write_owner,
-                ObjectKind::Dict => (*self.as_dict_ptr()).container_write_owner,
-                ObjectKind::Instance => (*self.as_instance_ptr()).container_write_owner,
-                _ => Value::NULL,
-            }
-        }
-    }
-
-    #[inline]
-    pub fn set_container_write_owner(&self, owner: Value) {
-        unsafe {
-            match (*self.as_header_ptr()).kind {
-                ObjectKind::Array => (*self.as_array_ptr()).container_write_owner = owner,
-                ObjectKind::Dict => (*self.as_dict_ptr()).container_write_owner = owner,
-                ObjectKind::Instance => (*self.as_instance_ptr()).container_write_owner = owner,
-                kind => unreachable!("{kind} takes no writer slot, so it has no owner to set"),
-            }
-        }
     }
 
     #[inline]
@@ -720,19 +566,6 @@ impl GcTraceable for ObjBoundMethod {
 type MemberId = u8;
 
 #[inline]
-pub fn arguments_may_carry_witness(stack_start: *mut Value, arity: usize) -> bool {
-    (0..arity).any(|i| may_carry_witness(unsafe { *stack_start.add(i + 1) }))
-}
-
-#[inline]
-pub fn any_argument_null_or_container(stack_start: *mut Value, arity: usize) -> bool {
-    (0..arity).any(|i| {
-        let value = unsafe { *stack_start.add(i + 1) };
-        value.is_null() || is_container(value)
-    })
-}
-
-#[inline]
 pub fn may_carry_witness(value: Value) -> bool {
     if value.is_number() || value.is_bool() {
         return false;
@@ -910,8 +743,6 @@ impl GcTraceable for ObjType {
 #[repr(C)]
 pub struct ObjInstance {
     pub header: ObjectHeader,
-    /// The container that write-owns this instance, or null.
-    pub container_write_owner: Value,
     pub ty: *mut ObjType,
     /// Member values indexed directly by member id.
     pub values: Box<[Value]>
@@ -922,7 +753,6 @@ impl ObjInstance {
         let ty = unsafe { &*type_ptr };
         ObjInstance {
             header: ObjectHeader::new(ObjectKind::Instance),
-            container_write_owner: Value::NULL,
             ty: type_ptr,
             values: ty.template.clone()
         }
@@ -1004,8 +834,6 @@ impl GcTraceable for ObjUpvalue {
 #[repr(C)]
 pub struct ObjArray {
     pub header: ObjectHeader,
-    /// The container that write-owns this array, or null.
-    pub container_write_owner: Value,
     pub values: Vec<Value>
 }
 
@@ -1013,7 +841,6 @@ impl ObjArray {
     pub fn new(values: Vec<Value>) -> ObjArray {
         ObjArray {
             header: ObjectHeader::new(ObjectKind::Array),
-            container_write_owner: Value::NULL,
             values
         }
     }
@@ -1039,8 +866,6 @@ impl GcTraceable for ObjArray {
 #[repr(C)]
 pub struct ObjDict {
     pub header: ObjectHeader,
-    /// The container that write-owns this dict, or null.
-    pub container_write_owner: Value,
     pub entries: FnvHashMap<DictKey, Value>
 }
 
@@ -1048,7 +873,6 @@ impl ObjDict {
     pub fn new(entries: FnvHashMap<DictKey, Value>) -> ObjDict {
         ObjDict {
             header: ObjectHeader::new(ObjectKind::Dict),
-            container_write_owner: Value::NULL,
             entries
         }
     }

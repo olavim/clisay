@@ -13,6 +13,4 @@ pub trait Host {
     /// Whether the running native's receiver is a slot the calling frame declared.
     fn receiver_is_frame_local(&self) -> bool;
     fn argument_is_borrowed(&self, position: usize) -> bool;
-    /// Tells the host a container took a value.
-    fn note_containment(&mut self, container: Value, value: Value);
 }

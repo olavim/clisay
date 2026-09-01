@@ -2,7 +2,7 @@ use anyhow::bail;
 
 use crate::core::gc::{Gc, GcTraceable};
 use crate::core::host::Host;
-use crate::core::objects::{carries_borrow, container_took, NativeFn, ObjNativeFn, ObjString, IMMUTABLE_MUTATION, PERSISTED_BORROW};
+use crate::core::objects::{NativeFn, ObjNativeFn, ObjString, IMMUTABLE_MUTATION};
 use crate::core::value::{Value, ValueKind};
 
 use super::NativeType;
@@ -54,13 +54,7 @@ impl NativeArray {
         if target.as_object().is_immutable() {
             bail!("{IMMUTABLE_MUTATION}");
         }
-        let borrowed = carries_borrow(value) || host.argument_is_borrowed(0);
-        if borrowed && !host.receiver_is_frame_local() {
-            bail!("{PERSISTED_BORROW}");
-        }
-
         let array = unsafe { &mut *target.as_object().as_array_ptr() };
-        container_took(host, target, value, borrowed)?;
         array.values.push(value);
         host.push(Value::NULL);
         Ok(())

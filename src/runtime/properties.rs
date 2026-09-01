@@ -7,8 +7,6 @@ enum MemberValue {
     Absent,
 }
 
-/// The advice for a persisted borrow where no name can be quoted back.
-const PERSIST_HELP: &str = "a borrowed value cannot be stored in a destination that outlives the call; take the parameter by `*mut` to own it, or `copy` it before storing";
 
 impl Vm {
     #[inline]
@@ -61,13 +59,12 @@ impl Vm {
     }
 
     /// Pushes a frame for an instance method without allocating a bound method.
-    fn invoke_method(&mut self, method: Object, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
-        let root = self.take_write_root(root_kind, root_operand);
+    fn invoke_method(&mut self, method: Object, arg_count: usize, _root_kind: u8, _root_operand: u8) -> Result<(), anyhow::Error> {
 
         // A capturing method is already a closure bound to the frame that declared its type. Any
         // other method captures nothing and is closed here.
         let is_bound = method.tag() == objects::TAG_CLOSURE;
-        let (name, arity, ip_start, mut_receiver, retain_receiver) = match is_bound {
+        let (name, arity, ip_start, mut_receiver, _retain_receiver) = match is_bound {
             true => {
                 let closure = unsafe { &*method.as_closure_ptr() };
                 (closure.name, closure.arity, closure.ip_start, closure.mut_receiver, closure.retain_receiver)
@@ -82,7 +79,6 @@ impl Vm {
             if self.receiver_rejects_mut(target) {
                 return self.readonly_receiver_error(name, target);
             }
-            self.ensure_writable(target, root)?;
         }
         if arg_count != arity as usize {
             let text = unsafe { &(*name).value };
@@ -93,9 +89,8 @@ impl Vm {
             false => self.create_closure(method.as_function_ptr()).as_closure_ptr(),
         };
         let stack_start = self.stack.offset(arg_count);
+        self.check_arguments_accepted(unsafe { (*closure_ptr).param_accepts }, stack_start, arg_count)?;
         self.push_frame(closure_ptr, stack_start, ip_start, true)?;
-        let m = unsafe { (*closure_ptr).call_masks() };
-        self.transfer_argument_write_ownership(m.retain_mask, m.escape_mask, m.needs_borrow_mark, m.param_accepts, stack_start, arg_count, ReceiverSlot::declared(retain_receiver, unsafe { (*closure_ptr).receiver_needs_borrow }))?;
         Ok(())
     }
 
@@ -128,12 +123,8 @@ impl Vm {
     /// bind a receiver. The value is called as it is. A bound method still carries
     /// its original receiver.
     fn invoke_this_field(&mut self, receiver: Value, member_id: u8, arg_count: usize, root_kind: u8, root_operand: u8) -> Result<(), anyhow::Error> {
-        let root = self.take_write_root(root_kind, root_operand);
         let instance_ref = receiver.as_object().as_instance_ptr();
         let callable = self.get_property_by_id(instance_ref, member_id);
-        if self.callable_writes_receiver(callable) {
-            self.claim_write_ownership_through(receiver, root)?;
-        }
         self.stack.set(arg_count, callable);
         self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
         let called = self.call(arg_count, callable, true);
@@ -142,7 +133,6 @@ impl Vm {
     }
 
     fn invoke_member_slow(&mut self, name: *mut ObjString, arg_count: usize, root_kind: u8, root_operand: u8, is_dot: bool) -> Result<(), anyhow::Error> {
-        let root = self.take_write_root(root_kind, root_operand);
 
         // Resolving the property allocates a bound method, which can collect. The arguments stay
         // on the stack across it, since a copy held anywhere else would not be a root.
@@ -158,9 +148,6 @@ impl Vm {
 
         // The callable takes the receiver's slot, which is where a call reads it from.
         let callable = self.stack.pop();
-        if self.callable_writes_receiver(callable) {
-            self.claim_write_ownership_through(receiver, root)?;
-        }
         self.stack.set(arg_count, callable);
         self.native_receiver_is_frame_local = self.root_is_frame_local(root_kind, root_operand);
         let called = self.call(arg_count, callable, true);
@@ -352,27 +339,24 @@ impl Vm {
 
     fn set_field<const POP: bool>(&mut self) -> Result<(), anyhow::Error> {
         let member_id = self.read_next();
-        let root_kind = self.read_next();
-        let root_operand = self.read_next();
+        // The store still carries the root operands, and no longer reads them.
+        let (_, _) = (self.read_next(), self.read_next());
         let target = self.stack.pop();
         if !matches!(target.kind(), ValueKind::Object(ObjectKind::Instance)) {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         }
         self.ensure_mutable(target)?;
-        self.arbitrate_write(target, root_kind, root_operand)?;
 
         let instance_ref = target.as_object().as_instance_ptr();
 
         // Ask before the pop, which would prune the mark this reads.
         let slot = self.stack.offset(0);
         let value = unsafe { *slot };
-        let borrowed = self.ensure_borrowed_does_not_persist(value, slot, root_kind, root_operand)?;
         if POP {
             self.stack.pop();
         }
 
         // Record before storing, so a store this refuses has not already mutated the instance.
-        self.container_took(target, value, borrowed)?;
         self.store_field(instance_ref, member_id, value)
     }
 
@@ -426,90 +410,12 @@ impl Vm {
         if target.as_object().is_immutable() {
             return self.immutable_error(target);
         }
-        if target.as_object().is_write_retired() {
-            let label = format!("`{}` is written here", self.get_source_position().snippet());
-            return self.error_labeled(objects::WROTE_TRANSFERRED_ELEMENT, label);
-        }
         Ok(())
-    }
-
-    #[inline]
-    pub(super) fn container_took_from(&mut self, container: Value, slot: *mut Value) -> Result<(), anyhow::Error> {
-        let value = unsafe { *slot };
-        let borrowed = self.slot_carries_borrow(slot, value);
-        self.container_took(container, value, borrowed)
-    }
-
-    pub(super) fn record_held_borrow_from(&mut self, container: Value, slot: *mut Value) {
-        if self.slot_carries_borrow(slot, unsafe { *slot }) {
-            objects::mark_holds_borrow(container);
-        }
-    }
-
-    pub(super) fn container_took(&mut self, container: Value, value: Value, borrowed: bool) -> Result<(), anyhow::Error> {
-        objects::container_took(self, container, value, borrowed)
-            .map_err(|_| self.gave_transferred_element_error())
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn gave_transferred_element_error(&self) -> anyhow::Error {
-        self.raise(Diagnostic::new(objects::GAVE_TRANSFERRED_ELEMENT, self.get_source_position().clone())
-            .with_label("this store would hand the container a writer")
-            .with_help("write-ownership was given away and nothing handed it back; reading the value is still fine"))
-            .unwrap_err()
-    }
-
-    #[inline]
-    pub(super) fn slot_carries_borrow(&self, slot: *mut Value, value: Value) -> bool {
-        objects::carries_borrow(value) || self.stack.is_borrowed(slot)
-    }
-
-    pub(super) fn ensure_borrowed_does_not_persist(&self, value: Value, slot: *mut Value, root_kind: u8, root_operand: u8) -> Result<bool, anyhow::Error> {
-        let borrowed = self.slot_carries_borrow(slot, value);
-        if borrowed && !self.root_is_frame_local(root_kind, root_operand) {
-            return Err(self.persisted_borrow_error());
-        }
-        Ok(borrowed)
-    }
-
-    #[cold]
-    #[inline(never)]
-    pub(super) fn persisted_borrow_error(&self) -> anyhow::Error {
-        let destination = self.get_source_position().clone();
-        let site = self.code_index_at(self.ip);
-        let named = self.chunk.source_at(site, ir::SourceRole::StoredName);
-        let stored = named.or_else(|| self.chunk.source_at(site, ir::SourceRole::StoredValue));
-        let Some(pos) = stored else {
-            return self.raise(Diagnostic::new(objects::PERSISTED_BORROW, destination)
-                .with_label("this store outlives the borrow")
-                .with_help(PERSIST_HELP)).unwrap_err();
-        };
-        let help = match named {
-            Some(pos) => format!("you can retain `{0}` by declaring the parameter `*{0}`", pos.snippet()),
-            None => PERSIST_HELP.to_string(),
-        };
-        self.raise(Diagnostic::new(objects::PERSISTED_BORROW, pos.clone())
-            .with_label(format!("`{}` is borrowed", pos.snippet()))
-            .with_context_span(destination, "this destination outlives the borrow")
-            .with_help(help))
-            .unwrap_err()
     }
 
     pub(super) fn root_is_frame_local(&self, kind: u8, operand: u8) -> bool {
         ir::write_root_kind(kind) == ir::WRITE_ROOT_LOCAL
             && self.frame_arity().is_some_and(|arity| operand as usize > arity)
-    }
-
-    /// Settles the one-writer rule for a store.
-    fn arbitrate_write(&mut self, target: Value, kind: u8, operand: u8) -> Result<(), anyhow::Error> {
-        if kind & ir::WRITE_ROOT_UNSHARED != 0 {
-            debug_assert!(ir::write_root_kind(kind) != ir::WRITE_ROOT_STASH,
-                "a stashed root is popped by the store, so it can never be proven unshared");
-            return Ok(());
-        }
-        let root = self.take_write_root(kind, operand);
-        self.claim_write_ownership_through(target, root)
     }
 
     fn frame_arity(&self) -> Option<usize> {
@@ -525,17 +431,13 @@ impl Vm {
     }
 
     pub(super) fn op_set_index(&mut self) -> Result<(), anyhow::Error> {
-        let root_kind = self.read_next();
-        let root_operand = self.read_next();
-        let (target, prop, stored) = self.store_operands();
+        // The store still carries the root operands, and no longer reads them.
+        let (_, _) = (self.read_next(), self.read_next());
+        let (target, prop, _stored) = self.store_operands();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.arbitrate_write(target, root_kind, root_operand)?;
-        let borrowed = self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
-
-        self.container_took(target, stored, borrowed)?;
         self.drop_store_path();
 
         match object_kind {
@@ -598,17 +500,13 @@ impl Vm {
 
     /// Dotted store `target.name = v`.
     pub(super) fn op_set_property(&mut self) -> Result<(), anyhow::Error> {
-        let root_kind = self.read_next();
-        let root_operand = self.read_next();
-        let (target, prop, stored) = self.store_operands();
+        // The store still carries the root operands, and no longer reads them.
+        let (_, _) = (self.read_next(), self.read_next());
+        let (target, prop, _stored) = self.store_operands();
         let ValueKind::Object(object_kind) = target.kind() else {
             return self.error(format!("Invalid property access: {}", target.fmt()));
         };
         self.ensure_mutable(target)?;
-        self.arbitrate_write(target, root_kind, root_operand)?;
-        let borrowed = self.ensure_borrowed_does_not_persist(stored, self.stack.offset(0), root_kind, root_operand)?;
-
-        self.container_took(target, stored, borrowed)?;
         self.drop_store_path();
 
         match object_kind {

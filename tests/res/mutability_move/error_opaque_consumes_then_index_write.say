@@ -1,7 +1,0 @@
-fn eats(*mut x) { }
-fn run(consume) {
-    say a = mut [0];
-    consume(a);
-    a[0] = 1; // error: cannot write a value whose write-ownership was given away
-}
-run(eats);

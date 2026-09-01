@@ -99,79 +99,6 @@ pub struct CallFrame {
     stack_start: *mut Value,
     /// Whether a factory returning from this frame should seal (deep-freeze) its instance.
     seal: bool,
-    /// How much write-ownership was held when this frame began, so a return gives back what the
-    /// body still holds.
-    write_depth: usize,
-    /// How many borrow marks were saved when this frame began.
-    borrow_depth: usize,
-}
-
-/// Who holds an element's writer slot. A name lives in a frame slot, so its claim dies with the
-/// frame. A container is identified by its value, whose lifetime that frame does not bound.
-#[derive(Clone, Copy)]
-pub enum WriteOwnershipHolder {
-    Name(*mut Value),
-    Container(Value),
-    /// A `*mut` parameter whose frame is gone. The write-ownership was handed over and the taker
-    /// never handed it on, so it belongs to nobody.
-    Retired,
-}
-
-/// What a call puts in slot zero.
-#[derive(Clone, Copy, PartialEq)]
-pub enum ReceiverSlot {
-    /// The slot holds the callee, so the call has no receiver.
-    Callee,
-    /// The caller lends its receiver for the call and gets it back, and the body may hand `this`
-    /// on, so the borrow is written down where such a call can read it.
-    BorrowedRecorded,
-    Borrowed,
-    Retained,
-}
-
-impl ReceiverSlot {
-    pub fn declared(retain: bool, records: bool) -> ReceiverSlot {
-        match (retain, records) {
-            (true, _) => ReceiverSlot::Retained,
-            (false, true) => ReceiverSlot::BorrowedRecorded,
-            (false, false) => ReceiverSlot::Borrowed,
-        }
-    }
-}
-
-/// The root used to reach a target.
-#[derive(Clone, Copy)]
-pub enum WriteRoot {
-    /// The write reaches its target through a binding, named by where it lives, as in `a[0] = 1`.
-    /// The flag marks a path through the receiver.
-    Named(*mut Value, bool),
-    /// The write targets an element of an unnamed value, such as `get()[0][0] = 1`. The stash
-    /// holds the container the element came from.
-    Stashed(Value),
-    /// The write targets an unnamed value directly, such as `get()[0] = 1`. This value has no name
-    /// or container. There is nothing to compare a second writer against.
-    NoRoot,
-}
-
-/// Write-ownership of one element, held by a name or by a container.
-#[derive(Clone, Copy)]
-pub struct WriteOwnership {
-    pub value: Value,
-    pub holder: WriteOwnershipHolder,
-    pub at: u32,
-    pub how: WriteOwnershipSource,
-}
-
-/// How a holder came by write-ownership, which is what a scope exit needs to dispose of it.
-#[derive(Clone, Copy, PartialEq)]
-pub enum WriteOwnershipSource {
-    /// A name binding the value. The write-ownership returns to the source when the name dies.
-    Bound,
-    /// A store into a container. The claim re-keys to the container, which outlives the name.
-    Given,
-    /// A `*mut` hand-off to a parameter. The write-ownership does not come back, so the claim
-    /// follows the value out of the frame or retires with it.
-    Taken,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -186,66 +113,11 @@ pub struct TryFrame {
     origin: *mut CallFrame,
     handler_ip: *const OpCode,
     stack_start: *mut Value,
-    /// The borrow-stack depth when the `try` began, restored on an unwind to this handler.
-    borrow_depth: usize,
-    write_depth: usize,
-    /// The stash depth at the start of the try block.
-    stash_depth: usize
-}
-
-/// An argument a resolved call said it only borrows, watched for as long as that call runs.
-struct BorrowWatch {
-    value: Value,
-    /// Containers the callee put the argument in.
-    into: Vec<Value>,
-    /// The frame depth once the call pushed its own frame.
-    depth: usize,
-    /// The lowest slot the call's frame owns.
-    stack_start: *mut Value,
-    position: u8,
-    site: usize,
-}
-
-#[cfg(debug_assertions)]
-struct MarkWatch {
-    slot: *mut Value,
-    position: Option<u8>,
-    site: usize,
 }
 
 pub struct Vm {
     /// Forced checks this run reached, for the coverage report.
     elisions_reached: FnvHashSet<usize>,
-    /// Whether this run puts what the analysis concluded on trial.
-    forced: bool,
-    /// Arguments a call said it only borrows, watched until that call returns.
-    borrow_watches: Vec<BorrowWatch>,
-    /// Containers a finished call put a borrowed argument into.
-    settling_containments: Vec<(Value, u8, usize)>,
-    watches_made: usize,
-    watches_settled: usize,
-    #[cfg(debug_assertions)]
-    mark_watches: Vec<MarkWatch>,
-    #[cfg(debug_assertions)]
-    watched_receivers: Vec<(Value, usize, usize)>,
-    #[cfg(debug_assertions)]
-    marks_watched: usize,
-    #[cfg(debug_assertions)]
-    marks_read: usize,
-    /// Write barriers that had to collect before they could answer, split by what the collection
-    /// then said. A trace the barrier did not need is an escape no primitive recorded, so only
-    /// those sites are worth naming.
-    write_barrier_missed_sites: FnvHashSet<usize>,
-    write_barrier_traced_missed: usize,
-    write_barrier_traced_refused: usize,
-    /// The write-ownership a scope exit would have released, each with the site it would have
-    /// released at. Nothing acts on a prediction, so a wrong one costs a report rather than a
-    /// second writer. The next collection settles the list and clears it, since none of it is a
-    /// root.
-    predicted_write_ownership_releases: Vec<(Value, usize)>,
-    predicted_write_ownership_release_sites: FnvHashSet<usize>,
-    refuted_write_ownership_release_sites: FnvHashSet<usize>,
-    refuted_write_ownership_releases: usize,
     pub(crate) gc: Gc,
     ip: *const OpCode,
     chunk: BytecodeChunk,
@@ -253,11 +125,6 @@ pub struct Vm {
     pub(crate) stack: Stack<Value, MAX_STACK>,
     frames: CachedStack<CallFrame, MAX_FRAMES>,
     try_frames: Vec<TryFrame>,
-    /// Values marked borrowed for an active call, each with its prior bit for nesting.
-    borrows: Vec<(Value, bool)>,
-    /// Values whose element writer slot is held, innermost last.
-    write_ownerships: Vec<WriteOwnership>,
-    root_stash: Vec<Value>,
     tail_breadcrumbs: Vec<(*mut CallFrame, *mut ObjClosure)>,
     open_upvalues: Vec<*mut ObjUpvalue>,
     native_types: NativeTypes,
@@ -329,8 +196,8 @@ fn build_err_type(gc: &mut Gc, ids: &[(TypeId, u16)], layout: &BuiltinLayout) ->
     gc.alloc(ty)
 }
 
-pub fn execute(chunk: BytecodeChunk, gc: Gc, forced: bool) -> Result<Vec<String>, anyhow::Error> {
-    Vm::execute(chunk, gc, forced)
+pub fn execute(chunk: BytecodeChunk, gc: Gc, _forced: bool) -> Result<Vec<String>, anyhow::Error> {
+    Vm::execute(chunk, gc)
 }
 
 impl Host for Vm {
@@ -363,13 +230,10 @@ impl Host for Vm {
         objects::mask_holds(self.native_borrowed_arguments, position)
     }
 
-    fn note_containment(&mut self, container: Value, value: Value) {
-        self.note_container_took_watched_value(container, value);
-    }
 }
 
 impl Vm {
-    pub fn execute(chunk: BytecodeChunk, mut gc: Gc, forced: bool) -> Result<Vec<String>, anyhow::Error> {
+    pub fn execute(chunk: BytecodeChunk, mut gc: Gc) -> Result<Vec<String>, anyhow::Error> {
         // The test harness reads this dump, so `capture_output` has to produce it in release too.
         #[cfg(any(debug_assertions, feature = "capture_output"))] {
             disassemble(&chunk);
@@ -394,35 +258,12 @@ impl Vm {
             stack: Stack::new(),
             frames: CachedStack::new(),
             try_frames: Vec::new(),
-            borrows: Vec::new(),
-            write_ownerships: Vec::new(),
-            root_stash: Vec::new(),
             tail_breadcrumbs: Vec::new(),
             open_upvalues: Vec::new(),
             native_types,
             index_cache: vec![IndexCache::empty(); INDEX_CACHE_SIZE].into_boxed_slice(),
             call_cache: vec![CallCache::empty(); CALL_CACHE_SIZE].into_boxed_slice(),
             elisions_reached: FnvHashSet::default(),
-            forced,
-            borrow_watches: Vec::new(),
-            settling_containments: Vec::new(),
-            watches_made: 0,
-            watches_settled: 0,
-            #[cfg(debug_assertions)]
-            mark_watches: Vec::new(),
-            #[cfg(debug_assertions)]
-            watched_receivers: Vec::new(),
-            #[cfg(debug_assertions)]
-            marks_watched: 0,
-            #[cfg(debug_assertions)]
-            marks_read: 0,
-            write_barrier_missed_sites: FnvHashSet::default(),
-            write_barrier_traced_missed: 0,
-            write_barrier_traced_refused: 0,
-            predicted_write_ownership_releases: Vec::new(),
-            predicted_write_ownership_release_sites: FnvHashSet::default(),
-            refuted_write_ownership_release_sites: FnvHashSet::default(),
-            refuted_write_ownership_releases: 0,
             out: Vec::new(),
             native_receiver_is_frame_local: false,
             native_borrowed_arguments: 0
@@ -437,8 +278,6 @@ impl Vm {
             return_ip: std::ptr::null(),
             stack_start: vm.stack.top(),
             seal: false,
-            write_depth: 0,
-            borrow_depth: 0,
         });
 
         vm.define_native("print", 1, |vm, _target, args| {
@@ -488,8 +327,6 @@ impl Vm {
         let err_name = vm.gc.intern("Err");
         vm.globals.insert(err_name, Value::from(vm.native_types.err));
 
-        // The registered built-ins must match the list `middle::bind` checks references against,
-        // or a valid call to a native would be rejected as an undefined variable (or vice versa).
         debug_assert_eq!(vm.globals.len(), crate::core::builtins::NAMES.len(), "built-in registration drifted from core::builtins::NAMES");
         debug_assert!(crate::core::builtins::NAMES.iter().all(|n| vm.globals.contains_key(&vm.gc.intern(*n))),
             "a name in core::builtins::NAMES was not registered as a native");
@@ -499,45 +336,8 @@ impl Vm {
         let base = unsafe { (*vm.frames.top()).stack_start };
         let result = threaded::dispatch(&mut vm, ip, top, base);
 
-        // A release is only settled by a collection, and a program can make its last allocation
-        // before its last release. Collect once more so nothing pending goes unchecked.
-        if result.is_ok() && std::env::var_os("CLISAY_BARRIER_TRACES").is_some() {
-            // The script's own locals are still rooted here, so a release the root scope made would
-            // read as reachable. Drop them first, or every top-level container refutes.
-            vm.stack.set_top(vm.stack.bottom());
-            vm.start_gc();
-        }
-
         vm.report_elision_coverage();
-        vm.report_watch_coverage();
-        vm.report_barrier_traces();
         Ok(result?)
-    }
-
-    fn report_barrier_traces(&self) {
-        if std::env::var_os("CLISAY_BARRIER_TRACES").is_none() {
-            return;
-        }
-
-        // The two signals are independent. A wrongly released claim lets the write through, so it
-        // takes no trace at all, and gating one report on the other hides exactly that case.
-        if self.write_barrier_traced_missed > 0 || self.write_barrier_traced_refused > 0 {
-            eprintln!("barrier traces: {} ({} missed release over {} sites, {} refused)",
-                self.write_barrier_traced_missed + self.write_barrier_traced_refused, self.write_barrier_traced_missed,
-                self.write_barrier_missed_sites.len(), self.write_barrier_traced_refused);
-        }
-        if self.refuted_write_ownership_releases > 0 {
-            eprintln!("write-ownership release: {} refuted at {} sites",
-                self.refuted_write_ownership_releases, self.refuted_write_ownership_release_sites.len());
-        }
-        for &site in self.refuted_write_ownership_release_sites.iter() {
-            let pos = &self.chunk.code_pos[site];
-            eprintln!("  refuted {}:{} {}", pos.source.name, pos.line, pos.snippet());
-        }
-        for &site in self.write_barrier_missed_sites.iter() {
-            let pos = &self.chunk.code_pos[site];
-            eprintln!("  {}:{} {}", pos.source.name, pos.line, pos.snippet());
-        }
     }
 
     fn report_elision_coverage(&self) {
@@ -546,18 +346,6 @@ impl Vm {
         }
         eprintln!("forced checks: {} of {} elided sites reached",
             self.elisions_reached.len(), self.chunk.elisions.len());
-    }
-
-    fn report_watch_coverage(&self) {
-        if self.watches_made > 0 {
-            eprintln!("watched borrows: {} put on trial, {} settled by a collection",
-                self.watches_made, self.watches_settled);
-        }
-        #[cfg(debug_assertions)]
-        if self.marks_watched > 0 {
-            eprintln!("watched marks: {} taken by forcing, {} reached by a read",
-                self.marks_watched, self.marks_read);
-        }
     }
 
     fn at_elided_site(&mut self) -> bool {
@@ -676,21 +464,15 @@ impl Vm {
     }
 
     fn raise(&self, diagnostic: Diagnostic) -> Result<(), anyhow::Error> {
-        // Each frame is paused on one instruction: the current `ip` for the top frame, and each
-        // caller's saved `return_ip` for the frames below it. The base frame has no closure.
         let frames: Vec<CallFrame> = self.frames.iter().collect();
         let mut ip = self.ip;
         let mut lines = Vec::new();
         for i in (1..frames.len()).rev() {
             lines.push(self.stringify_frame(&frames[i], ip));
-            // The frames are contiguous, so the live address of the one copied at `i` is that far
-            // back from the top.
             let at = unsafe { self.frames.top().sub(frames.len() - 1 - i) };
             self.push_rendered_tail_call_breadcrumbs(at, &mut lines);
             ip = frames[i].return_ip;
         }
-        // Show the top-level script as the base of the chain, but only when a function frame sits
-        // above it. At top level the primary caret already marks the site.
         if frames.len() > 1 {
             lines.push(self.stringify_op(ip));
         }
@@ -786,13 +568,6 @@ impl Vm {
             self.gc.mark_object(*closure);
         }
 
-        for (value, _) in &self.borrows {
-            value.mark(&mut self.gc);
-        }
-
-        for value in &self.root_stash {
-            value.mark(&mut self.gc);
-        }
 
         for entry in self.call_cache.iter_mut() {
             *entry = CallCache::empty();
@@ -802,56 +577,7 @@ impl Vm {
         }
 
         self.gc.trace();
-        self.refute_predicted_write_ownership_releases();
-        self.settle_watched_containments();
-        self.prune_borrow_watches();
-        self.prune_write_ownerships();
         self.gc.sweep();
-    }
-
-    fn settle_watched_containments(&mut self) {
-        #[cfg(debug_assertions)]
-        assert!(self.gc.marks_valid(), "a containment settled outside the window where marks say what survived");
-        self.settling_containments.retain(|(container, _, _)| container.is_marked());
-    }
-
-    fn prune_borrow_watches(&mut self) {
-        #[cfg(debug_assertions)]
-        assert!(self.gc.marks_valid(), "a watch pruned outside the window where marks say what survived");
-        self.borrow_watches.retain_mut(|watch| {
-            watch.into.retain(|container| container.is_marked());
-            watch.value.is_marked()
-        });
-    }
-
-    fn refute_predicted_write_ownership_releases(&mut self) {
-        #[cfg(debug_assertions)]
-        assert!(self.gc.marks_valid(), "a prediction settled outside the window where marks say what survived");
-        for (container, site) in std::mem::take(&mut self.predicted_write_ownership_releases) {
-            if container.is_object() && container.as_object().is_marked() {
-                self.refuted_write_ownership_release_sites.insert(site);
-                self.refuted_write_ownership_releases += 1;
-            }
-        }
-    }
-
-    fn prune_write_ownerships(&mut self) {
-        #[cfg(debug_assertions)]
-        assert!(self.gc.marks_valid(), "a claim pruned outside the window where marks say what survived");
-        self.write_ownerships.retain(|held| {
-            if !held.value.is_object() || !held.value.as_object().is_marked() {
-                return false;
-            }
-            // A container not reached by the trace no longer holds the value. Clearing the bit
-            // allows subsequent writes to proceed without re-verifying.
-            if let WriteOwnershipHolder::Container(container) = held.holder {
-                if !container.is_object() || !container.as_object().is_marked() {
-                    held.value.as_object().set_write_owned(false);
-                    return false;
-                }
-            }
-            true
-        });
     }
 
     #[inline]

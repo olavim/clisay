@@ -187,9 +187,6 @@ fn load_local(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value)
     debug_assert!(!vm.stack.is_borrowed(top), "a push destination carried a stale borrow mark");
     if vm.stack.is_borrowed(from) {
         vm.stack.mark_borrowed(top, vm.stack.borrow_origin(from));
-        if vm.forced {
-            vm.carry_watched_mark(from, top);
-        }
     }
     push!(vm, ip, top, unsafe { *from });
     become dispatch(vm, ip, top, base)
@@ -229,19 +226,11 @@ fn load_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Valu
 fn store_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
     let mut ip = ip;
     let idx = rb!(ip) as usize;
-    let slot = unsafe { top.sub(1) };
     let value = peek!(top, 0);
-    // A captured variable outlives the call that borrowed the value, so it may not be stored into one.
-    if vm.slot_carries_borrow(slot, value) {
-        vm.stack.set_top(top);
-        vm.ip = ip;
-        vm.ensure_borrowed_does_not_persist(value, slot, crate::middle::ir::WRITE_ROOT_UPVALUE, idx as u8)?;
-    }
     // The slot written belongs to an enclosing frame, so the value outlives this one and the
     // claim over it moves there rather than dying with this frame.
     vm.stack.set_top(top);
     vm.ip = ip;
-    vm.hand_write_ownership_to_upvalue(idx, value)?;
     vm.store_through_upvalue(idx, value)?;
     become dispatch(vm, ip, top, base)
 }
@@ -250,18 +239,10 @@ fn store_upvalue_pop(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut
     let mut ip = ip;
     let mut top = top;
     let idx = rb!(ip) as usize;
-    // Ask before the pop, which would prune the mark this reads.
-    let slot = unsafe { top.sub(1) };
     let value = peek!(top, 0);
-    if vm.slot_carries_borrow(slot, value) {
-        vm.stack.set_top(top);
-        vm.ip = ip;
-        vm.ensure_borrowed_does_not_persist(value, slot, crate::middle::ir::WRITE_ROOT_UPVALUE, idx as u8)?;
-    }
     let _ = pop!(vm, top);
     vm.stack.set_top(top);
     vm.ip = ip;
-    vm.hand_write_ownership_to_upvalue(idx, value)?;
     vm.store_through_upvalue(idx, value)?;
     become dispatch(vm, ip, top, base)
 }
@@ -551,7 +532,7 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
 
     // Resolve the callee: a cache hit skips the checks and closure deref.
     let cache = unsafe { *vm.call_cache.get_unchecked(slot) };
-    let (closure, ip_start, retain_mask, needs_borrow_mark) = if cache.site == site && cache.callee == value {
+    let (closure, ip_start, _retain_mask, _needs_borrow_mark) = if cache.site == site && cache.callee == value {
         (cache.closure, cache.ip_start, cache.retain_mask, cache.needs_borrow_mark)
     } else if let Some((closure, ip_start, retain_mask, needs_borrow_mark)) = closure_call(value, arg_count) {
         unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start, retain_mask, needs_borrow_mark } };
@@ -572,24 +553,12 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
     }
 
     let stack_start = unsafe { top.sub(arg_count + 1) };
-    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true, write_depth: vm.write_ownerships.len(), borrow_depth: vm.borrows.len() });
-    // The transfer records the site it happened at, so `ip` has to be current for the diagnostic.
+    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true });
+    // The check names the site it happened at, so `ip` has to be current for the diagnostic.
     if arg_count != 0 {
         vm.stack.set_top(top);
         vm.ip = ip;
-        // The call cache holds the retain mask so a cached call never reads the closure.
-        // Only a forced run needs the escape mask, so an ordinary run still skips that read.
-        let escape_mask = match vm.forced {
-            true => unsafe { (*closure).escape_mask },
-            false => 0,
-        };
-
-        // Both of the transfer's own early-outs, asked before the call rather than inside it. That
-        // duplication is deliberate: skipping the call is worth 3.8% on a recursive one-argument
-        // call, and the closure stays unread, which is what the cache exists for.
-        if retain_mask | needs_borrow_mark != 0 || vm.forced || objects::any_argument_null_or_container(stack_start, arg_count) {
-            vm.transfer_argument_write_ownership(retain_mask, escape_mask, needs_borrow_mark, unsafe { (*closure).param_accepts }, stack_start, arg_count, ReceiverSlot::Callee)?;
-        }
+        vm.check_arguments_accepted(unsafe { (*closure).param_accepts }, stack_start, arg_count)?;
     }
     become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
 }
@@ -599,17 +568,9 @@ fn halt(vm: &mut Vm, _ip: *const OpCode, _top: *mut Value, _base: *mut Value) ->
     Ok(std::mem::take(&mut vm.out))
 }
 
-/// Whether the value about to be returned took a borrow in.
-#[inline]
-fn returns_a_held_borrow(top: *mut Value) -> bool {
-    let returning = unsafe { *top.sub(1) };
-    returning.is_object() && returning.as_object().holds_borrow()
-}
-
 fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R {
     // The top-level ends in HALT, so every RETURN has a caller frame to pop.
-    let nothing_to_unwind = vm.open_upvalues.is_empty() && vm.write_ownerships.is_empty();
-    if nothing_to_unwind && vm.borrows.is_empty() && !returns_a_held_borrow(top) {
+    if vm.open_upvalues.is_empty() {
         let frame = vm.frames.pop();
         let returned_from = unsafe { top.sub(1) };
         let value = unsafe { *returned_from };
@@ -625,9 +586,6 @@ fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R 
 
         if handed_back_borrow {
             vm.stack.mark_borrowed(frame.stack_start, vm.stack.borrow_origin(returned_from));
-            if vm.forced {
-                vm.carry_watched_mark(returned_from, frame.stack_start);
-            }
         }
 
         let top = unsafe { frame.stack_start.add(1) };
@@ -638,10 +596,7 @@ fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R 
     vm.stack.set_top(top);
     vm.ip = ip;
 
-    match nothing_to_unwind {
-        true => vm.return_ending_borrows()?,
-        false => { vm.op_return()?; },
-    }
+    vm.op_return()?;
 
     let top = vm.stack.top();
     let base = unsafe { (*vm.frames.top()).stack_start };

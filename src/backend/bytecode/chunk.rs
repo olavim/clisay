@@ -54,11 +54,6 @@ impl BytecodeChunk {
         }
     }
 
-    /// An extra position recorded for the instruction `offset` falls inside.
-    pub fn source_at(&self, offset: usize, role: SourceRole) -> Option<&SourcePosition> {
-        self.source_map.get(&(offset, role))
-    }
-
     pub fn write(&mut self, op: OpCode, pos: &SourcePosition) {
         self.code.push(op);
         self.code_pos.push(pos.clone());

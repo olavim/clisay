@@ -43,28 +43,9 @@ impl Vm {
         self.stack.push(over);
     }
 
-    fn unwind_to(&mut self, stack_start: *mut Value, write_depth: usize, leaving: Value) -> Result<(), anyhow::Error> {
+    fn unwind_to(&mut self, stack_start: *mut Value, _leaving: Value) -> Result<(), anyhow::Error> {
         self.close_upvalues(stack_start);
-        self.release_write_ownership_above(write_depth, stack_start, leaving);
         self.stack.set_top(stack_start);
-        if self.forced {
-            self.settle_borrow_watches(leaving)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn restore_borrows(&mut self, depth: usize) {
-        while self.borrows.len() > depth {
-            let (value, prev) = self.borrows.pop().unwrap();
-            if value.is_object() { value.as_object().set_borrowed(prev); }
-        }
-    }
-
-    pub(super) fn ensure_not_holding_borrow(&self, value: Value) -> Result<(), anyhow::Error> {
-        if value.is_object() && value.as_object().holds_borrow() {
-            let label = format!("`{}` holds a value borrowed from the caller", self.get_source_position().snippet());
-            return self.error_labeled(objects::PERSISTED_BORROW, label);
-        }
         Ok(())
     }
 
@@ -72,7 +53,6 @@ impl Vm {
         if unsafe { (*self.frames.top()).closure.is_null() } {
             return Ok(false);
         }
-        self.ensure_not_holding_borrow(self.stack.peek(0))?;
 
         let frame = self.frames.pop();
         self.ip = frame.return_ip;
@@ -87,62 +67,22 @@ impl Vm {
         let value = self.stack.pop();
         // The value outlives this frame, so the scope releases below must not let go of it.
         objects::record_escape(value);
-        self.restore_borrows(frame.borrow_depth);
-        self.unwind_to(frame.stack_start, frame.write_depth, value)?;
+        self.unwind_to(frame.stack_start, value)?;
         self.stack.push(value);
         if handed_back_borrow {
             let into = self.stack.offset(0);
             self.stack.mark_borrowed(into, self.stack.borrow_origin(handed_back_from));
-            if self.forced {
-                self.carry_watched_mark(handed_back_from, into);
-            }
         }
         Ok(true)
     }
 
-    /// A return whose frame only needs to end borrows.
-    pub(super) fn return_ending_borrows(&mut self) -> Result<(), anyhow::Error> {
-        let value = self.stack.peek(0);
-        self.ensure_not_holding_borrow(value)?;
-
-        let frame = self.frames.pop();
-        self.ip = frame.return_ip;
-
-        let handed_back_from = self.stack.offset(0);
-        let handed_back_borrow = !value.is_object()
-            && self.stack.borrow_outlives(handed_back_from, frame.stack_start);
-
-        // The value outlives this frame, so a later scope release must not let go of it.
-        objects::record_escape(value);
-        self.restore_borrows(frame.borrow_depth);
-        self.stack.set_top(frame.stack_start);
-
-        if self.forced {
-            self.settle_borrow_watches(value)?;
-        }
-
-        self.stack.push(value);
-
-        if handed_back_borrow {
-            let into = self.stack.offset(0);
-            self.stack.mark_borrowed(into, self.stack.borrow_origin(handed_back_from));
-            if self.forced {
-                self.carry_watched_mark(handed_back_from, into);
-            }
-        }
-
-        Ok(())
-    }
-
     pub(super) fn op_return_factory(&mut self) -> Result<(), anyhow::Error> {
-        self.ensure_not_holding_borrow(self.stack.peek(0))?;
         let frame = self.frames.pop();
         self.ip = frame.return_ip;
 
         let value = self.stack.pop();
         objects::record_escape(value);
-        self.restore_borrows(frame.borrow_depth);
-        self.unwind_to(frame.stack_start, frame.write_depth, value)?;
+        self.unwind_to(frame.stack_start, value)?;
         if frame.seal {
             crate::core::objects::freeze_value(value, self.current_pos_index());
         }
@@ -160,7 +100,6 @@ impl Vm {
             .find(|f| f.kind == TryKind::Catch)
             .is_some_and(|f| f.origin == self.frames.top_ptr());
         if !caught_here {
-            self.ensure_not_holding_borrow(value)?;
         }
         // A thrown value passes every scope between here and the handler, so none of them may
         // let go of it.
@@ -171,13 +110,11 @@ impl Vm {
 
         let frame = self.try_frames.pop().unwrap();
         // Restore borrows marked since the `try` began, whose frame exits the unwind skips.
-        self.restore_borrows(frame.borrow_depth);
-        self.root_stash.truncate(frame.stash_depth);
         self.frames.set_top(frame.origin);
         if !self.tail_breadcrumbs.is_empty() {
             self.release_tail_breadcrumbs();
         }
-        self.unwind_to(frame.stack_start, frame.write_depth, value)?;
+        self.unwind_to(frame.stack_start, value)?;
         self.ip = frame.handler_ip;
         self.stack.push(value);
         Ok(())
@@ -190,9 +127,6 @@ impl Vm {
             origin: self.frames.top_ptr(),
             handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
             stack_start: self.stack.top(),
-            borrow_depth: self.borrows.len(),
-            write_depth: self.write_ownerships.len(),
-            stash_depth: self.root_stash.len()
         });
     }
 
@@ -312,20 +246,14 @@ impl Vm {
         Ok(())
     }
 
-    /// Hands a container the elements still on the stack, `step` apart.
-    fn take_elements(&mut self, container: Value, count: usize, step: usize, seal: bool) -> Result<(), anyhow::Error> {
+    /// Refuses a mutable element in a sealed literal, which is all a container asks of what it takes.
+    fn take_elements(&mut self, _container: Value, count: usize, step: usize, seal: bool) -> Result<(), anyhow::Error> {
+        if !seal {
+            return Ok(());
+        }
         for i in (0..count).step_by(step) {
-            let slot = self.stack.offset(i);
-            let value = unsafe { *slot };
-            match seal {
-                // A sealed literal takes no writer slot, but it still carries what its elements hold.
-                true => {
-                    if objects::is_mutable_container(value) {
-                        return self.mutable_in_immutable_error();
-                    }
-                    self.record_held_borrow_from(container, slot);
-                },
-                false => self.container_took_from(container, slot)?,
+            if objects::is_mutable_container(unsafe { *self.stack.offset(i) }) {
+                return self.mutable_in_immutable_error();
             }
         }
         Ok(())
@@ -361,14 +289,9 @@ impl Vm {
         };
         let values = source[prefix..end].to_vec();
         // A slice holds only what it copied, so the elements answer rather than the source.
-        let copied_borrow = values.iter().any(|&v| objects::carries_borrow(v));
         let array = self.alloc(ObjArray::new(values));
         self.stack.truncate(1);
-        let slice = Value::from(array);
-        if copied_borrow {
-            objects::mark_holds_borrow(slice);
-        }
-        self.push_immutable(slice);
+        self.push_immutable(Value::from(array));
     }
 
     pub(super) fn op_dict(&mut self) -> Result<(), anyhow::Error> {

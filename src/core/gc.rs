@@ -6,7 +6,6 @@ use fnv::FnvHashMap;
 use fnv::FnvHashSet;
 
 use super::objects::{ObjClosure, ObjString, ObjUpvalue, ObjectHeader, ObjectKind, Object, FLAG_MARKED};
-use super::value::Value;
 
 /// Every heap object is `repr(align(8))`, so a freed block can back any later
 /// object of the same size regardless of its concrete type. Blocks are bucketed
@@ -227,25 +226,12 @@ impl Gc {
     pub fn sweep(&mut self) {
         #[cfg(debug_assertions)]
         assert!(self.traced, "a sweep with no trace before it reads marks from the last cycle");
-        self.prune_container_write_owners();
         self.sweep_strings();
         self.sweep_objects();
         // Scale the next threshold to the surviving live set, so collection frequency tracks live size.
         self.next_gc = self.bytes_allocated.saturating_mul(GC_GROW_FACTOR).max(INITIAL_GC_THRESHOLD);
         #[cfg(debug_assertions)]
         { self.traced = false; }
-    }
-
-    /// Drops the owner links this collection invalidates. An owner is weak, so an element that
-    /// outlives the container it was stored into is nobody's element again. Runs before the sweep,
-    /// while the marks still say what survived.
-    fn prune_container_write_owners(&mut self) {
-        for obj in &self.refs {
-            let owner = obj.container_write_owner();
-            if owner.is_object() && !owner.as_object().is_marked() {
-                obj.set_container_write_owner(Value::NULL);
-            }
-        }
     }
 
     fn sweep_strings(&mut self) {

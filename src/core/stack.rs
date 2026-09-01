@@ -156,6 +156,8 @@ impl<'a, T: Copy, const N: usize> Stack<T, N> {
         self.top
     }
 
+    /// Only `verify_roots` asks, and that runs in debug builds alone.
+    #[cfg(debug_assertions)]
     #[inline]
     pub fn bottom(&self) -> *mut T {
         self.bottom
@@ -341,10 +343,5 @@ impl<'a, T: Copy, const N: usize> CachedStack<T, N> {
     #[inline]
     pub fn iter(&'a self) -> StackIter<'a, T, N> {
         self.stack.iter()
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.stack.len()
     }
 }
