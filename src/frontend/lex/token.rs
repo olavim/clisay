@@ -224,6 +224,5 @@ tokens! {
     AmpAmpEqual => "&&=",
     PipePipeEqual => "||=",
     QuestionQuestion => "??",
-    QuestionBang => "?!",
-    StarMut => "*mut"
+    QuestionBang => "?!"
 }

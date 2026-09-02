@@ -1,7 +1,5 @@
-// `_` fills a parameter position and names nothing, so a test beside it says nothing either.
 fn one(_)! { return 1; }
 fn two(_, _)! { return 2; }
-
 print(one(9)); // expect: 1
 print(two(8, 7)); // expect: 2
 
@@ -9,6 +7,5 @@ print(two(8, 7)); // expect: 2
 fn one(_)! { return _; } // error: Undefined variable '_'
 
 // @split
-type Node { pub n; init(this, *n) { this.n = n; } }
-
+type Node { pub n; init(this, n) { this.n = n; } }
 fn tested(_ @ Node)! { return 1; } // error: redundant `_ @`

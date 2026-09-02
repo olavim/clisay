@@ -48,8 +48,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn at_mut_marker(&self) -> bool {
-        self.tokens.matches(TokenType::StarMut)
-            || self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut)
+        self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut)
     }
 
     fn parse_mut_marker(&mut self, clause: &mut SlotClause, slot: SlotKind) -> Result<(), anyhow::Error> {
@@ -60,10 +59,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             // A named slot puts the marker ahead of the name, which is the one spelling it has.
             SlotKind::Param | SlotKind::Receiver => return Err(self.error_help(
                 "A capability leads the name, not the ':' clause", &pos,
-                format!("write it ahead of the {}, as in `mut x` or `*mut x`", slot.label()))),
+                format!("write it ahead of the {}, as in `mut x`", slot.label()))),
             SlotKind::Local | SlotKind::Field | SlotKind::Member => return Err(self.error_help(
                 format!("A {} cannot carry a mutability capability", slot.label()), &pos,
-                "'mut' / '*mut' lead a parameter's name, or ride a return's clause")),
+                "'mut' leads a parameter's name, or rides a return's clause")),
         }
         if clause.capability != Capability::None {
             parse_error!(self, &pos, "Repeated mutability capability");
@@ -74,17 +73,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             return Err(self.error_help(
                 "Mutability must lead the ':' clause",
                 &pos,
-                "move 'mut' / '*mut' ahead of the obligations",
+                "move 'mut' ahead of the obligations",
             ));
         }
 
-        // `*mut` transfers ownership; plain `mut` borrows.
-        clause.capability = if self.tokens.next_if(TokenType::StarMut).is_some() {
-            Capability::MoveMut
-        } else {
-            self.tokens.next();
-            Capability::Mut
-        };
+        self.tokens.next();
+        clause.capability = Capability::Mut;
         Ok(())
     }
 

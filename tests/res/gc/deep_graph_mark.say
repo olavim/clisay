@@ -1,27 +1,17 @@
-// A deeply nested live object graph must be markable without overflowing the
-// host stack. Build a 50000-node linked list kept live via `head`, then force a
-// full collection while it is reachable. Recursive marking overflows the native
-// stack here; iterative (worklist) marking handles it. Walking the list and
-// counting proves every node survived the collection. The claim is about one deep mark, so
-// collecting on every allocation just marks the same list 50000 times.
 gcStress(false);
-
 type Node {
     pub next?;
-    init(this, *n?) {
+    init(this, n?) {
         this.next = n;
     }
 }
-
 say var head? = null;
 say var i = 0;
 while i < 50000 {
     head = Node(head);
     i = i + 1;
 }
-
 gcCollect();
-
 say var count = 0;
 say var cur? = head;
 while cur != null {

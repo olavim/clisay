@@ -1,5 +1,3 @@
-// Traits are lexically scoped like type/fn/say: a trait declared in a function is visible only
-// there, so two functions may each declare their own.
 fn makeInner()! {
     trait Tagged { pub fn tag(this)! { return "INNER"; } }
     type Widget with Tagged { init(this) {} }
@@ -14,6 +12,5 @@ print(makeInner().tag()); // expect: INNER
 print(makeOuter().tag()); // expect: OUTER
 
 // @split
-// A trait declared in a function cannot be named outside it.
 fn makeInner()! { trait Tagged { pub fn tag(this)! { return "INNER"; } } type Widget with Tagged { init(this) {} } return Widget(); }
 type Thing with Tagged { init(this) {} } // error: Trait 'Tagged' is not declared

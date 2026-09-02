@@ -1,56 +1,49 @@
-// A binder takes a declared member's clause, and is unknown where no test proves what it holds.
 type W { } obligation taint { witness W; discharge to use; }
 fn sink(x)! { return 1; }
 fn structural(v @ { d })! { return sink(d); }
 fn direct(v)! { say d = v["d"]; return sink(d); }
-
 say v = { "d": W() };
 try { print(structural(v)); } catch (e) { print("structural caught"); } // expect: structural caught
 try { print(direct(v)); } catch (e) { print("direct caught"); } // expect: direct caught
 
 // @split
 type W { } obligation taint { witness W; discharge to use; }
-type Box { pub d: taint; init(this, *d: taint) { this.d = d; } }
+type Box { pub d: taint; init(this, d: taint) { this.d = d; } }
 fn sink(x)! { return 1; }
-
 fn nominal(v @ Box { d })! {
     return sink(d); // error: cannot pass a value owing 'taint'
 }
 
 // @split
 type W { } obligation taint { witness W; discharge to use; }
-type Box { pub d: taint; init(this, *d: taint) { this.d = d; } }
+type Box { pub d: taint; init(this, d: taint) { this.d = d; } }
 fn sink(x)! { return 1; }
-
 fn surface(v @ has Box { d })! {
     return sink(d); // error: cannot pass a value owing 'taint'
 }
 
 // @split
 type W { } obligation taint { witness W; discharge to use; }
-type Box { pub d: taint; init(this, *d: taint) { this.d = d; } }
+type Box { pub d: taint; init(this, d: taint) { this.d = d; } }
 fn takes(x: taint)! { return 1; }
 fn sink(x)! { return 1; }
 fn nominal(v @ Box { d })! { return takes(d); }
 fn structural(v @ { d })! { return sink(d); }
-
 print(nominal(Box(W()))); // expect: 1
 print(structural({ "d": 1 })); // expect: 1
 
 // @split
 type W { } obligation taint { witness W; discharge to use; }
-type Box { pub d: taint; init(this, *d: taint) { this.d = d; } pub fn m(this)! { return 1; } }
+type Box { pub d: taint; init(this, d: taint) { this.d = d; } pub fn m(this)! { return 1; } }
 fn sink(x)! { return 1; }
 fn method(v @ has Box { m })! { return sink(m); }
 fn element(v @ [a])! { return sink(a); }
-
 try { print(method({ "d": 1, "m": W() })); } catch (e) { print("method caught"); } // expect: method caught
 try { print(element([W()])); } catch (e) { print("element caught"); } // expect: element caught
 
 // @split
 type W { } obligation taint { witness W; discharge to use; }
 fn sink(x)! { return 1; }
-
 say v = { "d": W() };
 if (v ~ { d }) {
     try { print(sink(d)); } catch (e) { print("condition caught"); } // expect: condition caught

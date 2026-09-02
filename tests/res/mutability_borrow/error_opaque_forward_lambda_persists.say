@@ -1,5 +1,0 @@
-obligation borrowed { no persist; no return; }
-say sink = mut [];
-fn each(xs: borrowed, cb) { cb(xs); } // error: cannot pass a value owing 'borrowed' to a callee that retains it
-say m = mut [1, 2];
-each(m, (*v) => sink.push(v));

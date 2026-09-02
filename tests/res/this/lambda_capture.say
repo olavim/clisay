@@ -1,15 +1,11 @@
-// A lambda in a method body captures the enclosing `this`, through any depth of nesting. A closure
-// over a borrowing receiver may be called in place; only one that outlives the call is refused.
 type Counter {
     pub var n;
     init(this) { this.n = 0; }
-
     pub fn show(this) { say f = () => print(this.n); f(); }
     pub fn nested(this) { say f = () => { say g = () => print(this.n); g(); }; f(); }
     pub fn bump(mut this) { say f = () => { this.n = this.n + 1; }; f(); }
     pub fn read(this)! { return this.n; }
 }
-
 say c = mut Counter();
 c.show();   // expect: 0
 c.bump();
@@ -18,9 +14,7 @@ c.nested(); // expect: 1
 print(c.read()); // expect: 1
 
 // @split
-// A closure that outlives the call needs a receiver that owns the instance, so the caller hands
-// it over rather than lending it.
-type Counter { pub var n; init(this) { this.n = 1; } pub fn reader(*this)! { return () => this.n; } }
+type Counter { pub var n; init(this) { this.n = 1; } pub fn reader(this)! { return () => this.n; } }
 say c = mut Counter();
 say read = c.reader();
 print(read()); // expect: 1

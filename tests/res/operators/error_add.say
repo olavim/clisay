@@ -1,57 +1,46 @@
 1 + true; // error: Operator '+' cannot be applied to operands number and boolean
 
 // @split
-
 true + "str"; // error: Operator '+' cannot be applied to operands boolean and string
 
 // @split
-
 1 + "str"; // error: Operator '+' cannot be applied to operands number and string
 
 // @split
-
 fn func() {}
 func + 1; // error: Operator '+' cannot be applied to operands function and number
 
 // @split
-
 fn func() {}
 func + "str"; // error: Operator '+' cannot be applied to operands function and string
 
 // @split
-
 fn func() {}
 func + true; // error: Operator '+' cannot be applied to operands function and boolean
 
 // @split
-
 fn func1() {}
 fn func2() {}
 func1 + func2; // error: Operator '+' cannot be applied to operands function and function
 
 // @split
-
 type A {}
 A + 1; // error: Operator '+' cannot be applied to operands type and number
 
 // @split
-
 type A {}
 A + "str"; // error: Operator '+' cannot be applied to operands type and string
 
 // @split
-
 type A {}
 A + true; // error: Operator '+' cannot be applied to operands type and boolean
 
 // @split
-
 type A {}
 fn func() {}
 A + func; // error: Operator '+' cannot be applied to operands type and function
 
 // @split
-
 type A {}
 type B {}
 A + B; // error: Operator '+' cannot be applied to operands type and type

@@ -1,8 +1,7 @@
-// A nullable field on a known-type receiver is nullable, so member access on it is rejected.
 type Node {
     pub next?;
     pub value;
-    init(this, *v) {
+    init(this, v) {
         value = v;
     }
 }

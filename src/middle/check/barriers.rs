@@ -29,11 +29,6 @@ pub enum Guard {
     NonNull,
 }
 
-#[derive(Default)]
-pub struct ArgMarks {
-    survive: Vec<(u8, Symbol)>,
-}
-
 /// The runtime checks codegen emits.
 #[derive(Default)]
 pub struct Barriers {
@@ -46,8 +41,6 @@ pub struct Barriers {
     pub(super) boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
     /// Discharge nodes (`??`, `?`, `!`) whose operand owes an object witness.
     pub(super) witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
-    /// What each call does to its arguments, keyed by callee node.
-    pub(super) arg_marks: HashMap<HirId<HirExpr>, ArgMarks>,
     /// Every registered object witness declaration, the VM's registry for recognizing a crossing
     /// value as a witness at a boundary barrier.
     pub(super) witness_decls: Vec<TypeId>,
@@ -72,10 +65,6 @@ impl Barriers {
 
     pub fn witness_set(&self, node: &HirId<HirExpr>) -> Option<&WitnessSet> {
         self.witness_tests.get(node)
-    }
-
-    pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[(u8, Symbol)]> {
-        self.arg_marks.get(callee).map(|m| m.survive.as_slice()).filter(|p| !p.is_empty())
     }
 
     pub fn len(&self) -> usize {
@@ -103,10 +92,6 @@ impl<'a> Checker<'a> {
         if let Err(at) = guards.binary_search(&guard) {
             guards.insert(at, guard);
         }
-    }
-
-    pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<(u8, Symbol)>) {
-        self.out.arg_marks.entry(*callee).or_default().survive = positions;
     }
 
     pub(super) fn record_boundary_barrier(&mut self, node: &HirId<HirExpr>, accepted: &Obligations) {

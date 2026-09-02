@@ -84,10 +84,10 @@ fn param_pattern_carries_a_clause() {
 /// The marker describes the slot, so it does not need the pattern to name the value.
 #[test]
 fn unnamed_param_still_carries_a_capability() {
-    let ast = parse("fn f(*mut _, mut Node : opt) {}");
+    let ast = parse("fn f(mut _, mut Node : opt) {}");
     let params = &nth_fn(&ast, &top_stmts(&ast), 0).params;
     assert!(params[0].binder(&ast).is_none());
-    assert_eq!(params[0].clause.capability, Capability::MoveMut);
+    assert_eq!(params[0].clause.capability, Capability::Mut);
     assert!(params[1].binder(&ast).is_none());
     assert_eq!(params[1].clause.capability, Capability::Mut);
     assert_eq!(ast.text(params[1].clause.names[0]), "opt");
@@ -96,15 +96,15 @@ fn unnamed_param_still_carries_a_capability() {
 /// The marker lands in the clause the rest of the pipeline reads, whichever form wrote it.
 #[test]
 fn capability_prefix_fills_the_clause() {
-    let ast = parse("fn f(a, mut b, *c, *mut d) {} fn h(*mut e) {}");
+    let ast = parse("fn f(a, mut b) {} fn h(mut e) {}");
     let stmts = top_stmts(&ast);
     let caps: Vec<Capability> = nth_fn(&ast, &stmts, 0).params.iter().map(|p| p.clause.capability).collect();
-    assert_eq!(caps, vec![Capability::None, Capability::Mut, Capability::Move, Capability::MoveMut]);
+    assert_eq!(caps, vec![Capability::None, Capability::Mut]);
 
-    assert_eq!(nth_fn(&ast, &stmts, 1).params[0].clause.capability, Capability::MoveMut);
+    assert_eq!(nth_fn(&ast, &stmts, 1).params[0].clause.capability, Capability::Mut);
 
     // A parameter and a receiver take the marker ahead of the name, and nowhere else.
-    for src in ["fn f(x: mut) {}", "fn f(x: *mut) {}", "type T { pub fn m(this: mut) {} }"] {
+    for src in ["fn f(x: mut) {}", "type T { pub fn m(this: mut) {} }"] {
         assert!(try_parse(src).is_err(), "{src}");
     }
 }
@@ -112,13 +112,13 @@ fn capability_prefix_fills_the_clause() {
 /// A receiver has no pattern, so the prefix is the only place its capability can sit.
 #[test]
 fn receiver_carries_a_capability_prefix() {
-    let ast = parse("type T { pub fn a(this) {} pub fn b(mut this) {} pub fn c(*this) {} pub fn d(*mut this) {} }");
+    let ast = parse("type T { pub fn a(this) {} pub fn b(mut this) {} }");
     let Stmt::Type(decl) = ast.get(&top_stmts(&ast)[0]) else { panic!("expected a type") };
     let caps: Vec<Capability> = decl.methods.iter().map(|m| match ast.get(m) {
         Stmt::Fn(f) => f.receiver.as_ref().expect("a receiver").clause.capability,
         _ => panic!("expected a method"),
     }).collect();
-    assert_eq!(caps, vec![Capability::None, Capability::Mut, Capability::Move, Capability::MoveMut]);
+    assert_eq!(caps, vec![Capability::None, Capability::Mut]);
 }
 
 #[test]
@@ -130,15 +130,14 @@ fn param_pattern_rejections() {
 
 #[test]
 fn param_capability_marker() {
-    // `mut` / `*mut` lead the clause, ahead of the obligation atoms.
-    let ast = parse("fn f(mut a, *mut b, mut c: opt) {}");
+    // `mut` leads the clause, ahead of the obligation atoms.
+    let ast = parse("fn f(mut a, mut c: opt) {}");
     let stmts = top_stmts(&ast);
     let params = &nth_fn(&ast, &stmts, 0).params;
     assert_eq!(params[0].clause.capability, Capability::Mut);
     assert!(params[0].clause.names.is_empty());
-    assert_eq!(params[1].clause.capability, Capability::MoveMut);
-    assert_eq!(params[2].clause.capability, Capability::Mut);
-    assert_eq!(ast.text(params[2].clause.names[0]), "opt");
+    assert_eq!(params[1].clause.capability, Capability::Mut);
+    assert_eq!(ast.text(params[1].clause.names[0]), "opt");
 }
 
 #[test]
@@ -158,7 +157,7 @@ fn capability_marker_must_lead_the_clause() {
     let names: Vec<&str> = decl.clause.names.iter().map(|n| ast.text(*n)).collect();
     assert_eq!(names, vec!["opt", "fails"]);
 
-    for src in ["fn f(): opt mut {}", "fn f(): opt *mut fails {}", "fn f(): [taint] mut {}"] {
+    for src in ["fn f(): opt mut {}", "fn f(): [taint] mut {}"] {
         assert!(try_parse(src).is_err(), "{src}");
     }
 }
@@ -201,12 +200,9 @@ fn value_mut_wraps_any_operand_optimistically() {
 
 #[test]
 fn capability_marker_rejections() {
-    // `*mut` is one token, so a space between `*` and `mut` is not the move marker.
-    assert!(try_parse("fn f(): * mut {}").is_err());
     assert!(try_parse("say x: mut;").is_err());
     assert!(try_parse("type T { a: mut; }").is_err());
     assert!(try_parse("fn f(): mut mut {}").is_err());
-    assert!(try_parse("fn f(): mut *mut {}").is_err());
 }
 
 #[test]

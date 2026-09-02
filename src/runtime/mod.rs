@@ -386,10 +386,6 @@ impl Vm {
         self.raise(Diagnostic::new(message, self.get_source_position().clone()))
     }
 
-    fn error_labeled(&self, message: impl Into<String>, label: impl Into<String>) -> Result<(), anyhow::Error> {
-        self.raise(Diagnostic::new(message, self.get_source_position().clone()).with_label(label))
-    }
-
     fn raise(&self, diagnostic: Diagnostic) -> Result<(), anyhow::Error> {
         let frames: Vec<CallFrame> = self.frames.iter().collect();
         let mut ip = self.ip;

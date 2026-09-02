@@ -1,7 +1,6 @@
-// A nullable value cannot be assigned into a non-null field.
 type T {
     pub value;
-    init(this, *p?) {
+    init(this, p?) {
         this.value = p; // error: Cannot assign a nullable value to non-null field 'value'
     }
 }

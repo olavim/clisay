@@ -9,7 +9,6 @@
 // 9: HALT
 
 // @split
-
 0 has { a: 1, b: 2 };
 // expect asm:
 // 0: PUSH_CONSTANT 0
@@ -28,7 +27,6 @@
 // 22: HALT
 
 // @split
-
 0 has { a: 1, b: 2, c: 3 };
 // expect asm:
 // 0: PUSH_CONSTANT 0

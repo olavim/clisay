@@ -1,12 +1,9 @@
-// Resolving a member allocates a bound method, which can collect. The receiver stays on the stack
-// across it, or the instance is swept and a type reachable only through it goes too.
 fn mk()! { say tag = 7; type T { pub v; init(this){this.v=tag;} pub fn read(this)! { return this.v+tag; } } return T(); }
 gcStress(true);
 say f = mk().read;
 print(f()); // expect: 14
 
 // @split
-// The same through the null-tolerant read.
 fn mk()! { say tag = 3; type T { pub v; init(this){this.v=tag;} pub fn read(this)! { return this.v+tag; } } return T(); }
 gcStress(true);
 say var total = 0;

@@ -1,45 +1,36 @@
-// A structural test reads a surface. A witness that cannot expose that surface is not what
-// matched, so `has T` rules it out even though it proves no identity.
 type Wt { pub a; }
 obligation warned { witness Wt; discharge to use; }
 type T { pub b; }
 fn src(): warned { return Wt { a: 0 }; }
-
 say v: warned = src();
 if (v ~ has T) { say y = v; }
 print("ok"); // expect: ok
 
 // @split
-// A witness exposing the whole surface may be exactly what matched, so nothing is ruled out.
 type Wt { pub a; }
 obligation warned { witness Wt; discharge to use; }
 type T { pub a; }
 fn src(): warned { return Wt { a: 0 }; }
-
 say v: warned = src();
 if (v ~ has T) {
     say y = v; // error: cannot assign a value owing 'warned' to 'y'
 }
 
 // @split
-// One missing member is enough, since the surface is read whole.
 type Wt { pub a; }
 obligation warned { witness Wt; discharge to use; }
 type T { pub a; pub b; }
 fn src(): warned { return Wt { a: 0 }; }
-
 say v: warned = src();
 if (v ~ has T) { say y = v; }
 print("ok"); // expect: ok
 
 // @split
-// A trait witness is an open family, so ruling it out would take every type providing it.
 trait Wt { }
 obligation warned { witness Wt; discharge to use; }
 type T { pub b; }
 type W with Wt { pub a; }
 fn src(): warned { return W { a: 0 }; }
-
 say v: warned = src();
 if (v ~ has T) {
     say y = v; // error: cannot assign a value owing 'warned' to 'y'

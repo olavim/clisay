@@ -1,21 +1,9 @@
+// A resolved callee that keeps a value owing `must use` is refused where the call is written.
 trait Wt { }
 obligation warned { witness Wt; must use; }
 type W with Wt { }
 say sink = mut [];
-fn stash(*v) { sink.push(v); }
-fn f(g) {
-    say b: warned = W { };
-    g(b); // error: cannot pass a value owing 'warned' to a callee that retains it
-    print(b ?? "handled");
-}
-f(stash);
-
-// @split
-trait Wt { }
-obligation warned { witness Wt; must use; }
-type W with Wt { }
-say sink = mut [];
-fn stash(*v) { sink.push(v); }
+fn stash(v) { sink.push(v); }
 fn f() {
     say b: warned = W { };
     stash(b); // error: cannot pass a value owing 'warned'
@@ -24,10 +12,10 @@ fn f() {
 f();
 
 // @split
-type Token { pub v; init(this, *x) { this.v = x; } }
+type Token { pub v; init(this, x) { this.v = x; } }
 obligation parsed { witness Token; discharge to use; }
 say sink = mut [];
-fn stash(*v) { sink.push(v); }
+fn stash(v) { sink.push(v); }
 fn f(g) {
     say b: parsed = Token(1);
     g(b);

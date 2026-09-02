@@ -1,5 +1,3 @@
-// A closure that rebinds the binding reaches it through the call, so the narrowing does not survive
-// the call. Without this the binding reads `null` through a non-null name at run time.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -12,8 +10,6 @@ fn run() {
 run();
 
 // @split
-// A call that rebinds some other name leaves this one's narrowing standing. The invalidation is
-// per name, not a blanket one whenever anything rebinds.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -27,7 +23,6 @@ fn run() {
 run();
 
 // @split
-// A call that rebinds nothing leaves the narrowing standing.
 type Box { pub value: opt; }
 fn other()! { return 1; }
 fn run() {
@@ -40,8 +35,6 @@ fn run() {
 run();
 
 // @split
-// A call inside the condition runs before the branch does, so a narrowing the same condition
-// proves is already stale where it would be used.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -54,7 +47,6 @@ fn run() {
 run();
 
 // @split
-// A loop body that rebinds drops it for the next iteration, which is the path a single pass misses.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };

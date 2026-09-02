@@ -50,8 +50,7 @@ type Wider with Mover {
 print(Wider().onMove(2)); // expect: took
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P { v: 1 }); }
 type Deeper with Mover {
     init(this) { }
@@ -59,8 +58,7 @@ type Deeper with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, { v }); }
 type Typed with Mover {
     init(this) { }
@@ -75,8 +73,7 @@ type Scalar with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, [a, b]); }
 type Typed with Mover {
     init(this) { }
@@ -84,9 +81,8 @@ type Typed with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-type Q { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, { k: P }); }
 type Bound with Mover {
     init(this) { }
@@ -94,8 +90,7 @@ type Bound with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, { k: named @ P })!; }
 type Bound with Mover {
     init(this) { }

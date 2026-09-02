@@ -1,19 +1,15 @@
-// Equality with a literal proves the value is that literal, which is neither null nor an instance,
-// so it is neither the `opt` witness nor any object one.
 fn g(): opt { return null; }
 say x: opt = g();
 if (x == 5) { say y = x; print("five"); }
 print("end"); // expect: end
 
 // @split
-// The false branch of `!=` proves the same thing.
 fn g(): opt { return null; }
 say x: opt = g();
 if (x != 5) { print("other"); } else { say y = x; print("five"); } // expect: other
 print("end"); // expect: end
 
 // @split
-// A string and a boolean say it too.
 fn g(): opt { return null; }
 say x: opt = g();
 if (x == "a") { say y = x; }
@@ -21,29 +17,24 @@ if (x == true) { say z = x; }
 print("end"); // expect: end
 
 // @split
-// `null` is a literal that proves the opposite, so it narrows in the other branch only.
 fn g(): opt { return null; }
 say x: opt = g();
 if (x == null) { print("null"); } else { say y = x; print("other"); } // expect: null
 print("end"); // expect: end
 
 // @split
-// An object witness goes the same way: a literal is not an instance.
 fn f(): fails { return Err("e"); }
 say x: fails = f();
 if (x == 5 || !(x ~ Err)) { say y = x; print("clean"); }
 print("end"); // expect: end
 
 // @split
-// A question asked in either operand of a short-circuit is asked by the condition.
 fn f(): fails { return Err("e"); }
 say x: fails = f();
 if (true && !(x ~ Err)) { print("in"); }
 print("end"); // expect: end
 
 // @split
-// Equality on an instance is identity, so a value equal to a binding that owes nothing is that
-// binding, and owes nothing either.
 type T { }
 fn f(): fails { return Err("e"); }
 say x: fails = f();
@@ -52,7 +43,6 @@ if (x == y || !(x ~ Err)) { say z = x; print("clean"); }
 print("end"); // expect: end
 
 // @split
-// Two bindings that both owe prove nothing about each other.
 fn f(): fails { return Err("e"); }
 say a: fails = f();
 say b: fails = f();

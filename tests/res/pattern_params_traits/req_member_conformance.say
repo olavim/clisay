@@ -1,16 +1,13 @@
-// What a required member declares is checked against the member filling it, at the composition.
 trait Counter {
     req var count;
     req data : opt;
     pub fn read(this)! { return 1; }
 }
-
 type Box with Counter {
     pub var count;
     pub data?;
-    init(this, *count, *data?) { this.count = count; this.data = data; }
+    init(this, count, data?) { this.count = count; this.data = data; }
 }
-
 print(Box(1, null).read()); // expect: 1
 
 // @split
@@ -19,12 +16,10 @@ trait Reader {
     req data : opt taint;
     pub fn read(this)! { return 1; }
 }
-
 type Box with Reader {
     pub data?;
-    init(this, *data?) { this.data = data; }
+    init(this, data?) { this.data = data; }
 }
-
 print(Box(null).read()); // expect: 1
 
 // @split
@@ -32,10 +27,9 @@ trait Counter {
     req var count;
     pub fn read(this)! { return 1; }
 }
-
 type Box with Counter {
     pub count; // error: member `count` does not satisfy `Counter.count`
-    init(this, *count) { this.count = count; }
+    init(this, count) { this.count = count; }
 }
 
 // @split
@@ -44,10 +38,9 @@ trait Reader {
     req data : opt;
     pub fn read(this)! { return 1; }
 }
-
 type Box with Reader {
     pub data: opt taint; // error: member `data` does not satisfy `Reader.data`
-    init(this, *data: opt taint) { this.data = data; }
+    init(this, data: opt taint) { this.data = data; }
 }
 
 // @split
@@ -55,10 +48,9 @@ trait Clearer {
     req var field : opt;
     pub fn clear(mut this) { this.field = null; }
 }
-
 type Box with Clearer {
     pub var field; // error: member `field` does not satisfy `Clearer.field`
-    init(this, *field) { this.field = field; }
+    init(this, field) { this.field = field; }
 }
 
 // @split
@@ -66,7 +58,6 @@ trait Reader {
     req data : opt;
     pub fn read(this)! { return 1; }
 }
-
 type Box with Reader {
     pub fn data(this)! { return 5; } // error: member `data` does not satisfy `Reader.data`
     init(this) {}

@@ -1,24 +1,19 @@
-// Case decides what a bare name means in a pattern: a type tests, a value binds.
-type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
-
+type Point { pub x; pub y; init(this, x, y) { this.x = x; this.y = y; } }
 fn tested(p @ Point)! { return p.x; }
 fn bound({ x: value })! { return value; }
 fn nested({ x: Point })! { return 1; }
-
 print(tested(Point(1, 2))); // expect: 1
 print(bound({ "x": 3 })); // expect: 3
 print(nested({ "x": Point(4, 5) })); // expect: 1
 
 // @split
-type Point { pub x; init(this, *x) { this.x = x; } }
-type Other { pub x; init(this, *x) { this.x = x; } }
-
+type Point { pub x; init(this, x) { this.x = x; } }
+type Other { pub x; init(this, x) { this.x = x; } }
 fn either({ k: Point | Other })! { return 1; }
 print(either({ "k": Other(1) })); // expect: 1
 
 // @split
-type Point { pub x; init(this, *x) { this.x = x; } }
-
+type Point { pub x; init(this, x) { this.x = x; } }
 fn f(x @ is Point) { } // error: redundant `is`
 
 // @split

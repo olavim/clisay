@@ -119,17 +119,11 @@ pub enum Capability {
     #[default]
     None,
     Mut,
-    Move,
-    MoveMut,
 }
 
 impl Capability {
     pub fn is_mut(self) -> bool {
-        matches!(self, Capability::Mut | Capability::MoveMut)
-    }
-
-    pub fn is_retain(self) -> bool {
-        matches!(self, Capability::Move | Capability::MoveMut)
+        matches!(self, Capability::Mut)
     }
 }
 

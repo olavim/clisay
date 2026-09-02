@@ -1,24 +1,19 @@
-// A surface asks for a member, so a receiver without one exposes no surface. A nullable member is
-// still a member: admitting null is not the same as not being there.
 type Box { pub v?; }
 say d = mut { };
 print(d has Box); // expect: false
 match (d) { has Box => print("yes"), _ => print("no"), } // expect: no
 
 // @split
-// Present and null satisfies a nullable member.
 type Box { pub v?; }
 say d = mut { "v": null };
 print(d has Box); // expect: true
 match (d) { has Box => print("yes"), _ => print("no"), } // expect: yes
 
 // @split
-// And a non-null member refuses the null.
 type Box { pub v; }
 say d = mut { "v": null };
 print(d has Box); // expect: false
 match (d) { has Box => print("yes"), _ => print("no"), } // expect: no
 
 // @split
-// A built-in's factory takes what its declaration admits, so a non-null field refuses null.
 say e: fails = Err(null); // error: expected non-null argument

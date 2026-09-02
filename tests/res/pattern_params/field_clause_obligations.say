@@ -1,28 +1,22 @@
-// A field's `:` clause reaches every reader: a plain member read and a destructure binder both
-// recover what the field declares.
 type Raw { } obligation taint { witness Raw; discharge to use; }
-type Box { pub item: taint; init(this, *v: taint) { this.item = v; } }
+type Box { pub item: taint; init(this, v: taint) { this.item = v; } }
 fn make(): taint { return Raw(); }
-
 say b = Box(make());
 say x = b.item; // error: cannot assign a value owing 'taint' to 'x'
 
 // @split
 type Raw { } obligation taint { witness Raw; discharge to use; }
-type Box { pub item: taint; init(this, *v: taint) { this.item = v; } }
+type Box { pub item: taint; init(this, v: taint) { this.item = v; } }
 fn make(): taint { return Raw(); }
-
 say b = Box(make());
 if (b ~ Box { item }) {
     say x = item; // error: cannot assign a value owing 'taint' to 'x'
 }
 
 // @split
-// A slot that declares the obligation accepts it, through either route.
 type Raw { } obligation taint { witness Raw; discharge to use; }
-type Box { pub item: taint; init(this, *v: taint) { this.item = v; } }
+type Box { pub item: taint; init(this, v: taint) { this.item = v; } }
 fn make(): taint { return Raw(); }
-
 say b = Box(make());
 say x: taint = b.item;
 if (b ~ Box { item }) {
@@ -31,33 +25,26 @@ if (b ~ Box { item }) {
 print("ok"); // expect: ok
 
 // @split
-// A field declaring nothing still reads clean.
-type Box { pub item; init(this, *v) { this.item = v; } }
+type Box { pub item; init(this, v) { this.item = v; } }
 say b = Box(1);
 say x = b.item;
 print(x); // expect: 1
 
 // @split
-// A factory's field-local accepts exactly what its field declares, so storing an owing value
-// into a field that does not declare it is refused.
 type Raw { } obligation taint { witness Raw; discharge to use; }
-type Box { pub item; init(this, *v: taint) { this.item = v; } } // error: cannot assign a value owing 'taint' to 'item'
+type Box { pub item; init(this, v: taint) { this.item = v; } } // error: cannot assign a value owing 'taint' to 'item'
 
 // @split
-// A `[obl]` field puts the debt on the elements, exactly as the same clause on a local does: the
-// container reads clean into a matching slot, and an element read carries the obligation.
 type Raw { } obligation taint { witness Raw; discharge to use; }
-type Box { pub items: [taint]; init(this, *v: [taint]) { this.items = v; } }
+type Box { pub items: [taint]; init(this, v: [taint]) { this.items = v; } }
 fn make(): [taint] { return [Raw()]; }
-
 say b = Box(make());
 say c: [taint] = b.items;
 print("ok"); // expect: ok
 
 // @split
 type Raw { } obligation taint { witness Raw; discharge to use; }
-type Box { pub items: [taint]; init(this, *v: [taint]) { this.items = v; } }
+type Box { pub items: [taint]; init(this, v: [taint]) { this.items = v; } }
 fn make(): [taint] { return [Raw()]; }
-
 say b = Box(make());
 say e = b.items[0]; // error: cannot assign a value owing 'taint' to 'e'

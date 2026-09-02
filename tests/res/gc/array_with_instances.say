@@ -1,20 +1,14 @@
-// Regression test for a use-after-free when building an array literal.
-
 gcStress(true);
-
 type Box {
     pub v;
-    init(this, *x) {
+    init(this, x) {
         this.v = x;
     }
 }
-
 say a = [Box(11), Box(22), Box(33)];
-
 say p1 = Box(44);
 say p2 = Box(55);
 say p3 = Box(66);
-
 print(a[0].v); // expect: 11
 print(a[1].v); // expect: 22
 print(a[2].v); // expect: 33

@@ -1,8 +1,7 @@
-// A method returning `this` needs no `: mut`; the receiver stays live for the next call.
 type Box {
   pub var v;
   init(this) { this.v = 0; }
-  pub fn setV(mut this, *x)! { this.v = x; return this; }
+  pub fn setV(mut this, x)! { this.v = x; return this; }
   pub fn get(this)! { return this.v; }
 }
 say b = mut Box();

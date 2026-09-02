@@ -1,4 +1,3 @@
-// An empty surface asks for nothing beyond a shaped value, so a null does not have it.
 trait Wt { }
 type Empty { }
 say d = mut { "a": 1 };
@@ -8,7 +7,6 @@ print(d has Wt); // expect: true
 print(d has Empty); // expect: true
 
 // @split
-// The guard rules out null, so the branch may pass the value into a non-null slot.
 trait Wt { }
 fn take(v) { print("took"); }
 fn f(x?) { if (x ~ has Wt) { take(x); } }
@@ -16,7 +14,6 @@ f(null);
 print("end"); // expect: end
 
 // @split
-// The match spelling reads it the same way.
 trait Wt { }
 fn f(x?) { match (x) { has Wt => print("yes"), _ => print("no"), } }
 f(null); // expect: no

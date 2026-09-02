@@ -91,24 +91,6 @@ impl Vm {
         }
     }
 
-    pub(super) fn op_assert_no_retain(&mut self) -> Result<(), anyhow::Error> {
-        let arg_count = self.read_next() as usize;
-        let owed_idx = u16::from_le_bytes([self.read_next(), self.read_next()]);
-        let count = self.read_next() as usize;
-        let callee = self.stack.peek(arg_count);
-        for _ in 0..count {
-            let position = self.read_next() as usize;
-            if let Some(owed) = self.owed_at(owed_idx, position) {
-                if self.callee_retains(callee, position) {
-                    let name = self.get_source_position().snippet();
-                    return self.error_labeled(objects::retained_owed_value(owed),
-                        format!("`{name}` owes '{owed}' but the callee retains it"));
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub(super) fn slot_addr(&self, slot: usize) -> *mut Value {
         unsafe { (*self.frames.top()).stack_start.add(slot) }
     }
@@ -129,31 +111,6 @@ impl Vm {
         }
         let start = unsafe { (*frame).stack_start };
         (self.stack.top() as usize - start as usize) / std::mem::size_of::<Value>()
-    }
-
-    fn owed_at(&self, owed_idx: u16, position: usize) -> Option<&str> {
-        self.chunk.owed_names[owed_idx as usize].iter()
-            .find(|(p, _)| *p as usize == position)
-            .map(|(_, name)| &**name)
-    }
-
-    fn callee_retains(&self, callee: Value, position: usize) -> bool {
-        if !callee.is_callable() {
-            return false;
-        }
-        let object = callee.as_object();
-        match object.tag() {
-            objects::TAG_CLOSURE => unsafe { &*object.as_closure_ptr() }.retains_at(position),
-            objects::TAG_BOUND_METHOD => {
-                let method = unsafe { &*object.as_bound_method_ptr() }.method;
-                method.tag() == objects::TAG_CLOSURE && unsafe { &*method.as_closure_ptr() }.retains_at(position)
-            },
-            objects::TAG_TYPE => {
-                let init = unsafe { &*object.as_type_ptr() }.factory();
-                matches!(init, Some(obj) if callable_retains(obj, position))
-            },
-            _ => false,
-        }
     }
 
     pub(super) fn call_native(&mut self, arg_count: usize, native_fn_ptr: *mut ObjNativeFn) -> Result<(), anyhow::Error> {
@@ -270,13 +227,5 @@ impl Vm {
             },
             _ => unsafe { std::hint::unreachable_unchecked() }
         }
-    }
-}
-
-fn callable_retains(obj: Object, position: usize) -> bool {
-    match obj.tag() {
-        objects::TAG_FUNCTION => unsafe { &*obj.as_function_ptr() }.retains_at(position),
-        objects::TAG_CLOSURE => unsafe { &*obj.as_closure_ptr() }.retains_at(position),
-        _ => false,
     }
 }

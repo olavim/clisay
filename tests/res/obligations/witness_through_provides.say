@@ -1,57 +1,43 @@
-// A trait witness names an open family: any type providing it is in the bad state. A type witness
-// names exactly itself. Both forms recover the obligation onto a matcher binder.
 trait W { }
 type T with W { }
 obligation obl { witness W; discharge to use; }
-
 fn f(x @ T) { say y = x; } // error: cannot assign a value owing 'obl' to 'y'
 
 // @split
 trait W { }
 type T with W { }
 obligation obl { witness W; discharge to use; }
-
 fn f(x @ W) { say y = x; } // error: cannot assign a value owing 'obl' to 'y'
 
 // @split
-// A type witness stays exact: nothing else provides its name.
 type Raw { }
 type Other { }
 obligation obl { witness Raw; discharge to use; }
-
 fn f(x @ Other) { say y = x; print("clean"); }
 f(Other { }); // expect: clean
 
 // @split
-// An or-alternative naming a providing type carries the obligation, so the destructure beside it
-// is a live binding rather than a dead one.
 trait W { }
 type T with W { }
 obligation obl { witness W; discharge to use; }
-
 fn f(a @ { x } | T) { print(x ?? "none"); }
 f({ x: 1 }); // expect: 1
 
 // @split
-// A positive test proves the value is the witness, through the trait its type mixes.
 trait W { }
 type T with W { }
 obligation obl { witness W; discharge to use; }
 fn src(): obl { return T { }; }
-
 say v: obl = src();
 if (!(v is W)) { say y = v; }
 print("ok"); // expect: ok
 
 // @split
-// A negative test proves nothing: another type could provide the same witness, so failing the `T`
-// test leaves the obligation owed.
 trait W { }
 type T with W { }
 type U with W { }
 obligation obl { witness W; discharge to use; }
 fn src(): obl { return U { }; }
-
 say v: obl = src();
 if (!(v is T)) {
     say y = v; // error: cannot assign a value owing 'obl' to 'y'

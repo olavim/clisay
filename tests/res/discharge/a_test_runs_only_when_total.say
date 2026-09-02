@@ -1,4 +1,4 @@
-type Wt { pub a; pub b; init(this, *x) { this.a = x; this.b = x; } }
+type Wt { pub a; pub b; init(this, x) { this.a = x; this.b = x; } }
 obligation warned { witness Wt; must use; }
 fn f() {
     say b: warned = Wt(1);
@@ -7,7 +7,7 @@ fn f() {
 f(); // expect: other
 
 // @split
-type Wt { pub a; pub b; init(this, *x) { this.a = x; this.b = x; } }
+type Wt { pub a; pub b; init(this, x) { this.a = x; this.b = x; } }
 obligation warned { witness Wt; must use; }
 fn f() {
     say b: warned = Wt(1);

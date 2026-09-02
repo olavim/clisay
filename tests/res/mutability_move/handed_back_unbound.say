@@ -1,8 +1,7 @@
-// Binding is what makes the second name, so a discarded or chained result moves nothing.
 type C {
     pub var v;
     init(this) { this.v = 0; }
-    pub fn set(mut this, *n)! { this.v = n; return this; }
+    pub fn set(mut this, n)! { this.v = n; return this; }
 }
 say a = mut C();
 a.set(1);

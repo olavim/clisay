@@ -219,7 +219,6 @@ enum NarrowFact {
 #[derive(Default, Clone)]
 struct ReceiverFacts {
     mutability: Mutability,
-    writable: bool,
     owed: Obligations,
 }
 

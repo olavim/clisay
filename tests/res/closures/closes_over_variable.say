@@ -1,14 +1,12 @@
 fn getClosure()! {
     say var x = "foo";
-
     fn closure(arg)? {
         fn get()! {
             return x;
         }
-        fn set(*val) {
+        fn set(val) {
             x = val;
         }
-
         if arg == "get" {
             return get;
         } else if arg == "set" {

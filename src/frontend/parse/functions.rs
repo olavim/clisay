@@ -110,27 +110,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     fn at_receiver(&self) -> bool {
-        let mut ahead = 0;
-        if matches!(self.tokens.peek(ahead).kind, TokenType::StarMut | TokenType::Multiply) {
-            ahead += 1;
-        }
-        if self.tokens.peek(ahead).contextual() == Some(ContextualKeyword::Mut) {
-            ahead += 1;
-        }
+        let ahead = usize::from(self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut));
         self.tokens.peek(ahead).kind == TokenType::This
     }
 
     fn parse_capability_prefix(&mut self) -> Capability {
-        if self.tokens.next_if(TokenType::StarMut).is_some() {
-            return Capability::MoveMut;
-        }
-        let takes = self.tokens.next_if(TokenType::Multiply).is_some();
-        let writes = self.take_modifier(ContextualKeyword::Mut);
-        match (takes, writes) {
-            (true, true) => Capability::MoveMut,
-            (true, false) => Capability::Move,
-            (false, true) => Capability::Mut,
-            (false, false) => Capability::None,
+        match self.take_modifier(ContextualKeyword::Mut) {
+            true => Capability::Mut,
+            false => Capability::None,
         }
     }
 

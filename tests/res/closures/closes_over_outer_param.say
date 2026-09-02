@@ -1,9 +1,8 @@
-fn outer(*x) {
+fn outer(x) {
     fn inner() {
         print(x);
     }
     inner();
 }
-
 outer("foo"); // expect: foo
 outer("bar"); // expect: bar

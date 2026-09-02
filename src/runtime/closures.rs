@@ -64,13 +64,12 @@ impl Vm {
         }
 
         let (name, arity, ip_start) = (fn_ref.name, fn_ref.arity, fn_ref.ip_start);
-        let retains = fn_ref.retain_mask;
         let param_accepts = fn_ref.param_accepts;
         let slot_accepts = fn_ref.slot_accepts;
         if self.gc.should_collect() {
             self.start_gc();
         }
-        let closure: Object = self.gc.alloc_closure(name, arity, ip_start, &upvalues, retains, param_accepts, slot_accepts).into();
+        let closure: Object = self.gc.alloc_closure(name, arity, ip_start, &upvalues, param_accepts, slot_accepts).into();
         closure
     }
 

@@ -1,39 +1,39 @@
-type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
+type Point { pub x; pub y; init(this, x, y) { this.x = x; this.y = y; } }
 say p = Point(1, 2);
 say Point { x, y } = p;
 print(x); // expect: 1
 print(y); // expect: 2
 
 // @split
-type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
+type Point { pub x; pub y; init(this, x, y) { this.x = x; this.y = y; } }
 say p = Point(1, 2);
 say var Point { x, y } = p;
 x = 9;
 print(x); // expect: 9
 
 // @split
-type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
+type Point { pub x; pub y; init(this, x, y) { this.x = x; this.y = y; } }
 say p = Point(1, 2);
 say Point { x, y } = p;
 x = 9; // error: Cannot reassign binding `x`
 print(x);
 
 // @split
-type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
+type Point { pub x; pub y; init(this, x, y) { this.x = x; this.y = y; } }
 say p = Point(1, 2);
 say { x, y } = p;
 print(x); // expect: 1
 print(y); // expect: 2
 
 // @split
-type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
+type Point { pub x; pub y; init(this, x, y) { this.x = x; this.y = y; } }
 say p = Point(1, 2);
 say q @ Point { x, y } = p;
 print(q.x); // expect: 1
 print(y); // expect: 2
 
 // @split
-type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
+type Point { pub x; pub y; init(this, x, y) { this.x = x; this.y = y; } }
 say p = Point(1, 2);
 say Point & { x } = p;
 print(x); // expect: 1

@@ -7,15 +7,6 @@ use super::gc::{Gc, GcTraceable};
 use super::host::Host;
 use super::value::{DictKey, Value};
 
-pub fn retained_owed_value(owed: &str) -> String {
-    format!("cannot pass a value owing '{owed}' to a callee that retains it")
-}
-
-#[inline]
-pub fn mask_holds(mask: u64, position: usize) -> bool {
-    position < 64 && mask & (1u64 << position) != 0
-}
-
 #[inline]
 pub fn arguments_may_carry_witness(stack_start: *mut Value, arity: usize) -> bool {
     (0..arity).any(|i| may_carry_witness(unsafe { *stack_start.add(i + 1) }))
@@ -237,22 +228,16 @@ pub struct ObjFn {
     pub name: *mut ObjString,
     pub ip_start: usize,
     pub upvalues: Vec<UpvalueLocation>,
-    pub retain_mask: u64,
 }
 
 impl ObjFn {
-    pub fn retains_at(&self, position: usize) -> bool {
-        mask_holds(self.retain_mask, position)
-    }
-
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, retain_mask: u64, param_accepts: u16, slot_accepts: u16) -> ObjFn {
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, param_accepts: u16, slot_accepts: u16) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
             arity,
             ip_start,
             upvalues,
-            retain_mask,
             param_accepts,
             slot_accepts
         }
@@ -319,14 +304,9 @@ pub struct ObjClosure {
     pub slot_accepts: u16,
     pub name: *mut ObjString,
     pub ip_start: usize,
-    pub retain_mask: u64,
 }
 
 impl ObjClosure {
-    pub fn retains_at(&self, position: usize) -> bool {
-        mask_holds(self.retain_mask, position)
-    }
-
     /// Byte offset of the trailing upvalue array.
     const UPVALUES_OFFSET: usize = mem::size_of::<ObjClosure>();
 

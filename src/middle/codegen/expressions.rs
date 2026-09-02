@@ -475,18 +475,6 @@ impl<'a> Compiler<'a> {
             self.expression(arg)?;
         }
 
-        // An opaque call that must keep an argument asserts the callee borrows it, not consumes it.
-        if let Some(positions) = self.barriers.survive(callee).filter(|_| !self.drop_guards) {
-            let entries = positions.iter()
-                .map(|&(p, _)| (p, self.hir.pos(&args[p as usize]).clone()))
-                .collect();
-            // The obligation rides along so the failure can name what the caller still has to do.
-            let owed: Box<[_]> = positions.iter().map(|&(p, o)| (p, self.hir.text(o).into())).collect();
-            let owed_idx = self.ir.add_owed_names(owed)?;
-            let idx = self.ir.add_survive_positions(entries)?;
-            self.emit(Inst::AssertNoRetain(args.len() as u8, owed_idx, idx), callee);
-        }
-
         let n = args.len() as u8;
         self.emit(match tail {
             true => Inst::TailCall(n),

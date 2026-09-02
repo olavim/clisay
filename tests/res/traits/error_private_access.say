@@ -1,37 +1,27 @@
-// A trait's private member is reachable only from inside its own trait. The resolver scopes
-// each trait body to its own privates (so `this.log` / bare `log` works *inside* Logger), and
-// rejects access from anywhere else. The per-trait slot name `"Logger.log"` is an internal
-// artifact and is never addressable as a member.
-
 trait Logger { fn log(this, m) { print(m); } }
 type Service with Logger { init(this) { this.log("hello"); } } // error: cannot access `this.log` in a factory: `this` is not a value there, only its fields
 
 // @split
-
 trait Logger { fn log(this, m) { print(m); } }
 type Service with Logger { init(this) { log("hello"); } } // error: Member 'log' is private
 
 // @split
-
 trait Logger { fn log(this, m) { print(m); } }
 type Service with Logger { init(this) { this["Logger.log"]("hello"); } } // error: Invalid member access: 'Logger.log' is not a member
 
 // @split
-
 trait Logger { fn log(this, m) { print(m); } }
 type Service with Logger {}
 say s = Service();
 s.log("hello"); // error: Service doesn't have member "log"
 
 // @split
-
 trait Logger { fn log(this, m) { print(m); } }
 type Service with Logger {}
 say s = Service();
 s["log"]("hello"); // error: Service doesn't have member "log"
 
 // @split
-
 trait Logger { fn log(this, m) { print(m); } }
 type Service with Logger {}
 say s = Service();

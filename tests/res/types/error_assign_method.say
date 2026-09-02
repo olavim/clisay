@@ -1,17 +1,13 @@
-// Reads of a method go to the type's method table, so a write into that slot lands where nothing
-// looks. It has to be refused rather than silently discarded.
 type W { init(this) { } pub fn m(this)! { return 1; } pub fn go(this) { this.m = 5; print(this.m); } } // error: Cannot assign to method 'm'
 say w = mut W();
 w.go();
 
 // @split
-// The same write from outside the type.
 type W { init(this) { } pub fn m(this)! { return 1; } }
 say w = mut W();
 w.m = 5; // error: Cannot assign to method 'm'
 
 // @split
-// The dynamic spelling was refused all along, and still is.
 type W { init(this) { } pub fn m(this)! { return 1; } }
 say w = mut W();
 w["m"] = 5; // error: Cannot assign to method 'm'

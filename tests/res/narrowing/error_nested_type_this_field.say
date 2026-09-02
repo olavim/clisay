@@ -1,8 +1,6 @@
-// A `this` field narrowing is keyed by name, and a nested type can declare the same field name.
-// `T.x` is narrowed here, but `K.x` is a different field and keeps what it owes.
 type T {
     x: opt;
-    init(this, *a: opt) { this.x = a; }
+    init(this, a: opt) { this.x = a; }
     pub fn run(this) {
         if (this.x == null) { return; }
         type K {

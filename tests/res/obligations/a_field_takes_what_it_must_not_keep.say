@@ -1,4 +1,4 @@
-type Token { pub v; init(this, *x) { this.v = x; } }
+type Token { pub v; init(this, x) { this.v = x; } }
 type Box { pub var item; }
 obligation parsed { witness Token; discharge to use; }
 say b: parsed = Token(1);

@@ -1,28 +1,23 @@
-// A witnessless obligation names no bad state, so it is not one of the states `??` may have caught.
-type W { pub d; init(this, *d) { this.d = d; } }
+type W { pub d; init(this, d) { this.d = d; } }
 obligation warned { witness W; discharge to use; }
 obligation plain { no persist; }
-
 fn one(x: warned)! { return x ?? e => e.d; }
 fn beside(x: plain warned)! { return x ?? e => e.d; }
-
 print(one(5)); // expect: 5
 print(beside(5)); // expect: 5
 
 // @split
-type W { pub d; init(this, *d) { this.d = d; } }
+type W { pub d; init(this, d) { this.d = d; } }
 obligation warned { witness W; discharge to use; }
-
 fn f(x: opt warned)! {
     return x ?? e => e.d; // error: unchecked value owes 'opt', 'warned'
 }
 
 // @split
-type W { pub d; init(this, *d) { this.d = d; } }
-type V { pub d; init(this, *d) { this.d = d; } }
+type W { pub d; init(this, d) { this.d = d; } }
+type V { pub d; init(this, d) { this.d = d; } }
 obligation warned { witness W; discharge to use; }
 obligation voided { witness V; discharge to use; }
-
 fn f(x: warned voided)! {
     return x ?? e => e.d; // error: unchecked value owes 'voided', 'warned'
 }

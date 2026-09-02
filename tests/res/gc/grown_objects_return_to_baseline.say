@@ -1,13 +1,9 @@
-// An object can grow after it is allocated, so live bytes are counted fresh at each collection.
-// Subtracting what an object reported on the way out counted the growth it never added, which
-// drifted and then underflowed.
 say bytesStart = gcHeapSize();
 { say d = mut { }; d["a"] = 1; d["b"] = 2; d["c"] = 3; }
 gcCollect();
 print(gcHeapSize() - bytesStart); // expect: 0
 
 // @split
-// The drift accumulated across cycles, so many of them must still come back to nothing.
 fn churn(n) {
     say var i = 0;
     while (i < n) {
@@ -23,8 +19,6 @@ gcCollect();
 print(gcHeapSize() - bytesStart); // expect: 0
 
 // @split
-// Under `gcStress` every allocation collects, so the count is remade constantly while instances
-// and dicts are built and read.
 gcStress(true);
 type A { pub alpha; pub beta; init(this) { this.alpha = 1; this.beta = 2; } }
 type B { pub gamma; init(this) { this.gamma = 3; } }

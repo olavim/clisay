@@ -1,56 +1,45 @@
-// Knowing a value's concrete type rules out every witness that type does not provide.
 type A { }
 type Warn { }
 obligation warned { witness Warn; discharge to use; }
 fn src(): warned { return Warn { }; }
-
 say v: warned = src();
 if (v is A) { say y = v; }
 print("ok"); // expect: ok
 
 // @split
-// Testing for the witness itself confirms the bad state rather than clearing it.
 type Warn { }
 obligation warned { witness Warn; discharge to use; }
 fn src(): warned { return Warn { }; }
-
 say v: warned = src();
 if (v is Warn) {
     say y = v; // error: cannot assign a value owing 'warned' to 'y'
 }
 
 // @split
-// A type providing the witness keeps owing it, the same as naming the witness directly.
 trait Wt { }
 type T with Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn src(): warned { return T { }; }
-
 say v: warned = src();
 if (v is T) {
     say y = v; // error: cannot assign a value owing 'warned' to 'y'
 }
 
 // @split
-// A trait test proves only that the value provides the trait. Its concrete type is unknown and may
-// provide the witness too, so nothing is ruled out.
 trait Tr { }
 trait Wt { }
 type Both with Tr, Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn src(): warned { return Both { }; }
-
 say v: warned = src();
 if (v is Tr) {
     say y = v; // error: cannot assign a value owing 'warned' to 'y'
 }
 
 // @split
-// A witnessless obligation is a fact about a slot's history, so no type test rules it out.
 type A { }
 obligation taint { no persist; }
 fn src(): taint { return A { }; }
-
 say v: taint = src();
 if (v is A) {
     say a = [v]; // error: cannot store value owing 'taint' in a container

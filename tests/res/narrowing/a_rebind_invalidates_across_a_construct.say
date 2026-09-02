@@ -1,6 +1,3 @@
-// A construct's tail restore puts the pre-construct narrowings back. A rebind inside the construct
-// invalidated one, and that invalidation has to survive the restore. Each section null-derefs at
-// runtime if it does not.
 fn get(f)? { if (f) { return null; } return "abc"; }
 say var x? = get(false);
 if (x != null) {
@@ -29,8 +26,6 @@ if (x != null) {
 }
 
 // @split
-// A throw leaves the body anywhere, so the catch runs on the very state the body's narrowing said
-// was impossible.
 fn get(f)? { if (f) { return null; } return "abc"; }
 say x? = get(true);
 try {
@@ -42,7 +37,6 @@ try {
 }
 
 // @split
-// A construct that rebinds nothing still hands its narrowing on.
 fn get(f)? { if (f) { return null; } return "abc"; }
 say var x? = get(false);
 say var i = 0;

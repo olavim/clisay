@@ -22,14 +22,6 @@ fn merge_binder_obligations(into: &mut HashMap<Symbol, Obligations>, from: HashM
 }
 
 impl<'a> Ctx<'a> {
-    pub(super) fn obligation_preventing_escape(&self, debt: &Debt) -> Option<Symbol> {
-        let Debt::Owed { obligations, .. } = debt else { return None };
-        obligations.iter().copied().find(|&o| {
-            let rules = self.sigs.obligation_rules_of(o);
-            rules.no_persist || rules.must_use
-        })
-    }
-
     pub(super) fn call_result(&self, callable: CallableId, receiver_tag: &TypeTag) -> ValueState {
         let debt = self.sigs.fn_sig_of(callable).map_or(Debt::Unknown, |s| self.ret_debt(&s.ret));
         let mutability = self.sigs.ret_mut_of_callable(callable);
@@ -447,15 +439,6 @@ impl<'a> Checker<'a> {
         let owed = self.locals[i].owed.clone();
         self.ctx.obligation_rule_reject_at(&Debt::Owed { obligations: owed, definite: false, container: false },
             ObligationRule::NoPersist, Site::Capture, node)
-    }
-
-    pub(super) fn note_opaque_call_args(&mut self, callee: &HirId<HirExpr>, arg_types: &[ValueState]) {
-        let survive: Vec<(u8, Symbol)> = arg_types.iter().enumerate()
-            .filter_map(|(i, state)| self.ctx.obligation_preventing_escape(&state.debt).map(|owed| (i as u8, owed)))
-            .collect();
-        if !survive.is_empty() {
-            self.record_survive_barrier(callee, survive);
-        }
     }
 
     pub(super) fn transfer_obligations_into_receiver(&mut self, receiver: &HirId<HirExpr>, values: &[ValueState]) {

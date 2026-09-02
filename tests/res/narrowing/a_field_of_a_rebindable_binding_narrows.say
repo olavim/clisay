@@ -1,5 +1,3 @@
-// A rebindable binding narrows its field like any other. Nothing between the proof and the use can
-// reach `b`, so refusing this outright refused an obvious program.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -10,7 +8,6 @@ fn run() {
 run();
 
 // @split
-// An immutable binding narrows, which is the control.
 type Box { pub value: opt; }
 fn run() {
     say b = Box { value: "v" };
@@ -21,7 +18,6 @@ fn run() {
 run();
 
 // @split
-// A rebind in the same frame drops the narrowing where it happens.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -33,7 +29,6 @@ fn run() {
 run();
 
 // @split
-// A rebind on one path of a branch drops it for the join.
 type Box { pub value: opt; }
 fn run(k) {
     say var b = Box { value: "v" };

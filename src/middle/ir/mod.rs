@@ -89,7 +89,6 @@ pub enum Inst {
     PopTry,
     AssertNonNull,
     BarrierGuard(u16),
-    AssertNoRetain(u8, u16, u16),
     PopScope(u8, u8),
 
     // Stack / constants
@@ -183,9 +182,6 @@ pub struct Ir {
     fn_entries: Vec<(*mut ObjFn, Label)>,
     /// Brace-construction field-id lists.
     construct_fields: Vec<Vec<u8>>,
-    survive_positions: Vec<Vec<(u8, SourcePosition)>>,
-    /// The obligation a survive barrier's guarded position owes.
-    owed_names: Vec<Box<[(u8, Box<str>)]>>,
     /// Instruction indices of the checks that check-forcing put back.
     /// Empty unless check-forcing is on.
     elisions: Vec<usize>,
@@ -219,8 +215,6 @@ impl Ir {
             labels: Vec::new(),
             fn_entries: Vec::new(),
             construct_fields: Vec::new(),
-            survive_positions: Vec::new(),
-            owed_names: Vec::new(),
             elisions: Vec::new(),
             param_accepts: Vec::new(),
             slot_accepts: Vec::new(),
@@ -238,35 +232,6 @@ impl Ir {
 
     pub fn construct_fields(&self, idx: u16) -> &[u8] {
         &self.construct_fields[idx as usize]
-    }
-
-    /// Records a barrier's guarded argument positions.
-    pub fn add_survive_positions(&mut self, positions: Vec<(u8, SourcePosition)>) -> Result<u16, anyhow::Error> {
-        if self.survive_positions.len() >= u16::MAX as usize {
-            bail!("Too many opaque-call barriers");
-        }
-        self.survive_positions.push(positions);
-        Ok((self.survive_positions.len() - 1) as u16)
-    }
-
-    pub fn survive_positions(&self, idx: u16) -> &[(u8, SourcePosition)] {
-        &self.survive_positions[idx as usize]
-    }
-
-    /// Records the obligations a survive barrier's guarded positions owe.
-    pub fn add_owed_names(&mut self, owed: Box<[(u8, Box<str>)]>) -> Result<u16, anyhow::Error> {
-        if let Some(i) = self.owed_names.iter().position(|o| **o == *owed) {
-            return Ok(i as u16);
-        }
-        if self.owed_names.len() >= u16::MAX as usize {
-            bail!("Too many opaque-call barriers");
-        }
-        self.owed_names.push(owed);
-        Ok((self.owed_names.len() - 1) as u16)
-    }
-
-    pub fn owed_names(&self) -> &[Box<[(u8, Box<str>)]>] {
-        &self.owed_names
     }
 
     /// The index the next emitted instruction will take.
@@ -455,8 +420,6 @@ impl Ir {
             labels,
             fn_entries: self.fn_entries,
             construct_fields: self.construct_fields,
-            survive_positions: self.survive_positions,
-            owed_names: self.owed_names,
             // A rewrite moves instructions, so each marked check follows its own index.
             elisions: self.elisions.iter().map(|&idx| old_to_new[idx]).collect(),
             source_map: self.source_map.iter().map(|(&(idx, role), pos)| ((old_to_new[idx], role), pos.clone())).collect(),

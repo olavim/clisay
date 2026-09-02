@@ -1,4 +1,4 @@
-fn getAdder(*a, *b, *c, *d, *e)! {
+fn getAdder(a, b, c, d, e)! {
     say var sum = 0;
     fn addA()! {
         sum = sum + a;
@@ -22,5 +22,4 @@ fn getAdder(*a, *b, *c, *d, *e)! {
     }
     return addA;
 }
-
 print(getAdder(1, 2, 3, 4, 5)()()()()()); // expect: 15

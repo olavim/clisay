@@ -88,12 +88,6 @@ impl<'a> Shape<'a> {
                         &req.pos, format!("`{trait_name}.{name}` declares a read-only `this`"),
                         format!("drop `mut` from `this` in `{type_name}.{name}`")));
                 }
-                if recv.capability.is_retain() && !hole.capability.is_retain() {
-                    return Err(self.error_ctx_help("receiver asks more than the trait declares",
-                        &sat.sig_pos, format!("`{type_name}.{name}` takes `this` (`*`)"),
-                        &req.pos, format!("`{trait_name}.{name}` only borrows `this`"),
-                        format!("drop `*` from `this` in `{type_name}.{name}`")));
-                }
             }
 
             // A satisfier's parameter must accept at least what the hole passes it.
@@ -107,17 +101,10 @@ impl<'a> Shape<'a> {
                         &req.pos, format!("`{trait_name}.{name}` declares {theirs} parameter")));
                 }
 
-                if hole.clause.capability.is_retain() && !sat_param.clause.capability.is_retain() {
-                    return Err(self.error_ctx_help("parameter is less permissive than the trait requires",
-                        &sat_param.pos, format!("`{type_name}.{name}` only borrows {param} here (`mut`)"),
-                        &hole.pos, format!("`{trait_name}.{name}` requires ownership of {param} (`*mut`)"),
-                        format!("take ownership of {param} to match the trait, by declaring it `*mut`")));
-                }
-
                 if sat_param.clause.capability.is_mut() && !hole.clause.capability.is_mut() {
                     return Err(self.error_ctx_help("parameter asks more than the trait declares",
                         &sat_param.pos, format!("`{type_name}.{name}` needs {param} mutable"),
-                        &hole.pos, format!("`{trait_name}.{name}` only lends {param}"),
+                        &hole.pos, format!("`{trait_name}.{name}` only borrows {param}"),
                         format!("drop `mut` from {param}, or declare the hole `mut {param}`")));
                 }
 

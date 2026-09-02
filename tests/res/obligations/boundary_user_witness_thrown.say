@@ -1,6 +1,4 @@
-// A foreign user witness reaching a clean or `opt` slot through the dynamic boundary is thrown,
-// not laundered as clean/`opt`.
-type Token { pub v; init(this, *x) { this.v = x; } }
+type Token { pub v; init(this, x) { this.v = x; } }
 obligation parsed { witness Token; discharge to use; }
 say bag = [Token(1)];
 try {

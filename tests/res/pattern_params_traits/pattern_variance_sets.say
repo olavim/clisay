@@ -1,6 +1,5 @@
-type P { pub v; init(this, *v) { this.v = v; } }
-type Q { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P | Q); }
 type Half with Mover {
     init(this) { }
@@ -8,9 +7,8 @@ type Half with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-type Q { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P | Q)!; }
 type Swapped with Mover {
     init(this) { }
@@ -19,8 +17,7 @@ type Swapped with Mover {
 print(Swapped().onMove(P(1))); // expect: took
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P); }
 type Literal with Mover {
     init(this) { }
@@ -28,9 +25,8 @@ type Literal with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-type Q { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, a @ P, b); }
 type Mixed with Mover {
     init(this) { }
@@ -45,8 +41,7 @@ type Structural with Shaped {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P)!; }
 type Wild with Mover {
     init(this) { }
@@ -55,9 +50,8 @@ type Wild with Mover {
 print(Wild().onMove(P(1))); // expect: took
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-type Q { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P | Q | null); }
 type NoNull with Mover {
     init(this) { }
@@ -65,9 +59,8 @@ type NoNull with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-type Q { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P | Q)!; }
 type WithNull with Mover {
     init(this) { }
@@ -76,8 +69,7 @@ type WithNull with Mover {
 print(WithNull().onMove(P(1))); // expect: took
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ null); }
 type Typed with Mover {
     init(this) { }
@@ -85,10 +77,9 @@ type Typed with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-type Q { pub v; init(this, *v) { this.v = v; } }
-type R { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
+type R { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P | Q | R); }
 type Two with Mover {
     init(this) { }
@@ -96,10 +87,9 @@ type Two with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-type Q { pub v; init(this, *v) { this.v = v; } }
-type R { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
+type R { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P | Q)!; }
 type Three with Mover {
     init(this) { }
@@ -108,8 +98,7 @@ type Three with Mover {
 print(Three().onMove(Q(1))); // expect: took
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P)!; }
 type Mixed with Mover {
     init(this) { }

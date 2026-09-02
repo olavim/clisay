@@ -78,7 +78,7 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn this_is_writable(&self) -> bool {
-        self.checking_factory || self.fn_ctx.receiver.writable
+        self.checking_factory || self.fn_ctx.receiver.mutability == Mutability::Mutable
     }
 
     pub(super) fn is_readonly(&self, target: &HirId<HirExpr>) -> bool {

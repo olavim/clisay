@@ -1,17 +1,13 @@
-// Admitting a member implies finding it, but failing to admit does not imply failing to find, so a
-// surface arm cannot delete a shape arm from the path where the surface test failed.
-type T { pub x; init(this, *a) { this.x = a; } }
+type T { pub x; init(this, a) { this.x = a; } }
 say d = mut { "x": null };
 match d { has T => print("surface"), { x } => print("shape"), _ => print("none") } // expect: shape
 
 // @split
-// The reverse order was always right and still is.
-type T { pub x; init(this, *a) { this.x = a; } }
+type T { pub x; init(this, a) { this.x = a; } }
 say d = mut { "x": null };
 match d { { x } => print("shape"), has T => print("surface"), _ => print("none") } // expect: shape
 
 // @split
-// A value with neither takes the wildcard.
-type T { pub x; init(this, *a) { this.x = a; } }
+type T { pub x; init(this, a) { this.x = a; } }
 say d = mut { };
 match d { has T => print("surface"), { x } => print("shape"), _ => print("none") } // expect: none

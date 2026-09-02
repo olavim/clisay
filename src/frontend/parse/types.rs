@@ -290,7 +290,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// implementation, and this is what the passes that read a factory's signature read.
     fn declare_err_init(&mut self, init_name: Symbol, value: Symbol, pos: &SourcePosition) -> AstId<Stmt> {
         let pattern = self.ast.add_matcher(Matcher::Binder(value), pos.clone());
-        let clause = SlotClause { capability: Capability::Move, ..SlotClause::default() };
+        let clause = SlotClause::default();
         let param = Param { pattern, pos: pos.clone(), nullable: false, reassignable: false, clause };
 
         let this = self.ast.add_expr(Expr::This, pos.clone());

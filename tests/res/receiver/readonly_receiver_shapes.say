@@ -1,5 +1,3 @@
-// Every way of mutating through the receiver needs the method to declare `this: mut`, not just a
-// direct field assignment.
 type T { pub var n; init(this) { this.n = 0; } pub fn f(this) { this.n = 1; } } // error: cannot assign `T.n` through a read-only receiver
 
 // @split
@@ -14,14 +12,12 @@ type I { pub var v; init(this) { this.v = 0; } }
 type T { pub inner; init(this) { this.inner = mut I(); } pub fn f(this) { this.inner.v = 1; } } // error: cannot mutate through a read-only receiver
 
 // @split
-// Naming a member is not calling it, so taking `t.set` is allowed whatever the receiver is.
-type T { pub var x?; pub fn set(mut this, *v) { this.x = v; } }
+type T { pub var x?; pub fn set(mut this, v) { this.x = v; } }
 say t = T {};
 say f = t.set;
 print("named"); // expect: named
 
 // @split
-// The same program with a mutable receiver runs, so the rule refuses only what it should.
 fn take(mut a) { a.push(1); }
 type I { pub var v; init(this) { this.v = 0; } }
 type T {
@@ -36,7 +32,6 @@ print(t.arr[0]); // expect: 2
 print(t.inner.v); // expect: 4
 
 // @split
-// A factory builds the instance, so its own writes are not receiver mutations.
 type T { pub arr; init(this) { this.arr = mut []; this.arr.push(9); this.arr[0] = 8; } }
 say t = mut T();
 print(t.arr[0]); // expect: 8

@@ -43,7 +43,6 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     chunk.slot_accepts = ir.slot_accepts().iter()
         .map(|body| body.iter().map(|e| SlotAccepts { from: offsets[e.from], to: if e.to == TO_FRAME_END { TO_FRAME_END } else { offsets[e.to] }, ..*e }).collect())
         .collect();
-    chunk.owed_names = ir.owed_names().to_vec();
     chunk.constants = ir.constants().to_vec();
     chunk.elisions = ir.elisions().iter().map(|&idx| offsets[idx]).collect();
     for (&(idx, role), pos) in ir.source_map() {
@@ -58,14 +57,6 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     chunk.builtin_layouts = ir.into_builtin_layouts();
 
     Ok(chunk)
-}
-
-fn write_positions(ir: &Ir, chunk: &mut BytecodeChunk, idx: u16, pos: &SourcePosition) {
-    let positions = ir.survive_positions(idx);
-    chunk.write(positions.len() as u8, pos);
-    for (p, arg_pos) in positions {
-        chunk.write(*p, arg_pos);
-    }
 }
 
 fn write_u16(chunk: &mut BytecodeChunk, value: u16, pos: &SourcePosition) {
@@ -83,8 +74,7 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
             Some(sz) => len += sz,
             None => match *inst {
                 Inst::Construct(fields_idx) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
-                Inst::AssertNoRetain(_, _, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
-                _ => unreachable!("only Construct and AssertNoRetain have a List operand"),
+                _ => unreachable!("only Construct has a List operand"),
             },
         }
     }
@@ -161,12 +151,6 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         ArrayMiddle(a, b) | ArrayElem(a, b) => {
             chunk.write(a, pos);
             chunk.write(b, pos);
-        }
-
-        AssertNoRetain(arg_count, owed_idx, idx) => {
-            chunk.write(arg_count, pos);
-            write_u16(chunk, owed_idx, pos);
-            write_positions(ir, chunk, idx, pos);
         }
 
         InvokeThis(member, arg_count) => {

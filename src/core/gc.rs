@@ -122,7 +122,6 @@ impl Gc {
         arity: u8,
         ip_start: usize,
         upvalues: &[*mut ObjUpvalue],
-        retains: u64,
         param_accepts: u16,
         slot_accepts: u16
     ) -> *mut ObjClosure {
@@ -134,7 +133,6 @@ impl Gc {
         unsafe {
             std::ptr::write(closure_ptr, ObjClosure {
                 header: ObjectHeader::new(ObjectKind::Closure),
-                retain_mask: retains,
                 name,
                 arity,
                 upvalue_count: count as u8,

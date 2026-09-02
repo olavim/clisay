@@ -1,20 +1,20 @@
-type P { pub x; pub fn get(this) { return this.x; } init(this, *x) { this.x = x; } }
+type P { pub x; pub fn get(this) { return this.x; } init(this, x) { this.x = x; } }
 say p = P(1);
 print(p.x); // expect: 1
 print(p.get()); // expect: 1
 print(p["x"]); // expect: 1
 
 // @split
-type P { pub x; init(this, *x) { this.x = x; } }
+type P { pub x; init(this, x) { this.x = x; } }
 say p = P(1);
 print(p.y); // error: P doesn't have member "y"
 
 // @split
-type P { pub x; init(this, *x) { this.x = x; } }
+type P { pub x; init(this, x) { this.x = x; } }
 say p = P(1);
 p.zap(); // error: P doesn't have member "zap"
 
 // @split
-type P { pub x; init(this, *x) { this.x = x; } }
+type P { pub x; init(this, x) { this.x = x; } }
 say p = P(1);
 print(p["y"]); // error: P doesn't have member "y"

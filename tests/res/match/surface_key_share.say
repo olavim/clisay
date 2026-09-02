@@ -1,4 +1,4 @@
-type T { pub x; init(this, *a) { this.x = a; } }
+type T { pub x; init(this, a) { this.x = a; } }
 say t = T(1);
 match t {
     { x } => 0,

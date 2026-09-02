@@ -1,13 +1,10 @@
-// `pub` members are externally accessible (read, write, call). A private member
-// is reachable from the type's own methods via `this`.
 type Point {
     pub var x;
     pub y;
     secret = 99; // private by default
     pub fn sum(this)! { return this.x + this.y + this.secret; } // reads private via this
-    init(this, *x, *y) { this.x = x; this.y = y; }
+    init(this, x, y) { this.x = x; this.y = y; }
 }
-
 say p = mut Point(3, 4);
 print(p.x); // expect: 3
 print(p.y); // expect: 4

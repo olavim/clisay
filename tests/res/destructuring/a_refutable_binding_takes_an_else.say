@@ -4,7 +4,6 @@ fn head(xs) {
 }
 print(head([1, 2, 3])); // expect: 3
 print(head([])); // expect: empty
-
 fn first(xs) {
   say [a] = xs else { throw "not one"; };
   return a;
@@ -12,7 +11,7 @@ fn first(xs) {
 print(first([7])); // expect: 7
 
 // @split
-type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
+type Point { pub x; pub y; init(this, x, y) { this.x = x; this.y = y; } }
 say p = Point(4, 5);
 say Point { x, y } = p;
 print(x + y); // expect: 9

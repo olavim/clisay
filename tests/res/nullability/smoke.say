@@ -1,23 +1,18 @@
-// An annotated program run with the check pass enabled. Phase one collects its signatures.
-// Nothing is enforced yet, so it runs to completion.
 type Box {
     pub var value;
-    init(this, *v) {
+    init(this, v) {
         value = v;
     }
     pub fn get(this)! {
         return this.value;
     }
 }
-
-fn makeBox(*v)!: mut {
+fn makeBox(v)!: mut {
     return mut Box(v);
 }
-
 fn describe(b?)! {
     return "a box";
 }
-
 say b = makeBox(10);
 b.value = 20;
 print(b.get()); // expect: 20

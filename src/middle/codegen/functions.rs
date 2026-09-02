@@ -8,12 +8,6 @@ use crate::middle::bind::FnKind;
 
 use super::Compiler;
 
-fn declared_retains(decl: &HirFnDecl) -> u64 {
-    decl.params.iter().take(64).enumerate()
-        .filter(|(_, p)| p.clause.capability.is_retain())
-        .fold(0u64, |bits, (i, _)| bits | (1u64 << i))
-}
-
 impl<'a> Compiler<'a> {
     fn compile_pattern_param_checks(&mut self, params: &[HirParam]) -> Result<(), anyhow::Error> {
         for param in params {
@@ -99,7 +93,7 @@ impl<'a> Compiler<'a> {
             .collect();
 
         let param_accepts = self.param_accepts(callable)?;
-        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, declared_retains(decl), param_accepts, slot_accepts));
+        let func = self.gc.alloc(ObjFn::new(name, arity, 0, upvalues, param_accepts, slot_accepts));
         self.ir.record_fn_entry(func, body);
 
         self.ir.add_constant(Value::from(func))

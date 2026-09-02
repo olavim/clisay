@@ -1,4 +1,3 @@
-// A safe call runs the same body a plain call does, so it invalidates the same way.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -11,7 +10,6 @@ fn run() {
 run();
 
 // @split
-// A rebind replaces the whole value, so the binding's own non-null proof goes with its fields.
 fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
 fn run(k) {
     say var a: opt = maybe(k);
@@ -24,8 +22,6 @@ fn run(k) {
 run(2);
 
 // @split
-// A condition can hold a lambda with a condition of its own, and the inner walk must not discard
-// what the outer one recorded.
 type Box { pub value: opt; }
 fn tick(g)! { return g(); }
 fn run() {
@@ -39,8 +35,6 @@ fn run() {
 run();
 
 // @split
-// An immutable binding cannot be rebound, so no call touches its narrowing however many other
-// bindings share its name.
 type Box { pub value: opt; }
 fn other() { say var b = Box { value: "x" }; say f = () => { b = Box { value: null }; return 1; }; f(); }
 fn run() {
@@ -53,8 +47,6 @@ fn run() {
 run();
 
 // @split
-// A function declared outside the calling frame is still a user body. Only a built-in is exempt,
-// and a name being absent from the frame is not what makes it one.
 type Box { pub value: opt; }
 fn helper() { print("h"); }
 fn run() {
@@ -68,8 +60,6 @@ fn run() {
 run();
 
 // @split
-// Only a binding some nested body captures can be rebound by a call. Another function's binding of
-// the same name is a different binding, and nothing here can reach it.
 type T { pub value: opt; }
 fn other() { say var x = T { value: "o" }; say f = () => { x = T { value: null }; return 1; }; f(); }
 fn harmless()! { return 1; }
@@ -83,7 +73,6 @@ fn run() {
 run();
 
 // @split
-// The same binding once something does capture it, which is what makes the call reach it.
 type T { pub value: opt; }
 fn harmless()! { return 1; }
 fn run() {
@@ -97,8 +86,6 @@ fn run() {
 run();
 
 // @split
-// A parameter is a binding a nested body can capture, so it answers the same way. Capture is what
-// puts it in reach; the closure here only reads it.
 fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
 fn other() { say var p = 1; say g = () => { p = 2; return 1; }; g(); }
 fn helper()! { return 1; }
@@ -112,7 +99,6 @@ fn run(p: opt) {
 run(maybe(2));
 
 // @split
-// The same parameter with nothing capturing it keeps its narrowing.
 fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
 fn other() { say var p = 1; say g = () => { p = 2; return 1; }; g(); }
 fn helper()! { return 1; }
@@ -125,7 +111,6 @@ fn run(p: opt) {
 run(maybe(2));
 
 // @split
-// A match binder is a binding like any other, so an uncaptured one keeps its narrowing.
 fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
 fn other() { say var v = 1; say g = () => { v = 2; return 1; }; g(); }
 fn helper()! { return 1; }
@@ -142,8 +127,6 @@ fn run(k) {
 run(2);
 
 // @split
-// The same binder once something captures it. A binder is never reassignable itself, so the
-// capture is what puts it in reach of a name another body rebinds.
 fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
 fn other() { say var v = 1; say g = () => { v = 2; return 1; }; g(); }
 fn helper()! { return 1; }
@@ -161,7 +144,6 @@ fn run(k) {
 run(2);
 
 // @split
-// A built-in runs no user body, so calling one rebinds nothing.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };

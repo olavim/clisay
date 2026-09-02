@@ -24,7 +24,7 @@ fn takes(x) { print(x); }
 takes(d["a"]); // error: unexpected null
 
 // @split
-type T { pub var v; init(this) { this.v = 1; } pub fn set(mut this, *x) { this.v = x; } }
+type T { pub var v; init(this) { this.v = 1; } pub fn set(mut this, x) { this.v = x; } }
 say d = { a: null };
 say t = mut T();
 t.set(d["a"]); // error: unexpected null

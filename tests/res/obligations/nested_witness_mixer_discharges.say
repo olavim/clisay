@@ -1,23 +1,17 @@
-// A witness is declared at top level, so what a program must name to discharge is always in scope.
-// The concrete type carrying the debt need not be: a nested mixer discharges from outside.
 trait Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn f(): warned { type Inner with Wt { pub x; init(this) { this.x = 1; } } return Inner(); }
-
 say v: warned = f();
 print(v ?? "handled"); // expect: handled
 
 // @split
-// The same through the test that names only the witness.
 trait Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn f(): warned { type Inner with Wt { pub x; init(this) { this.x = 1; } } return Inner(); }
-
 say v: warned = f();
 if (v ~ Wt) { print("is the witness"); } // expect: is the witness
 else { say y = v; print("discharged"); }
 
 // @split
-// A type that is not a witness stays nestable, and needs no name outside.
 fn f()! { type Local { pub x; init(this) { this.x = 7; } } return Local(); }
 print(f().x); // expect: 7

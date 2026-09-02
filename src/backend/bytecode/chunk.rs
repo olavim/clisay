@@ -25,8 +25,6 @@ pub struct BytecodeChunk {
     /// What each callable's parameters accept, by position, as witness-pool indices.
     pub param_accepts: Vec<Box<[u16]>>,
     pub slot_accepts: Vec<Box<[SlotAccepts]>>,
-    /// The obligation each survive barrier's guarded positions owe, by pool index.
-    pub owed_names: Vec<Box<[(u8, Box<str>)]>>,
     pub code: Vec<OpCode>,
     pub constants: Vec<Value>,
     /// One source position per code byte.
@@ -46,7 +44,6 @@ impl BytecodeChunk {
             witness_allows: Vec::new(),
             param_accepts: Vec::new(),
             slot_accepts: Vec::new(),
-            owed_names: Vec::new(),
             code: Vec::new(),
             constants: Vec::new(),
             code_pos: Vec::new(),

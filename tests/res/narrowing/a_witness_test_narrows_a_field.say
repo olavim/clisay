@@ -1,8 +1,6 @@
-// A test on a field rules out its witnesses, the same as a test on a local.
 type W { }
 obligation warned { witness W; discharge to use; }
-type Box { pub d: warned; init(this, *d: warned) { this.d = d; } }
-
+type Box { pub d: warned; init(this, d: warned) { this.d = d; } }
 say b = Box(5);
 if (!(b.d ~ W)) { say y = b.d; print("clean"); } // expect: clean
 
@@ -11,7 +9,7 @@ type W { }
 obligation warned { witness W; discharge to use; }
 type Box {
     pub d: warned;
-    init(this, *d: warned) { this.d = d; }
+    init(this, d: warned) { this.d = d; }
     pub fn check(this)! {
         if (!(this.d ~ W)) { say y = this.d; return 1; }
         return 0;
@@ -22,8 +20,7 @@ print(Box(5).check()); // expect: 1
 // @split
 type W { }
 obligation warned { witness W; discharge to use; }
-type Box { pub d: warned; init(this, *d: warned) { this.d = d; } }
-
+type Box { pub d: warned; init(this, d: warned) { this.d = d; } }
 say b = Box(5);
 if (b.d ~ W) {
     say y = b.d; // error: cannot assign a value owing 'warned' to 'y'
@@ -32,16 +29,14 @@ if (b.d ~ W) {
 // @split
 type W { }
 obligation warned { witness W; discharge to use; }
-type Box { pub d: warned; init(this, *d: warned) { this.d = d; } }
-
+type Box { pub d: warned; init(this, d: warned) { this.d = d; } }
 say b = Box(5);
 if (b.d == 5) { say y = b.d; print("five"); } // expect: five
 
 // @split
 type W { }
 obligation warned { witness W; discharge to use; }
-type Box { pub var d: warned; init(this, *d: warned) { this.d = d; } }
-
+type Box { pub var d: warned; init(this, d: warned) { this.d = d; } }
 say b = Box(5);
 if (!(b.d ~ W)) {
     say y = b.d; // error: cannot assign a value owing 'warned' to 'y'
@@ -50,8 +45,7 @@ if (!(b.d ~ W)) {
 // @split
 type A { }
 obligation held { no return; }
-type Box { pub d: held; init(this, *d: held) { this.d = d; } }
-
+type Box { pub d: held; init(this, d: held) { this.d = d; } }
 say b = Box(1);
 if (!(b.d ~ A)) {
     say y = b.d; // error: cannot assign a value owing 'held' to 'y'

@@ -1,4 +1,3 @@
-// A call on `this` uses static member resolution. This can resolve to a method,
 //a captured method, or any field value.
 type Counter {
     var n;
@@ -9,7 +8,6 @@ type Counter {
     pub fn read(this)! { return this.n; }
     pub fn viaField(this)! { return this.cb(); }
 }
-
 say c = mut Counter();
 c.twice();
 print(c.read()); // expect: 2
@@ -26,7 +24,6 @@ fn make(base)! {
     }
     return mut Adder();
 }
-
 say a = make(10);
 a.addTwice(1);
 print(a.sum()); // expect: 22
@@ -35,10 +32,9 @@ print(a.sum()); // expect: 22
 type Box {
     pub var items;
     init(this) { this.items = mut []; }
-    pub fn keep(mut this, *mut v) { this.items.push(v); }
-    pub fn keepTwice(mut this, *mut v) { this.keep(v); }
+    pub fn keep(mut this, mut v) { this.items.push(v); }
+    pub fn keepTwice(mut this, mut v) { this.keep(v); }
 }
-
 say b = mut Box();
 say thing = mut [1];
 b.keepTwice(thing);

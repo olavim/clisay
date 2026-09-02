@@ -1,18 +1,16 @@
-type Point { pub x; init(this, *x) { this.x = x; } }
-
+type Point { pub x; init(this, x) { this.x = x; } }
 fn f(x @ is Point) { }
-
 // error(full):
 // error: redundant `is`
-//  --> pattern_param_rejections.say:3:10
+//  --> pattern_param_rejections.say:2:10
 //   |
-// 3 | fn f(x @ is Point) { }
+// 1 | type Point { pub x; init(this, x) { this.x = x; } }
+// 2 | fn f(x @ is Point) { }
 //   |          ^^
 //   = help: a bare type name is already the test here
 
 // @split
 fn f(x @ Foo) { }
-
 // error(full):
 // error: 'Foo' is not a type or trait
 //  --> pattern_param_rejections.say:1:10
@@ -24,9 +22,7 @@ fn f(x @ Foo) { }
 fn ranked(n @ 1 | 2 | 3) {
     print(n);
 }
-
 ranked(9);
-
 // error(full):
 // error: Uncaught exception: "argument does not match `n @ 1 | 2 | 3`"
 //  --> pattern_param_rejections.say:1:11
@@ -34,4 +30,4 @@ ranked(9);
 // 1 | fn ranked(n @ 1 | 2 | 3) {
 //   |           ^^^^^^^^^^^^^
 // 	at ranked (pattern_param_rejections.say:1)
-// 	at script (pattern_param_rejections.say:5)
+// 	at script (pattern_param_rejections.say:4)

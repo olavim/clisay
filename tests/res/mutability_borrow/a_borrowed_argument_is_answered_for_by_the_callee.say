@@ -1,5 +1,3 @@
-// The routes a forced borrow claim watches, each on a program that must keep running: a container
-// the callee builds and drops, a closure it drops, a forward, and a declared hand-over.
 fn wraps(v)! {
     say held = mut [v];
     return held[0][0];
@@ -10,7 +8,6 @@ a[0] = 9;
 print(a[0]); // expect: 9
 
 // @split
-// A closure over the argument dies with the call that made it.
 fn peeks(v)! {
     say cb = () => v[0];
     return cb();
@@ -19,7 +16,6 @@ say a = mut [2];
 print(peeks(a)); // expect: 2
 
 // @split
-// A forward keeps nothing when the callee it forwards to keeps nothing.
 fn inner(y) { say c = mut []; c.push(y); }
 fn outer(x) { inner(x); }
 say a = mut [3];
@@ -28,9 +24,8 @@ a[0] = 4;
 print(a[0]); // expect: 4
 
 // @split
-// A `*` hands the argument over, so there is no borrow claim left to answer for.
 say var kept? = null;
-fn takes(*x) { kept = x; }
+fn takes(x) { kept = x; }
 say a = mut [5];
 takes(a);
 print(kept![0]); // expect: 5

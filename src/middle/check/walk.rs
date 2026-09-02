@@ -304,9 +304,6 @@ impl<'a> Checker<'a> {
                 self.ctx.require_witnessed_operand(&callee.debt, callee_id)?;
                 let arg_types: Vec<ValueState> = args.iter().map(|a| self.expr(a)).collect::<Result<_, _>>()?;
                 let resolved = self.resolved_call(callee_id, args, &arg_types)?;
-                if resolved.is_none() {
-                    self.note_opaque_call_args(callee_id, &arg_types);
-                }
                 self.invalidate_rebound_bindings(callee_id);
                 let yielded = resolved.map_or(Debt::Clean, |state| state.debt);
                 self.chain_result_with(&callee.debt, &yielded, expr)
@@ -699,7 +696,6 @@ impl<'a> Checker<'a> {
             Some(_) if self.checking_factory => ReceiverFacts::default(),
             Some(clause) => ReceiverFacts {
                 mutability: Mutability::of(clause.capability),
-                writable: clause.capability.is_mut(),
                 owed: clause.owed(),
             },
             None => self.fn_ctx.receiver.clone(),
@@ -711,10 +707,7 @@ impl<'a> Checker<'a> {
 
         match self.resolved_call(callee, args, &arg_types)? {
             Some(state) => Ok(state),
-            None => {
-                self.note_opaque_call_args(callee, &arg_types);
-                self.indirect_call(callee)
-            },
+            None => self.indirect_call(callee)
         }
     }
 

@@ -1,9 +1,7 @@
-// A bare type matcher is the `is` test written another way, so the two rule out the same witnesses.
 type A { } type B { }
 type Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn src(): warned { return Wt { }; }
-
 say v: warned = src();
 if (v is B) { say y = v; }
 say w: warned = src();
@@ -11,12 +9,10 @@ if (w ~ B) { say z = w; }
 print("ok"); // expect: ok
 
 // @split
-// An or-matcher rules a witness out only when every alternative does.
 type A { } type B { }
 type Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn src(): warned { return Wt { }; }
-
 say v: warned = src();
 if (v ~ A | B) { say y = v; }
 print("ok"); // expect: ok
@@ -26,54 +22,43 @@ type A { }
 type Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn src(): warned { return Wt { }; }
-
 say v: warned = src();
 if (v ~ A | Wt) {
     say y = v; // error: cannot assign a value owing 'warned' to 'y'
 }
 
 // @split
-// Matching the witness confirms the bad state rather than clearing it.
 type Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn src(): warned { return Wt { }; }
-
 say v: warned = src();
 if (v ~ Wt) {
     say y = v; // error: cannot assign a value owing 'warned' to 'y'
 }
 
 // @split
-// A trait matcher leaves the concrete type open, so another type providing it may carry the
-// witness too.
 trait Tr { }
 trait Wt { }
 type Both with Tr, Wt { }
 obligation warned { witness Wt; discharge to use; }
 fn src(): warned { return Both { }; }
-
 say v: warned = src();
 if (v ~ Tr) {
     say y = v; // error: cannot assign a value owing 'warned' to 'y'
 }
 
 // @split
-// A shape matches any instance declaring those members, so it rules nothing out. The non-null
-// narrowing it already gave is unaffected.
 type Wt { pub x; init(this) { this.x = 1; } }
 obligation warned { witness Wt; discharge to use; }
 fn src(): warned { return Wt(); }
-
 say v: warned = src();
 if (v ~ { x: _ }) {
     say y = v; // error: cannot assign a value owing 'warned' to 'y'
 }
 
 // @split
-// The non-null half of a positive match is unchanged.
 type B { pub x; init(this) { this.x = 1; } }
 fn maybe(): opt { return null; }
-
 say v: opt = maybe();
 if (v ~ B) { say y = v; }
 say w: opt = maybe();

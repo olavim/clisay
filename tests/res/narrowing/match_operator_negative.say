@@ -1,11 +1,9 @@
-// A failed `~` rules out every witness its matcher covers, the same flip `is` gets.
 fn src(): fails { return Err("x"); }
 say v: fails = src();
 if (!(v ~ Err)) { say y = v; }
 print("ok"); // expect: ok
 
 // @split
-// The true branch proves the value IS the witness, so it still owes.
 fn src(): fails { return Err("x"); }
 say v: fails = src();
 if (v ~ Err) {
@@ -13,7 +11,6 @@ if (v ~ Err) {
 }
 
 // @split
-// Polarity composes, so a doubled negation is the positive test again.
 fn src(): fails { return Err("x"); }
 say v: fails = src();
 if (!!(v ~ Err)) {
@@ -21,7 +18,6 @@ if (!!(v ~ Err)) {
 }
 
 // @split
-// A matcher may cover several witnesses at once, which `is` cannot spell.
 type Warn { }
 obligation warned { witness Warn; discharge to use; }
 fn src(): fails warned { return Err("x"); }
@@ -30,7 +26,6 @@ if (!(v ~ Err | Warn)) { say y = v; }
 print("ok"); // expect: ok
 
 // @split
-// Ruling out one leaves the other owed.
 type Warn { }
 obligation warned { witness Warn; discharge to use; }
 fn src(): fails warned { return Err("x"); }
@@ -40,8 +35,6 @@ if (!(v ~ Err)) {
 }
 
 // @split
-// The negative direction stays exact. `T` is one of several types providing `W`, so failing the
-// `T` test says nothing about `W`.
 trait W { }
 type T with W { }
 type U with W { }
@@ -53,7 +46,6 @@ if (!(v ~ T)) {
 }
 
 // @split
-// Naming the witness itself does rule it out.
 trait W { }
 type T with W { }
 obligation obl { witness W; discharge to use; }

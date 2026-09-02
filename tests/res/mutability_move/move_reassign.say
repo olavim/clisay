@@ -1,5 +1,4 @@
-// Rebinding a moved slot installs a fresh value, so the earlier move no longer bars a read.
-fn consume(*mut xs) { }
+fn consume(mut xs) { }
 say var a = mut [1];
 consume(a);
 a = mut [2];

@@ -1,7 +1,6 @@
-// `init` is not a callable member on a constructed instance.
 type T {
     pub v;
-    init(this, *v) { this.v = v; }
+    init(this, v) { this.v = v; }
 }
 say t = T(5);
 print(t.v); // expect: 5
@@ -9,7 +8,7 @@ print(t.v); // expect: 5
 // @split
 type T {
     pub v;
-    init(this, *v) { this.v = v; }
+    init(this, v) { this.v = v; }
 }
 say t = T(5);
 t.init(9); // error: T doesn't have member "init"

@@ -1,7 +1,4 @@
-// A destructure beside a bindingless witness binds the destructured name owing the witness's
-// obligation: `| null` leaves `next` owing `opt`, `| Err` leaves it owing `fails`.
-type Node { pub next; init(this, *n) { this.next = n; } }
-
+type Node { pub next; init(this, n) { this.next = n; } }
 fn nullable(v: opt) {
     match v {
         Node { next } | null => print(next ?? 0),
@@ -10,7 +7,6 @@ fn nullable(v: opt) {
 }
 nullable(Node(5)); // expect: 5
 nullable(null); // expect: 0
-
 fn fallible(v) {
     match v {
         Node { next } | Err => print(next ?? -1),

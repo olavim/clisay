@@ -121,7 +121,6 @@ fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
         opcode::ASSERT_NON_NULL => vm.op_assert_non_null()?,
         opcode::DUP2 => vm.op_dup2(),
         opcode::BARRIER_GUARD => vm.op_barrier_guard()?,
-        opcode::ASSERT_NO_RETAIN => vm.op_assert_no_retain()?,
         opcode::POP_SCOPE => vm.op_pop_scope(),
         opcode::CLOSE_UPVALUE => vm.op_close_upvalue(),
         opcode::CLOSE_SLOT_UPVALUE => vm.op_close_slot_upvalue(),

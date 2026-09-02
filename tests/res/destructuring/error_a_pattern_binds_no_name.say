@@ -1,4 +1,4 @@
-type Point { pub x; pub y; init(this, *x, *y) { this.x = x; this.y = y; } }
+type Point { pub x; pub y; init(this, x, y) { this.x = x; this.y = y; } }
 say p = Point(1, 2);
 say has Point = p; // error: This pattern binds no name
 print(1);

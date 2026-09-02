@@ -1,4 +1,3 @@
-// A trait mixing the witness provides it too.
 trait Wt { }
 trait Outer with Wt { }
 obligation warned { witness Wt; discharge to use; }
@@ -7,7 +6,6 @@ fn f(): warned { return T(); }
 fn viaOuter(p @ Outer | null)! { return p.x; } // error: unchecked value owes 'opt', 'warned'
 
 // @split
-// Examining it through the outer name settles it, since that name reaches the witness.
 trait Wt { }
 trait Outer with Wt { }
 obligation warned { witness Wt; discharge to use; }
@@ -18,7 +16,6 @@ if (v ~ Outer) { print("matched"); } // expect: matched
 print("end"); // expect: end
 
 // @split
-// The runtime test agrees with what the compiler read: the value matches both names.
 trait Wt { }
 trait Outer with Wt { }
 obligation warned { witness Wt; discharge to use; }

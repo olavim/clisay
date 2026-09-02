@@ -1,28 +1,22 @@
-// A match narrows the scrutinee non-null: a shape or type match, an or-matcher when every branch
-// narrows, and an and-matcher when either side does. The narrowed value flows into a non-null slot.
-type P { pub n; init(this, *a) { this.n = a; } }
-
+type P { pub n; init(this, a) { this.n = a; } }
 fn viaShape(v?) {
     if v ~ { k } {
         say g = v;
         print("shape");
     }
 }
-
 fn viaOr(v?) {
     if v ~ { a: _ } | { b: _ } {
         say g = v;
         print("or");
     }
 }
-
 fn viaAnd(p?) {
     if p ~ P & { n } {
         say g = p;
         print(g.n);
     }
 }
-
 viaShape({ k: 1 }); // expect: shape
 viaOr({ a: 1 }); // expect: or
 viaOr({ b: 2 }); // expect: or

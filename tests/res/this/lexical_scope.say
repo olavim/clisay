@@ -1,17 +1,12 @@
-// A parameter shadows a same-named member for bare access, while `this.x` always names
-// the member. (`this` member access is resolved statically, independent of locals.)
 type A {
     pub x;
-
-    init(this, *v) {
+    init(this, v) {
         this.x = v;
     }
-
     pub fn withParam(this, x)! {
         return this.x + "/" + x;
     }
 }
-
 say a = A("member");
 print(a.withParam("param")); // expect: member/param
 print(a.x);                  // expect: member

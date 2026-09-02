@@ -1,5 +1,4 @@
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P)!; }
 type Binds with Mover {
     init(this) { }
@@ -8,8 +7,7 @@ type Binds with Mover {
 print(Binds().onMove(P(5))); // expect: 5
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P); }
 type Tests with Mover {
     init(this) { }
@@ -17,8 +15,7 @@ type Tests with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P { v })!; }
 type Drops with Mover {
     init(this) { }
@@ -27,8 +24,7 @@ type Drops with Mover {
 print(Drops().onMove(P(6))); // expect: 6
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P { v: 1 })!; }
 type Same with Mover {
     init(this) { }
@@ -37,9 +33,8 @@ type Same with Mover {
 print(Same().onMove(P(1))); // expect: one
 
 // @split
-type Inner { pub n; init(this, *n) { this.n = n; } }
-type Outer { pub inner; init(this, *i) { this.inner = i; } }
-
+type Inner { pub n; init(this, n) { this.n = n; } }
+type Outer { pub inner; init(this, i) { this.inner = i; } }
 trait Mover { req fn onMove(this, x @ Outer); }
 type Deep with Mover {
     init(this) { }
@@ -47,9 +42,8 @@ type Deep with Mover {
 }
 
 // @split
-type Inner { pub n; init(this, *n) { this.n = n; } }
-type Outer { pub inner; init(this, *i) { this.inner = i; } }
-
+type Inner { pub n; init(this, n) { this.n = n; } }
+type Outer { pub inner; init(this, i) { this.inner = i; } }
 trait Mover { req fn onMove(this, x @ Outer)!; }
 type Shallow with Mover {
     init(this) { }
@@ -58,8 +52,7 @@ type Shallow with Mover {
 print(Shallow().onMove(Outer(Inner(7)))); // expect: 7
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P); }
 type BareTests with Mover {
     init(this) { }
@@ -67,8 +60,7 @@ type BareTests with Mover {
 }
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, x @ P)!; }
 type BareBinds with Mover {
     init(this) { }
@@ -77,8 +69,7 @@ type BareBinds with Mover {
 print(BareBinds().onMove(P(4))); // expect: 4
 
 // @split
-type P { pub v; init(this, *v) { this.v = v; } }
-
+type P { pub v; init(this, v) { this.v = v; } }
 trait Mover { req fn onMove(this, P)!; }
 type Named with Mover {
     init(this) { }
@@ -87,9 +78,8 @@ type Named with Mover {
 print(Named().onMove(P(8))); // expect: 8
 
 // @split
-type Inner { pub n; init(this, *n) { this.n = n; } }
-type Outer { pub inner; init(this, *i) { this.inner = i; } }
-
+type Inner { pub n; init(this, n) { this.n = n; } }
+type Outer { pub inner; init(this, i) { this.inner = i; } }
 trait Mover { req fn onMove(this, x @ Outer { inner: Inner { n } })!; }
 type Deep with Mover {
     init(this) { }
@@ -98,9 +88,8 @@ type Deep with Mover {
 print(Deep().onMove(Outer(Inner(9)))); // expect: 9
 
 // @split
-type Inner { pub n; init(this, *n) { this.n = n; } }
-type Outer { pub inner; init(this, *i) { this.inner = i; } }
-
+type Inner { pub n; init(this, n) { this.n = n; } }
+type Outer { pub inner; init(this, i) { this.inner = i; } }
 trait Mover { req fn onMove(this, x @ Outer { inner: Inner { n } })!; }
 type Shallower with Mover {
     init(this) { }
@@ -109,9 +98,8 @@ type Shallower with Mover {
 print(Shallower().onMove(Outer(Inner(2)))); // expect: 2
 
 // @split
-type Inner { pub n; init(this, *n) { this.n = n; } }
-type Outer { pub inner; init(this, *i) { this.inner = i; } }
-
+type Inner { pub n; init(this, n) { this.n = n; } }
+type Outer { pub inner; init(this, i) { this.inner = i; } }
 trait Mover { req fn onMove(this, x @ Outer { inner: Inner { n } })!; }
 type Anything with Mover {
     init(this) { }

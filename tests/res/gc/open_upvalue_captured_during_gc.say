@@ -1,8 +1,5 @@
-// Regression test for a use-after-free in the GC. It reproduces the bug on its own, so collecting
-// on every allocation would only repeat a settled assertion at a hundred times the cost.
 gcStress(false);
-
-fn makeAdder(*a, *b, *c, *d, *e)! {
+fn makeAdder(a, b, c, d, e)! {
     say var sum = 0;
     fn addA()! {
         sum = sum + a;
@@ -26,7 +23,6 @@ fn makeAdder(*a, *b, *c, *d, *e)! {
     }
     return addA;
 }
-
 say var ok = true;
 say var i = 0;
 while i < 100000 {
@@ -36,6 +32,5 @@ while i < 100000 {
     }
     i = i + 1;
 }
-
 print(ok); // expect: true
 print(i); // expect: 100000

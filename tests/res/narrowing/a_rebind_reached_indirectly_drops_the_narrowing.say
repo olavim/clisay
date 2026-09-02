@@ -1,5 +1,3 @@
-// A callee that only calls a rebinder still reaches the binding. Reading a per-callee summary here
-// needs the call-graph fixpoint, so the answer comes from the set of names any body rebinds.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -13,8 +11,6 @@ fn run() {
 run();
 
 // @split
-// A lambda is a leaf of its enclosing body's walk, so the enclosing function's own summary never
-// mentions the name its lambda rebinds.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -27,8 +23,6 @@ fn run() {
 run();
 
 // @split
-// A nested named function is walked for captures, not escapes, so its assignments reach no
-// enclosing summary either.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -41,8 +35,6 @@ fn run() {
 run();
 
 // @split
-// A declaration of the same name elsewhere in the body does not cancel the rebind. Which binding an
-// assignment names is decided by where it resolves, not by whether the name appears in a `say`.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -55,7 +47,6 @@ fn run() {
 run();
 
 // @split
-// A shadowing declaration inside the rebinding body itself does not cancel it either.
 type Box { pub value: opt; }
 fn run() {
     say var b = Box { value: "v" };
@@ -68,7 +59,6 @@ fn run() {
 run();
 
 // @split
-// A body rebinding its own local reaches no caller, so the name stays narrowable.
 type Box { pub value: opt; }
 fn count()! { say var n = 0; n = n + 1; return n; }
 fn run() {
@@ -81,8 +71,6 @@ fn run() {
 run();
 
 // @split
-// The same where the lambda's own local shares the narrowed binding's name. Which binding the
-// assignment names is what decides this, and the name it is spelled with says nothing.
 type T { pub value: opt; }
 fn run() {
     say var x = T { value: "v" };

@@ -1,5 +1,3 @@
-// A type test names a declaration, not a name, so two declarations sharing a name are two
-// different tests. Sibling scopes each name their own, and neither can name the other's.
 fn mk()! { type T { pub x; init(this) { this.x = 1; } } return T(); }
 fn probe() {
     type T { pub y; init(this) { this.y = 2; } }
@@ -9,7 +7,6 @@ fn probe() {
 probe();
 
 // @split
-// The same through the match operator, which is the same test.
 fn mk()! { type T { pub x; init(this) { this.x = 1; } } return T(); }
 fn probe() {
     type T { pub y; init(this) { this.y = 2; } }
@@ -19,7 +16,6 @@ fn probe() {
 probe();
 
 // @split
-// A trait mixed by both declarations is still provided by both, since each mixes the one trait.
 trait Tr { }
 fn mk()! { type T with Tr { pub x; init(this) { this.x = 1; } } return T(); }
 fn probe() {

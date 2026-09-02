@@ -1,7 +1,5 @@
-// A `fn` and a `type` are built at the top of their scope, so a name works above the line writing it.
 print(f()); // expect: 1
 fn f()! { return 1; }
-
 say t = T{ v: 2 };
 print(t.v); // expect: 2
 type T { pub v; }
@@ -13,28 +11,23 @@ type T { pub v; }
 }
 
 // @split
-// Two declarations that name each other work out to one order.
 fn a(n)! { if (n <= 0) { return 0; } return b(n - 1); }
 fn b(n)! { return a(n) + 1; }
 print(b(3)); // expect: 4
-
 type P { pub fn mk(this)! { return Q{ w: 5 }; } }
 type Q { pub w; }
 print(P{}.mk().w); // expect: 5
 
 // @split
-// A declaration that captures a local is ready once that local is, and reads what it holds.
 say x = 6;
 print(f()); // expect: 6
 fn f()! { return x; }
-
 say outer = 7;
 say c = C();
 type C { pub fn grab(this)! { return outer; } }
 print(c.grab()); // expect: 7
 
 // @split
-// Building a declaration early does not move what its body can see.
 fn f()! { return x; } // error: Undefined variable 'x'
 say x = 1;
 f();
