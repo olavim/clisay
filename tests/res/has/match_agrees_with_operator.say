@@ -1,22 +1,22 @@
 type Box { pub v; init(this, v) { this.v = v; } }
-say d = mut { "v": null };
+say d = { "v": null };
 print(d has Box); // expect: false
 match (d) { has Box => print("yes"), _ => print("no"), } // expect: no
 
 // @split
 type Box { pub v; init(this, v) { this.v = v; } }
-say d = mut { "v": 1 };
+say d = { "v": 1 };
 print(d has Box); // expect: true
 match (d) { has Box => print("yes"), _ => print("no"), } // expect: yes
 
 // @split
 trait Tr { pub fn go(this)! { return 1; } }
-say d = mut { "go": null };
+say d = { "go": null };
 print(d has Tr); // expect: true
 match (d) { has Tr => print("yes"), _ => print("no"), } // expect: yes
 
 // @split
 type Node { pub next; init(this) { this.next = 1; } }
-say d = mut { "a": 1 };
+say d = { "a": 1 };
 print(d ~ { next: Node | null }); // expect: false
 match (d) { { next: Node | null } => print("yes"), _ => print("no"), } // expect: no

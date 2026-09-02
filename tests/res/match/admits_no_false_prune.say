@@ -1,13 +1,13 @@
 type T { pub x; init(this, a) { this.x = a; } }
-say d = mut { "x": null };
+say d = { "x": null };
 match d { has T => print("surface"), { x } => print("shape"), _ => print("none") } // expect: shape
 
 // @split
 type T { pub x; init(this, a) { this.x = a; } }
-say d = mut { "x": null };
+say d = { "x": null };
 match d { { x } => print("shape"), has T => print("surface"), _ => print("none") } // expect: shape
 
 // @split
 type T { pub x; init(this, a) { this.x = a; } }
-say d = mut { };
+say d = { };
 match d { has T => print("surface"), { x } => print("shape"), _ => print("none") } // expect: none

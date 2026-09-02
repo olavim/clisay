@@ -1,8 +1,0 @@
-fn consume(mut x) {}
-say var a = mut [1];
-consume(a);
-say cond = false;
-while cond {
-  a = mut [2];
-}
-print(a[0]); // expect: 1

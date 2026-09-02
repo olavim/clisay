@@ -8,6 +8,6 @@ type A {
     pub fn getMe(this)! { return this.me; }
 }
 
-say objA = mut A();
+say objA = A();
 say objB = B();
 objA.getMe = objB.getMe; // error: Cannot assign to method 'getMe'

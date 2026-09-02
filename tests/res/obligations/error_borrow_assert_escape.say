@@ -1,0 +1,4 @@
+// A value owing `borrowed` cannot be `!`-ed into escaping: the obligation names no witness, so
+// there is nothing for `!` to prove.
+obligation borrowed { no persist; no return; }
+fn leak(x: borrowed) { return x!; } // error: cannot discharge a value owing 'borrowed'

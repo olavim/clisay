@@ -1,9 +1,0 @@
-// Reassigning a `mut` binding resets the narrowing established by the guard.
-fn find()? {
-    return null;
-}
-say var h?;
-if (h != null) {
-    h = find();
-    h.x; // error: unchecked value owes 'opt'
-}

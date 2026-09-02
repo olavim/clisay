@@ -1,0 +1,4 @@
+say a = [1, 2];
+say b = a[0];
+a[0] = 9;
+print(a[0]); // expect: 9

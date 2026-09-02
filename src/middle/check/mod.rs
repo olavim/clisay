@@ -1,6 +1,5 @@
 //! Flow-sensitive semantic checks: what a program does on the way to each point.
 
-mod immutable;
 mod barriers;
 mod conform;
 mod narrow;
@@ -18,7 +17,7 @@ use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{Hir, HirExpr, HirId, HirStmt, ReturnShape, Symbol};
 use crate::middle::obligations::{Obligations, ObligationRule, Site};
 use crate::middle::signatures::Resolved;
-use crate::middle::signatures::{CallableId, Mutability, Signatures, TypeTag};
+use crate::middle::signatures::{CallableId, Signatures, TypeTag};
 
 
 pub use barriers::{Barrier, Barriers, Guard, WitnessSet};
@@ -56,8 +55,6 @@ enum Violation {
 struct ValueState {
     debt: Debt,
     tag: TypeTag,
-    /// What the value is: whether anything may mutate it at all.
-    mutability: Mutability,
     stored: bool,
 }
 
@@ -66,7 +63,6 @@ impl ValueState {
         ValueState {
             debt: Debt::Unknown,
             tag: TypeTag::Unknown,
-            mutability: Mutability::Unknown,
             stored: false,
         }
     }
@@ -75,7 +71,6 @@ impl ValueState {
         ValueState {
             debt: Debt::Clean,
             tag: TypeTag::Unknown,
-            mutability: Mutability::Unknown,
             stored: false,
         }
     }
@@ -84,18 +79,12 @@ impl ValueState {
         ValueState {
             debt,
             tag,
-            mutability: Mutability::Unknown,
             stored: false,
         }
     }
 
     fn as_stored(mut self) -> ValueState {
         self.stored = true;
-        self
-    }
-
-    fn with_mutability(mut self, mutability: Mutability) -> ValueState {
-        self.mutability = mutability;
         self
     }
 }
@@ -111,7 +100,6 @@ struct Local {
     pattern_binder_source: Option<PatternBinderSource>,
     /// Whether the binding holds a container whose elements owe `owed`.
     container: bool,
-    param: bool,
     used: bool,
     /// The obligations discharged on this binding.
     discharged: Obligations,
@@ -121,8 +109,6 @@ struct Local {
     site: Option<HirId<HirExpr>>,
     /// The node that declared the binding.
     decl: Option<usize>,
-    mutability: Mutability,
-    writable: bool,
     unknown: bool,
 }
 
@@ -162,14 +148,11 @@ impl Local {
             resolved_callable: None,
             pattern_binder_source: None,
             container: false,
-            param: false,
             used: false,
             discharged: Obligations::new(),
             field_discharged: HashMap::new(),
             site: None,
             decl: None,
-            mutability: Mutability::Unknown,
-            writable: true,
             unknown: false
         }
     }
@@ -215,22 +198,14 @@ enum NarrowFact {
     Tag(usize, TypeTag),
 }
 
-/// What a method's declared `this` says about the receiver.
-#[derive(Default, Clone)]
-struct ReceiverFacts {
-    mutability: Mutability,
-    owed: Obligations,
-}
-
 #[derive(Default)]
 struct FnContext {
     return_shape: ReturnShape,
     return_owes: bool,
     return_unmarked: bool,
-    return_mut: bool,
     return_admits: Option<Obligations>,
     /// What the declared `this` says about the receiver.
-    receiver: ReceiverFacts,
+    receiver: Obligations,
     /// The function's name.
     name: Option<Symbol>,
     return_clause: Option<SourcePosition>,
@@ -348,12 +323,12 @@ impl<'a> Checker<'a> {
 
     fn this_valuestate(&self) -> ValueState {
         let receiver = &self.fn_ctx.receiver;
-        let debt = if receiver.owed.is_empty() {
+        let debt = if receiver.is_empty() {
             Debt::Clean
         } else {
-            Debt::Owed { obligations: receiver.owed.clone(), definite: false, container: false }
+            Debt::Owed { obligations: receiver.clone(), definite: false, container: false }
         };
-        ValueState::of(debt, self.this_tag()).with_mutability(receiver.mutability)
+        ValueState::of(debt, self.this_tag())
     }
 
     fn callable_of(&self, name: Symbol) -> Option<CallableId> {

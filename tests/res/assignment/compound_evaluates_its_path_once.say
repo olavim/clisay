@@ -1,11 +1,11 @@
 say var calls = 0;
 fn idx() { calls = calls + 1; return 0; }
-say a = mut [10];
+say a = [10];
 a[idx()] += 1;
 print(a[0]); // expect: 11
 print(calls); // expect: 1
 type Box { pub var v; init(this) { this.v = 10; } }
-say b = mut Box();
+say b = Box();
 fn get() { calls = calls + 1; return b; }
 get().v *= 3;
 print(b.v); // expect: 30
@@ -13,26 +13,26 @@ print(calls); // expect: 2
 type Counter {
     pub var n;
     init(this) { this.n = 1; }
-    pub fn bump(mut this) { this.n += 4; }
+    pub fn bump(this) { this.n += 4; }
 }
-say c = mut Counter();
+say c = Counter();
 c.bump();
 print(c.n); // expect: 5
 say var x = 3;
 x -= 8;
 print(x); // expect: -5
-say d = mut { k: 2 };
+say d = { k: 2 };
 d["k"] <<= 3;
 print(d["k"]); // expect: 16
 type W { pub d; init(this, d) { this.d = d; } }
 obligation warned { witness W; discharge to use; }
 fn pick(i)!: warned { return W(i); }
-say e = mut [1, 2, 3];
+say e = [1, 2, 3];
 say j = 1;
 e[j] += pick(40) ?? h => h.d;
 print(e[1]); // expect: 42
 say var log = "";
-fn recv() { log = log + "recv "; return mut [0]; }
+fn recv() { log = log + "recv "; return [0]; }
 fn key() { log = log + "key "; return 0; }
 fn val() { log = log + "val "; return 9; }
 recv()[key()] = val();

@@ -32,54 +32,17 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             self.parse_obligation_container(clause, slot)
         } else if self.at_void_marker() {
             self.parse_void_marker(clause, slot)
-        } else if self.at_mut_marker() {
-            self.parse_mut_marker(clause, slot)
         } else {
             self.push_obligation_name(clause)
         }
     }
 
     fn at_clause_atom(&self) -> bool {
-        self.tokens.matches(TokenType::LeftBracket) || self.at_void_marker() || self.at_mut_marker() || self.at_obligation_name()
+        self.tokens.matches(TokenType::LeftBracket) || self.at_void_marker() || self.at_obligation_name()
     }
 
     fn at_void_marker(&self) -> bool {
         self.tokens.peek(0).contextual() == Some(ContextualKeyword::Void)
-    }
-
-    fn at_mut_marker(&self) -> bool {
-        self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut)
-    }
-
-    fn parse_mut_marker(&mut self, clause: &mut SlotClause, slot: SlotKind) -> Result<(), anyhow::Error> {
-        let pos = self.tokens.peek(0).pos.clone();
-
-        match slot {
-            SlotKind::Return => {},
-            // A named slot puts the marker ahead of the name, which is the one spelling it has.
-            SlotKind::Param | SlotKind::Receiver => return Err(self.error_help(
-                "A capability leads the name, not the ':' clause", &pos,
-                format!("write it ahead of the {}, as in `mut x`", slot.label()))),
-            SlotKind::Local | SlotKind::Field | SlotKind::Member => return Err(self.error_help(
-                format!("A {} cannot carry a mutability capability", slot.label()), &pos,
-                "'mut' leads a parameter's name, or rides a return's clause")),
-        }
-        if clause.capability != Capability::None {
-            parse_error!(self, &pos, "Repeated mutability capability");
-        }
-
-        // The capability leads the clause, so each clause has one canonical spelling.
-        if !clause.names.is_empty() || clause.container {
-            return Err(self.error_help(
-                "Mutability must lead the ':' clause",
-                &pos,
-                "move 'mut' ahead of the obligations",
-            ));
-        }
-
-        self.tokens.next();
-        clause.capability = Capability::Mut;
-        Ok(())
     }
 
     fn at_obligation_name(&self) -> bool {
@@ -90,10 +53,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Whether more of the container body follows before its `]`: another name, or a
     /// malformed token the loop still diagnoses.
     fn at_container_content(&self) -> bool {
-        self.at_obligation_name()
-            || self.at_void_marker()
-            || self.tokens.matches(TokenType::LeftBracket)
-            || self.tokens.matches(TokenType::Comma)
+        self.at_clause_atom() || self.tokens.matches(TokenType::Comma)
     }
 
     fn parse_obligation_container(&mut self, clause: &mut SlotClause, slot: SlotKind) -> Result<(), anyhow::Error> {

@@ -1,0 +1,14 @@
+type UserBuilder {
+  pub var name;
+  init(this) { this.name = ""; }
+  pub fn setName(this, n)! { this.name = n; return this; }
+  pub fn build(this)! { return this.name; }
+}
+fn getBuilder() {
+  say b = UserBuilder();
+  b.setName("default");
+  return b;
+}
+say builder = getBuilder();
+say user = builder.build();
+print(user); // expect: default

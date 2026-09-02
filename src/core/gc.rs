@@ -67,8 +67,7 @@ pub struct Gc {
     /// again, so traversing one means `mark` missed the pointer that should have kept it alive.
     #[cfg(debug_assertions)]
     freed_blocks: FnvHashSet<usize>,
-    /// Set by a trace and cleared by the sweep that consumes it. Only in that window do the marks
-    /// say what survived, which is the only window a weak reference may be pruned in.
+    /// Set by a trace and cleared by the sweep that consumes it.
     #[cfg(debug_assertions)]
     traced: bool
 }
@@ -203,11 +202,6 @@ impl Gc {
         }
         #[cfg(debug_assertions)]
         { self.traced = true; }
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn marks_valid(&self) -> bool {
-        self.traced
     }
 
     /// Frees whatever the trace did not reach.

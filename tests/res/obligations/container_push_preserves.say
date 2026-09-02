@@ -1,6 +1,6 @@
 // Pushing a pending value onto a native array makes the array carry the obligation.
 type Taint { } obligation taint { witness Taint; discharge to use; }
 say t: taint = "x";
-say a: [taint] = mut [];
+say a: [taint] = [];
 a.push(t);
 print(a.length()); // expect: 1

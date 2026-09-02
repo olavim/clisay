@@ -2,7 +2,7 @@
 trait Wt { }
 obligation warned { witness Wt; must use; }
 type W with Wt { }
-say sink = mut [];
+say sink = [];
 fn stash(v) { sink.push(v); }
 fn f() {
     say b: warned = W { };
@@ -14,7 +14,7 @@ f();
 // @split
 type Token { pub v; init(this, x) { this.v = x; } }
 obligation parsed { witness Token; discharge to use; }
-say sink = mut [];
+say sink = [];
 fn stash(v) { sink.push(v); }
 fn f(g) {
     say b: parsed = Token(1);

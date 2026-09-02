@@ -1,0 +1,8 @@
+type Box { pub var v; init(this) { this.v = 0; } }
+fn eats(x) { }
+say consume = eats;
+say var a = Box();
+consume(a);
+a = Box();
+a.v = 1;
+print(a.v); // expect: 1

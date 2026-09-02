@@ -1,0 +1,8 @@
+type T {
+    pub value;
+    init(this) {
+        this.value = 1;
+        this.value = 2;
+    }
+}
+print(T().value); // expect: 2

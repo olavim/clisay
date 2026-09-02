@@ -2,9 +2,9 @@ type Counter {
     var n;
     init(this, start) { this.n = start; }
     pub fn value(this)! { return this.n; }
-    pub fn bump(mut this) { this.n = this.n + 1; }
+    pub fn bump(this) { this.n = this.n + 1; }
 }
-say c = mut Counter(1);
+say c = Counter(1);
 print(c.value()); // expect: 1
 c.bump();
 print(c.value()); // expect: 2

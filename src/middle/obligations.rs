@@ -41,11 +41,6 @@ impl Obligations {
         self.0.iter()
     }
 
-    /// The names this set and `other` share.
-    pub fn intersection<'a>(&'a self, other: &'a Obligations) -> impl Iterator<Item = &'a Symbol> {
-        self.0.iter().filter(|n| other.contains(n))
-    }
-
     /// The names in this set that `other` does not have.
     pub fn difference<'a>(&'a self, other: &'a Obligations) -> impl Iterator<Item = &'a Symbol> {
         self.0.iter().filter(|n| !other.contains(n))

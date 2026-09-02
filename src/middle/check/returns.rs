@@ -7,7 +7,7 @@ use crate::middle::hir::{HirFnDecl, HirExpr, HirId, ReturnShape};
 use crate::middle::signatures::CallableId;
 use crate::middle::obligations::Obligations;
 
-use super::{Checker, Ctx, Mutability, Debt, ValueState, Violation};
+use super::{Checker, Ctx, Debt, Violation};
 
 impl<'a> Ctx<'a> {
     pub(super) fn pending_must_use(&self, obligations: &Obligations) -> Obligations {
@@ -47,36 +47,6 @@ impl<'a> Ctx<'a> {
 }
 
 impl<'a> Checker<'a> {
-    /// A `: mut` function must hand back a mutable value.
-    pub(super) fn check_return_mutability(&self, state: &ValueState, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if self.fn_ctx.return_mut && state.mutability == Mutability::Immutable {
-            let label = format!("{} is immutable", self.ctx.arg_display_name(node));
-            if let (Some(clause), Some(fname)) = (&self.fn_ctx.return_clause, self.fn_ctx.name) {
-                let fname = self.ctx.hir.text(fname);
-                return Err(self.error_ctx("invalid immutable return: expected mutable", self.ctx.hir.pos(node), label, clause, format!("`{fname}` expects a mutable return")));
-            }
-            return Err(self.error_labeled("invalid immutable return: expected mutable".to_string(), node, label));
-        }
-        Ok(())
-    }
-
-    /// Returning a field of a receiver would move a mutable value out of a receiver the caller only
-    /// lends. A `: mut` function promises an owned mutable, so a bare field return is rejected.
-    pub(super) fn check_return_field_move(&self, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if !self.fn_ctx.return_mut {
-            return Ok(());
-        }
-        let HirExpr::Index(target, member, true) = self.ctx.hir.get(node) else { return Ok(()) };
-        let Some(field) = self.ctx.member_display_name(member) else { return Ok(()) };
-        if !matches!(self.ctx.hir.get(target), HirExpr::This | HirExpr::Identifier(_)) {
-            return Ok(());
-        }
-        Err(self.error_help(
-            format!("Cannot return the mutable field '{field}'; it would move out of the receiver"),
-            node,
-            "copy it before returning"))
-    }
-
     /// Checks a returned value against the obligations the return declares.
     pub(super) fn check_return_obligations(&self, debt: &Debt, admits: &Obligations, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         if self.fn_ctx.return_unmarked {

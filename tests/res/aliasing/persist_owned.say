@@ -1,0 +1,4 @@
+fn keep(bin, x) { bin.push(x); }
+say b = [];
+keep(b, [1]);
+print(b.length()); // expect: 1

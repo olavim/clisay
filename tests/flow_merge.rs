@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use clisay::internals::{
     intersect_narrowings, merge_local_flow, symbol, LocalFlow,
-    CallableId, Mutability, Obligations, Symbol, TypeTag, HirId,
+    CallableId, Obligations, Symbol, TypeTag, HirId,
 };
 
 // Two obligations the local owes, and one it does not.
@@ -45,10 +45,6 @@ fn tags() -> Vec<TypeTag> {
     ]
 }
 
-fn mutabilities() -> Vec<Mutability> {
-    vec![Mutability::Mutable, Mutability::Immutable, Mutability::Unknown]
-}
-
 fn sets() -> Vec<Obligations> {
     vec![
         obligations(&[]),
@@ -76,7 +72,6 @@ fn base() -> LocalFlow {
     LocalFlow {
         assigned: true,
         tag: tags()[0].clone(),
-        mutability: mutabilities()[0],
         discharged: sets()[0].clone(),
         field_discharged: field_sets()[0].clone(),
         resolved_callable: resolutions()[0],
@@ -87,23 +82,16 @@ fn domain() -> Vec<LocalFlow> {
     let mut out = Vec::new();
     for assigned in [true, false] {
         for tag in &tags() {
-            for mutability in &mutabilities() {
-                    {
-                    {
-                        for discharged in &sets() {
-                            for field_discharged in &field_sets() {
-                                for resolves_to in &resolutions() {
-                                    out.push(LocalFlow {
-                                        assigned,
-                                        tag: tag.clone(),
-                                        mutability: *mutability,
-                                        discharged: discharged.clone(),
-                                        field_discharged: field_discharged.clone(),
-                                        resolved_callable: *resolves_to,
-                                    });
-                                }
-                            }
-                        }
+            for discharged in &sets() {
+                for field_discharged in &field_sets() {
+                    for resolves_to in &resolutions() {
+                        out.push(LocalFlow {
+                            assigned,
+                            tag: tag.clone(),
+                            discharged: discharged.clone(),
+                            field_discharged: field_discharged.clone(),
+                            resolved_callable: *resolves_to,
+                        });
                     }
                 }
             }
@@ -120,7 +108,6 @@ fn one_field_apart() -> Vec<LocalFlow> {
     let mut out = vec![base()];
     out.push(LocalFlow { assigned: false, ..base() });
     out.extend(tags().into_iter().map(|tag| LocalFlow { tag, ..base() }));
-    out.extend(mutabilities().into_iter().map(|mutability| LocalFlow { mutability, ..base() }));
     out.extend(sets().into_iter().map(|discharged| LocalFlow { discharged, ..base() }));
     out.extend(field_sets().into_iter().map(|field_discharged| LocalFlow { field_discharged, ..base() }));
     out
@@ -129,10 +116,9 @@ fn one_field_apart() -> Vec<LocalFlow> {
 /// One field turned into a string.
 type Key = fn(&LocalFlow) -> String;
 
-const FIELD_KEYS: [(&str, Key); 5] = [
+const FIELD_KEYS: [(&str, Key); 4] = [
     ("assigned", |f| format!("{}", f.assigned)),
     ("tag", |f| match &f.tag { TypeTag::Concrete(id) => format!("c{}", id.index()), _ => "other".into() }),
-    ("mutability", |f| format!("{}{}", f.mutability == Mutability::Mutable, f.mutability == Mutability::Immutable)),
     ("discharged", |f| set_key(&f.discharged)),
     ("field_discharged", |f| {
         let mut entries: Vec<String> = f.field_discharged.iter()
@@ -308,10 +294,6 @@ fn the_domain_carries_every_variant() {
     let tags = count(full.iter().map(|f| discriminant(&f.tag)).collect());
     assert!(tags == variant_count::<TypeTag>(),
         "the domain carries {tags} of {} `TypeTag` variants", variant_count::<TypeTag>());
-
-    let mutabilities = count(full.iter().map(|f| discriminant(&f.mutability)).collect());
-    assert!(mutabilities == variant_count::<Mutability>(),
-        "the domain carries {mutabilities} of {} `Mutability` variants", variant_count::<Mutability>());
 }
 
 fn spread(all: &[LocalFlow], count: usize) -> Vec<&LocalFlow> {

@@ -1,0 +1,36 @@
+say a = [1];
+{ say b = [a]; }
+print(a[0]); // expect: 1
+
+// @split
+say a = [1];
+{ say b = { "k": a }; }
+print(a[0]); // expect: 1
+
+// @split
+type Box { pub var item; init(this, x) { this.item = x; } }
+say a = [1];
+{ say b = Box(a); }
+print(a[0]); // expect: 1
+
+// @split
+type Box { init(this, x) { } }
+say a = [1];
+say b = Box(a);
+print(a[0]); // expect: 1
+
+// @split
+say a = [1];
+{ say var b = [9]; b = a; }
+print(a[0]); // expect: 1
+
+// @split
+type Box { pub var item; init(this) { this.item = 0; } }
+say a = [1];
+{ say b = Box(); b.item = a; }
+print(a[0]); // expect: 1
+
+// @split
+say a = [1];
+{ say f = () => { a[0] = 2; }; }
+print(a[0]); // expect: 1

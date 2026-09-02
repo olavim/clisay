@@ -1,6 +1,6 @@
 trait Wt { }
 type Empty { }
-say d = mut { "a": 1 };
+say d = { "a": 1 };
 print(null has Wt); // expect: false
 print(null has Empty); // expect: false
 print(d has Wt); // expect: true

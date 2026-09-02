@@ -1,6 +1,0 @@
-// A closure holding a `mut` parameter may be called in place: the lend outlives it.
-type C { pub var n; init(this) { this.n = 0; } }
-fn bump(mut x) { say f = () => { x.n = x.n + 1; }; f(); f(); }
-say c = mut C();
-bump(c);
-print(c.n); // expect: 2

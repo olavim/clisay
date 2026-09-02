@@ -1,0 +1,10 @@
+type Box { pub var v; init(this) { this.v = 1; } }
+
+fn countDown(x, n)! { if (n > 0) { return countDown(x, n - 1); } return x.v; }
+
+fn ping(x, n)! { if (n > 0) { return pong(x, n - 1); } return x.v; }
+fn pong(x, n)! { return ping(x, n - 1); }
+
+say b = Box();
+print(countDown(b, 3)); // expect: 1
+print(ping(b, 4));      // expect: 1

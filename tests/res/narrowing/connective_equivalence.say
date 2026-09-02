@@ -59,7 +59,7 @@ fn src(): fails { return Err("e"); }
 say a: fails = src();
 if (!((a is Err) && (T { n: 1 }))) { say w = a; }
 say b: fails = src();
-if (!((b is Err) && (mut [1]))) { say x = b; }
+if (!((b is Err) && ([1]))) { say x = b; }
 say d: fails = src();
 if (!((d is Err) && T())) { say v = d; }
 say var flag = false;

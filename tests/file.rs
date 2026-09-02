@@ -209,33 +209,8 @@ fn obligations_traits(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
-#[test_resources("tests/res/mutability")]
-fn mutability(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/mutability_passing")]
-fn mutability_passing(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/mutability_move")]
-fn mutability_move(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/mutability_traits")]
-fn mutability_traits(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/mutability_borrow")]
-fn mutability_borrow(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/mutability_capability")]
-fn mutability_capability(resource: &str) -> Result<(), Failed> {
+#[test_resources("tests/res/aliasing")]
+fn aliasing(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 

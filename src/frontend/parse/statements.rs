@@ -50,10 +50,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     pub(super) fn parse_say(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Say)?.pos.clone();
-        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
-            let at = self.tokens.peek(0).pos.clone();
-            parse_error!(self, &at, "A reassignable binding is declared with `var`, not `mut`");
-        }
         let reassignable = self.take_modifier(ContextualKeyword::Var);
         let name_pos = self.tokens.peek(0).pos.clone();
 
@@ -253,11 +249,9 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 },
                 TokenType::LeftParen => {
                     let open = self.tokens.expect(TokenType::LeftParen)?.pos.clone();
-                    // A caught value is bound for the handler and nothing reassigns it, so neither
-                    // `var` nor the `mut` capability has anything to say here.
-                    if let Some(word @ (ContextualKeyword::Var | ContextualKeyword::Mut)) = self.tokens.peek(0).contextual() {
+                    if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Var) {
                         let at = self.tokens.peek(0).pos.clone();
-                        parse_error!(self, &at, "A catch parameter cannot be `{word}`");
+                        parse_error!(self, &at, "A catch parameter cannot be `var`");
                     }
                     let (lex, at) = (self.tokens.peek(0).lexeme.clone(), self.tokens.peek(0).pos.clone());
                     let param = self.parse_identifier_expr()?;

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Capability, Expr, SayDecl, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, SayDecl, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 /// The statements the program wrote. The compiler declares its own built-ins in the same block.
@@ -70,55 +70,14 @@ fn param_forms_are_all_patterns() {
 
 #[test]
 fn param_pattern_carries_a_clause() {
-    let ast = parse("fn f(mut (x @ Node { next } | null)) {}");
+    let ast = parse("fn f((x @ Node { next } | null)) {}");
     let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
     assert_eq!(ast.text(param.binder(&ast).expect("no whole-value binder")), "x");
-    assert_eq!(param.clause.capability, Capability::Mut);
 
     let Matcher::As(_, inner) = ast.get(&param.pattern) else { panic!("the pattern is not an as-binding") };
     let Matcher::Or(alternatives) = ast.get(inner) else { panic!("the pattern is not an or") };
     assert!(matches!(ast.get(&alternatives[0]), Matcher::Type { nominal: true, .. }));
     assert!(matches!(ast.get(&alternatives[1]), Matcher::Literal(MatchScalar::Null)));
-}
-
-/// The marker describes the slot, so it does not need the pattern to name the value.
-#[test]
-fn unnamed_param_still_carries_a_capability() {
-    let ast = parse("fn f(mut _, mut Node : opt) {}");
-    let params = &nth_fn(&ast, &top_stmts(&ast), 0).params;
-    assert!(params[0].binder(&ast).is_none());
-    assert_eq!(params[0].clause.capability, Capability::Mut);
-    assert!(params[1].binder(&ast).is_none());
-    assert_eq!(params[1].clause.capability, Capability::Mut);
-    assert_eq!(ast.text(params[1].clause.names[0]), "opt");
-}
-
-/// The marker lands in the clause the rest of the pipeline reads, whichever form wrote it.
-#[test]
-fn capability_prefix_fills_the_clause() {
-    let ast = parse("fn f(a, mut b) {} fn h(mut e) {}");
-    let stmts = top_stmts(&ast);
-    let caps: Vec<Capability> = nth_fn(&ast, &stmts, 0).params.iter().map(|p| p.clause.capability).collect();
-    assert_eq!(caps, vec![Capability::None, Capability::Mut]);
-
-    assert_eq!(nth_fn(&ast, &stmts, 1).params[0].clause.capability, Capability::Mut);
-
-    // A parameter and a receiver take the marker ahead of the name, and nowhere else.
-    for src in ["fn f(x: mut) {}", "type T { pub fn m(this: mut) {} }"] {
-        assert!(try_parse(src).is_err(), "{src}");
-    }
-}
-
-/// A receiver has no pattern, so the prefix is the only place its capability can sit.
-#[test]
-fn receiver_carries_a_capability_prefix() {
-    let ast = parse("type T { pub fn a(this) {} pub fn b(mut this) {} }");
-    let Stmt::Type(decl) = ast.get(&top_stmts(&ast)[0]) else { panic!("expected a type") };
-    let caps: Vec<Capability> = decl.methods.iter().map(|m| match ast.get(m) {
-        Stmt::Fn(f) => f.receiver.as_ref().expect("a receiver").clause.capability,
-        _ => panic!("expected a method"),
-    }).collect();
-    assert_eq!(caps, vec![Capability::None, Capability::Mut]);
 }
 
 #[test]
@@ -129,80 +88,15 @@ fn param_pattern_rejections() {
 }
 
 #[test]
-fn param_capability_marker() {
-    // `mut` leads the clause, ahead of the obligation atoms.
-    let ast = parse("fn f(mut a, mut c: opt) {}");
-    let stmts = top_stmts(&ast);
-    let params = &nth_fn(&ast, &stmts, 0).params;
-    assert_eq!(params[0].clause.capability, Capability::Mut);
-    assert!(params[0].clause.names.is_empty());
-    assert_eq!(params[1].clause.capability, Capability::Mut);
-    assert_eq!(ast.text(params[1].clause.names[0]), "opt");
-}
-
-#[test]
-fn fn_return_capability_marker() {
-    let ast = parse("fn f(): mut opt {}");
-    let decl = nth_fn(&ast, &top_stmts(&ast), 0);
-    assert_eq!(decl.clause.capability, Capability::Mut);
-    assert_eq!(ast.text(decl.clause.names[0]), "opt");
-}
-
-#[test]
-fn capability_marker_must_lead_the_clause() {
-    // The capability leads, so `mut opt fails` is the only spelling of that clause.
-    let ast = parse("fn f(): mut opt fails {}");
-    let decl = nth_fn(&ast, &top_stmts(&ast), 0);
-    assert_eq!(decl.clause.capability, Capability::Mut);
-    let names: Vec<&str> = decl.clause.names.iter().map(|n| ast.text(*n)).collect();
-    assert_eq!(names, vec!["opt", "fails"]);
-
-    for src in ["fn f(): opt mut {}", "fn f(): [taint] mut {}"] {
-        assert!(try_parse(src).is_err(), "{src}");
-    }
-}
-
-#[test]
 fn obligation_atoms_stay_unordered() {
-    // Only the capability's position is pinned. The obligations among themselves are a set.
-    for src in ["fn f(mut x: opt fails) {}", "fn f(mut x: fails opt) {}"] {
+    // The obligations in a clause are a set, so their order carries nothing.
+    for src in ["fn f(x: opt fails) {}", "fn f(x: fails opt) {}"] {
         let ast = parse(src);
         let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
         let mut names: Vec<&str> = param.clause.names.iter().map(|n| ast.text(*n)).collect();
         names.sort();
         assert_eq!(names, vec!["fails", "opt"], "{src}");
     }
-}
-
-#[test]
-fn value_mut_construction() {
-    // `mut` before a literal or constructor wraps the construction in a value-mut marker.
-    let dict = parse("say d = mut {x: 1};");
-    let Expr::Mut(inner) = dict.get(&say_value(&dict)) else { panic!("dict not value-mut") };
-    assert!(matches!(dict.get(inner), Expr::Literal(Literal::Dict(_))));
-
-    let array = parse("say a = mut [1, 2];");
-    let Expr::Mut(inner) = array.get(&say_value(&array)) else { panic!("array not value-mut") };
-    assert!(matches!(array.get(inner), Expr::Literal(Literal::Array(_))));
-
-    let ctor = parse("say u = mut User();");
-    let Expr::Mut(inner) = ctor.get(&say_value(&ctor)) else { panic!("ctor not value-mut") };
-    assert!(matches!(ctor.get(inner), Expr::Call(_, _)));
-}
-
-#[test]
-fn value_mut_wraps_any_operand_optimistically() {
-    // A non-construction operand still parses into the marker, so lowering can name the mistake.
-    let ast = parse("say x = mut (1 + 2);");
-    let Expr::Mut(inner) = ast.get(&say_value(&ast)) else { panic!("not value-mut") };
-    assert!(matches!(ast.get(inner), Expr::Binary(Operator::Add, _, _)));
-}
-
-#[test]
-fn capability_marker_rejections() {
-    assert!(try_parse("say x: mut;").is_err());
-    assert!(try_parse("type T { a: mut; }").is_err());
-    assert!(try_parse("fn f(): mut mut {}").is_err());
 }
 
 #[test]

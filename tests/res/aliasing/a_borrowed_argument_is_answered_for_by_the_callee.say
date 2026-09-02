@@ -1,0 +1,31 @@
+fn wraps(v)! {
+    say held = [v];
+    return held[0][0];
+}
+say a = [1];
+print(wraps(a)); // expect: 1
+a[0] = 9;
+print(a[0]); // expect: 9
+
+// @split
+fn peeks(v)! {
+    say cb = () => v[0];
+    return cb();
+}
+say a = [2];
+print(peeks(a)); // expect: 2
+
+// @split
+fn inner(y) { say c = []; c.push(y); }
+fn outer(x) { inner(x); }
+say a = [3];
+outer(a);
+a[0] = 4;
+print(a[0]); // expect: 4
+
+// @split
+say var kept? = null;
+fn takes(x) { kept = x; }
+say a = [5];
+takes(a);
+print(kept![0]); // expect: 5

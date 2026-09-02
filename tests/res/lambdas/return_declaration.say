@@ -5,7 +5,7 @@ print(nullable(1)); // expect: null
 say owing = (): fails => Err("boom");
 say r: fails = owing();
 print(r ?? "recovered"); // expect: recovered
-say mutable = (): mut => mut [1];
+say mutable = () => [1];
 say a = mutable();
 a[0] = 9;
 print(a[0]); // expect: 9

@@ -178,7 +178,7 @@ fn build_err_type(gc: &mut Gc, ids: &[(TypeId, u16)], layout: &BuiltinLayout) ->
     gc.alloc(ty)
 }
 
-pub fn execute(chunk: BytecodeChunk, gc: Gc, _forced: bool) -> Result<Vec<String>, anyhow::Error> {
+pub fn execute(chunk: BytecodeChunk, gc: Gc) -> Result<Vec<String>, anyhow::Error> {
     Vm::execute(chunk, gc)
 }
 

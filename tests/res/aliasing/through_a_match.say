@@ -1,0 +1,20 @@
+fn build(n) {
+  say a = [1, 2];
+  match n {
+    0 => { return a; },
+    _ => {},
+  }
+  a[0] = 3;
+  return a;
+}
+print(build(9)[0]); // expect: 3
+print(build(0)[0]); // expect: 1
+
+// @split
+fn consume(xs) {}
+say a = [1, 2];
+match a[0] {
+  1 => { consume(a); },
+  _ => {},
+}
+print(a[0]); // expect: 1

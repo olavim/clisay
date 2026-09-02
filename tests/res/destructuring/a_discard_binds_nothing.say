@@ -17,7 +17,7 @@ say r = mayFail(1); // error: cannot assign a value owing 'fails' to 'r'
 print("ran");
 
 // @split
-say xs = mut [1];
+say xs = [1];
 say _ = xs;
 xs.push(2);
 print(xs.length()); // expect: 2

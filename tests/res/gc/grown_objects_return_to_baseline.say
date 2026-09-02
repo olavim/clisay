@@ -1,5 +1,5 @@
 say bytesStart = gcHeapSize();
-{ say d = mut { }; d["a"] = 1; d["b"] = 2; d["c"] = 3; }
+{ say d = { }; d["a"] = 1; d["b"] = 2; d["c"] = 3; }
 gcCollect();
 print(gcHeapSize() - bytesStart); // expect: 0
 
@@ -7,7 +7,7 @@ print(gcHeapSize() - bytesStart); // expect: 0
 fn churn(n) {
     say var i = 0;
     while (i < n) {
-        say d = mut { };
+        say d = { };
         d["a"] = i;
         d["b"] = i;
         i = i + 1;
@@ -28,7 +28,7 @@ fn spin(n)! {
     while (i < n) {
         say a = A();
         say b = B();
-        say d = mut { };
+        say d = { };
         d["k"] = i;
         total = total + a.alpha + a.beta + b.gamma;
         i = i + 1;

@@ -1,0 +1,10 @@
+type Box {
+  pub var v;
+  init(this) { this.v = 0; }
+  pub fn setV(this, x)! { this.v = x; return this; }
+  pub fn get(this)! { return this.v; }
+}
+say b = Box();
+b.setV(1);
+b.setV(2);
+print(b.get()); // expect: 2

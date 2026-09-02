@@ -10,7 +10,7 @@ say bytesStart = gcHeapSize();
         pub var self?;
         init(this) {}
     }
-    say n = mut Node();
+    say n = Node();
     n.self = n;
 }
 

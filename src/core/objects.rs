@@ -619,10 +619,6 @@ pub struct ObjUpvalue {
 }
 
 impl ObjUpvalue {
-    pub fn is_closed(&self) -> bool {
-        std::ptr::eq(self.location as *const Value, &raw const self.closed)
-    }
-
     pub fn new(location: *mut Value, accepts: u16) -> ObjUpvalue {
         ObjUpvalue {
             header: ObjectHeader::new(ObjectKind::Upvalue),

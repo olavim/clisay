@@ -3,4 +3,4 @@ obligation borrowed { no persist; no return; }
 type Taint { } obligation taint { witness Taint; discharge to use; }
 type Box { pub var item; init(this) { this.item = 0; } }
 fn id(x: borrowed): taint { return x; } // error: cannot return a value owing 'borrowed'
-fn go(y: borrowed) { say b = mut Box(); b.item = id(y)!; }
+fn go(y: borrowed) { say b = Box(); b.item = id(y)!; }

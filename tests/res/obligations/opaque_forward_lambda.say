@@ -1,0 +1,5 @@
+// A `no persist` parameter may forward its borrow to a borrow-only lambda callback.
+obligation borrowed { no persist; no return; }
+fn each(xs: borrowed, cb) { cb(xs); }
+say m = [1, 2];
+each(m, v => print(v[0])); // expect: 1

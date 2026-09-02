@@ -2,13 +2,13 @@ type T {
     pub value;
     init(this) { this.value = 1; }
 }
-say t = mut T();
+say t = T();
 t.value = 2;
 // error(full):
 // error: Cannot reassign field `T.value`
 //  --> help_field_external.say:6:1
 //   |
-// 5 | say t = mut T();
+// 5 | say t = T();
 // 6 | t.value = 2;
 //   | ^^^^^^^
 //   = help: you can make `T.value` reassignable by declaring it as `pub var value;`

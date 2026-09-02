@@ -1,0 +1,5 @@
+// A brace construction's fields are writable through the instance.
+type Box { pub items; }
+say b = Box{items: [0]};
+b.items[0] = 5;
+print(b.items[0]); // expect: 5

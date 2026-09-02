@@ -1,5 +1,0 @@
-fn escape(mut x) {}
-say cond = true;
-say a = mut [1];
-{ say b = a; if (cond) { escape(b); } }
-print(a[0]); // expect: 1

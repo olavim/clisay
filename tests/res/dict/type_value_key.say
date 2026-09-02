@@ -5,7 +5,7 @@ fn make()! { type T { init(this) {} pub fn m(this)! { return outer; } } return T
 say a = make();
 say b = make();
 print(a == b); // expect: true
-say d = mut {};
+say d = {};
 d[a] = "from-a";
 print(d[b]); // expect: from-a
 print(d.containsKey(b)); // expect: true

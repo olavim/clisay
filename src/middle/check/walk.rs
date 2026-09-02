@@ -8,7 +8,7 @@ use crate::middle::bind::Place;
 use crate::middle::native::{self, Container};
 use crate::middle::obligations::Obligations;
 use crate::middle::signatures::CallableId;
-use crate::middle::signatures::{Mutability, TypeTag};
+use crate::middle::signatures::TypeTag;
 
 use super::scope::FlowSnapshot;
 
@@ -19,9 +19,26 @@ enum Dropped {
     Silently
 }
 
-use super::{PatternBinderSource, Checker, Ctx, Debt, FnContext, Guard, Local, ReceiverFacts, ValueState};
+use super::{PatternBinderSource, Checker, Ctx, Debt, FnContext, Guard, Local, ValueState};
 
 impl<'a> Ctx<'a> {
+    pub(super) fn non_var_field_error(&self, decl: &HirId<HirStmt>, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
+        let name = self.qualified_field_display_name(decl, field);
+        self.error_help(format!("Cannot reassign field `{name}`"), lhs,
+            format!("you can make `{name}` reassignable by declaring it as `{};`", self.var_decl_error_hint(decl, field)))
+    }
+
+    pub(super) fn method_assign_error(&self, field: Symbol, lhs: &HirId<HirExpr>) -> anyhow::Error {
+        self.error(format!("Cannot assign to method '{}'", self.hir.text(field)), lhs)
+    }
+
+    fn var_decl_error_hint(&self, decl: &HirId<HirStmt>, field: Symbol) -> String {
+        let visibility = self.layout_of(decl).map_or("", |layout| {
+            if layout.is_public(field) { "pub " } else if layout.is_inner(field) { "inner " } else { "" }
+        });
+        format!("{visibility}var {}", self.hir.text(field))
+    }
+
     pub(super) fn arg_display_name(&self, arg: &HirId<HirExpr>) -> String {
         match self.hir.get(arg) {
             HirExpr::Identifier(name) => format!("`{}`", self.hir.text(*name)),
@@ -95,8 +112,6 @@ impl<'a> Checker<'a> {
             HirStmt::Return(opt) => match opt {
                 Some(e) => {
                     let state = self.expr(e)?;
-                    self.check_return_field_move(e)?;
-                    self.check_return_mutability(&state, e)?;
                     self.check_return(&state.debt, self.fn_ctx.return_shape, e)?;
                 },
                 // A `!` function falls back to null on a bare return, which it may not.
@@ -228,10 +243,10 @@ impl<'a> Checker<'a> {
 
     pub(super) fn expr(&mut self, expr: &HirId<HirExpr>) -> Result<ValueState, anyhow::Error> {
         Ok(match self.ctx.hir.get(expr) {
-            HirExpr::Literal(HirLiteral::Null) => ValueState::of(self.ctx.opt_debt(true), TypeTag::Unknown).with_mutability(Mutability::Immutable),
+            HirExpr::Literal(HirLiteral::Null) => ValueState::of(self.ctx.opt_debt(true), TypeTag::Unknown),
             HirExpr::Literal(lit) => {
                 self.literal_children(lit, expr)?;
-                ValueState::nonnull().with_mutability(Mutability::Immutable)
+                ValueState::nonnull()
             },
             HirExpr::Identifier(name) => self.identifier(*name, expr)?,
             HirExpr::This => self.this_valuestate(),
@@ -258,9 +273,8 @@ impl<'a> Checker<'a> {
                     TypeTag::Concrete(decl) => self.ctx.construction_debt(decl),
                     _ => Debt::Clean,
                 };
-                ValueState::of(debt, tag).with_mutability(Mutability::Immutable)
+                ValueState::of(debt, tag)
             },
-            HirExpr::Mut(inner) => self.expr(inner)?.with_mutability(Mutability::Mutable),
             HirExpr::Index(target, member, _) => self.member_access(target, member)?,
             HirExpr::Binary(op, l, r) => self.binary(*op, l, r)?,
             HirExpr::Unary(op, x) => self.unary(*op, x)?,
@@ -375,28 +389,26 @@ impl<'a> Checker<'a> {
     }
 
     pub(super) fn say(&mut self, decl: usize, field: &'a HirSayDecl) -> Result<(), anyhow::Error> {
-        let (name, mutable, value, pattern) = (field.name, field.reassignable, &field.value, &field.pattern);
+        let (name, reassignable, value, pattern) = (field.name, field.reassignable, &field.value, &field.pattern);
         let owed = field.clause.owed();
-        let (assigned, tag, mutability) = if let Some(value) = value {
+        let (assigned, tag) = if let Some(value) = value {
             let state = self.expr(value)?;
             self.check_into_slot(&state.debt, &owed, name, value)?;
-            (true, state.tag, state.mutability)
+            (true, state.tag)
         } else {
-            (false, TypeTag::Unknown, Mutability::Unknown)
+            (false, TypeTag::Unknown)
         };
-        let mut local = Local::value(name, owed, mutable, assigned, tag);
+        let mut local = Local::value(name, owed, reassignable, assigned, tag);
         local.container = field.clause.container;
         local.site = *value;
         local.decl = Some(decl);
-        local.mutability = mutability;
         local.resolved_callable = value.and_then(|v| self.callable_named_by(&v));
         let tag = local.tag.clone();
-        let binder_mutability = local.mutability;
         self.locals.push(local);
 
         if let (Some(pattern), Some(value)) = (pattern, value) {
             self.check_say_pattern_else(pattern, value, &tag, &field.otherwise)?;
-            let scope = self.ctx.say_pattern_binders(pattern, value, binder_mutability, mutable)?;
+            let scope = self.ctx.say_pattern_binders(pattern, value, reassignable)?;
             self.push_binders(&scope);
         }
 
@@ -466,8 +478,7 @@ impl<'a> Checker<'a> {
         let owed: Obligations = self.locals[i].owed.difference(&self.locals[i].discharged).copied().collect();
         let debt = self.locals[i].read_debt(owed);
 
-        Ok(ValueState::of(debt, self.locals[i].tag.clone())
-            .with_mutability(self.locals[i].mutability))
+        Ok(ValueState::of(debt, self.locals[i].tag.clone()))
     }
 
     /// Member or data access `target.member` / `target[member]`.
@@ -516,10 +527,7 @@ impl<'a> Checker<'a> {
                         TypeMember::Method(_) => Debt::Clean,
                     };
 
-                    return Ok(match receiver_state.mutability {
-                        Mutability::Immutable => ValueState::of(debt, TypeTag::Unknown).with_mutability(Mutability::Immutable),
-                        _ => ValueState::of(debt, TypeTag::Unknown),
-                    });
+                    return Ok(ValueState::of(debt, TypeTag::Unknown));
                 }
             }
         }
@@ -610,7 +618,7 @@ impl<'a> Checker<'a> {
 
         match local.reassignable {
             true => ValueState::of(debt, TypeTag::Unknown),
-            false => ValueState::of(debt, local.tag.clone()).with_mutability(local.mutability),
+            false => ValueState::of(debt, local.tag.clone()),
         }
     }
 
@@ -620,8 +628,6 @@ impl<'a> Checker<'a> {
         let saved_factory = std::mem::replace(&mut self.checking_factory, false);
         self.current_type = type_stmt;
         if type_stmt.is_some() {
-            // The factory's field-locals carry definite assignment, and writing an immutable field
-            // in it is initialization. A factory-less type has a `Nop` init to skip.
             self.checking_factory = true;
             self.method_stmt(&decl.init)?;
             self.checking_factory = false;
@@ -657,7 +663,6 @@ impl<'a> Checker<'a> {
             return_shape: decl.ret,
             return_owes: !decl.clause.names.is_empty(),
             return_unmarked: unmarked,
-            return_mut: decl.clause.capability.is_mut(),
             return_admits: self.ctx.sigs.fn_sig_of(callable).map(|s| s.ret.obligations.clone()),
             returns_void: self.ctx.sigs.fn_sig_of(callable).is_some_and(|s| s.ret.void),
             name: Some(decl.name),
@@ -691,13 +696,10 @@ impl<'a> Checker<'a> {
         self.function((*node).into(), decl)
     }
 
-    pub(super) fn receiver_facts(&self, decl: &HirFnDecl) -> ReceiverFacts {
+    pub(super) fn receiver_facts(&self, decl: &HirFnDecl) -> Obligations {
         match &decl.receiver {
-            Some(_) if self.checking_factory => ReceiverFacts::default(),
-            Some(clause) => ReceiverFacts {
-                mutability: Mutability::of(clause.capability),
-                owed: clause.owed(),
-            },
+            Some(_) if self.checking_factory => Obligations::default(),
+            Some(clause) => clause.owed(),
             None => self.fn_ctx.receiver.clone(),
         }
     }
@@ -732,7 +734,7 @@ impl<'a> Checker<'a> {
                         self.check_call_args(callee, init.into(), arg_types, args)?;
                     }
 
-                    return Ok(Some(ValueState::of(self.ctx.construction_debt(&decl), TypeTag::Concrete(decl)).with_mutability(Mutability::Immutable)));
+                    return Ok(Some(ValueState::of(self.ctx.construction_debt(&decl), TypeTag::Concrete(decl))));
                 }
                 if let Some(callable) = self.callable_of(name) {
                     self.check_call_args(callee, callable, arg_types, args)?;
@@ -785,7 +787,6 @@ impl<'a> Checker<'a> {
         // Read the params through the shared signatures borrow so the later check can take &mut self.
         let sigs = self.ctx.sigs;
         let Some(sig) = sigs.fn_sig_of(callable) else { return Ok(()) };
-        self.check_arg_mutability(callee, &sig.param_markers, arg_types, args)?;
         self.check_arg_obligations(callee, &sig.param_clauses, arg_types, args)?;
         self.check_args(callee, &sig.param_clauses, arg_types, args)?;
         Ok(())
@@ -827,7 +828,6 @@ impl<'a> Checker<'a> {
                     self.locals[i].assigned = true;
                     self.locals[i].resolved_callable = self.callable_named_by(rhs);
                     self.locals[i].tag = state.tag.clone();
-                    self.locals[i].mutability = state.mutability;
                     self.locals[i].used = used;
                     self.reset_narrowing(i, matches!(state.debt, Debt::Clean));
                 } else if self.ctx.sigs.is_type(name) {
@@ -845,7 +845,6 @@ impl<'a> Checker<'a> {
             HirExpr::Index(target, member, is_dot) => self.assign_index(target, member, *is_dot, &state.debt, lhs, rhs)?,
             _ => {},
         }
-        // A store hands the value to a new holder, so a mutable right side moves.
         Ok(state)
     }
 
@@ -873,20 +872,9 @@ impl<'a> Checker<'a> {
             return Ok(());
         }
 
-        let slot = self.local_of(target);
-
-        let binding = slot.or_else(|| self.upvalue_binding_of(target));
-        if let Some(i) = binding.filter(|&i| !self.binding_is_writable(i)) {
-            return Err(self.immutable_mutation_error(target, i));
-        }
-
-        if slot.is_none() && self.is_readonly(target) {
-            return Err(self.readonly_write_error(target));
-        }
-
         // A bracket index `obj[expr] = ...` is the dynamic data path.
         if !is_dot {
-            if slot.is_none() {
+            if self.local_of(target).is_none() {
                 self.receiver(target)?;
             }
             return Ok(());
@@ -902,7 +890,7 @@ impl<'a> Checker<'a> {
 
     pub(super) fn assign_field_this(&mut self, field: Symbol, debt: &Debt, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let Some(type_stmt) = self.current_type else { return Ok(()) };
-        let (member, nullable, mutable) = match self.ctx.layout_of(&type_stmt) {
+        let (member, nullable, reassignable) = match self.ctx.layout_of(&type_stmt) {
             Some(layout) => (layout.members.get(&field).copied(), layout.is_nullable(field), layout.is_reassignable(field)),
             None => return Ok(()),
         };
@@ -913,16 +901,12 @@ impl<'a> Checker<'a> {
             None => return Ok(()),
         }
 
-        if !mutable && !self.checking_factory {
+        if !reassignable && !self.checking_factory {
             return Err(self.ctx.non_var_field_error(&type_stmt, field, lhs));
         }
 
         let this = self.this_valuestate();
         self.ctx.require_usable_value(&this, lhs)?;
-
-        if !self.this_is_writable() {
-            return Err(self.readonly_receiver_error(&type_stmt, field, lhs));
-        }
 
         self.check_into_field(debt, nullable, field, rhs)
     }
@@ -937,11 +921,11 @@ impl<'a> Checker<'a> {
             },
             None => None,
         };
-        let Some((public, nullable, mutable)) = field_info else { return Ok(()) };
+        let Some((public, nullable, reassignable)) = field_info else { return Ok(()) };
         if !public {
             return Ok(());
         }
-        if !mutable {
+        if !reassignable {
             return Err(self.ctx.non_var_field_error(&type_stmt, field, lhs));
         }
         self.check_into_field(debt, nullable, field, rhs)

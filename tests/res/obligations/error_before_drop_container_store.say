@@ -1,2 +1,2 @@
-say a = mut [];
+say a = [];
 a.push(Err("boom")); // error: cannot store value owing 'fails' in a container

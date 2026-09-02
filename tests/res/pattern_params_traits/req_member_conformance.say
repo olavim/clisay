@@ -46,7 +46,7 @@ type Box with Reader {
 // @split
 trait Clearer {
     req var field : opt;
-    pub fn clear(mut this) { this.field = null; }
+    pub fn clear(this) { this.field = null; }
 }
 type Box with Clearer {
     pub var field; // error: member `field` does not satisfy `Clearer.field`

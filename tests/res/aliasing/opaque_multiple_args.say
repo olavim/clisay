@@ -1,0 +1,12 @@
+type Box { pub var v; init(this) { this.v = 0; } }
+fn eats(x) { }
+say pair = (x, y) => 0;
+say consume = eats;
+say kept = Box();
+say given = Box();
+say r = pair(given, kept);
+kept.v = 7;
+print(kept.v);   // expect: 7
+say other = Box();
+consume(other);
+print("ok");     // expect: ok

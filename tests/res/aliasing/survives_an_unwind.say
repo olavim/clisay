@@ -1,0 +1,7 @@
+// A value handed to a call that throws is still usable after the unwind.
+say sink = [];
+fn boom(x) { throw "e"; }
+say m = [1, 2];
+try { boom(m); } catch e { }
+sink.push(m);
+print(sink[0][0]); // expect: 1

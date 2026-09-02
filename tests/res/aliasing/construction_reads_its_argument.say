@@ -1,0 +1,5 @@
+type Box { init(this, x) { } }
+say a = [1];
+say b = Box(a);
+a[0] = 9;
+print(a[0]); // expect: 9

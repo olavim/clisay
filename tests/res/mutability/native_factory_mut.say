@@ -1,9 +1,0 @@
-say e: fails = mut Err("x");
-e ?? 0;
-e["value"] = 5;
-print(e["value"]); // expect: 5
-
-// @split
-say e: fails = Err("x");
-e ?? 0;
-e["value"] = 5; // error: cannot mutate an immutable value

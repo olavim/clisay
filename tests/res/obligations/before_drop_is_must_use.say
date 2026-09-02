@@ -11,7 +11,7 @@ print(f()); // expect: 1
 // @split
 type Held { } obligation held { witness Held; must use; }
 type Box { pub var item; init(this) { this.item = 0; } }
-fn f(x: held) { say b = mut Box(); b.item = x; return 1; }
+fn f(x: held) { say b = Box(); b.item = x; return 1; }
 print(f(2)); // expect: 1
 
 // @split

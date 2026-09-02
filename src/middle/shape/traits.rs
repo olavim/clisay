@@ -5,7 +5,7 @@ use anyhow::anyhow;
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::middle::diagnose::Diagnose;
 use crate::middle::hir::{HirId, HirLiteral, HirMatchElem, HirMatchField, HirMatcher, HirParam, HirReqMember, HirStmt, HirTypeDecl, Symbol, SYNTHETIC_PARAM};
-use crate::middle::signatures::{Mutability, RetSig};
+use crate::middle::signatures::RetSig;
 use crate::middle::obligations::Obligations;
 
 use super::Shape;
@@ -35,9 +35,7 @@ impl<'a> Shape<'a> {
         Ok(())
     }
 
-    /// Checks obligation variance where a `req fn` hole is satisfied. A satisfier's return may
-    /// promise fewer obligations than the hole. Its parameters must accept at least what the hole
-    /// passes.
+    /// Checks obligation variance where a `req fn` hole is satisfied.
     pub(super) fn check_req_conformance(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         for req in &decl.req_fns {
             let Some(method) = self.satisfying_method(decl, req.name) else { continue };
@@ -55,21 +53,6 @@ impl<'a> Shape<'a> {
                     &req.pos, format!("`{trait_name}.{name}` declares {theirs} return")));
             }
 
-            // The capability axis is invariant: the satisfier's inferred return capability must
-            // match the hole's declared one.
-            let sat_mut = self.sigs.ret_mut_of_callable(&method) == Mutability::Mutable;
-            if req.ret.capability.is_mut() && !sat_mut {
-                return Err(self.error_ctx_help("return is immutable but trait requires mutable",
-                    &sat.sig_pos, format!("`{type_name}.{name}` returns an immutable value"),
-                    &req.pos, format!("`{trait_name}.{name}` requires a mutable return"),
-                    format!("return a mutable value from `{type_name}.{name}`")));
-            }
-            if !req.ret.capability.is_mut() && sat_mut {
-                return Err(self.error_ctx_help("return is mutable but trait requires immutable",
-                    &sat.sig_pos, format!("`{type_name}.{name}` returns a mutable value"),
-                    &req.pos, format!("`{trait_name}.{name}` requires an immutable return"),
-                    format!("return an immutable value from `{type_name}.{name}`")));
-            }
 
             // A satisfier may not owe a return obligation the requirement does not permit.
             let diff = self.sorted_difference(&sig.ret.obligations, &req.ret.owed());
@@ -77,17 +60,6 @@ impl<'a> Shape<'a> {
                 return Err(self.error_ctx("return owes an obligation the trait forbids",
                     self.hir.pos(&method), format!("`{type_name}.{name}` returns a value owing {}", quote_list(&diff)),
                     &req.pos, format!("`{trait_name}.{name}` forbids {}", quote_list(&diff))));
-            }
-
-            // The receiver goes the same way as a parameter: a satisfier may ask less of `this`
-            // than the hole and not more.
-            if let (Some(hole), Some(recv)) = (&req.receiver, &sat.receiver) {
-                if recv.capability.is_mut() && !hole.capability.is_mut() {
-                    return Err(self.error_ctx_help("receiver asks more than the trait declares",
-                        &sat.sig_pos, format!("`{type_name}.{name}` writes `this` (`mut`)"),
-                        &req.pos, format!("`{trait_name}.{name}` declares a read-only `this`"),
-                        format!("drop `mut` from `this` in `{type_name}.{name}`")));
-                }
             }
 
             // A satisfier's parameter must accept at least what the hole passes it.
@@ -101,12 +73,6 @@ impl<'a> Shape<'a> {
                         &req.pos, format!("`{trait_name}.{name}` declares {theirs} parameter")));
                 }
 
-                if sat_param.clause.capability.is_mut() && !hole.clause.capability.is_mut() {
-                    return Err(self.error_ctx_help("parameter asks more than the trait declares",
-                        &sat_param.pos, format!("`{type_name}.{name}` needs {param} mutable"),
-                        &hole.pos, format!("`{trait_name}.{name}` only borrows {param}"),
-                        format!("drop `mut` from {param}, or declare the hole `mut {param}`")));
-                }
 
                 // A satisfier may widen a pattern but not narrow it.
                 if !self.accepts_at_least(hole.pattern.as_ref(), sat_param.pattern.as_ref()) {

@@ -8,9 +8,9 @@ say field = 0;
 type T {
     var field = 1;
     pub fn read(this)! { return field; }
-    pub fn bump(mut this) { field = field + 5; }
+    pub fn bump(this) { field = field + 5; }
 }
-say t = mut T();
+say t = T();
 print(t.read()); // expect: 1
 t.bump();
 print(t.read()); // expect: 6

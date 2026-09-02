@@ -1,0 +1,9 @@
+// Reassigning a `var` binding resets the narrowing the guard established.
+fn find()? {
+    return null;
+}
+say var h?;
+if (h != null) {
+    h = find();
+    h.x; // error: unchecked value owes 'opt'
+}

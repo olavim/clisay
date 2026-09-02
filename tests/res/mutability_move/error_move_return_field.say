@@ -1,5 +1,0 @@
-type Holder {
-  pub var data;
-  init(this) { this.data = mut []; }
-  pub fn leak(this): mut { return this.data; } // error: Cannot return the mutable field 'data'; it would move out of the receiver
-}

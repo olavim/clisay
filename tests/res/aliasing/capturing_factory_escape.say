@@ -1,0 +1,6 @@
+fn pick(c)! { type Box { pub inner; pub tag; init(this, x) { this.inner = x; this.tag = c; } } return Box; }
+say maker = pick(1);
+say v = [1, 2];
+say b = maker(v);
+print(v[0]); // expect: 1
+print(b.inner[1]); // expect: 2

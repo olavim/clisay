@@ -1,6 +1,6 @@
 // A scope's CLOSE_UPVALUE names a frame-relative slot. Inside a function the operand is offset by
 // the frame's base, so an absolute one closes nothing and every lambda shares the last value.
-say box = mut [];
+say box = [];
 fn go()! {
     say var i = 0;
     while (i < 2) {

@@ -121,7 +121,6 @@ impl<'a> Collector<'a> {
         }
         FnSig {
             param_clauses: decl.params.iter().map(|p| p.clause.names.iter().copied().collect()).collect(),
-            param_markers: decl.params.iter().map(|p| p.clause.capability).collect(),
             ret,
         }
     }

@@ -9,5 +9,5 @@ match t { { x } => print("shape"), has T => print("surface"), _ => print("none")
 
 // @split
 type T { pub x; init(this, a) { this.x = a; } }
-say d = mut { "x": null };
+say d = { "x": null };
 match d { has T => print("surface"), _ => print("none") } // expect: none

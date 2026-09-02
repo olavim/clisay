@@ -1,0 +1,9 @@
+// A `var` field does not narrow, since a call could change it between the check and the use.
+type Node {
+    pub var prev?;
+    pub fn check(this) {
+        if (this.prev != null) {
+            this.prev.x; // error: unchecked value owes 'opt'
+        }
+    }
+}

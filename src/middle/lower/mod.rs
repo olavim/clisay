@@ -10,9 +10,9 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
-use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, Expr, SayDecl, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
+use crate::ast::{MatchArm, Ast, AstId, CatchClause, Expr, SayDecl, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
 use crate::middle::hir::{
-    BinOp, Hir, HirSlotClause, HirMatchArm, HirCatchClause, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, ObligationWitness, TypeId, UnOp,
+    BinOp, Hir, HirMatchArm, HirCatchClause, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, ObligationWitness, TypeId, UnOp,
 };
 use crate::middle::names::NameBindings;
 
@@ -261,7 +261,6 @@ impl<'a> Lowerer<'a> {
                 }
                 HirExpr::Construct(callee, brace)
             },
-            Expr::Mut(inner) => return self.lower_value_mut(expr_id, inner),
             Expr::This => {
                 // A `this.<field>` access is handled in the `Index` arm above. Reaching here means
                 // `this` is used as a value, which a factory forbids.
@@ -305,29 +304,6 @@ impl<'a> Lowerer<'a> {
             _ => HirExpr::Binary(lower_binop(op), self.expr(left)?, self.expr(right)?),
         };
         Ok(self.hir.add(kind, pos))
-    }
-
-    fn lower_value_mut(&mut self, node: &AstId<Expr>, inner: &AstId<Expr>) -> Result<HirId<HirExpr>, anyhow::Error> {
-        let constructs = match self.ast.get(inner) {
-            Expr::Literal(Literal::Array(_)) | Expr::Literal(Literal::Dict(_)) | Expr::Construct(..) => true,
-            Expr::Call(callee, _) => self.calls_a_type(callee),
-            _ => false,
-        };
-        if !constructs {
-            return Err(self.error_help_at("invalid operand of `mut`", self.ast.pos(node),
-                "`mut` can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`"));
-        }
-        let lowered = self.expr(inner)?;
-        Ok(self.hir.add(HirExpr::Mut(lowered), self.ast.pos(node).clone()))
-    }
-
-    /// Whether a call constructs, which is what `mut` may mark. Any other call returns a value it
-    /// did not make, so marking it would re-mark what someone else holds.
-    fn calls_a_type(&self, callee: &AstId<Expr>) -> bool {
-        match self.ast.get(callee) {
-            Expr::Identifier(name) => self.names.is_type_or_trait(*name),
-            _ => false,
-        }
     }
 
     fn exprs(&mut self, exprs: &[AstId<Expr>]) -> Result<Vec<HirId<HirExpr>>, anyhow::Error> {
@@ -452,34 +428,27 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Each field's lowered `:` clause. A field with no clause carries nothing.
-    pub(super) fn field_clauses(&self, decl: &TypeDecl) -> HashMap<Symbol, HirSlotClause> {
+    pub(super) fn field_clauses(&self, decl: &TypeDecl) -> HashMap<Symbol, SlotClause> {
         decl.field_clauses.iter()
             .map(|(field, clause)| (*field, self.slot_clause(decl.nullable_fields.contains(field), clause)))
             .collect()
     }
 
-    fn slot_clause(&self, marker_nullable: bool, clause: &SlotClause) -> HirSlotClause {
-        let mut names = clause.names.clone();
-        if marker_nullable && !names.contains(&self.opt) {
-            names.push(self.opt);
+    fn slot_clause(&self, marker_nullable: bool, clause: &SlotClause) -> SlotClause {
+        let mut lowered = clause.clone();
+        if marker_nullable && !lowered.names.contains(&self.opt) {
+            lowered.names.push(self.opt);
         }
-        HirSlotClause {
-            capability: clause.capability,
-            names,
-            container: clause.container,
-            void: clause.void,
-            pos: clause.pos.clone()
-        }
+        lowered
     }
 
-    pub(super) fn return_clause(&self, decl: &FnDecl) -> (ReturnShape, HirSlotClause) {
+    pub(super) fn return_clause(&self, decl: &FnDecl) -> (ReturnShape, SlotClause) {
         let clause = self.slot_clause(decl.ret == ReturnShape::Nullable, &decl.clause);
         let ret = if decl.clause.void {
             ReturnShape::Void
         } else if clause.names.contains(&self.opt) {
             ReturnShape::Nullable
-        } else if !decl.clause.names.is_empty() || decl.clause.capability != Capability::None {
+        } else if !decl.clause.names.is_empty() {
             ReturnShape::Inferred
         } else {
             decl.ret

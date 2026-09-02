@@ -1,0 +1,19 @@
+type Box { pub var v; init(this) { this.v = 0; } }
+say noop = (x) => 0;
+
+say a = Box();
+say r = noop(a);
+a.v = 1;
+print(a.v);   // expect: 1
+print(a.v);   // expect: 1
+
+say b = Box();
+say s = noop(b);
+{ b.v = 2; }
+print(b.v);   // expect: 2
+
+fn bump(x) { x.v = x.v + 5; }
+say lend = bump;
+say c = Box();
+lend(c);
+print(c.v);   // expect: 5

@@ -72,7 +72,6 @@ pub enum Expr {
     Handle(AstId<Expr>, Symbol, AstId<Expr>),
     /// `a!`
     Assert(AstId<Expr>),
-    Mut(AstId<Expr>),
     /// `scrutinee ~ matcher`
     Match(AstId<Expr>, AstId<Matcher>),
 }
@@ -114,22 +113,8 @@ pub enum Matcher {
     And(Vec<AstId<Matcher>>),
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Capability {
-    #[default]
-    None,
-    Mut,
-}
-
-impl Capability {
-    pub fn is_mut(self) -> bool {
-        matches!(self, Capability::Mut)
-    }
-}
-
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SlotClause {
-    pub capability: Capability,
     pub names: Vec<Symbol>,
     pub container: bool,
     pub void: bool,

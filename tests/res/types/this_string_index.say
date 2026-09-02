@@ -2,12 +2,12 @@
 type Counter {
     pub var n = 0;
 
-    pub fn bump(mut this) {
+    pub fn bump(this) {
         this["n"] = this["n"] + 1;
     }
 }
 
-say c = mut Counter();
+say c = Counter();
 c.bump();
 c.bump();
 print(c.n); // expect: 2

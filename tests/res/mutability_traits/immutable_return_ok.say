@@ -1,9 +1,0 @@
-trait Source {
-    req fn read(this): opt;
-}
-type File with Source {
-    pub fn read(this): opt { say x = mut []; return x; }
-    init(this) {}
-}
-say f = File();
-print("ok"); // expect: ok

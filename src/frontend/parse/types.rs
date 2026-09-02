@@ -76,9 +76,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses a `req "var"? name (":" clause)?;` member hole.
     pub(super) fn parse_req_member(&mut self) -> Result<ReqMember, anyhow::Error> {
         let start = self.tokens.peek(0).pos.clone();
-        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
-            parse_error!(self, &start, "A reassignable member is required with `var`, not `mut`");
-        }
         let reassignable = self.take_modifier(ContextualKeyword::Var);
         let name_pos = self.tokens.peek(0).pos.clone();
         let name = self.parse_identifier()?;
@@ -134,10 +131,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 continue;
             }
 
-            if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
-                let at = self.tokens.peek(0).pos.clone();
-                parse_error!(self, &at, "A reassignable field is declared with `var`, not `mut`");
-            }
             let reassignable = self.take_modifier(ContextualKeyword::Var);
 
             let kind = self.tokens.peek(0).kind;

@@ -1,6 +1,0 @@
-// A `mut` parameter returned through `??` is handed back to the caller that lent it, so it is not
-// an escape. Either branch yields a value the caller may already hold.
-fn f(mut x)!: mut { return x ?? mut []; }
-say a = mut [1];
-say b = f(a);
-print(b[0]); // expect: 1

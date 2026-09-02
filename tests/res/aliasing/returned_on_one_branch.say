@@ -1,0 +1,10 @@
+fn build(flag) {
+  say a = [1, 2];
+  if flag { return a; }
+  a[0] = 3;
+  return a;
+}
+say x = build(false);
+print(x[0]); // expect: 3
+say y = build(true);
+print(y[0]); // expect: 1

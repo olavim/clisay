@@ -1,7 +1,7 @@
-fn other() { type T { pub var x; init(this) { this.x = 1; } } say u = mut T(); u.x = 5; }
+fn other() { type T { pub var x; init(this) { this.x = 1; } } say u = T(); u.x = 5; }
 fn mk() {
     type T { pub x; init(this) { this.x = 1; } }
-    say v = mut T();
+    say v = T();
     v.x = 99; // error: Cannot reassign field `T.x`
 }
 
@@ -9,7 +9,7 @@ fn mk() {
 fn other() { type T { pub var x?; init(this) { this.x = null; } } }
 fn mk() {
     type T { pub var x; init(this) { this.x = 1; } }
-    say v = mut T();
+    say v = T();
     v.x = null; // error: Cannot assign null to non-null field 'x'
 }
 
@@ -17,7 +17,7 @@ fn mk() {
 fn other() { type T { pub x; init(this) { this.x = 1; } } }
 fn mk() {
     type T { pub var x; init(this) { this.x = 1; } }
-    say v = mut T();
+    say v = T();
     v.x = 2;
     print(v.x); // expect: 2
 }

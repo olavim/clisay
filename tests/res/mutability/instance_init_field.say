@@ -1,3 +1,0 @@
-type L { pub data; init(this) { this.data = mut [0]; } }
-say x = L();
-print(x.data[0]); // expect: 0

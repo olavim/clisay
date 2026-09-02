@@ -1,4 +1,4 @@
-// A matcher binder is immutable.
+// A matcher binder is not `var`.
 say d = { x: 1 };
 if d ~ { x } {
     x = 5; // error: Cannot reassign matcher binder `x`

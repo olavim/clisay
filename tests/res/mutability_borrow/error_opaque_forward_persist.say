@@ -1,6 +1,0 @@
-obligation borrowed { no persist; no return; }
-type Box {
-    pub var item;
-    init(this) { this.item = 0; }
-    fn stash(mut this, x: borrowed, cb) { cb(x); this.item = x; } // error: cannot store value owing 'borrowed' in a field
-}

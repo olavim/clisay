@@ -1,0 +1,5 @@
+type C { pub var n; init(this) { this.n = 0; } }
+fn bump(x) { say f = () => { x.n = x.n + 1; }; f(); f(); }
+say c = C();
+bump(c);
+print(c.n); // expect: 2

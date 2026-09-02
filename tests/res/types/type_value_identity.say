@@ -19,6 +19,6 @@ print(other().n); // expect: 9
 
 // @split
 say a = [1];
-say d = mut { "k": 1 };
+say d = { "k": 1 };
 print(a == d); // expect: false
 print(a == a); // expect: true

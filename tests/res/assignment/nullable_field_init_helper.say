@@ -1,0 +1,9 @@
+// A nullable field is assigned directly in init.
+type T {
+    var value?;
+    init(this) {
+        this.value = 1;
+    }
+}
+say t = T();
+print("ok"); // expect: ok

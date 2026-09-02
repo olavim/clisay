@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::middle::hir::{HirExpr, HirId, HirMatchArm, HirMatcher, HirParam, HirStmt, Symbol};
 use crate::middle::obligations::Obligations;
-use crate::middle::signatures::{CallableId, Mutability, TypeTag};
+use crate::middle::signatures::{CallableId, TypeTag};
 
 use super::narrow::collect_whole_value_binders;
 use super::{PatternBinderSource, Checker, Ctx, Local};
@@ -17,7 +17,6 @@ pub(super) struct PatternBinderScope {
     pub(super) decls: HashMap<Symbol, usize>,
     /// The binders that read as dynamic-boundary values, no test having proved what they hold.
     pub(super) unknown: HashSet<Symbol>,
-    pub(super) mutability: Mutability,
     pub(super) reassignable: bool,
     pub(super) source: PatternBinderSource,
 }
@@ -27,7 +26,6 @@ pub(super) struct PatternBinderScope {
 pub struct LocalFlow {
     pub assigned: bool,
     pub tag: TypeTag,
-    pub mutability: Mutability,
     pub discharged: Obligations,
     pub field_discharged: HashMap<Symbol, Obligations>,
     pub resolved_callable: Option<CallableId>,
@@ -44,24 +42,23 @@ pub(super) struct FlowSnapshot {
 impl<'a> Ctx<'a> {
     pub(super) fn param_pattern_binders(&self, param: &HirParam) -> Result<PatternBinderScope, anyhow::Error> {
         let Some(pattern) = &param.pattern else { return Ok(PatternBinderScope::default()) };
-        self.pattern_binders(pattern, &param.name, Mutability::of(param.clause.capability), false, PatternBinderSource::Param)
+        self.pattern_binders(pattern, &param.name, false, PatternBinderSource::Param)
     }
 
-    fn pattern_binders(&self, pattern: &HirId<HirMatcher>, at: &HirId<HirExpr>, mutability: Mutability, reassignable: bool, source: PatternBinderSource) -> Result<PatternBinderScope, anyhow::Error> {
+    fn pattern_binders(&self, pattern: &HirId<HirMatcher>, at: &HirId<HirExpr>, reassignable: bool, source: PatternBinderSource) -> Result<PatternBinderScope, anyhow::Error> {
         let names = self.hir.get(pattern).binders(self.hir);
         Ok(PatternBinderScope {
             decls: names.iter().map(|&name| (name, pattern.index())).collect(),
             names,
             owed: self.collect_matcher_witnessed_obligations(pattern, at)?,
             unknown: self.collect_matcher_unknown_binders(pattern),
-            mutability,
             reassignable,
             source,
         })
     }
 
-    pub(super) fn say_pattern_binders(&self, pattern: &HirId<HirMatcher>, value: &HirId<HirExpr>, mutability: Mutability, reassignable: bool) -> Result<PatternBinderScope, anyhow::Error> {
-        self.pattern_binders(pattern, value, mutability, reassignable, PatternBinderSource::Say)
+    pub(super) fn say_pattern_binders(&self, pattern: &HirId<HirMatcher>, value: &HirId<HirExpr>, reassignable: bool) -> Result<PatternBinderScope, anyhow::Error> {
+        self.pattern_binders(pattern, value, reassignable, PatternBinderSource::Say)
     }
 }
 
@@ -72,25 +69,10 @@ impl<'a> Checker<'a> {
 
     pub(super) fn local_of(&self, node: &HirId<HirExpr>) -> Option<usize> {
         match self.ctx.hir.get(node) {
-            HirExpr::Assert(x) | HirExpr::Propagate(x) | HirExpr::Mut(x) => self.local_of(x),
+            HirExpr::Assert(x) | HirExpr::Propagate(x) => self.local_of(x),
             HirExpr::Identifier(name) => self.frame_index_of(*name),
             _ => None,
         }
-    }
-
-    pub(super) fn root_local_of(&self, target: &HirId<HirExpr>) -> Option<usize> {
-        match self.ctx.hir.get(target) {
-            HirExpr::Index(base, ..) | HirExpr::SafeAccess(base, ..) => self.root_local_of(base),
-            _ => self.local_of(target),
-        }
-    }
-
-    pub(super) fn upvalue_binding_of(&self, node: &HirId<HirExpr>) -> Option<usize> {
-        let HirExpr::Identifier(name) = self.ctx.hir.get(node) else { return None };
-        if !matches!(self.ctx.bindings.place_of(node), Some(crate::middle::bind::Place::Upvalue(_))) {
-            return None;
-        }
-        self.upvalue_index(*name)
     }
 
     pub(super) fn frame_index_of(&self, name: Symbol) -> Option<usize> {
@@ -116,8 +98,6 @@ impl<'a> Checker<'a> {
         for &name in &scope.names {
             let mut local = Local::binder_owing(name, scope.owed.get(&name).cloned().unwrap_or_default(), scope.source);
             local.decl = scope.decls.get(&name).copied();
-            local.mutability = scope.mutability;
-            local.writable = scope.source != PatternBinderSource::Param || scope.mutability == Mutability::Mutable;
             local.unknown = scope.unknown.contains(&name);
             local.reassignable = scope.reassignable;
             self.locals.push(local);
@@ -142,7 +122,6 @@ impl<'a> Checker<'a> {
             names,
             owed: self.ctx.collect_condition_witness_obligations(cond)?,
             unknown: self.ctx.collect_condition_unknown_binders(cond),
-            mutability: Mutability::Unknown,
             reassignable: false,
             source: PatternBinderSource::Condition,
         })
@@ -167,7 +146,7 @@ impl<'a> Checker<'a> {
         if let Some(guard) = &arm.guard {
             unknown.extend(self.ctx.collect_condition_unknown_binders(guard));
         }
-        Ok(PatternBinderScope { names, owed, decls, unknown, mutability: Mutability::Unknown, reassignable: false, source: PatternBinderSource::Arm })
+        Ok(PatternBinderScope { names, owed, decls, unknown, reassignable: false, source: PatternBinderSource::Arm })
     }
 
     pub(super) fn with_frame<R>(&mut self, params: &[HirParam], at: &HirId<HirExpr>, body: impl FnOnce(&mut Self) -> Result<R, anyhow::Error>) -> Result<R, anyhow::Error> {
@@ -188,9 +167,6 @@ impl<'a> Checker<'a> {
             let mut local = Local::param(name, owed, param.reassignable);
             local.decl = Some(param.name.index());
             local.container = param.clause.container;
-            local.param = true;
-            local.mutability = Mutability::of(param.clause.capability);
-            local.writable = param.clause.capability.is_mut();
             local.site = Some(param.name);
 
             if param.pattern.is_some() {
@@ -239,7 +215,9 @@ impl<'a> Checker<'a> {
     pub(super) fn restore_narrowings(&mut self, flow: &FlowSnapshot) {
         for (local, snap) in self.locals.iter_mut().zip(&flow.locals) {
             let LocalFlow {
-                assigned: _, tag: _, mutability: _, discharged, field_discharged, resolved_callable: _,
+                assigned: _, tag: _, resolved_callable: _,
+                discharged,
+                field_discharged
             } = snap;
             local.discharged.retain(|ob| discharged.contains(ob));
             intersect_narrowings(&mut local.field_discharged, field_discharged);
@@ -262,7 +240,6 @@ pub(super) fn local_flow_of(local: &Local) -> LocalFlow {
     LocalFlow {
         assigned: local.assigned,
         tag: local.tag.clone(),
-        mutability: local.mutability,
         discharged: local.discharged.clone(),
         field_discharged: local.field_discharged.clone(),
         resolved_callable: local.resolved_callable,
@@ -271,11 +248,10 @@ pub(super) fn local_flow_of(local: &Local) -> LocalFlow {
 
 pub(super) fn restore_local_flow(local: &mut Local, flow: &LocalFlow) {
     let LocalFlow {
-        assigned, tag, mutability, discharged, field_discharged, resolved_callable,
+        assigned, tag, discharged, field_discharged, resolved_callable,
     } = flow;
     local.assigned = *assigned;
     local.tag = tag.clone();
-    local.mutability = *mutability;
     local.discharged = discharged.clone();
     local.field_discharged = field_discharged.clone();
     local.resolved_callable = *resolved_callable;
@@ -283,11 +259,14 @@ pub(super) fn restore_local_flow(local: &mut Local, flow: &LocalFlow) {
 
 pub fn merge_local_flow(into: &mut LocalFlow, other: &LocalFlow) {
     let LocalFlow {
-        assigned, tag, mutability, discharged, field_discharged, resolved_callable,
+        assigned,
+        tag,
+        discharged,
+        field_discharged,
+        resolved_callable
     } = other;
     into.assigned = into.assigned && *assigned;
     into.tag = if into.tag == *tag { into.tag.clone() } else { TypeTag::Unknown };
-    into.mutability = if into.mutability == *mutability { into.mutability } else { Mutability::Unknown };
 
     // Either path could have run, so a name resolves only where both paths reach the same callable.
     if into.resolved_callable != *resolved_callable {

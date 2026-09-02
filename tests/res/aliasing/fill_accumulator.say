@@ -1,0 +1,6 @@
+fn addDefaults(config) {
+  config["timeout"] = 30;
+}
+say cfg = {};
+addDefaults(cfg);
+print(cfg["timeout"]); // expect: 30

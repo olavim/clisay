@@ -1,0 +1,5 @@
+fn show(xs) { print(xs[0]); }
+say a = [1, 2];
+show(a); // expect: 1
+a[0] = 9;
+show(a); // expect: 9

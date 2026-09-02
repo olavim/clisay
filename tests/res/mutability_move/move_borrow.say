@@ -1,6 +1,0 @@
-// A plain `mut` parameter borrows, so the caller's value stays live across two calls.
-fn fill(mut x) { x["k"] = 1; }
-say a = mut {};
-fill(a);
-fill(a);
-print(a["k"]); // expect: 1

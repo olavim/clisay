@@ -7,8 +7,14 @@ use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 
-pub use crate::frontend::ast::{builtin_obligation_rules, Capability, ObligationRules, ReturnShape, Symbol};
+pub use crate::frontend::ast::{builtin_obligation_rules, ObligationRules, ReturnShape, SlotClause, Symbol};
 use crate::frontend::lex::{SourcePosition, TokenType};
+
+impl SlotClause {
+    pub fn owed(&self) -> crate::middle::obligations::Obligations {
+        self.names.iter().copied().collect()
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
@@ -98,7 +104,6 @@ pub enum HirExpr {
     Identifier(Symbol),
     /// Brace construction `C { field: value, ... }`
     Construct(HirId<HirExpr>, Vec<(Symbol, HirId<HirExpr>)>),
-    Mut(HirId<HirExpr>),
     This,
     /// `a ?? b`
     Coalesce(HirId<HirExpr>, HirId<HirExpr>),
@@ -216,23 +221,6 @@ impl HirMatcher {
     }
 }
 
-/// A slot's lowered `:` clause.
-#[derive(Default, Clone)]
-pub struct HirSlotClause {
-    pub capability: Capability,
-    pub names: Vec<Symbol>,
-    pub container: bool,
-    pub void: bool,
-    pub pos: Option<SourcePosition>,
-}
-
-impl HirSlotClause {
-    /// The obligations the clause declares.
-    pub fn owed(&self) -> crate::middle::obligations::Obligations {
-        self.names.iter().copied().collect()
-    }
-}
-
 pub struct HirSayDecl {
     pub name: Symbol,
     pub otherwise: Option<HirId<HirExpr>>,
@@ -240,7 +228,7 @@ pub struct HirSayDecl {
     pub value: Option<HirId<HirExpr>>,
     pub nullable: bool,
     pub reassignable: bool,
-    pub clause: HirSlotClause,
+    pub clause: SlotClause,
 }
 
 pub struct HirParam {
@@ -251,7 +239,7 @@ pub struct HirParam {
     pub pos: SourcePosition,
     pub nullable: bool,
     pub reassignable: bool,
-    pub clause: HirSlotClause,
+    pub clause: SlotClause,
 }
 
 pub struct HirFnDecl {
@@ -259,12 +247,12 @@ pub struct HirFnDecl {
     /// The `name(params): clause` signature span.
     pub sig_pos: SourcePosition,
     /// The declared `this` clause, present on an instance method and absent on a plain function.
-    pub receiver: Option<HirSlotClause>,
+    pub receiver: Option<SlotClause>,
     pub params: Vec<HirParam>,
     pub body: HirId<HirExpr>,
     /// The declared return shape (the postfix marker after the parameter list).
     pub ret: ReturnShape,
-    pub clause: HirSlotClause,
+    pub clause: SlotClause,
 }
 
 impl HirFnDecl {
@@ -273,9 +261,7 @@ impl HirFnDecl {
             return false;
         }
         self.ret == ReturnShape::Void
-            || (self.ret == ReturnShape::Inferred
-                && self.clause.names.is_empty()
-                && self.clause.capability == Capability::None)
+            || (self.ret == ReturnShape::Inferred && self.clause.names.is_empty())
     }
 }
 
@@ -285,12 +271,10 @@ pub struct HirReqFn {
     pub trait_name: Symbol,
     /// The `name(params): clause` span in the trait.
     pub pos: SourcePosition,
-    /// What the hole asks of `this`. A satisfier may ask less and not more.
-    pub receiver: Option<HirSlotClause>,
     /// Each parameter's clause and `name: clause` span.
     pub params: Vec<HirReqParam>,
     /// What the return may carry. A satisfier may promise fewer obligations.
-    pub ret: HirSlotClause,
+    pub ret: SlotClause,
 }
 
 pub struct HirReqMember {
@@ -302,7 +286,7 @@ pub struct HirReqMember {
     /// Required to be reassignable, with the `var` marker.
     pub reassignable: bool,
     /// What the member must owe.
-    pub clause: HirSlotClause,
+    pub clause: SlotClause,
 }
 
 /// What lowering names a parameter whose pattern binds no name for the whole value.
@@ -310,7 +294,7 @@ pub const SYNTHETIC_PARAM: &str = "$p";
 
 pub struct HirReqParam {
     pub pos: SourcePosition,
-    pub clause: HirSlotClause,
+    pub clause: SlotClause,
     pub pattern: Option<HirId<HirMatcher>>,
 }
 
@@ -335,7 +319,7 @@ pub struct HirTypeDecl {
     pub fields: IndexSet<Symbol>,
     pub nullable_fields: HashSet<Symbol>,
     pub var_fields: HashSet<Symbol>,
-    pub field_clauses: HashMap<Symbol, HirSlotClause>,
+    pub field_clauses: HashMap<Symbol, SlotClause>,
     /// Where each field is declared.
     pub field_positions: HashMap<Symbol, SourcePosition>,
     pub methods: Vec<HirId<HirStmt>>,

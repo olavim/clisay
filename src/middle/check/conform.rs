@@ -24,9 +24,8 @@ fn merge_binder_obligations(into: &mut HashMap<Symbol, Obligations>, from: HashM
 impl<'a> Ctx<'a> {
     pub(super) fn call_result(&self, callable: CallableId, receiver_tag: &TypeTag) -> ValueState {
         let debt = self.sigs.fn_sig_of(callable).map_or(Debt::Unknown, |s| self.ret_debt(&s.ret));
-        let mutability = self.sigs.ret_mut_of_callable(callable);
         let tag = self.sigs.ret_tag_of(callable).map_or(TypeTag::Unknown, |t| t.resolve(receiver_tag));
-        ValueState::of(debt, tag).with_mutability(mutability)
+        ValueState::of(debt, tag)
     }
 
     pub(super) fn collect_condition_witness_obligations(&self, cond: &HirId<HirExpr>) -> Result<HashMap<Symbol, Obligations>, anyhow::Error> {

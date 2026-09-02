@@ -1,0 +1,13 @@
+say a = [1];
+say var c = [0];
+say cond = false;
+{
+  say var b = [2];
+  if cond {
+    b = a;
+  } else {
+    c = a;
+  }
+}
+c[0] = 99;
+print(a[0]); // expect: 99

@@ -1,0 +1,5 @@
+fn fill(x) { x["k"] = 1; }
+say a = {};
+fill(a);
+fill(a);
+print(a["k"]); // expect: 1

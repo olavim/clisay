@@ -1,4 +1,4 @@
-// A caught value is bound for the handler and nothing reassigns it, so neither marker is accepted.
+// A caught value is bound for the handler and nothing reassigns it, so `var` is not accepted.
 try {
     throw "boom";
 } catch (e) {
@@ -8,7 +8,7 @@ try {
 // @split
 try {
     throw "boom";
-} catch (mut e) { // error: A catch parameter cannot be `mut`
+} catch (var e) { // error: A catch parameter cannot be `var`
     print(e);
 }
 

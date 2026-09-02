@@ -1,5 +1,4 @@
-// An immutable slot cannot be rebound, so a discharge made before the capture still holds inside it.
-// A discharge inside the nested body works too, and a slot assigned after the capture stays legal.
+// A binding without `var` cannot be rebound, so a discharge made before the capture still holds.
 fn narrowedOutside(v: opt) {
     say x: opt = v;
     if (x == null) { return; }

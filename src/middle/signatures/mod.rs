@@ -8,7 +8,7 @@ mod returns;
 use std::collections::HashMap;
 
 use crate::middle::bind::Bindings;
-use crate::middle::hir::{builtin_obligation_rules, Capability, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatcher, HirStmt, HirTypeDecl, ObligationRules, Symbol, TypeId};
+use crate::middle::hir::{builtin_obligation_rules, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatcher, HirStmt, HirTypeDecl, ObligationRules, Symbol, TypeId};
 use crate::middle::obligations::Obligations;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,22 +41,7 @@ pub struct RetSig {
 
 pub struct FnSig {
     pub param_clauses: Vec<Obligations>,
-    pub param_markers: Vec<Capability>,
     pub ret: RetSig,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub enum Mutability {
-    Mutable,
-    Immutable,
-    #[default]
-    Unknown,
-}
-
-impl Mutability {
-    pub fn of(capability: Capability) -> Mutability {
-        if capability.is_mut() { Mutability::Mutable } else { Mutability::Unknown }
-    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -90,7 +75,6 @@ pub struct Signatures {
     pub(crate) obligation_rules: HashMap<Symbol, ObligationRules>,
     pub(crate) fns: HashMap<CallableId, FnSig>,
     pub(crate) ret_tags: HashMap<CallableId, TypeTag>,
-    pub(crate) ret_mut: HashMap<CallableId, Mutability>,
     pub(crate) types_by_name: HashMap<Symbol, Vec<HirId<HirStmt>>>,
     pub(crate) traits_by_name: HashMap<Symbol, Vec<HirId<HirStmt>>>,
     pub(crate) decls_by_id: HashMap<TypeId, HirId<HirStmt>>,
@@ -108,7 +92,6 @@ impl Signatures {
             obligation_rules: HashMap::new(),
             fns: HashMap::new(),
             ret_tags: HashMap::new(),
-            ret_mut: HashMap::new(),
             types_by_name: HashMap::new(),
             traits_by_name: HashMap::new(),
             decls_by_id: HashMap::new(),
@@ -120,10 +103,6 @@ impl Signatures {
 
     pub(crate) fn ret_tag_of(&self, callable: impl Into<CallableId>) -> Option<&TypeTag> {
         self.ret_tags.get(&callable.into())
-    }
-
-    pub(crate) fn ret_mut_of_callable(&self, callable: impl Into<CallableId>) -> Mutability {
-        self.ret_mut.get(&callable.into()).copied().unwrap_or(Mutability::Unknown)
     }
 
     /// The declaration a callable id stands for, whichever spelling wrote it.
@@ -271,7 +250,6 @@ pub fn collect(hir: &Hir, bindings: &Bindings) -> Signatures {
     collector.admit_pattern_obligations();
     collector.collect_all_returns();
     collector.infer_ret_tags();
-    collector.infer_ret_mut();
     collector.infer_propagated();
     collector.sigs
 }

@@ -1,4 +1,0 @@
-fn keep(mut bin, mut x) { bin.push(x); }
-say b = mut [];
-keep(b, mut [1]);
-print(b.length()); // expect: 1

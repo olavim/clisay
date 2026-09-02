@@ -1,0 +1,10 @@
+say f = {};
+f["y"] = 2;
+print(f["y"]); // expect: 2
+
+// @split
+say var g = {};
+g["y"] = 2;
+g = {};
+g["z"] = 3;
+print(g["z"]); // expect: 3

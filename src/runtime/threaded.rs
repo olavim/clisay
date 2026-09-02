@@ -208,8 +208,6 @@ fn store_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Val
     let mut ip = ip;
     let idx = rb!(ip) as usize;
     let value = peek!(top, 0);
-    // The slot written belongs to an enclosing frame, so the value outlives this one and the
-    // claim over it moves there rather than dying with this frame.
     vm.stack.set_top(top);
     vm.ip = ip;
     vm.store_through_upvalue(idx, value)?;

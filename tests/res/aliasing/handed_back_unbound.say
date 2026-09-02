@@ -1,0 +1,10 @@
+type C {
+    pub var v;
+    init(this) { this.v = 0; }
+    pub fn set(this, n)! { this.v = n; return this; }
+}
+say a = C();
+a.set(1);
+print(a.v);        // expect: 1
+a.set(2).set(3);
+print(a.v);        // expect: 3

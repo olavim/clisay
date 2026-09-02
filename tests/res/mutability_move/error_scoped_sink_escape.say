@@ -1,6 +1,0 @@
-// A container that escapes the block carries its contents, so the source does not write them
-// again. Reading is unaffected.
-say sink = mut [];
-say a = mut [1];
-{ say b = mut [a]; sink.push(b); }
-print(a[0]); // expect: 1

@@ -1,0 +1,16 @@
+type T {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn read(this) { print(this.n); }
+    pub fn write(this) { this.n = 1; }
+    pub fn takeRead(this) { print(this.n); }
+    pub fn takeWrite(this) { this.n = 2; print(this.n); }
+}
+say t = T();
+t.read(); // expect: 0
+t.write();
+t.read(); // expect: 1
+t.takeWrite(); // expect: 2
+
+// @split
+type T { pub fn f(x, this) { } } // error: 'this' must be the first parameter

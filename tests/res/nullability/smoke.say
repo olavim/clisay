@@ -7,8 +7,8 @@ type Box {
         return this.value;
     }
 }
-fn makeBox(v)!: mut {
-    return mut Box(v);
+fn makeBox(v)! {
+    return Box(v);
 }
 fn describe(b?)! {
     return "a box";

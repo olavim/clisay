@@ -4,7 +4,7 @@ use indexmap::IndexSet;
 
 use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl, SlotClause};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirSlotClause, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirStmt, UnOp};
+use crate::middle::hir::{HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirStmt, UnOp};
 
 use super::Lowerer;
 
@@ -45,7 +45,6 @@ impl<'a> Lowerer<'a> {
         let mut fields: Vec<Symbol> = decl.fields.iter().copied().collect();
         fields.sort_by(|a, b| self.hir.text(*a).cmp(self.hir.text(*b)));
 
-        // Declare a `mut` field-local per field, seeded with its default, null for `opt`, or unassigned.
         for &field in &fields {
             let default = field_inits.iter().find(|(f, _)| *f == field).map(|(_, v)| *v);
             let nullable = decl.nullable_fields.contains(&field);
@@ -100,8 +99,8 @@ impl<'a> Lowerer<'a> {
         // The local stands for the field, so it accepts exactly what the field declares.
         let clause = match declared {
             Some(declared) => self.slot_clause(nullable, declared),
-            None if nullable => HirSlotClause { names: vec![self.opt], ..Default::default() },
-            None => HirSlotClause::default(),
+            None if nullable => SlotClause { names: vec![self.opt], ..Default::default() },
+            None => SlotClause::default(),
         };
         let decl = HirSayDecl { name, pattern: None, otherwise: None, value, nullable, reassignable: true, clause };
         self.hir.add(HirStmt::Say(decl), pos.clone())
@@ -143,8 +142,8 @@ impl<'a> Lowerer<'a> {
     fn make_factory_fn(&mut self, name: Symbol, params: Vec<HirParam>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
         let body = self.hir.add(HirExpr::Block(body), pos.clone());
         // A factory always has a receiver: the instance it is building up.
-        let receiver = Some(HirSlotClause::default());
-        let fn_decl = HirFnDecl { name, sig_pos: pos.clone(), receiver, params, body, ret: ReturnShape::Inferred, clause: HirSlotClause::default() };
+        let receiver = Some(SlotClause::default());
+        let fn_decl = HirFnDecl { name, sig_pos: pos.clone(), receiver, params, body, ret: ReturnShape::Inferred, clause: SlotClause::default() };
         self.hir.add(HirStmt::Fn(fn_decl), pos.clone())
     }
 }

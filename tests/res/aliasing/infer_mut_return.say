@@ -1,0 +1,4 @@
+fn make()! { return {}; }
+say r = make();
+r["k"] = 1;
+print(r["k"]); // expect: 1

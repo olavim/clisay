@@ -38,7 +38,6 @@ impl<'a> Compiler<'a> {
                 self.emit_load(place, expr)?;
             },
             HirExpr::Construct(callee, brace) => self.construct_expression(expr, callee, brace)?,
-            HirExpr::Mut(inner) => self.expression(inner)?,
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
                 match self.bindings.match_binders(expr) {

@@ -2,5 +2,5 @@ type Box {
     value; // private by default
     init(this, v) { this.value = v; }
 }
-say b = mut Box(1);
+say b = Box(1);
 b.value = 5; // error: Invalid index: Box doesn't have member "value"

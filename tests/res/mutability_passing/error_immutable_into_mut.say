@@ -1,3 +1,0 @@
-fn fill(mut x) { x["k"] = 1; }
-say m = {};
-fill(m); // error: expected mutable argument

@@ -1,10 +1,10 @@
-say pending = mut [];
+say pending = [];
 pending.push(Err("boom"));
 // error(full):
 // error: cannot store value owing 'fails' in a container
 //  --> help_before_drop_container_store.say:2:14
 //   |
-// 1 | say pending = mut [];
+// 1 | say pending = [];
 // 2 | pending.push(Err("boom"));
 //   |              ^^^^^^^^^^^
 //   = help: store what the `Err` carries, not the `Err` itself

@@ -1,0 +1,9 @@
+type T {
+    pub value;
+    init(this) {
+        this.value = 1;
+    }
+    fn reset(this) {
+        this.value = 2; // error: Cannot reassign field `T.value`
+    }
+}

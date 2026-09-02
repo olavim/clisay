@@ -1,5 +1,4 @@
-// An immutable field narrows after a guard, and copying a `mut` field to an immutable
-// local lets it narrow too.
+// A field without `var` narrows after a guard.
 type Node {
     pub next?;
     pub var prev?;

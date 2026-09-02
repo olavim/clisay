@@ -1,6 +1,6 @@
 say var calls = 0;
 fn idx() { calls = calls + 1; return 0; }
-say n = mut [12];
+say n = [12];
 n[idx()] += 1;
 n[idx()] -= 3;
 n[idx()] *= 4;
@@ -11,7 +11,7 @@ n[idx()] ^= 2;
 n[idx()] <<= 2;
 n[idx()] >>= 1;
 print(calls); // expect: 9
-say b = mut [true];
+say b = [true];
 b[idx()] &&= false;
 b[idx()] ||= true;
 print(calls); // expect: 11
@@ -19,13 +19,13 @@ print(b[0]); // expect: true
 
 say var runs = 0;
 fn side() { runs = runs + 1; return true; }
-say s = mut [false, true];
+say s = [false, true];
 s[idx()] &&= side();
 print(s[0]); // expect: false
 print(runs); // expect: 0
-say u = mut [true];
+say u = [true];
 u[idx()] ||= side();
 print(runs); // expect: 0
-say v = mut [true];
+say v = [true];
 v[idx()] &&= side();
 print(runs); // expect: 1

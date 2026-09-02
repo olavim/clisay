@@ -230,10 +230,6 @@ impl Bindings {
         self.slots[id]
     }
 
-    pub fn declaring_node(&self, id: &HirId<HirExpr>) -> Option<usize> {
-        self.decls.get(id).copied()
-    }
-
     pub fn upvalues(&self, body: &HirId<HirExpr>) -> &[UpvalueLocation] {
         &self.upvalues[body]
     }
@@ -449,8 +445,6 @@ impl<'a> Resolver<'a> {
                 self.enter_scope();
 
                 // Store the scrutinee in a temp so each arm can access it without re-evaluating.
-                // If the scrutinee is a local, we could reuse its slot, but that would require
-                // complex analysis across all arms to ensure it's not e.g. mutated or shadowed.
                 let scrut_slot = self.declare_temp()?;
 
                 // One binder block sized to the widest arm, counting a binding guard's binders too.
@@ -674,7 +668,6 @@ impl<'a> Resolver<'a> {
                 let brace = brace.clone();
                 self.construct(expr, &callee, &brace)?;
             },
-            HirExpr::Mut(inner) => self.expression(inner)?,
             HirExpr::This => self.resolve_this(expr)?,
             HirExpr::Coalesce(left, right) => {
                 self.expression(left)?;

@@ -1,0 +1,16 @@
+type Box { pub var v; init(this) { this.v = 0; } }
+fn eats(x) { }
+fn borrows(x) { x.v = 1; }
+say consume = eats;
+say lend = borrows;
+say a = Box();
+consume(a);
+say b = Box();
+lend(b);
+say c = Box();
+if (1 > 0) { consume(c); }
+say d = Box();
+say var i = 0;
+while (i < 2) { i = i + 1; }
+consume(d);
+print("ok"); // expect: ok

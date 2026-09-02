@@ -1,0 +1,4 @@
+type Box { pub data; init(this) { this.data = [0]; } }
+say b = Box();
+b.data[0] = 9;
+print(b.data[0]); // expect: 9

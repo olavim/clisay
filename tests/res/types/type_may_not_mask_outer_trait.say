@@ -8,7 +8,7 @@ fn f()! {
 type T { pub x; init(this) { this.x = 1; } }
 trait Tr { pub fn m(this)! { type T { init(this) {} } return 1; } } // error: 'T' shadows a type or trait declared in an enclosing scope
 type Host with Tr { init(this) {} }
-say v = mut T();
+say v = T();
 v.x = 99;
 
 // @split

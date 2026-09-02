@@ -1,10 +1,10 @@
-//! Return inference: each function's return type tag and return mutability.
+//! Return inference.
 
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt};
+use crate::middle::hir::{HirExpr, HirId, HirStmt};
 
 use super::CallableId;
 use super::Signatures;
-use super::{Collector, Mutability, TypeTag};
+use super::{Collector, TypeTag};
 use crate::middle::walk::Child;
 use crate::middle::walk;
 
@@ -30,23 +30,6 @@ impl<'a> Collector<'a> {
         }
     }
 
-    pub(super) fn infer_ret_mut(&mut self) {
-        let callables: Vec<CallableId> = self.sigs.fns.keys().copied().collect();
-        for stmt in &callables {
-            self.sigs.ret_mut.insert(*stmt, Mutability::Unknown);
-        }
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for stmt in &callables {
-                let Some(decl) = Signatures::decl_of(self.hir, *stmt) else { continue };
-                let mutability = self.ret_mut_of(decl, &self.returns[stmt]);
-                changed |= self.sigs.ret_mut.insert(*stmt, mutability) != Some(mutability);
-            }
-        }
-    }
-
-    /// Walks each function body once, so the tag and mutability passes share the return list.
     pub(super) fn collect_all_returns(&mut self) {
         let callables: Vec<CallableId> = self.sigs.fns.keys().copied().collect();
         for stmt in callables {
@@ -57,33 +40,6 @@ impl<'a> Collector<'a> {
         }
     }
 
-    /// A function's return mutability, inferred from its body.
-    fn ret_mut_of(&self, decl: &HirFnDecl, returns: &[HirId<HirExpr>]) -> Mutability {
-        if decl.clause.capability.is_mut() {
-            return Mutability::Mutable;
-        }
-        if !returns.is_empty() && returns.iter().all(|r| self.returns_mutable(r)) {
-            Mutability::Mutable
-        } else {
-            Mutability::Unknown
-        }
-    }
-
-    /// Whether a return hands back a statically-mutable value: a `mut`-minted construction or a call
-    /// to a function inferred to return a mutable.
-    fn returns_mutable(&self, expr: &HirId<HirExpr>) -> bool {
-        match self.hir.get(expr) {
-            HirExpr::Mut(_) => true,
-            HirExpr::Call(callee, _) => {
-                let HirExpr::Identifier(name) = self.hir.get(callee) else { return false };
-                let Some(stmt) = self.sigs.fns_by_name.get(name) else { return false };
-                self.sigs.ret_mut_of_callable(stmt) == Mutability::Mutable
-            },
-            _ => false,
-        }
-    }
-
-    /// The joined return type tag of a body: a single tag if every return agrees, else unknown.
     fn infer_body_tag(&self, returns: &[HirId<HirExpr>]) -> TypeTag {
         let mut joined: Option<TypeTag> = None;
         for ret in returns {
@@ -100,8 +56,6 @@ impl<'a> Collector<'a> {
     fn classify_return(&self, expr: &HirId<HirExpr>) -> TypeTag {
         match self.hir.get(expr) {
             HirExpr::This => TypeTag::SelfType,
-            // A `: mut` factory returns `mut Ctor()`, so classify the wrapped construction.
-            HirExpr::Mut(inner) => self.classify_return(inner),
             HirExpr::Construct(callee, _) => self.resolved().constructed_tag(callee),
             // A callee naming a type is a factory call, so it reports the type it builds.
             HirExpr::Call(callee, _) => match self.resolved().type_named(callee) {

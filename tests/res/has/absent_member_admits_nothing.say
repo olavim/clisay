@@ -1,17 +1,17 @@
 type Box { pub v?; }
-say d = mut { };
+say d = { };
 print(d has Box); // expect: false
 match (d) { has Box => print("yes"), _ => print("no"), } // expect: no
 
 // @split
 type Box { pub v?; }
-say d = mut { "v": null };
+say d = { "v": null };
 print(d has Box); // expect: true
 match (d) { has Box => print("yes"), _ => print("no"), } // expect: yes
 
 // @split
 type Box { pub v; }
-say d = mut { "v": null };
+say d = { "v": null };
 print(d has Box); // expect: false
 match (d) { has Box => print("yes"), _ => print("no"), } // expect: no
 

@@ -1,4 +1,4 @@
 type Box { pub var item; init(this) { this.item = 0; } }
 fn make(): fails { return Err("boom"); }
-say b = mut Box();
+say b = Box();
 b.item = make(); // error: cannot store value owing 'fails' in a field

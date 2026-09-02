@@ -81,7 +81,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut params = Vec::new();
         while !self.tokens.matches(end_token) {
             // A `this` further along still spells the receiver, so point at where it belongs.
-            if self.at_receiver() {
+            if self.tokens.matches(TokenType::This) {
                 let pos = self.tokens.peek(0).pos.clone();
                 let msg = if receiver.is_some() { "Repeated 'this' parameter" } else { "'this' must be the first parameter" };
                 return Err(self.error_help(msg, &pos, "a method declares its receiver once, ahead of the other parameters"));
@@ -98,47 +98,20 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// receiver := "this" (":" clause)?
     fn parse_receiver(&mut self) -> Result<Option<Receiver>, anyhow::Error> {
         let start = self.tokens.peek(0).pos.clone();
-        if !self.at_receiver() {
+        if self.tokens.next_if(TokenType::This).is_none() {
             return Ok(None);
         }
-        let prefix = self.parse_capability_prefix();
-        self.tokens.expect(TokenType::This)?;
-        let mut clause = self.parse_slot_clause(SlotKind::Receiver)?;
-        clause.capability = prefix;
+        let clause = self.parse_slot_clause(SlotKind::Receiver)?;
         let pos = start.to(&self.tokens.previous().pos);
         Ok(Some(Receiver { pos, clause }))
-    }
-
-    fn at_receiver(&self) -> bool {
-        let ahead = usize::from(self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut));
-        self.tokens.peek(ahead).kind == TokenType::This
-    }
-
-    fn parse_capability_prefix(&mut self) -> Capability {
-        match self.take_modifier(ContextualKeyword::Mut) {
-            true => Capability::Mut,
-            false => Capability::None,
-        }
-    }
-
-    fn pattern_takes_prefix(&self, pattern: &AstId<Matcher>) -> bool {
-        !matches!(self.ast.get(pattern), Matcher::As(..) | Matcher::Or(_) | Matcher::And(_))
     }
 
     /// param := pattern (":" clause)?
     pub(super) fn parse_param(&mut self) -> Result<Param, anyhow::Error> {
         let start = self.tokens.peek(0).pos.clone();
-        let prefix = self.parse_capability_prefix();
-        // A group settles what the marker covers, so its contents need no further judging.
-        let grouped = self.tokens.matches(TokenType::LeftParen);
         let pattern = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
-        if prefix != Capability::None && !grouped && !self.pattern_takes_prefix(&pattern) {
-            return Err(self.error_help("A capability ahead of a combinator needs the pattern grouped", &start,
-                "group it so the marker cannot read as part of the pattern, as in `*(p @ Node | null)`"));
-        }
         let nullable = self.parse_nullable();
-        let mut clause = self.parse_slot_clause(SlotKind::Param)?;
-        clause.capability = prefix;
+        let clause = self.parse_slot_clause(SlotKind::Param)?;
         let pos = start.to(&self.tokens.previous().pos);
         Ok(Param { pattern, pos, nullable, reassignable: false, clause })
     }

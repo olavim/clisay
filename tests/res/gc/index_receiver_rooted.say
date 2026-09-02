@@ -5,7 +5,7 @@ print(f()); // expect: 14
 
 // @split
 gcStress(true);
-fn mk()! { return mut [1, 2]; }
+fn mk()! { return [1, 2]; }
 say push = mk()["push"];
 print("bound"); // expect: bound
 

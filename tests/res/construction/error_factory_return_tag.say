@@ -1,0 +1,5 @@
+// A factory returning `Ctor()` carries the constructed type's tag, so a method call on its
+// result still runs the callee's argument checks.
+type Foo { pub fn take(this, x) { } }
+fn make() { return Foo(); }
+make().take(null); // error: expected non-null argument

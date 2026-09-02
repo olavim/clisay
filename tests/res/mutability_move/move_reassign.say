@@ -1,5 +1,0 @@
-fn consume(mut xs) { }
-say var a = mut [1];
-consume(a);
-a = mut [2];
-print(a[0]); // expect: 2

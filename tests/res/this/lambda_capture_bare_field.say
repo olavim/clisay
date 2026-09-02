@@ -5,12 +5,12 @@ type Counter {
     init(this) { this.n = 7; }
 
     pub fn read(this)! { say f = () => n; return f(); }
-    pub fn write(mut this) { say f = () => { n = n + 1; }; f(); }
+    pub fn write(this) { say f = () => { n = n + 1; }; f(); }
     pub fn deep(this)! { say a = () => { say b = () => n; return b(); }; return a(); }
     pub fn mixed(this)! { say f = () => n + this.n; return f(); }
 }
 
-say c = mut Counter();
+say c = Counter();
 print(c.read()); // expect: 7
 c.write();
 print(c.read());  // expect: 8

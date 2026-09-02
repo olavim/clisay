@@ -7,7 +7,7 @@ use anyhow::anyhow;
 
 use crate::ast::{AstId, Expr, FnDecl, Literal, ReqFn, ReqMember, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqMember, HirReqParam, HirStmt, HirTypeDecl, TypeId};
+use crate::middle::hir::{SlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqMember, HirReqParam, HirStmt, HirTypeDecl, TypeId};
 
 use super::Lowerer;
 
@@ -366,8 +366,7 @@ impl<'a> Lowerer<'a> {
         let call = self.hir.add(HirExpr::Call(method_access, args), pos.clone());
         let ret_stmt = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
         let body = self.hir.add(HirExpr::Block(vec![ret_stmt]), pos.clone());
-        // The forwarder only reads `this.<field>`, so it needs no capability of its own.
-        let receiver = Some(HirSlotClause::default());
+        let receiver = Some(SlotClause::default());
         self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), receiver, params, body, ret, clause }), pos.clone())
     }
 
@@ -388,8 +387,7 @@ impl<'a> Lowerer<'a> {
             params.push(HirReqParam { pos: p.pos.clone(), clause, pattern: self.pattern_left_to_match(&p.pattern)? });
         }
         let ret = self.slot_clause(rf.ret == ReturnShape::Nullable, &rf.clause);
-        let receiver = rf.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause));
-        Ok(HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), receiver, params, ret })
+        Ok(HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), params, ret })
     }
 
     /// At an instantiable type, every `req T`, `req fn`, and `req <member>` must be satisfied.

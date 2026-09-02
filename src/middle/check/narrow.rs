@@ -173,7 +173,6 @@ impl<'a> Ctx<'a> {
             HirExpr::Unary(UnOp::Not, x) => self.eval_truthiness(x).negate(),
             HirExpr::Construct(..) => Truthy,
             HirExpr::Call(callee, _) if self.names_type(callee) => Truthy,
-            HirExpr::Mut(inner) => self.eval_truthiness(inner),
             HirExpr::Assign(_, rhs) => self.eval_truthiness(rhs),
             HirExpr::Binary(BinOp::And, l, r) => match (self.eval_truthiness(l), self.eval_truthiness(r)) {
                 (Falsy, _) | (_, Falsy) => Falsy,

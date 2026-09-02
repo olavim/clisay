@@ -5,7 +5,7 @@ type Point {
     pub fn sum(this)! { return this.x + this.y + this.secret; } // reads private via this
     init(this, x, y) { this.x = x; this.y = y; }
 }
-say p = mut Point(3, 4);
+say p = Point(3, 4);
 print(p.x); // expect: 3
 print(p.y); // expect: 4
 p.x = 10; // external write to a pub field

@@ -34,7 +34,7 @@ pub use output::Output;
 /// and not a stable public API.
 #[doc(hidden)]
 pub mod internals {
-    pub use crate::ast::{MatchArm, Ast, AstId, Capability, Expr, SayDecl, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
+    pub use crate::ast::{MatchArm, Ast, AstId, Expr, SayDecl, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
     pub use crate::frontend::lex::{ContextualKeyword, Token, TokenType};
     pub use crate::middle::hir::{
         Hir, HirMatchArm, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, HirTypeDecl,
@@ -44,7 +44,7 @@ pub mod internals {
     pub use crate::middle::check::Barriers;
     pub use crate::middle::check::scope::{intersect_narrowings, merge_local_flow, LocalFlow};
     pub use crate::middle::obligations::Obligations;
-    pub use crate::middle::signatures::{CallableId, Mutability, TypeTag};
+    pub use crate::middle::signatures::{CallableId, TypeTag};
 
     pub use crate::middle::codegen::matching::{Scalar, tree::{build_tree, Access, Clause, DecisionTree, Path, ValueTest}};
     pub use crate::middle::ir::{Ir, Label};
@@ -149,5 +149,5 @@ pub fn run_with(file_name: &str, src: &str, config: RunConfig) -> Result<Vec<Str
     let ir = if config.optimize { optimize(ir) } else { ir };
 
     let chunk = assemble(ir)?;
-    runtime::execute(chunk, gc, config.force_checks)
+    runtime::execute(chunk, gc)
 }
