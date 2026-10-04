@@ -58,12 +58,16 @@ impl<'a> Shape<'a> {
         match self.hir.get(node) {
             HirStmt::Fn(decl) => self.visit(Child::Expr(decl.body))?,
             HirStmt::Type(decl) => {
-                self.check_method_overrides(decl)?;
-                self.check_req_conformance(decl)?;
-                self.check_req_members(node, decl)?;
+                self.check_type_override_returns(decl)?;
+                self.check_type_satisfies_req_fns(decl)?;
+                self.check_type_satisfies_req_members(node, decl)?;
                 self.type_body(decl)?;
             },
-            HirStmt::Trait(decl) => self.type_body(decl)?,
+            HirStmt::Trait(decl) => {
+                self.check_mixed_req_var(decl)?;
+                self.check_mixed_in_req_fns(decl)?;
+                self.type_body(decl)?;
+            },
             _ => {},
         }
         Ok(())

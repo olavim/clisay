@@ -1,4 +1,3 @@
-// Reading a non-null field before init assigns it is rejected.
 type T {
     a;
     b;

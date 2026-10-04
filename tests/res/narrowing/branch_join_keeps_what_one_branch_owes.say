@@ -1,0 +1,9 @@
+fn maybe(n): opt { if (n > 0) { return n; } return null; }
+say var h: opt = maybe(0);
+if (maybe(0) != null) { h = 1; }
+print(h + 1); // error: unchecked value owes 'opt'
+// @split
+fn maybe(n): opt { if (n > 0) { return n; } return null; }
+say var h: opt = maybe(0);
+if (maybe(0) != null) { h = 1; } else { h = 2; }
+print(h + 1); // expect: 3

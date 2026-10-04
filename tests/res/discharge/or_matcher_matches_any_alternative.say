@@ -1,0 +1,21 @@
+trait Wt { }
+obligation warned { witness Wt; must use; }
+type W2 with Wt { }
+type A { }
+type B { }
+fn f() {
+    say b: warned = W2 { };
+    if (b ~ A | B) { print("or"); } else { print("neither"); }
+}
+f(); // expect: neither
+
+// @split
+trait Wt { }
+obligation warned { witness Wt; must use; }
+type W2 with Wt { }
+type A { }
+fn f() {
+    say b: warned = W2 { };
+    if (b ~ A | W2) { print("or"); }
+}
+f(); // expect: or

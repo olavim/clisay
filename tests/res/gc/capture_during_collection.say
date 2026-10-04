@@ -1,0 +1,11 @@
+
+fn outer() {
+    say x = "fo" + "o";
+    fn inner() {
+        gcCollect();
+        print(x); // expect: foo
+    }
+    inner();
+}
+
+outer();

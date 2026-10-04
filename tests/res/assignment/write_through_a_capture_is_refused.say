@@ -1,0 +1,41 @@
+say box = Ref([]);
+fn g() { box.mutate((&var list) => { &list.push(1); }); }
+g();
+print(@box[0]); // expect: 1
+
+// @split
+say box = [];
+fn g() { &box.push(1); } // error: Cannot take an anchor into `box`; it is captured
+g();
+
+// @split
+say a = Ref([0]);
+fn g() { @a[0] = 7; }
+g();
+print(@a[0]); // expect: 7
+
+// @split
+say a = [0];
+fn g() { a[0] = 7; } // error: Cannot write through `a`; a closure captures its value, not its binding
+g();
+
+// @split
+say var items = [];
+type T {
+    pub var items;
+    init(this) { this.items = []; }
+    pub fn add(var this, v) { &this.items.push(v); return this.items.length(); }
+}
+say var t = T();
+print(t.add(1)); // expect: 1
+
+// @split
+type T {
+    pub var n;
+    init(this) { this.n = [0]; }
+    pub fn bump(var this) { say f = () => { this.n[0] = 1; }; f(); } // error: Cannot write through `this`; a closure captures its value, not its binding
+}
+
+// @split
+fn h() { }
+fn f() { h.x = 1; } // error: Cannot write through `h`; it names a function

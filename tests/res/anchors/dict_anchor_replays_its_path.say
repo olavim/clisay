@@ -1,0 +1,27 @@
+fn bump(&var n) { n = n + 1; }
+
+say var d = {};
+d["x"] = 1;
+bump(&d["x"]);
+print(d["x"]); // expect: 2
+
+// @split
+say var d = {};
+d["x"] = 1;
+print(d.x); // error: Dict doesn't have member "x"
+
+// @split
+fn read(&var n) { return n; }
+
+say var d = {};
+d["x"] = 1;
+print(read(&d.x)); // error: Dict doesn't have member "x"
+
+// @split
+type T { pub var f; init(this, f) { this.f = f; } }
+fn bump(&var n) { n = n + 1; }
+
+say var t = T(1);
+bump(&t.f);
+bump(&t["f"]);
+print(t.f); // expect: 3

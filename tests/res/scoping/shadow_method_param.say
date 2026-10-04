@@ -1,7 +1,6 @@
-// A `say` in a method body may shadow a method parameter.
 type Counter {
   init(this) {}
-  pub fn bump(this, n)! {
+  pub fn bump(this, n) {
     say n = n + 1;
     return n;
   }

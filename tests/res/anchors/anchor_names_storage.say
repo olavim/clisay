@@ -1,0 +1,16 @@
+fn use(&var m) { m = 7; }
+
+say var a = [0];
+use(&a[0]);
+print(a[0]); // expect: 7
+
+// @split
+fn use(&var m) { m = 7; }
+
+use(&(1 + 2)); // error: An anchor names a binding or a path into one
+
+// @split
+fn h() { return [0]; }
+fn use(&var m) { m = 7; }
+
+use(&h()[0]); // error: An anchor is not a value

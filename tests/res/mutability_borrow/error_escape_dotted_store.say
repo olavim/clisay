@@ -1,5 +1,0 @@
-type Box { pub var item?; init(this) { } }
-say bx = mut Box();
-fn relay(x, cb) { cb(x); } // error: cannot pass a borrowed argument to a callee that retains it
-say m = mut [1, 2];
-relay(m, (*v) => bx.item = v);

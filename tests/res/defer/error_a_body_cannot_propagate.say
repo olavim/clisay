@@ -1,0 +1,15 @@
+fn g() { return Err("e"); }
+fn f(): fails {
+    defer { say v = g()?!; } // error: A 'defer' body cannot propagate with '?!'
+    print("body");
+    return 1;
+}
+f();
+
+// @split
+fn g() { return Err("e"); }
+fn f() {
+    defer { say v = g() ?? "fallback"; print(v); }
+    print("body"); // expect: body
+}
+f(); // expect: fallback

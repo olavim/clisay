@@ -1,0 +1,31 @@
+fn build() {
+    fn even(n) { if (n == 0) { return true; } return odd(n - 1); }
+    fn odd(n) { if (n == 0) { return false; } return even(n - 1); }
+    return even(4);
+}
+print(build()); // expect: true
+
+// @split
+fn build() {
+    type P { pub fn mk(this, n) { if (n == 0) { return 0; } return Q{}.mk(n - 1); } }
+    type Q { pub fn mk(this, n) { return P{}.mk(n - 1) + 1; } }
+    return P{}.mk(4);
+}
+print(build()); // expect: 2
+
+// @split
+fn build() {
+    type P { pub fn mk(this, n) { if (n == 0) { return 0; } return step(n); } }
+    fn step(n) { return P{}.mk(n - 1) + 1; }
+    return P{}.mk(3);
+}
+print(build()); // expect: 3
+
+// @split
+fn build(k) {
+    fn even(n) { if (n == 0) { return k; } return odd(n - 1); }
+    fn odd(n) { return even(n - 1); }
+    return even(2);
+}
+print(build("a")); // expect: a
+print(build("b")); // expect: b

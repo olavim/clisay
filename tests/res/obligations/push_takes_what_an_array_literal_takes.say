@@ -1,0 +1,21 @@
+type Token { pub n; init(this, n) { this.n = n; } }
+obligation parsed { witness Token; discharge to use; }
+fn opaque(x) { return x; }
+say bag = opaque([Token(1)]);
+say var xs = [];
+&xs.push(bag[0]);
+say ys = [bag[0]];
+print(xs.length()); // expect: 1
+print(ys.length()); // expect: 1
+print(bag[0].n); // expect: 1
+
+// @split
+type Held { pub n; init(this, n) { this.n = n; } }
+obligation held { witness Held; no persist; }
+say var xs = [];
+try { throw Held(1); } catch (e) { &xs.push(e); } // error: Uncaught exception: <instance <type Held>>
+
+// @split
+type Held { pub n; init(this, n) { this.n = n; } }
+obligation held { witness Held; no persist; }
+try { throw Held(1); } catch (e) { say ys = [e]; } // error: Uncaught exception: <instance <type Held>>

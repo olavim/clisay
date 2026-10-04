@@ -1,0 +1,25 @@
+say var x = [[1]];
+say var k = [];
+&x[(k = [x]).length() - 1].push(2);
+print(x[0].length()); // expect: 2
+print(k[0][0].length()); // expect: 1
+
+// @split
+say var x = [[1]];
+&x[x.length() - 1].push(2);
+print(x[0].length()); // expect: 2
+
+// @split
+say var x: opt = [[1]];
+say var k = [];
+&x?[(k = [x]).length() - 1].push(2);
+print(x?[0].length()); // expect: 2
+print(k[0]?[0].length()); // expect: 1
+
+// @split
+type Box { pub var items = [[0]]; }
+say var b = Box{items: [[0]]};
+say var k = [];
+&b.items[(k = [b]).length() - 1].push(1);
+print(b.items[0].length()); // expect: 2
+print(k[0].items[0].length()); // expect: 1

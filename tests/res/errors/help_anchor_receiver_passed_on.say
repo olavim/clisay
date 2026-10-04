@@ -1,0 +1,35 @@
+type C {
+    pub var n = 0;
+    pub fn bump(&var this) { this.n = this.n + 1; }
+    pub fn twice(this) { &this.bump(); &this.bump(); }
+}
+say var c = C();
+&c.twice();
+// error(full):
+// error: Cannot anchor non-var binding `this`
+//  --> help_anchor_receiver_passed_on.say:4:27
+//   |
+// 3 |     pub fn bump(&var this) { this.n = this.n + 1; }
+// 4 |     pub fn twice(this) { &this.bump(); &this.bump(); }
+//   |                           ^^^^^^^^^
+//   = help: declare the receiver as `var this` or `&var this`
+
+// @split
+type C {
+    pub var n = 0;
+    pub fn bump(&var this) { this.n = this.n + 1; }
+    pub fn twice(&var this) { &this.bump(); &this.bump(); }
+}
+say var c = C();
+&c.twice();
+print(c.n); // expect: 2
+
+// @split
+type C {
+    pub var n = 0;
+    pub fn bump(&var this) { this.n = this.n + 1; }
+    pub fn twice(var this) { &this.bump(); &this.bump(); return this.n; }
+}
+say var c = C();
+print(c.twice()); // expect: 2
+print(c.n); // expect: 0

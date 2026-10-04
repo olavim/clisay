@@ -1,7 +1,20 @@
 //! `type`/`trait` declaration parsing.
 
+use std::collections::HashMap;
+
 use indexmap::IndexSet;
 use super::*;
+
+fn builtin_of(name: &str, pos: &SourcePosition) -> Option<BuiltinType> {
+    if !pos.is_vm_source() {
+        return None;
+    }
+    match name {
+        "Err" => Some(BuiltinType::Err),
+        "Ref" => Some(BuiltinType::Ref),
+        _ => None,
+    }
+}
 
 impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// Parses the composition header: an optional `with T1, T2, ...` clause then an optional
@@ -65,20 +78,28 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let name = self.ast.intern(&name);
         self.tokens.expect(TokenType::LeftParen)?;
         let (receiver, params) = self.parse_params(TokenType::RightParen)?;
-        let ret = self.parse_return_shape();
         let clause = self.parse_slot_clause(SlotKind::Return)?;
         let pos = start.to(&self.tokens.previous().pos);
         self.check_receiver_presence(receiver.as_ref(), true, &pos)?;
+        let anchored = receiver.as_ref().filter(|r| r.anchor).map(|r| &r.pos)
+            .or_else(|| params.iter().find(|p| p.anchor).map(|p| &p.pos));
+        if let Some(pos) = anchored {
+            return Err(self.error_help("A `req fn` cannot require an anchor parameter", pos,
+                "an anchor names a slot of the caller, which is a calling convention rather than a contract"));
+        }
+        let marked = receiver.as_ref().filter(|r| r.reassignable).map(|r| &r.pos)
+            .or_else(|| params.iter().find(|p| p.reassignable).map(|p| &p.pos));
+        if let Some(pos) = marked {
+            return Err(self.error_help("A `req fn` cannot require a `var` parameter", pos,
+                "`req fn` cannot require its params to be `var`; composing types can still mark params as `var`, but it cannot be part of the contract"));
+        }
         self.tokens.expect(TokenType::Semicolon)?;
-        Ok(ReqFn { name, pos, receiver, params, ret, clause })
+        Ok(ReqFn { name, pos, receiver, params, clause })
     }
 
     /// Parses a `req "var"? name (":" clause)?;` member hole.
     pub(super) fn parse_req_member(&mut self) -> Result<ReqMember, anyhow::Error> {
         let start = self.tokens.peek(0).pos.clone();
-        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
-            parse_error!(self, &start, "A reassignable member is required with `var`, not `mut`");
-        }
         let reassignable = self.take_modifier(ContextualKeyword::Var);
         let name_pos = self.tokens.peek(0).pos.clone();
         let name = self.parse_identifier()?;
@@ -87,6 +108,15 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let pos = start.to(&self.tokens.previous().pos);
         self.tokens.expect(TokenType::Semicolon)?;
         Ok(ReqMember { name: self.ast.intern(&name), pos, reassignable, clause })
+    }
+
+    fn declare_member(&self, declared: &mut HashMap<Symbol, (SourcePosition, &'static str)>, name: Symbol, pos: &SourcePosition, kind: &'static str) -> Result<(), anyhow::Error> {
+        let Some((first_pos, first_kind)) = declared.insert(name, (pos.clone(), kind)) else { return Ok(()) };
+        let text = self.ast.text(name);
+        Err(anyhow!("{}", Diagnostic::new(format!("'{text}' is declared more than once"), pos.clone())
+            .with_label(format!("declared again as a {kind}"))
+            .with_context_span(first_pos, format!("already declared as a {first_kind}"))
+            .with_help("give one of them another name, or drop it")))
     }
 
     pub(super) fn parse_type_decl(&mut self, is_trait: bool) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -105,7 +135,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let body_open = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
 
         let mut fields: IndexSet<Symbol> = IndexSet::default();
-        let mut nullable_fields: HashSet<Symbol> = HashSet::default();
         let mut var_fields: HashSet<Symbol> = HashSet::default();
         let mut field_clauses: Vec<(Symbol, SlotClause)> = Vec::new();
         let mut field_positions: Vec<(Symbol, SourcePosition)> = Vec::new();
@@ -117,6 +146,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let mut req_members: Vec<ReqMember> = Vec::new();
         let mut gives: Vec<(Symbol, Symbol)> = Vec::new();
         let mut init = None;
+        let mut declared: HashMap<Symbol, (SourcePosition, &'static str)> = HashMap::default();
 
         while !self.tokens.matches(TokenType::RightBrace) && self.tokens.has_next() {
             let member_pos = self.tokens.peek(0).pos.clone();
@@ -127,17 +157,17 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 if visibility != Visibility::Private { parse_error!(self, &member_pos, "A `req` declaration cannot have a visibility modifier"); }
                 self.tokens.next(); // consume `req`
                 if self.tokens.matches(TokenType::Fn) {
-                    req_fns.push(self.parse_req_fn()?);
+                    let req = self.parse_req_fn()?;
+                    self.declare_member(&mut declared, req.name, &req.pos, "required method")?;
+                    req_fns.push(req);
                 } else {
-                    req_members.push(self.parse_req_member()?);
+                    let req = self.parse_req_member()?;
+                    self.declare_member(&mut declared, req.name, &req.pos, "required member")?;
+                    req_members.push(req);
                 }
                 continue;
             }
 
-            if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
-                let at = self.tokens.peek(0).pos.clone();
-                parse_error!(self, &at, "A reassignable field is declared with `var`, not `mut`");
-            }
             let reassignable = self.take_modifier(ContextualKeyword::Var);
 
             let kind = self.tokens.peek(0).kind;
@@ -146,6 +176,8 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                     if reassignable { parse_error!(self, &member_pos, "Only fields can be `var`"); }
                     let stmt = self.parse_fn(true)?;
                     if let Stmt::Fn(decl) = self.ast.get(&stmt) {
+                        let (name, sig_pos) = (decl.name, decl.sig_pos.clone());
+                        self.declare_member(&mut declared, name, &sig_pos, "method")?;
                         match visibility {
                             Visibility::Pub => { pub_members.insert(decl.name); },
                             Visibility::Inner => { inner_members.insert(decl.name); },
@@ -172,7 +204,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                             if is_trait { return Err(self.error_help("A trait cannot declare fields", &member_pos, "`req` the state it needs and let the host type hold it")); }
                             self.check_name_case(&name, NameKind::Field, &name_pos)?;
                             let field = self.ast.intern(&name);
-                            let nullable = self.parse_nullable();
                             let clause = self.parse_slot_clause(SlotKind::Field)?;
                             let give = if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Gives) {
                                 self.tokens.next();
@@ -190,16 +221,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                                 .transpose()?;
 
                             self.tokens.expect(TokenType::Semicolon)?;
+                            let field_pos = member_pos.to(&self.tokens.previous().pos);
+                            self.declare_member(&mut declared, field, &field_pos, "field")?;
                             fields.insert(field);
-                            field_positions.push((field, member_pos.to(&self.tokens.previous().pos)));
+                            field_positions.push((field, field_pos));
 
-                            // A `[obl]` clause names what the elements owe, so its `opt` makes an
-                            // element nullable and not the field.
-                            let clause_opt = !clause.container && clause.names.iter().any(|n| self.ast.text(*n) == "opt");
-                            if nullable || clause_opt { nullable_fields.insert(field); }
                             if reassignable { var_fields.insert(field); }
 
-                            if !clause.names.is_empty() || clause.void {
+                            if !clause.is_empty() || clause.void {
                                 field_clauses.push((field, clause));
                             }
 
@@ -231,7 +260,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         let type_decl = Box::new(TypeDecl {
             name: type_sym,
             is_trait,
-            builtin: None,
+            builtin: builtin_of(&type_name, &pos),
             with_traits,
             trait_refs,
             req_traits,
@@ -241,7 +270,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             init_name,
             init,
             fields,
-            nullable_fields,
             var_fields,
             field_clauses,
             field_positions,
@@ -253,62 +281,5 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         self.current_type = prev_type;
         Ok(self.node_stmt(Stmt::Type(type_decl), pos))
-    }
-
-    /// Declares the built-in `Err` type: `type Err { pub value; init(this, *value) { this.value = value; } }`.
-    pub(super) fn declare_err(&mut self, pos: &SourcePosition) -> AstId<Stmt> {
-        let name = self.ast.intern("Err");
-        let value = self.ast.intern("value");
-        let init_name = self.ast.intern("Err.init");
-        let init = Some(self.declare_err_init(init_name, value, pos));
-        let decl = Box::new(TypeDecl {
-            name,
-            is_trait: false,
-            builtin: Some(BuiltinType::Err),
-            with_traits: Vec::new(),
-            trait_refs: Vec::new(),
-            req_traits: Vec::new(),
-            req_fns: Vec::new(),
-            req_members: Vec::new(),
-            gives: Vec::new(),
-            init_name,
-            init,
-            fields: IndexSet::from([value]),
-            nullable_fields: HashSet::new(),
-            var_fields: HashSet::new(),
-            field_clauses: Vec::new(),
-            field_positions: Vec::new(),
-            field_inits: Vec::new(),
-            methods: Vec::new(),
-            pub_members: IndexSet::from([value]),
-            inner_members: IndexSet::new(),
-        });
-        self.node_stmt(Stmt::Type(decl), pos.clone())
-    }
-
-    /// The factory that Err's declaration would have if it were written out. The VM supplies the
-    /// implementation, and this is what the passes that read a factory's signature read.
-    fn declare_err_init(&mut self, init_name: Symbol, value: Symbol, pos: &SourcePosition) -> AstId<Stmt> {
-        let pattern = self.ast.add_matcher(Matcher::Binder(value), pos.clone());
-        let clause = SlotClause { capability: Capability::Move, ..SlotClause::default() };
-        let param = Param { pattern, pos: pos.clone(), nullable: false, reassignable: false, clause };
-
-        let this = self.ast.add_expr(Expr::This, pos.clone());
-        let key = self.ast.add_expr(Expr::Literal(Literal::String("value".to_string())), pos.clone());
-        let target = self.ast.add_expr(Expr::Index(this, key, true), pos.clone());
-        let source = self.ast.add_expr(Expr::Identifier(value), pos.clone());
-        let assign = self.ast.add_expr(Expr::Binary(Operator::Assign, target, source), pos.clone());
-        let stmt = self.ast.add_stmt(Stmt::Expression(assign), pos.clone());
-        let body = self.ast.add_expr(Expr::Block(vec![stmt]), pos.clone());
-
-        self.ast.add_stmt(Stmt::Fn(FnDecl {
-            name: init_name,
-            sig_pos: pos.clone(),
-            receiver: Some(Receiver { pos: pos.clone(), clause: SlotClause::default() }),
-            params: vec![param],
-            body,
-            ret: ReturnShape::default(),
-            clause: SlotClause::default(),
-        }), pos.clone())
     }
 }

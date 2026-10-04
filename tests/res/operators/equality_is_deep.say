@@ -1,0 +1,26 @@
+print([1, [2, 3]] == [1, [2, 3]]); // expect: true
+print([1, [2, 3]] == [1, [2, 4]]); // expect: false
+print([1, 2] == [1, 2, 3]); // expect: false
+print({ a: 1, b: [2] } == { b: [2], a: 1 }); // expect: true
+print({ a: 1 } == { a: 2 }); // expect: false
+print([0] == [-0]); // expect: true
+
+// @split
+type P { pub x; pub y; }
+print(P { x: 1, y: [2] } == P { x: 1, y: [2] }); // expect: true
+print(P { x: 1, y: [2] } != P { x: 1, y: [3] }); // expect: true
+
+// @split
+type P { pub x; }
+type Q { pub x; }
+print(P { x: 1 } == Q { x: 1 }); // expect: false
+print(P == Q); // expect: false
+
+// @split
+say n = 0 / 0;
+print(n == n); // expect: false
+print([n] == [n]); // expect: false
+
+// @split
+print(Ref == Ref); // expect: true
+print(Ref == Err); // expect: false

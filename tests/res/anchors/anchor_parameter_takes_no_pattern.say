@@ -1,0 +1,16 @@
+fn f(&var arr) { arr[0] = 1; arr[1] = 2; }
+
+say var arr = [0, 0];
+f(&arr);
+print(arr[0]); // expect: 1
+print(arr[1]); // expect: 2
+
+// @split
+fn f(var [a, b]) { return a + b; }
+print(f([1, 2])); // expect: 3
+
+// @split
+fn f(&var [a, b]) { a = 1; b = 2; } // error: An anchor parameter names one binding, so it takes no pattern
+
+say var arr = [0, 0];
+f(&arr);

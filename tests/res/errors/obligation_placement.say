@@ -1,15 +1,13 @@
-// An obligation is declared where every holder of one can name it, and name the witness that
-// discharges it.
 
 type A { pub x; init(this) { this.x = 1; } }
 fn f() { obligation w { witness A; discharge to use; } }
 
 // error(full):
 // error: obligation 'w' must be declared at the top level
-//  --> obligation_placement.say:5:10
+//  --> obligation_placement.say:3:10
 //   |
-// 4 | type A { pub x; init(this) { this.x = 1; } }
-// 5 | fn f() { obligation w { witness A; discharge to use; } }
+// 2 | type A { pub x; init(this) { this.x = 1; } }
+// 3 | fn f() { obligation w { witness A; discharge to use; } }
 //   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 // @split

@@ -1,0 +1,3 @@
+type Foo { pub fn take(this, x) { } }
+fn make() { return Foo(); }
+make().take(null); // error: expected non-null argument

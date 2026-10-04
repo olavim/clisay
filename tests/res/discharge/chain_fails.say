@@ -1,6 +1,5 @@
-// A `?` chain over a fails operand carries fails and short-circuits on Err, not just null.
 type Box { pub field; }
-fn readConfig(flag)! {
+fn readConfig(flag) {
     if (flag) { return Err("boom"); }
     return Box { field: "ok" };
 }

@@ -1,8 +1,0 @@
-trait Source {
-    req fn read(this): [fails];
-}
-type File with Source {
-    pub fn read(this): fails { return Err("x"); } // error: return shape does not match the trait
-    init(this) {}
-}
-print("unreachable");

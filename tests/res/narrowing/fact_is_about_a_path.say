@@ -1,0 +1,118 @@
+type Inner { pub val: opt; init(this, v: opt) { this.val = v; } }
+type Outer { pub inner; init(this, i) { this.inner = i; } }
+say o = Outer(Inner(5));
+if (o ~ Outer { inner: Inner }) {
+    print(o.inner.val ?? "none"); // expect: 5
+}
+
+// @split
+type Inner { pub val: opt; init(this, v: opt) { this.val = v; } }
+type Outer { pub inner; init(this, i) { this.inner = i; } }
+say o = Outer(Inner(null));
+if (o ~ Outer { inner: Inner }) {
+    say y = o.inner.val; // error: Cannot assign a nullable value to non-null binding 'y'
+}
+
+// @split
+type Inner { pub val: opt; init(this, v: opt) { this.val = v; } }
+type Outer { pub var inner; pub other; init(this, i, o) { this.inner = i; this.other = o; } }
+say var o = Outer(Inner(5), Inner(5));
+if (o ~ Outer { inner: Inner, other: Inner }) {
+    o.inner = 7;
+    print(o.other.val ?? "none"); // expect: 5
+}
+
+// @split
+type W { pub n; }
+type Box { pub value: opt; }
+say b = Box { value: W { n: 1 } };
+if (b ~ Box { value: W }) {
+    print(b.value.n); // expect: 1
+}
+
+// @split
+type W { pub n; }
+type Box { pub value: opt; }
+say b = Box { value: null };
+if (b ~ Box { value: _ }) {
+    say y = b.value; // error: Cannot assign a nullable value to non-null binding 'y'
+}
+
+// @split
+type W { pub n; }
+fn f(x) {
+    if (x ~ { inner: { value: W } }) {
+        print(x["inner"]["value"].n); // expect: 1
+    }
+}
+f({ inner: { value: W { n: 1 } } });
+
+// @split
+fn f(x) {
+    if (x ~ { inner: { value: _ | null } }) {
+        say y = x["inner"]["value"]; // error: Cannot assign a nullable value to non-null binding 'y'
+        print(y);
+    }
+}
+f({ inner: { value: 5 } });
+
+// @split
+type W { pub n; }
+fn f(x) {
+    if (x ~ { v: W | Err }) {
+        if (x["v"] ~ W) { print(x["v"].n); } // expect: 1
+    }
+}
+f({ v: W { n: 1 } });
+
+// @split
+type W { pub n; }
+fn f(x) {
+    if (x ~ { v: W | Err }) {
+        print(x["v"].n); // error: unchecked value owes 'fails'
+    }
+}
+f({ v: W { n: 1 } });
+
+// @split
+type T { pub value: opt; }
+fn f(x) {
+    if (x ~ { inner: T }) {
+        say y = x["inner"]["value"]; // error: Cannot assign a nullable value to non-null binding 'y'
+        print(y);
+    }
+}
+f({ inner: T { value: 5 } });
+
+// @split
+obligation warned { witness Wt; discharge to use; }
+type Wt { pub m; }
+type W { pub n; }
+type T { pub value: warned; }
+fn f(x) {
+    if (x ~ { inner: T }) {
+        if (x["inner"]["value"] ~ W) { print(x["inner"]["value"].n); } // expect: 1
+    }
+}
+f({ inner: T { value: W { n: 1 } } });
+
+// @split
+fn f(var x) {
+    if (x ~ { v: _ | null }) {
+        x["v"] = 5;
+        print(x["v"]); // expect: 5
+    }
+}
+f({ v: null });
+
+// @split
+fn mk(): opt { return null; }
+fn f(var x) {
+    if (x ~ { v: W }) {
+        x["v"] = mk();
+        say y = x["v"]; // error: Cannot assign a nullable value to non-null binding 'y'
+        print(y);
+    }
+}
+type W { pub n; }
+f({ v: W { n: 1 } });

@@ -1,6 +1,4 @@
-// A guard that is the literal `true` is constant-folded, so its arm rules out its witness like a
-// guard-free one. The null arm subtracts opt, so the final binder is clean.
-fn get(flag)? {
+fn get(flag): opt {
     if (flag == 1) { return null; }
     if (flag == 2) { return Err("boom"); }
     return 10;

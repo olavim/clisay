@@ -1,0 +1,23 @@
+fn run() {
+    say var a = 0;
+    say var xs: opt = null;
+    &xs?.push(a = 1);
+    return a;
+}
+print(run()); // expect: 0
+
+// @split
+fn run() {
+    say a;
+    say var xs: opt = [1];
+    &xs?.push(a = 1);
+    return a; // error: 'a' is used before it is assigned
+}
+
+// @split
+fn run() {
+    say a;
+    say cb: opt = null;
+    cb?(a = 1);
+    return a; // error: 'a' is used before it is assigned
+}

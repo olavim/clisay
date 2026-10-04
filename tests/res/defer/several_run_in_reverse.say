@@ -1,0 +1,8 @@
+{
+    defer { print("A"); }
+    defer { print("B"); }
+    print("body");
+}
+// expect: body
+// expect: B
+// expect: A

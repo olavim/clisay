@@ -1,0 +1,5 @@
+// Writing through a path each iteration, with no place involved.
+type Holder { pub var arr; init(this, arr) { this.arr = arr; } }
+say var obj = Holder([]);
+say var i = 0;
+while i < 100000 { &obj.arr.push(i); i = i + 1; }

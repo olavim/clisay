@@ -6,70 +6,189 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::Diagnostic;
 use crate::middle::diagnose::Diagnose;
-use crate::middle::hir::{builtin_obligation_rules, BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt, Symbol};
+use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatchRest, HirMatcher, HirStmt, Symbol, builtin_obligation_rules};
 use crate::middle::obligations::{quoted_obligation_list, sorted_obligation_names, Obligations};
 use crate::middle::native::{self, NativeSig};
-use crate::middle::signatures::{CallableId, Mutability, RetSig, TypeTag, Witness};
-use crate::middle::hir::TypeId;
+use crate::middle::signatures::{CallableId, RetSig, TypeTag, Witness};
 
 use super::narrow::collect_whole_value_binders;
-use super::{Checker, Ctx, Debt, ObligationRule, Site, ValueState, Violation, WitnessSet};
+use super::{ProvenFacts, PathMap, ELEMENTS};
+use super::{Checker, Ctx, Debt, ObligationRule, OperandKind, Site, ValueState};
 
-fn merge_binder_obligations(into: &mut HashMap<Symbol, Obligations>, from: HashMap<Symbol, Obligations>) {
-    for (name, obligations) in from {
-        into.entry(name).or_default().extend(obligations);
+#[derive(Default, Clone)]
+pub(super) struct BinderFacts {
+    pub owed: Obligations,
+    /// What is proven below the root of the value the name takes.
+    pub proven: PathMap<ProvenFacts>,
+    pub undeclared: bool,
+    pub tag: TypeTag,
+}
+
+pub(super) const ANCHOR_OWES_ONLY_WITNESSED: &str = "an anchor can owe only obligations with a witness";
+
+impl BinderFacts {
+    /// What the name takes, at its root and inside it.
+    pub(super) fn state(&self) -> ValueState {
+        let debt = match (self.owed.is_empty(), self.undeclared) {
+            (false, _) => Debt::Owed { obligations: self.owed.clone(), definite: false },
+            (true, true) => Debt::Unknown,
+            (true, false) => Debt::Clean,
+        };
+        ValueState::of(debt, self.tag.clone()).proving(self.proven.clone())
+    }
+}
+
+#[derive(Default)]
+pub(super) struct MatcherFacts(HashMap<Symbol, BinderFacts>);
+
+impl MatcherFacts {
+    pub(super) fn get(&self, name: &Symbol) -> Option<&BinderFacts> {
+        self.0.get(name)
+    }
+
+    fn of(&mut self, name: Symbol) -> &mut BinderFacts {
+        self.0.entry(name).or_default()
+    }
+
+    pub(super) fn add_owed(&mut self, name: Symbol, owed: &Obligations) {
+        self.of(name).owed.extend(owed.iter().copied());
+    }
+
+    pub(super) fn merge(&mut self, other: MatcherFacts) {
+        for (name, facts) in other.0 {
+            let mine = self.of(name);
+            mine.owed.extend(facts.owed);
+            if facts.tag != TypeTag::Unknown {
+                mine.tag = facts.tag;
+            }
+            mine.undeclared |= facts.undeclared;
+            mine.proven.extend(facts.proven);
+        }
     }
 }
 
 impl<'a> Ctx<'a> {
-    pub(super) fn obligation_preventing_escape(&self, debt: &Debt) -> Option<Symbol> {
-        let Debt::Owed { obligations, .. } = debt else { return None };
-        obligations.iter().copied().find(|&o| {
-            let rules = self.sigs.obligation_rules_of(o);
-            rules.no_persist || rules.before_drop
-        })
-    }
-
     pub(super) fn call_result(&self, callable: CallableId, receiver_tag: &TypeTag) -> ValueState {
         let debt = self.sigs.fn_sig_of(callable).map_or(Debt::Unknown, |s| self.ret_debt(&s.ret));
-        let mutability = self.sigs.ret_mut_of_callable(callable);
         let tag = self.sigs.ret_tag_of(callable).map_or(TypeTag::Unknown, |t| t.resolve(receiver_tag));
-        ValueState::of(debt, tag).with_mutability(mutability)
+        ValueState::of(debt, tag)
     }
 
-    pub(super) fn collect_condition_witness_obligations(&self, cond: &HirId<HirExpr>) -> Result<HashMap<Symbol, Obligations>, anyhow::Error> {
+    pub(super) fn matcher_facts<T>(&self, matcher: &HirId<HirMatcher>, at: &HirId<T>) -> Result<MatcherFacts, anyhow::Error> {
+        let mut out = MatcherFacts::default();
+        self.walk_matcher(matcher, at, None, &mut out)?;
+        Ok(out)
+    }
+
+    pub(super) fn condition_facts(&self, cond: &HirId<HirExpr>) -> Result<MatcherFacts, anyhow::Error> {
         match self.hir.get(cond) {
-            HirExpr::Match(_, matcher) => self.collect_matcher_witnessed_obligations(matcher, cond),
+            HirExpr::Match(_, matcher) => self.matcher_facts(matcher, cond),
             HirExpr::Binary(BinOp::And | BinOp::Or, left, right) => {
-                let mut out = self.collect_condition_witness_obligations(left)?;
-                merge_binder_obligations(&mut out, self.collect_condition_witness_obligations(right)?);
+                let mut out = self.condition_facts(left)?;
+                out.merge(self.condition_facts(right)?);
                 Ok(out)
             },
-            _ => Ok(HashMap::new()),
+            _ => Ok(MatcherFacts::default()),
         }
     }
 
-    pub(super) fn collect_matcher_unknown_binders(&self, matcher: &HirId<HirMatcher>) -> HashSet<Symbol> {
+    fn walk_matcher<T>(&self, matcher: &HirId<HirMatcher>, at: &HirId<T>, enclosing_type_test: Option<&HirId<HirMatcher>>, out: &mut MatcherFacts) -> Result<(), anyhow::Error> {
         match self.hir.get(matcher) {
-            HirMatcher::As(_, inner) => self.collect_matcher_unknown_binders(inner),
-            HirMatcher::Or(parts) | HirMatcher::And(parts) =>
-                parts.iter().flat_map(|part| self.collect_matcher_unknown_binders(part)).collect(),
-            HirMatcher::Type { shape: Some(shape), .. } => self.unknown_binders_in_shape_matcher(shape, Some(matcher)),
-            HirMatcher::Shape(_) | HirMatcher::Array(_) => self.unknown_binders_in_shape_matcher(matcher, None),
-            _ => HashSet::new(),
+            HirMatcher::As(name, inner) => {
+                out.of(*name).owed.extend(self.resolved().admitted_obligations(inner));
+                if let Some(decl) = self.matcher_proves_type(inner) {
+                    let facts = out.of(*name);
+                    facts.tag = TypeTag::Concrete(decl);
+                    facts.undeclared = false;
+                }
+                self.walk_matcher(inner, at, enclosing_type_test, out)?;
+            },
+            HirMatcher::Or(alternatives) => self.walk_or_matchers(alternatives, at, enclosing_type_test, out)?,
+            HirMatcher::And(parts) => for part in parts {
+                self.walk_matcher(part, at, enclosing_type_test, out)?;
+            },
+            HirMatcher::Type { shape: Some(shape), .. } => {
+                for (name, owed) in self.collect_matcher_obligations_by_binding(matcher, shape) {
+                    out.of(name).owed.extend(owed);
+                }
+                self.walk_matcher(shape, at, Some(matcher), out)?;
+            },
+            HirMatcher::Dict(shape) => self.walk_matcher(shape, at, None, out)?,
+            HirMatcher::Shape { fields, rest } => {
+                for field in fields {
+                    // A nominal test answers for every key of its type. A structural one answers
+                    // only for the fields it declares, and a dict answers for none.
+                    if !self.proves_declared_field(enclosing_type_test, &field.key) {
+                        for name in collect_whole_value_binders(self.hir, &field.value) { out.of(name).undeclared = true; }
+                    }
+                    self.walk_matcher(&field.value, at, None, out)?;
+                }
+                self.walk_rest(rest.as_ref(), out);
+            },
+            HirMatcher::Array(elements) => {
+                for element in elements {
+                    let HirMatchElem::Elem(m) = element else { continue };
+                    for name in collect_whole_value_binders(self.hir, m) { out.of(name).undeclared = true; }
+                    self.walk_matcher(m, at, None, out)?;
+                }
+                let rest = elements.iter().find_map(|e| match e {
+                    HirMatchElem::Rest(rest) => Some(rest),
+                    HirMatchElem::Elem(_) => None,
+                });
+                self.walk_rest(rest, out);
+            },
+            HirMatcher::Binder(..) | HirMatcher::Literal(..) | HirMatcher::Wildcard | HirMatcher::Type { .. } => {}
+        }
+        Ok(())
+    }
+
+    fn matcher_proves_type(&self, matcher: &HirId<HirMatcher>) -> Option<HirId<HirStmt>> {
+        match self.hir.get(matcher) {
+            HirMatcher::Type { nominal: true, .. } => {
+                let stmt = self.bindings.type_ref(matcher)?;
+                let HirStmt::Type(decl) = self.hir.get(&stmt) else { return None };
+                (!self.hir.is_trait(decl.id)).then_some(stmt)
+            },
+            HirMatcher::As(_, inner) => self.matcher_proves_type(inner),
+            HirMatcher::And(parts) => parts.iter().find_map(|p| self.matcher_proves_type(p)),
+            HirMatcher::Or(alternatives) => {
+                let mut proved = alternatives.iter().map(|a| self.matcher_proves_type(a));
+                let first = proved.next()??;
+                proved.all(|p| p == Some(first)).then_some(first)
+            },
+            HirMatcher::Wildcard | HirMatcher::Literal(..) | HirMatcher::Binder(..)
+                | HirMatcher::Type { nominal: false, .. } | HirMatcher::Shape { .. }
+                | HirMatcher::Dict(..) | HirMatcher::Array(..) => None,
         }
     }
 
-    pub(super) fn collect_condition_unknown_binders(&self, cond: &HirId<HirExpr>) -> HashSet<Symbol> {
-        match self.hir.get(cond) {
-            HirExpr::Match(_, matcher) => self.collect_matcher_unknown_binders(matcher),
-            HirExpr::Binary(BinOp::And | BinOp::Or, left, right) => {
-                let mut out = self.collect_condition_unknown_binders(left);
-                out.extend(self.collect_condition_unknown_binders(right));
-                out
-            },
-            _ => HashSet::new(),
+    fn walk_rest(&self, rest: Option<&HirMatchRest>, out: &mut MatcherFacts) {
+        let Some(rest) = rest else { return };
+        let (Some(every), Some(name)) = (&rest.every, rest.binder) else { return };
+        let owed = self.resolved().admitted_obligations(every);
+        out.of(name).proven.insert(ELEMENTS.to_vec(), ProvenFacts { owed: Some(owed), tag: TypeTag::Unknown });
+    }
+
+    fn walk_or_matchers<T>(&self, matchers: &[HirId<HirMatcher>], at: &HirId<T>, enclosing_type_test: Option<&HirId<HirMatcher>>, out: &mut MatcherFacts) -> Result<(), anyhow::Error> {
+        let binding = matchers.iter().find(|a| self.hir.get(*a).binds_anything(self.hir));
+        let mut admitted = Obligations::new();
+        for alt in matchers {
+            self.walk_matcher(alt, at, enclosing_type_test, out)?;
+            if self.hir.get(alt).binds_anything(self.hir) || binding.is_none() {
+                continue;
+            }
+            let witnesses = self.resolved().bindingless_witness_obligations(alt);
+            if witnesses.is_empty() {
+                return Err(self.error_help("a non-witness alternative beside a destructure is a dead binding".to_string(), at,
+                    "beside a destructure, an alternative must be a witness (`null` or a witness type)"));
+            }
+            admitted.extend(witnesses.iter().copied());
         }
+        let Some(binding) = binding else { return Ok(()) };
+        for name in self.hir.get(binding).binders(self.hir) {
+            out.of(name).owed.extend(admitted.iter().copied());
+        }
+        Ok(())
     }
 
     pub(super) fn witness_use_error(&self, header: String, operand: &HirId<HirExpr>, witness: &str) -> anyhow::Error {
@@ -81,18 +200,41 @@ impl<'a> Ctx<'a> {
     }
 
     pub(super) fn obligation_witness_name(&self, state: &ValueState) -> Option<&'a str> {
-        let TypeTag::Concrete(tag) = &state.tag else { return None };
-        let Debt::Owed { obligations, .. } = &state.debt else { return None };
+        self.obligation_witness_name_of(&state.debt, &state.tag)
+    }
+
+    fn obligation_witness_name_of(&self, debt: &Debt, tag: &TypeTag) -> Option<&'a str> {
+        let TypeTag::Concrete(tag) = tag else { return None };
+        let Debt::Owed { obligations, .. } = debt else { return None };
         // Every bad state the value might be in has to be an object. `opt` admits null, which the
         // tag does not describe. A witnessless obligation names no bad state, so it admits nothing.
         if obligations.iter().any(|o| matches!(self.sigs.witness_of(*o), Some(Witness::Null))) {
             return None;
         }
-        obligations.iter().find_map(|o| match self.sigs.witness_of(*o) {
-            Some(Witness::Type(w)) if self.sigs.type_decl_of_id(*w) == Some(*tag) =>
-                self.type_name_of(tag).map(|name| self.hir.text(name)),
+        // A trait witness counts too: proving the type proves every trait it provides.
+        let HirStmt::Type(decl) = self.hir.get(tag) else { return None };
+        let witnessed = self.sigs.obligations_witnessed_by_decl(decl);
+        obligations.iter().find(|o| witnessed.contains(o))?;
+        self.type_name_of(tag).map(|name| self.hir.text(name))
+    }
+
+    pub(super) fn absent_member_error(&self, tag: &TypeTag, name: &str, node: &HirId<HirExpr>) -> anyhow::Error {
+        let owner = match tag {
+            TypeTag::Concrete(decl) => self.type_name_of(decl).map(|n| self.hir.text(n)),
+            TypeTag::Native(ty) => Some(ty.name()),
             _ => None,
-        })
+        };
+        self.error(format!("{} doesn't have member \"{name}\"", owner.unwrap_or("This value")), node)
+    }
+
+    pub(super) fn may_have_member(&self, tag: &TypeTag, name: &str) -> bool {
+        let decl = match tag {
+            TypeTag::Concrete(decl) => decl,
+            TypeTag::Native(ty) => return native::native_method(*ty, name).is_some(),
+            _ => return true,
+        };
+        let Some(layout) = self.layout_of(decl) else { return true };
+        self.hir.symbol_of(name).is_some_and(|field| layout.members.contains_key(&field))
     }
 
     /// What a fresh instance owes.
@@ -103,7 +245,7 @@ impl<'a> Ctx<'a> {
         };
         match obligations.is_empty() {
             true => Debt::Clean,
-            false => Debt::Owed { obligations, definite: true, container: false },
+            false => Debt::Owed { obligations, definite: true },
         }
     }
 
@@ -114,14 +256,7 @@ impl<'a> Ctx<'a> {
         if kept.is_empty() {
             Debt::Clean
         } else {
-            Debt::Owed { obligations: kept, definite: false, container: false }
-        }
-    }
-
-    pub(super) fn err_witness(&self) -> Option<TypeId> {
-        match self.sigs.witness_of(self.sigs.fails) {
-            Some(Witness::Type(e)) => Some(*e),
-            _ => None,
+            Debt::Owed { obligations: kept, definite: false }
         }
     }
 
@@ -149,7 +284,7 @@ impl<'a> Ctx<'a> {
         if obligations.is_empty() {
             Debt::Clean
         } else {
-            Debt::Owed { obligations, definite: false, container: false }
+            Debt::Owed { obligations, definite: false }
         }
     }
 
@@ -218,29 +353,50 @@ impl<'a> Ctx<'a> {
         Err(self.error_help(site.refusal(&owed), node, help))
     }
 
-    /// Refuses a value that would outlive its binding.
-    pub(super) fn reject_outliving(&self, debt: &Debt, site: Site, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        self.obligation_rule_reject_at(debt, ObligationRule::BeforeDrop, site, node)?;
-        self.obligation_rule_reject_at(debt, ObligationRule::NoPersist, site, node)
+    /// Refuses an obligation without a witness on an anchor parameter or an anchor receiver. Their
+    /// clause has to match the anchor's, and that is settled only for obligations a value can show.
+    pub(super) fn reject_anchor_unwitnessed_obligations(&self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
+        let receiver = decl.receiver.as_ref().filter(|r| r.anchor).map(|r| (&r.clause, &r.pos, "An anchor receiver"));
+        let params = decl.params.iter().filter(|p| p.anchor).map(|p| (&p.clause, &p.pos, "An anchor parameter"));
+        for (clause, pos, subject) in receiver.into_iter().chain(params) {
+            let Some(name) = self.sigs.first_unwitnessed(&clause.owed()) else { continue };
+            let text = self.hir.text(name);
+            let pos = clause.pos.clone().unwrap_or_else(|| pos.clone());
+            return Err(anyhow!("{}", Diagnostic::new(format!("{subject} cannot owe '{text}'"), pos)
+                .with_label(format!("'{text}' has no witness"))
+                .with_help(ANCHOR_OWES_ONLY_WITNESSED)));
+        }
+        Ok(())
     }
 
     pub(super) fn reject_receiver_witnessed_obligations(&self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
-        let Some(clause) = &decl.receiver else { return Ok(()) };
-        let Some(name) = clause.names.iter().find(|n| self.sigs.witness_of(**n).is_some()) else { return Ok(()) };
-        let text = self.hir.text(*name);
+        let Some(receiver) = &decl.receiver else { return Ok(()) };
+        let clause = &receiver.clause;
+        let Some(name) = clause.names.iter().copied().find(|n| self.sigs.witness_of(*n).is_some()) else { return Ok(()) };
+        let text = self.hir.text(name);
         let pos = clause.pos.clone().unwrap_or_else(|| decl.sig_pos.clone());
         Err(anyhow!("{}", Diagnostic::new(format!("The receiver cannot owe '{text}'"), pos)
             .with_label(format!("'{text}' admits a value `this` cannot be"))
             .with_help("`this` is always an instance of the type; put the obligation on a parameter instead")))
     }
 
-    pub(super) fn require_usable_value(&self, state: &ValueState, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        debug_assert!(!self.is_obligation_witness(state), "a confirmed witness must be handled at its operation site, not advised to narrow");
-        if state.debt.is_void() {
+    pub(super) fn require_discharged_or_narrowed(&self, debt: &Debt, tag: &TypeTag, node: &HirId<HirExpr>, kind: OperandKind) -> Result<(), anyhow::Error> {
+        let witness = self.obligation_witness_name_of(debt, tag).is_some();
+        match kind {
+            OperandKind::Whole => debug_assert!(!witness, "a confirmed witness must be handled at its operation site"),
+            OperandKind::Base if witness => return Ok(()),
+            OperandKind::Base => {},
+        }
+        self.refuse_blocking_debt(debt, node)
+    }
+
+    /// The rule itself, with no operand kind to excuse anything.
+    pub(super) fn refuse_blocking_debt(&self, debt: &Debt, operand: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if debt.is_void() {
             return Err(self.error("This call returns no value, so its result cannot be used here".to_string(), operand));
         }
 
-        let Debt::Owed { obligations, .. } = &state.debt else { return Ok(()) };
+        let Debt::Owed { obligations, .. } = debt else { return Ok(()) };
 
         let blocking: Obligations = obligations.iter().copied().filter(|o| self.sigs.obligation_rules_of(*o).to_use).collect();
         if blocking.is_empty() {
@@ -299,7 +455,7 @@ impl<'a> Ctx<'a> {
         } else if ret.obligations.is_empty() {
             Debt::Clean
         } else {
-            Debt::Owed { obligations: ret.obligations.clone(), definite: false, container: false }
+            Debt::Owed { obligations: ret.obligations.clone(), definite: false }
         }
     }
 
@@ -324,38 +480,20 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// What the value owes that the slot does not admit.
     pub(super) fn unadmitted_obligations(&self, debt: &Debt, admits: &Obligations) -> Obligations {
         let Debt::Owed { obligations, .. } = debt else { return Obligations::new() };
-        obligations.difference(admits).copied().filter(|o| *o != self.sigs.opt).collect()
+        obligations.difference(admits).copied().collect()
     }
 
-    /// The unknown binders of one shape. `test` is the type test the shape hangs off, where there
-    /// is one.
-    fn unknown_binders_in_shape_matcher(&self, shape: &HirId<HirMatcher>, test: Option<&HirId<HirMatcher>>) -> HashSet<Symbol> {
-        let mut out = HashSet::new();
-        match self.hir.get(shape) {
-            HirMatcher::Shape(fields) => for field in fields {
-                if !self.proves_declared_field(test, &field.key) {
-                    out.extend(collect_whole_value_binders(self.hir, &field.value));
-                }
-                out.extend(self.collect_matcher_unknown_binders(&field.value));
-            },
-            HirMatcher::Array(elements) => for element in elements {
-                if let HirMatchElem::Elem(m) = element {
-                    out.extend(collect_whole_value_binders(self.hir, m));
-                    out.extend(self.collect_matcher_unknown_binders(m));
-                }
-            },
-            _ => {},
-        }
-        out
+    pub(super) fn only_nullable(&self, unadmitted: &Obligations) -> bool {
+        unadmitted.len() == 1 && unadmitted.contains(&self.sigs.opt)
     }
 
     pub(super) fn unprovable_only(&self, obligations: &Obligations) -> Obligations {
         obligations.iter().copied().filter(|o| self.sigs.witness_of(*o).is_none()).collect()
     }
 
-    /// The type or trait that witnesses an obligation at runtime, if it has one.
     pub(super) fn witness_name(&self, obligation: Symbol) -> Option<&'a str> {
         match self.sigs.witness_of(obligation)? {
             Witness::Type(id) | Witness::Trait(id) => self.hir.type_info(*id).map(|info| self.hir.text(info.name)),
@@ -363,123 +501,73 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The witness obligations each binder inherits from a bindingless alternative sharing its
-    /// or-group. In `Node { next } | null` the `next` binder owes `opt`.
-    pub(super) fn collect_matcher_witnessed_obligations<T>(&self, matcher: &HirId<HirMatcher>, at: &HirId<T>) -> Result<HashMap<Symbol, Obligations>, anyhow::Error> {
-        match self.hir.get(matcher) {
-            HirMatcher::Or(alternatives) => self.collect_or_matcher_witnessed_obligations(alternatives, at),
-            HirMatcher::As(name, inner) => {
-                let mut out = self.collect_matcher_witnessed_obligations(inner, at)?;
-                // `x @ p | null` names the whole value, so `x` owes what that or-group admits.
-                let admits = self.resolved().admitted_obligations(inner);
-                if !admits.is_empty() {
-                    out.entry(*name).or_default().extend(admits);
-                }
-                Ok(out)
-            },
-            HirMatcher::Type { shape: Some(shape), .. } => {
-                let mut out = self.collect_matcher_obligations_by_binding(matcher, shape);
-                merge_binder_obligations(&mut out, self.collect_matcher_witnessed_obligations(shape, at)?);
-                Ok(out)
-            },
-            HirMatcher::Shape(fields) => self.merge_matcher_binder_obligations(fields.iter().map(|field| &field.value), at),
-            HirMatcher::Array(elements) => self.merge_matcher_binder_obligations(elements.iter().filter_map(|element| match element {
-                HirMatchElem::Elem(m) => Some(m),
-                HirMatchElem::Rest(_) => None,
-            }), at),
-            HirMatcher::And(parts) => self.merge_matcher_binder_obligations(parts.iter(), at),
-            _ => Ok(HashMap::new()),
-        }
-    }
-
-    fn merge_matcher_binder_obligations<'m, T>(&self, matchers: impl Iterator<Item = &'m HirId<HirMatcher>>, at: &HirId<T>) -> Result<HashMap<Symbol, Obligations>, anyhow::Error> {
-        let mut out = HashMap::new();
-        for matcher in matchers {
-            merge_binder_obligations(&mut out, self.collect_matcher_witnessed_obligations(matcher, at)?);
-        }
-        Ok(out)
-    }
-
-    fn collect_or_matcher_witnessed_obligations<T>(&self, alternatives: &[HirId<HirMatcher>], at: &HirId<T>) -> Result<HashMap<Symbol, Obligations>, anyhow::Error> {
-        // With nothing to bind, there is no name to hand the group to.
-        let Some(binding) = alternatives.iter().find(|a| self.hir.get(*a).binds_anything(self.hir)) else {
-            return Ok(HashMap::new());
-        };
-
-        let mut out = HashMap::new();
-        let mut admitted = Obligations::new();
-        for alt in alternatives {
-            if self.hir.get(alt).binds_anything(self.hir) {
-                merge_binder_obligations(&mut out, self.collect_matcher_witnessed_obligations(alt, at)?);
-                continue;
-            }
-            let witnesses = self.resolved().bindingless_witness_obligations(alt);
-            if witnesses.is_empty() {
-                return Err(self.error_help("a non-witness alternative beside a destructure is a dead binding".to_string(), at,
-                    "beside a destructure, an alternative must be a witness (`null` or a witness type)"));
-            }
-            admitted.extend(witnesses.iter().copied());
-        }
-
-        for name in self.hir.get(binding).binders(self.hir) {
-            out.entry(name).or_default().extend(admitted.iter().copied());
-        }
-        Ok(out)
-    }
 }
 
 impl<'a> Checker<'a> {
-    /// Records which witnesses a discharge node must test at runtime.
-    pub(super) fn record_witness_test(&mut self, node: &HirId<HirExpr>, debt: &Debt) {
-        let Debt::Owed { obligations, .. } = debt else { return };
-        let err = self.ctx.err_witness();
-        let mut set = WitnessSet { null: false, witnesses: Vec::new(), contains_user_witnesses: false };
-        for &o in obligations {
-            match self.ctx.sigs.witness_of(o) {
-                Some(Witness::Null) => set.null = true,
-                Some(Witness::Type(w) | Witness::Trait(w)) => {
-                    if !set.witnesses.contains(w) {
-                        set.witnesses.push(*w);
-                    }
-                    if Some(*w) != err { set.contains_user_witnesses = true; }
-                },
-                None => {},
+    pub(super) fn store_into_container(&mut self, debt: &Debt, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        self.ctx.obligation_rule_reject_at(debt, ObligationRule::NoPersist, Site::Container, expr)
+    }
+
+    pub(super) fn refuse_anchor_capture(&self, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Some(i) = self.capture_index(name) else { return Ok(()) };
+        // An anchor parameter's name is a copy of the value at the anchor, so a closure can hold it.
+        if !self.locals[i].is_anchor || self.locals[i].is_param {
+            return Ok(());
+        }
+        Err(self.error_help(format!("Cannot capture `{}`; it is an anchor", self.ctx.hir.text(name)), node,
+            "pass the anchor to the function instead of capturing it"))
+    }
+
+    pub(super) fn refuse_capture_of_persisting_value(&self, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let Some(i) = self.capture_index(name) else { return Ok(()) };
+        // A capture outlives the current value, so what the slot admits is what may be persisted.
+        let owed = self.locals[i].clause_owed().clone();
+        self.ctx.obligation_rule_reject_at(&Debt::Owed { obligations: owed, definite: false },
+            ObligationRule::NoPersist, Site::Capture, node)
+    }
+
+    pub(super) fn transfer_obligations_into_receiver(&mut self, receiver: &HirId<HirExpr>, values: &[ValueState]) {
+        let mut obligations = HashSet::new();
+        for state in values {
+            if let Debt::Owed { obligations: o, .. } = &state.debt {
+                obligations.extend(o.iter().copied());
             }
         }
-        // A recorded set always names an object witness: callers only record when
-        // `owes_object_witness` holds. Codegen relies on this to fast-path an opt-only operand.
-        debug_assert!(!set.witnesses.is_empty(), "witness test recorded with no object witness");
-        self.out.witness_tests.insert(*node, set);
-    }
-
-    /// Whether a value is a container carrying element obligations.
-    pub(super) fn is_container(debt: &Debt) -> bool {
-        matches!(debt, Debt::Owed { container: true, .. })
-    }
-
-    pub(super) fn chain_result_with(&mut self, operand: &Debt, yielded: &Debt, node: &HirId<HirExpr>) -> ValueState {
-        if self.ctx.owes_object_witness(operand) {
-            self.record_witness_test(node, operand);
+        if obligations.is_empty() {
+            return;
         }
+        let HirExpr::Identifier(name) = self.ctx.hir.get(receiver) else { return };
+        let Some(i) = self.frame_index_of(*name) else { return };
+        // The values went into a container, so what they owed is owed by its elements.
+        self.locals[i].set_element_owed(obligations.into_iter().collect());
+    }
+
+    pub(super) fn record_witness_assert(&mut self, node: &HirId<HirExpr>) {
+        self.out.witness_asserts.insert(*node);
+    }
+
+    pub(super) fn chained_result(&self, operand: &Debt, yielded: &Debt) -> ValueState {
         let mut obligations = self.ctx.obligations_of(operand);
         obligations.extend(self.ctx.obligations_of(yielded));
-        let debt = match obligations.is_empty() {
-            true => Debt::Clean,
-            false => Debt::Owed { obligations, definite: false, container: false },
+        let unknown = matches!(operand, Debt::Unknown) || matches!(yielded, Debt::Unknown);
+        let debt = if !obligations.is_empty() {
+            Debt::Owed { obligations, definite: false }
+        } else if unknown {
+            Debt::Unknown
+        } else {
+            Debt::Clean
         };
         ValueState::of(debt, TypeTag::Unknown)
     }
 }
 
 impl<'a> Checker<'a> {
-    pub(super) fn check_arg_obligations(&mut self, callee: &HirId<HirExpr>, clauses: &[Obligations], arg_types: &[ValueState], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
-        let mut handed: Vec<usize> = Vec::new();
+    pub(super) fn check_arg_obligations(&self, callee: &HirId<HirExpr>, clauses: &[Obligations], arg_types: &[ValueState], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
         for (i, admits) in clauses.iter().enumerate() {
             let Some(state) = arg_types.get(i) else { break };
             let undeclared = self.ctx.unadmitted_obligations(&state.debt, admits);
-            if undeclared.is_empty() {
-                // The debt moves to the callee, but only for what this parameter declares.
-                handed.push(i);
+            // Nullability alone is answered by `check_arg`, which points at the parameter too.
+            if undeclared.is_empty() || self.ctx.only_nullable(&undeclared) {
                 continue;
             }
             let owed = quoted_obligation_list(self.ctx.hir, &undeclared);
@@ -490,9 +578,6 @@ impl<'a> Checker<'a> {
                 self.ctx.hir.pos(&args[i]), format!("{subject} owes {owed}"),
                 self.ctx.hir.pos(callee), format!("{c} does not declare {owed} here"),
                 "discharge it before the call, or declare it on the parameter"));
-        }
-        for i in handed {
-            self.mark_settled(&args[i], &clauses[i]);
         }
         Ok(())
     }
@@ -512,64 +597,44 @@ impl<'a> Checker<'a> {
             self.record_boundary_barrier(node, accepts);
             return Ok(());
         }
-        if accepts.contains(&self.ctx.sigs.opt) && !debt.is_void() {
+        if debt.is_void() {
+            return Err(self.error(format!("Argument {} is a void result; the call returns no value", position + 1), node));
+        }
+        let unadmitted = self.ctx.unadmitted_obligations(debt, accepts);
+        if unadmitted.is_empty() || !self.ctx.only_nullable(&unadmitted) {
             return Ok(());
         }
 
-        let n = position + 1;
         let site_label = format!("{} requires a non-null value here", self.ctx.callee_display_name(callee));
-        match self.non_null_violation(debt, node) {
-            None => Ok(()),
-            Some(Violation::Void) => Err(self.error(format!("Argument {n} is a void result; the call returns no value"), node)),
-            Some(Violation::Null) => Err(self.error_ctx("expected non-null argument", self.ctx.hir.pos(node), "this argument is null", self.ctx.hir.pos(callee), site_label)),
-            Some(Violation::Nullable) => Err(self.error_ctx_help("expected non-null argument", self.ctx.hir.pos(node), "this argument may be null", self.ctx.hir.pos(callee), site_label, "narrow it before the call")),
+        match debt.is_definite() {
+            true => Err(self.error_ctx("expected non-null argument", self.ctx.hir.pos(node), "this argument is null", self.ctx.hir.pos(callee), site_label)),
+            false => Err(self.error_ctx_help("expected non-null argument", self.ctx.hir.pos(node), "this argument may be null", self.ctx.hir.pos(callee), site_label, "narrow it before the call")),
         }
     }
 
     pub(super) fn check_native_args(&mut self, callee: &HirId<HirExpr>, sig: &NativeSig, arg_types: &[ValueState], args: &[HirId<HirExpr>]) -> Result<(), anyhow::Error> {
-        let accepts: Vec<Obligations> = sig.params.iter().map(|p| self.ctx.native_obligations(*p)).collect();
-        self.check_args(callee, &accepts, arg_types, args)
-    }
-
-    /// Downgrades a frozen argument's slot to immutable.
-    pub(super) fn discharge_freeze(&mut self, arg: &HirId<HirExpr>) {
-        let HirExpr::Identifier(name) = self.ctx.hir.get(arg) else { return };
-        if let Some(i) = self.frame_index_of(*name) {
-            self.locals[i].alias.mutability = Mutability::Immutable;
+        for (i, set) in sig.params.iter().enumerate() {
+            let Some(state) = arg_types.get(i) else { break };
+            if set.admits_any() && matches!(state.debt, Debt::Unknown) {
+                continue;
+            }
+            self.check_arg(callee, &state.debt, &self.ctx.native_obligations(*set), i, &args[i])?;
         }
+        Ok(())
     }
 
     /// Checks a value moving into a field.
-    pub(super) fn check_into_field(&mut self, debt: &Debt, field_nullable: bool, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        // Storing into a field persists the value, which a `no persist` value forbids.
-        self.ctx.reject_outliving(debt, super::Site::Field, node)?;
-        let text = self.ctx.hir.text(field);
-        let void = || format!("Cannot assign a void result to field '{text}'; the call returns no value");
-        if field_nullable {
-            // A nullable field still rejects a void result, which is not a value.
-            if debt.is_void() {
-                return Err(self.error(void(), node));
-            }
-            // An unknown value into an `opt` field is guarded against every object witness it may be.
-            if matches!(debt, Debt::Unknown) {
-                self.record_boundary_barrier(node, &Obligations::from([self.ctx.sigs.opt]));
-            }
-            return Ok(());
-        }
-        match self.non_null_violation(debt, node) {
-            None => Ok(()),
-            Some(Violation::Void) => Err(self.error(void(), node)),
-            Some(Violation::Null) => Err(self.error(format!("Cannot assign null to non-null field '{text}'"), node)),
-            Some(Violation::Nullable) => Err(self.error(format!("Cannot assign a nullable value to non-null field '{text}'"), node)),
-        }
+    pub(super) fn check_into_field(&mut self, debt: &Debt, admits: &Obligations, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        // Storing into a field persists the value, which a `no persist` value forbids. A local is
+        // not a persist site, so the shared slot check does not ask this.
+        self.ctx.obligation_rule_reject_at(debt, ObligationRule::NoPersist, Site::Field, node)?;
+        self.check_into_named_slot(debt, admits, field, "field", node)
     }
 
     pub(super) fn check_into_brace_field(&mut self, decl: &HirId<HirStmt>, field: Symbol, debt: &Debt, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let nullable = match self.ctx.layout_of(decl) {
-            Some(layout) => layout.is_nullable(field),
-            None => return Ok(()),
-        };
-        self.check_into_field(debt, nullable, field, node)
+        let Some(layout) = self.ctx.layout_of(decl) else { return Ok(()) };
+        let admits = layout.owed(field);
+        self.check_into_field(debt, &admits, field, node)
     }
 
     /// For an `lhs = rhs` assignment in a factory, the field `lhs` names, if it is left uninitialized.
@@ -578,7 +643,7 @@ impl<'a> Checker<'a> {
         if !self.ctx.is_factory_field(*local) {
             return None;
         }
-        let HirExpr::Index(target, member, _) = self.ctx.hir.get(lhs) else { return None };
+        let HirExpr::Index { base: target, member, .. } = self.ctx.hir.get(lhs) else { return None };
         if !matches!(self.ctx.hir.get(target), HirExpr::This) {
             return None;
         }
@@ -588,21 +653,4 @@ impl<'a> Checker<'a> {
         }
         self.ctx.string_member(member)
     }
-
-    /// Records a discharge that guards every witness the binding owes, such as `??`, `!` or `?!`.
-    pub(super) fn mark_handled(&mut self, node: &HirId<HirExpr>) {
-        let Some(i) = self.local_of(node) else { return };
-        let mut handled = std::mem::take(&mut self.locals[i].handled);
-        handled.extend(self.locals[i].owed.iter().copied());
-        self.locals[i].handled = handled;
-    }
-
-    /// Records what a partial act settled: a test that rules out one witness, or a transfer into a
-    /// slot declaring part of the debt.
-    pub(super) fn mark_settled(&mut self, node: &HirId<HirExpr>, settled: &Obligations) {
-        if let Some(i) = self.local_of(node) {
-            self.locals[i].handled.extend(settled.iter().copied());
-        }
-    }
-
 }

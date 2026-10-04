@@ -1,0 +1,44 @@
+say r = Ref([0]);
+say other = Ref([0]);
+r.mutate((&var v) => { v[0] = @other[0] + 1; @other = [9]; });
+print(@r[0]); // expect: 1
+print(@other[0]); // expect: 9
+say n = r.update((x) => [x[0] + 1]);
+print(@r[0]); // expect: 2
+
+// @split
+say r = Ref([0]);
+r.mutate((&var v) => { print(@r[0]); }); // error: A `Ref` cannot be read while its `mutate` runs
+
+// @split
+say r = Ref([0]);
+r.mutate((&var v) => { @r = [1]; }); // error: A `Ref` cannot be written while its `mutate` runs
+
+// @split
+say r = Ref([0]);
+r.mutate((&var v) => { @r[0] = 1; }); // error: A `Ref` cannot be written while its `mutate` runs
+
+// @split
+say r = Ref([0]);
+r.mutate((&var v) => { r.update((x) => x); }); // error: A `Ref` cannot be read while its `mutate` runs
+
+// @split
+say r = Ref([0]);
+r.mutate((&var v) => { r.mutate((&var w) => {}); }); // error: Uncaught exception: "A `Ref` cannot be written while its `mutate` runs"
+
+// @split
+say r = Ref([0]);
+r.mutate((&var v) => {
+    try { r.mutate((&var w) => {}); } catch (e) { print(e); } // expect: A `Ref` cannot be written while its `mutate` runs
+    v[0] = 1;
+});
+print(@r[0]); // expect: 1
+
+// @split
+say r = Ref([0]);
+try { r.mutate((&var v) => { v[0] = 3; throw "out"; }); } catch (e) { print(e); } // expect: out
+print(@r[0]); // expect: 3
+@r = [4];
+print(@r[0]); // expect: 4
+r.mutate((&var v) => { v[0] = 5; });
+print(@r[0]); // expect: 5

@@ -1,4 +1,3 @@
-// A binding match composes into a while head and the right operand of `&&`.
 say var q = [1, 2, 3];
 while q ~ [head, ..tail] {
     print(head); // expect: 1

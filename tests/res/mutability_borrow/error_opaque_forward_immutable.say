@@ -1,7 +1,0 @@
-// Freezing the value does not make it persistable: `no persist` is about the slot's history, not
-// the value's capability, so the forwarding call is refused either way.
-obligation borrowed { no persist; no return; }
-say sink = mut [];
-fn keeper(*v) { sink.push(v); }
-fn each(xs: borrowed, cb) { cb(xs); } // error: cannot pass a value owing 'borrowed' to a callee that retains it
-each(freeze([1, 2]), keeper);

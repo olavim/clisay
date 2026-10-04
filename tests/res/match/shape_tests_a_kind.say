@@ -1,0 +1,18 @@
+type P { pub x; init(this) { this.x = 1; } }
+say d = { "x": 1 };
+say i = P();
+say a = [1];
+
+print(d ~ { x: _ }); // expect: true
+print(i ~ { x: _ }); // expect: false
+print(a ~ { x: _ }); // expect: false
+
+print(d ~ has { x: _ }); // expect: true
+print(i ~ has { x: _ }); // expect: true
+print(a ~ has { x: _ }); // expect: false
+
+// @split
+type P { pub x; init(this) { this.x = 1; } }
+say i = P();
+if (i ~ has { x: v }) { print(v); } // expect: 1
+if (i ~ P { x: w }) { print(w); } // expect: 1

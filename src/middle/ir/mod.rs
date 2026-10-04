@@ -11,19 +11,34 @@ use crate::core::value::Value;
 use crate::frontend::lex::SourcePosition;
 
 pub const NULL_WITNESS_ID: u16 = 0;
-pub const SLOT_ACCEPTS_SCRIPT_FRAME: u16 = 0;
-pub const SLOT_ACCEPTS_ANYTHING: u16 = u16::MAX;
+pub const SCRIPT_SLOT_WITNESS_SET_POOL_ID: u16 = 0;
+pub const PARAM_IS_ANCHOR: u16 = 1 << 15;
+pub const PARAM_LIST_HAS_ANCHOR: u16 = 1 << 15;
+pub const RECEIVER_IS_COPIED: u16 = 1 << 14;
+pub const WANTS_ANCHOR_RECEIVER: u16 = 1 << 13;
+pub const PARAM_LIST_POOL_ID: u16 = !(PARAM_LIST_HAS_ANCHOR | RECEIVER_IS_COPIED | WANTS_ANCHOR_RECEIVER);
+
+pub const CALL_ARGS_SETTLED: u8 = 1 << 0;
+pub const CALL_KINDS_PROVEN: u8 = 1 << 1;
+pub const CALL_WANTS_VALUE: u8 = 1 << 2;
+pub const CALL_PASSES_ANCHOR_RECEIVER: u8 = 1 << 3;
+pub const CALL_TESTS_CALLEE: u8 = 1 << 4;
+
+pub const NO_WITNESS_SET: u16 = u16::MAX;
+
+pub const COPY_IN_WRITTEN: u8 = 1 << 0;
+pub const COPY_IN_ADMITS_NO_PERSIST: u8 = 1 << 1;
 
 pub const TO_FRAME_END: usize = usize::MAX;
 
 #[derive(Clone, Copy)]
-pub struct SlotAccepts {
+pub struct SlotWitnessSet {
     pub slot: u8,
     /// The declaration's instruction index.
     pub from: usize,
     /// Where the binding's scope ends.
     pub to: usize,
-    pub accepts: u16,
+    pub witness_set_pool_id: u16,
 }
 
 fn remap_end(old_to_new: &[usize], to: usize) -> usize {
@@ -33,58 +48,43 @@ fn remap_end(old_to_new: &[usize], to: usize) -> usize {
     }
 }
 
-fn intern_row(pool: &mut Vec<Box<[u16]>>, row: Box<[u16]>, what: &str) -> Result<u16, anyhow::Error> {
-    if let Some(i) = pool.iter().position(|existing| **existing == *row) {
+fn intern(pool: &mut Vec<Box<[u16]>>, entry: Box<[u16]>, what: &str) -> Result<u16, anyhow::Error> {
+    if let Some(i) = pool.iter().position(|existing| **existing == *entry) {
         return Ok(i as u16);
     }
-    if pool.len() >= u16::MAX as usize {
+    if pool.len() >= WANTS_ANCHOR_RECEIVER as usize {
         bail!("Too many distinct {what}");
     }
-    pool.push(row);
+    pool.push(entry);
     Ok((pool.len() - 1) as u16)
 }
 
-// How a store names the root its write reaches through.
-pub const WRITE_ROOT_NONE: u8 = 0;
-pub const WRITE_ROOT_LOCAL: u8 = 1;
-pub const WRITE_ROOT_UPVALUE: u8 = 2;
-pub const WRITE_ROOT_RECEIVER: u8 = 3;
-pub const WRITE_ROOT_RECEIVER_UP: u8 = 4;
-/// A root without a binding name. `StashRoot` puts it on the stash for the store to use.
-pub const WRITE_ROOT_STASH: u8 = 5;
-/// Set on a store's root kind where one name is proven to reach the target. The store then skips
-/// the one-writer arbitration that every other store runs.
-pub const WRITE_ROOT_UNSHARED: u8 = 0x80;
-
-pub const fn write_root_kind(kind: u8) -> u8 {
-    kind & !WRITE_ROOT_UNSHARED
-}
-
 /// A symbolic jump target, resolved to a byte offset at assembly time.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Label(usize);
 
+impl Label {
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
+
+
 /// A single IR instruction.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Inst {
-    // Control flow
-    Call(u8),
-    /// `mut K(args)`: a factory call whose frame is left unsealed, so the result stays mutable.
-    CallMut(u8),
-    /// Brace construction `C { f: v, ... }`. The second operand is the seal flag: 1 freezes the
-    /// instance in place, 0 leaves it mutable (`mut K{..}`).
-    Construct(u16, u8),
-    /// Fused method call `recv.name(args)`. The last operand is 1 for a `.` access and 0 for a
-    /// `[]` one.
-    Invoke(u8, u8, u8, u8, u8),
-    /// Fused `this.name(args)` where the member is known at compile time.
-    InvokeThis(u8, u8, u8, u8),
+    Call(u8, u8),
+    TailCall(u8, u8),
+    Invoke(u8, u8, u8, u8),
+    /// `this.name(args)`.
+    InvokeThis(u8, u8, u8),
+    /// Brace construction `C { f: v, ... }`.
+    Construct(u16),
     Jump(Label),
     JumpIfFalse(Label),
     JumpIfFalseOrPop(Label),
     JumpIfTrueOrPop(Label),
-    JumpIfNotNullOrPop(Label),
-    JumpIfNull(Label),
+    JumpIfCleanOrPop(Label),
     JumpIfClean(Label),
     JumpIfBad(Label),
     JumpIfIs(Label, TypeId),
@@ -99,78 +99,75 @@ pub enum Inst {
     JumpIfLeLocalConst(Label, u8, u8),
     JumpIfLtLocalConst(Label, u8, u8),
     Return,
-    /// A factory's return: deep-freezes the returned instance if the call frame's seal bit is set.
+    ReturnShared,
     ReturnFac,
     Halt,
     Throw,
-    PushTry(Label),
-    PopTry,
-    /// Aborts if the top of the stack is null, else leaves it.
     AssertNonNull,
-    AssertImmutable,
-    /// Puts the root on top of the stash for a root no binding can name. The
-    /// stack is left alone. The path builds over the root as if no barrier existed.
-    StashRoot,
     BarrierGuard(u16),
-    AssertNoRetain(u8, u16, u16),
-    TransferWriteOwnership(u8),
-    TransferWriteOwnershipUp(u8),
-    /// The container is on the stack, this far below the element it is given.
-    TransferWriteOwnershipAt(u8),
-    ReleaseWriteOwnership(u8),
     PopScope(u8, u8),
-
-    // Stack / constants
     Pop,
-    /// Pushes a copy of the top of the stack.
     Dup,
+    Dup2,
     PushConstant(u8),
     PushNull,
+    PushUnassigned,
     PushTrue,
     PushFalse,
-    PushClosure(u8),
+    BuildClosure(u8),
     PushType(u8),
     /// Builds a type from a template. Its capturing methods bind to the running frame.
     BuildType(u8),
-
-    // Variables and properties
     LoadGlobal(u8),
     LoadLocal(u8),
+    LoadLocalForWrite(u8),
+    LoadAnchorForWrite(u8),
+    CopyObject,
+    ShareLocal(u8),
+    StoreLocalFresh(u8),
+    StoreLocalFreshPop(u8),
+    LoadStepForWrite(u8),
     StoreLocal(u8),
+    PushSlotAnchor(u8, u16),
+    LoadAnchor(u8),
+    StoreAnchor(u8),
+    StoreTempPop(u8),
+    /// Walks the path from the root on top through the anchor's saved keys, and pushes the anchor.
+    FormAnchorPath(u8, u16),
     StoreLocalPop(u8),
     StoreLocalAddLocalLocal(u8, u8, u8), // dst = a + b
-    LoadUpvalue(u8),
-    StoreUpvalue(u8),
-    StoreUpvaluePop(u8),
-    CloseUpvalue(u8),
-    CloseSlotUpvalue(u8),
+    LoadCapture(u8),
+    BindClosureCaptures(u8, u8),
+    BindTypeCaptures(u8, u8),
+    BuildClosureUnbound(u8),
+    BuildTypeUnbound(u8),
     GetIndex,
-    SetIndex(u8, u8),
     GetIndexOrNull(u8),
     GetProperty,
-    SetProperty(u8, u8),
+    SetIndex,
+    SetProperty,
     /// Instance member access by resolved layout id (`this.x`), skipping the name lookup.
     GetField(u8),
-    SetField(u8, u8, u8),
-    SetFieldPop(u8, u8, u8),
-    /// Element count, then whether the literal seals itself immutable.
-    Array(u8, u8),
-    Dict(u8, u8),
-    /// Clears the immutable bit on the object on top of the stack.
-    Mut,
-    /// Asserts every element of the immutable container on top of the stack is immutable, so a
-    /// mutable value of unknown capability cannot land in an immutable container.
-    SealCheck,
-
-    // Arithmetic
+    SetField(u8),
+    SetFieldPop(u8),
+    GetMember(u8),
+    SetMember(u8),
+    CheckAnchorRoot(u8, u8, u8),
+    RecordAnchorRoot(u8),
+    Array(u8),
+    Dict(u8),
     Add,
+    Subtract,
     AddLocalConst(u8, u8), // local + const
     AddConstLocal(u8, u8), // const + local
-    Subtract,
     SubLocalConst(u8, u8), // local - const
     SubConstLocal(u8, u8), // const - local
     IncLocal(u8, u8),      // local = local + const
     DecLocal(u8, u8),      // local = local - const
+    /// Copies the value at an anchor into a frame slot.
+    CopyAnchorIn(u8, u8, u16),
+    /// Copies a frame slot's value back to an anchor.
+    CopyAnchorOut(u8, u8),
     Multiply,
     Divide,
     Negate,
@@ -181,8 +178,6 @@ pub enum Inst {
     BitOr,
     BitXor,
     BitNot,
-
-    // Logical / comparison
     Equal,
     NotEqual,
     LessThan,
@@ -194,6 +189,15 @@ pub enum Inst {
     /// Whether a member satisfies what its declaration admits.
     MemberAdmits(u8, u16),
     IsShaped,
+    IsDict,
+    LoadRef,
+    LoadRefForWrite,
+    StoreRef,
+    StoreRefPop,
+    /// The dict's entries whose keys are not among the `n` on the stack above it.
+    DictRest(u8),
+    /// The dict's entries whose keys are not among the `n` on the stack above it, as an array.
+    DictRestValues(u8),
     ArrayLen,
     /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
     ArrayMiddle(u8, u8),
@@ -205,27 +209,30 @@ pub struct Ir {
     /// Each registered object witness name and its id.
     witness_ids: Vec<(TypeId, u16)>,
     builtin_layouts: [Option<BuiltinLayout>; BuiltinType::COUNT],
-    /// The witness ids each barrier allows.
-    witness_allows: Vec<Box<[u16]>>,
+    witness_set_pool: Vec<Box<[u16]>>,
     code: Vec<Inst>,
     positions: Vec<SourcePosition>,
     constants: Vec<Value>,
     constant_indices: FnvHashMap<Value, u8>,
     labels: Vec<Option<usize>>,
     fn_entries: Vec<(*mut ObjFn, Label)>,
-    /// Brace-construction field-id lists.
-    construct_fields: Vec<Vec<u8>>,
-    survive_positions: Vec<Vec<(u8, SourcePosition)>>,
-    /// The obligation a survive barrier's guarded position owes.
-    owed_names: Vec<Box<[(u8, Box<str>)]>>,
+    byte_lists: Vec<Vec<u8>>,
     /// Instruction indices of the checks that check-forcing put back.
     /// Empty unless check-forcing is on.
-    elisions: Vec<usize>,
-    param_accepts: Vec<Box<[u16]>>,
-    /// One table per frame, the script's first.
-    slot_accepts: Vec<Vec<SlotAccepts>>,
+    forced_checks: Vec<usize>,
+    param_list_pool: Vec<Box<[u16]>>,
+    slot_witness_set_pool: Vec<Vec<SlotWitnessSet>>,
+    anchor_params: Vec<Box<[(u8, u8)]>>,
+    throw_targets: Vec<ThrowTarget>,
     /// Extra source positions an instruction needs, keyed by instruction index and role.
     source_map: FnvHashMap<(usize, SourceRole), SourcePosition>,
+}
+
+/// From `from` on, a throw goes to `handler`.
+#[derive(Clone, Copy)]
+pub struct ThrowTarget {
+    pub from: Label,
+    pub handler: Option<(Label, u16)>,
 }
 
 /// Which part of an instruction an extra source position belongs to.
@@ -243,62 +250,33 @@ impl Ir {
         Ir {
             witness_ids: Vec::new(),
             builtin_layouts: std::array::from_fn(|_| None),
-            witness_allows: Vec::new(),
+            witness_set_pool: Vec::new(),
             code: Vec::new(),
             positions: Vec::new(),
             constants: Vec::new(),
             constant_indices: FnvHashMap::default(),
             labels: Vec::new(),
             fn_entries: Vec::new(),
-            construct_fields: Vec::new(),
-            survive_positions: Vec::new(),
-            owed_names: Vec::new(),
-            elisions: Vec::new(),
-            param_accepts: Vec::new(),
-            slot_accepts: Vec::new(),
+            byte_lists: Vec::new(),
+            forced_checks: Vec::new(),
+            param_list_pool: Vec::new(),
+            slot_witness_set_pool: Vec::new(),
+            anchor_params: Vec::new(),
+            throw_targets: Vec::new(),
             source_map: FnvHashMap::default(),
         }
     }
 
-    pub fn add_construct_fields(&mut self, fields: Vec<u8>) -> Result<u16, anyhow::Error> {
-        if self.construct_fields.len() >= u16::MAX as usize {
-            bail!("Too many brace constructions");
+    pub fn add_byte_list(&mut self, list: Vec<u8>) -> Result<u16, anyhow::Error> {
+        if self.byte_lists.len() >= u16::MAX as usize {
+            bail!("Too many byte lists");
         }
-        self.construct_fields.push(fields);
-        Ok((self.construct_fields.len() - 1) as u16)
+        self.byte_lists.push(list);
+        Ok((self.byte_lists.len() - 1) as u16)
     }
 
-    pub fn construct_fields(&self, idx: u16) -> &[u8] {
-        &self.construct_fields[idx as usize]
-    }
-
-    /// Records a barrier's guarded argument positions.
-    pub fn add_survive_positions(&mut self, positions: Vec<(u8, SourcePosition)>) -> Result<u16, anyhow::Error> {
-        if self.survive_positions.len() >= u16::MAX as usize {
-            bail!("Too many opaque-call barriers");
-        }
-        self.survive_positions.push(positions);
-        Ok((self.survive_positions.len() - 1) as u16)
-    }
-
-    pub fn survive_positions(&self, idx: u16) -> &[(u8, SourcePosition)] {
-        &self.survive_positions[idx as usize]
-    }
-
-    /// Records the obligations a survive barrier's guarded positions owe.
-    pub fn add_owed_names(&mut self, owed: Box<[(u8, Box<str>)]>) -> Result<u16, anyhow::Error> {
-        if let Some(i) = self.owed_names.iter().position(|o| **o == *owed) {
-            return Ok(i as u16);
-        }
-        if self.owed_names.len() >= u16::MAX as usize {
-            bail!("Too many opaque-call barriers");
-        }
-        self.owed_names.push(owed);
-        Ok((self.owed_names.len() - 1) as u16)
-    }
-
-    pub fn owed_names(&self) -> &[Box<[(u8, Box<str>)]>] {
-        &self.owed_names
+    pub fn byte_list(&self, idx: u16) -> &[u8] {
+        &self.byte_lists[idx as usize]
     }
 
     /// The index the next emitted instruction will take.
@@ -307,12 +285,12 @@ impl Ir {
     }
 
     /// Marks every instruction emitted since `from` as a forced check.
-    pub fn mark_elisions_from(&mut self, from: usize) {
-        self.elisions.extend(from..self.code.len());
+    pub fn mark_forced_from(&mut self, from: usize) {
+        self.forced_checks.extend(from..self.code.len());
     }
 
-    pub fn elisions(&self) -> &[usize] {
-        &self.elisions
+    pub fn forced_checks(&self) -> &[usize] {
+        &self.forced_checks
     }
 
     pub fn map_source(&mut self, index: usize, role: SourceRole, pos: SourcePosition) {
@@ -365,53 +343,75 @@ impl Ir {
         self.builtin_layouts
     }
 
+    pub fn intern_param_list(&mut self, param_list: Box<[u16]>) -> Result<u16, anyhow::Error> {
+        intern(&mut self.param_list_pool, param_list, "parameter lists")
+    }
+
+    pub fn intern_witness_set(&mut self, witness_set: Box<[u16]>) -> Result<u16, anyhow::Error> {
+        intern(&mut self.witness_set_pool, witness_set, "barrier witness sets")
+    }
+
     pub fn witness_ids(&self) -> &[(TypeId, u16)] {
         &self.witness_ids
     }
 
-    pub fn witness_allows(&self) -> &[Box<[u16]>] {
-        &self.witness_allows
+    pub fn witness_set_pool(&self) -> &[Box<[u16]>] {
+        &self.witness_set_pool
     }
 
-    pub fn add_param_accepts(&mut self, accepts: Box<[u16]>) -> Result<u16, anyhow::Error> {
-        intern_row(&mut self.param_accepts, accepts, "parameter accept sets")
-    }
-
-    pub fn new_slot_accepts_table(&mut self) -> Result<u16, anyhow::Error> {
-        let index = self.slot_accepts.len();
+    pub fn push_slot_witness_set_table(&mut self) -> Result<u16, anyhow::Error> {
+        let index = self.slot_witness_set_pool.len();
         if index >= u16::MAX as usize {
             bail!("Too many frames with their own slots");
         }
-        self.slot_accepts.push(Vec::new());
+        self.slot_witness_set_pool.push(Vec::new());
+        self.anchor_params.push(Box::new([]));
         Ok(index as u16)
     }
 
-    pub fn end_slot_accepts_from(&mut self, table_id: u16, first_dead: u8) {
+    pub fn end_slot_witness_sets_from(&mut self, table_id: u16, first_dead: u8) {
         let at = self.code.len();
-        for entry in self.slot_accepts[table_id as usize].iter_mut() {
+        for entry in self.slot_witness_set_pool[table_id as usize].iter_mut() {
             if entry.slot >= first_dead && entry.to == TO_FRAME_END {
                 entry.to = at;
             }
         }
     }
 
-    /// Records what a binding's slot accepts, from its declaration onward.
-    pub fn record_slot_accepts(&mut self, table: u16, slot: u8, accepts: u16) {
+    pub fn push_slot_witness_set(&mut self, slot_witness_set_pool_id: u16, slot: u8, witness_set_pool_id: u16) {
         let from = self.code.len();
-        self.slot_accepts[table as usize].push(SlotAccepts { slot, from, to: TO_FRAME_END, accepts });
+        self.slot_witness_set_pool[slot_witness_set_pool_id as usize].push(SlotWitnessSet { slot, from, to: TO_FRAME_END, witness_set_pool_id });
     }
 
-    pub fn slot_accepts(&self) -> &[Vec<SlotAccepts>] {
-        &self.slot_accepts
+    pub fn slot_witness_set_pool(&self) -> &[Vec<SlotWitnessSet>] {
+        &self.slot_witness_set_pool
     }
 
-    pub fn param_accepts(&self) -> &[Box<[u16]>] {
-        &self.param_accepts
+    pub fn record_anchor_params(&mut self, table: u16, params: Box<[(u8, u8)]>) {
+        self.anchor_params[table as usize] = params;
     }
 
-    /// Pools a barrier's allowed witness ids.
-    pub fn add_witness_allow(&mut self, allow: Box<[u16]>) -> Result<u16, anyhow::Error> {
-        intern_row(&mut self.witness_allows, allow, "barrier witness sets")
+    pub fn anchor_params(&self) -> &[Box<[(u8, u8)]>] {
+        &self.anchor_params
+    }
+
+    pub fn set_throw_target(&mut self, handler: Option<(Label, u16)>) {
+        let here = self.code.len();
+        if let Some(last) = self.throw_targets.last_mut().filter(|last| self.labels[last.from.0] == Some(here)) {
+            last.handler = handler;
+            return;
+        }
+        let from = self.new_label();
+        self.bind(from);
+        self.throw_targets.push(ThrowTarget { from, handler });
+    }
+
+    pub fn throw_targets(&self) -> &[ThrowTarget] {
+        &self.throw_targets
+    }
+
+    pub fn param_list_pool(&self) -> &[Box<[u16]>] {
+        &self.param_list_pool
     }
 
     pub fn add_constant(&mut self, value: Value) -> Result<u8, anyhow::Error> {
@@ -440,11 +440,9 @@ impl Ir {
         &self.constants
     }
 
-    /// The instruction index `label` is bound to.
-    pub fn label_target(&self, label: Label) -> usize {
-        let target = self.labels[label.0].expect("label was never bound");
-        debug_assert!(target < self.code.len(), "jump target past end of instruction stream");
-        target
+    /// The instruction a label is bound to, which may be one past the last one.
+    pub fn label_position(&self, label: Label) -> usize {
+        self.labels[label.0].expect("label was never bound")
     }
 
     /// Rewrites the instruction stream with a peephole `fuse` function and fixes
@@ -485,19 +483,167 @@ impl Ir {
             constant_indices: self.constant_indices,
             labels,
             fn_entries: self.fn_entries,
-            construct_fields: self.construct_fields,
-            survive_positions: self.survive_positions,
-            owed_names: self.owed_names,
+            byte_lists: self.byte_lists,
             // A rewrite moves instructions, so each marked check follows its own index.
-            elisions: self.elisions.iter().map(|&idx| old_to_new[idx]).collect(),
+            forced_checks: self.forced_checks.iter().map(|&idx| old_to_new[idx]).collect(),
             source_map: self.source_map.iter().map(|(&(idx, role), pos)| ((old_to_new[idx], role), pos.clone())).collect(),
             witness_ids: self.witness_ids,
             builtin_layouts: self.builtin_layouts,
-            witness_allows: self.witness_allows,
-            param_accepts: self.param_accepts,
-            slot_accepts: self.slot_accepts.into_iter()
-                .map(|body| body.into_iter().map(|e| SlotAccepts { from: old_to_new[e.from], to: remap_end(&old_to_new, e.to), ..e }).collect())
+            witness_set_pool: self.witness_set_pool,
+            param_list_pool: self.param_list_pool,
+            anchor_params: self.anchor_params,
+            throw_targets: self.throw_targets,
+            slot_witness_set_pool: self.slot_witness_set_pool.into_iter()
+                .map(|body| body.into_iter().map(|e| SlotWitnessSet { from: old_to_new[e.from], to: remap_end(&old_to_new, e.to), ..e }).collect())
                 .collect(),
+        }
+    }
+}
+
+/// What an instruction does to the operand stack on each path out of it.
+pub struct StackEffect {
+    /// Values popped and pushed on the way to the next instruction. None when control never
+    /// goes on to it, such as after a jump.
+    pub next: Option<(usize, usize)>,
+    /// The label a jump may continue at, with the values popped and pushed on that path.
+    pub jump: Option<(Label, usize, usize)>,
+}
+
+impl StackEffect {
+    fn next(pops: usize, pushes: usize) -> StackEffect {
+        StackEffect { next: Some((pops, pushes)), jump: None }
+    }
+
+    fn end() -> StackEffect {
+        StackEffect { next: None, jump: None }
+    }
+
+    fn branch(label: Label, pops: usize, jump_pops: usize) -> StackEffect {
+        StackEffect { next: Some((pops, 0)), jump: Some((label, jump_pops, 0)) }
+    }
+}
+
+impl Ir {
+    pub fn stack_effect(&self, inst: &Inst) -> StackEffect {
+        match *inst {
+            Inst::Call(_, arity)
+                | Inst::Invoke(_, _, arity, _)
+                | Inst::InvokeThis(_, _, arity) => StackEffect::next(arity as usize + 1, 1),
+            Inst::Construct(fields) => StackEffect::next(self.byte_list(fields).len() + 1, 1),
+            Inst::Jump(label) => StackEffect { next: None, jump: Some((label, 0, 0)) },
+            Inst::JumpIfFalse(label) => StackEffect::branch(label, 1, 1),
+            Inst::JumpIfFalseOrPop(label)
+                | Inst::JumpIfTrueOrPop(label)
+                | Inst::JumpIfCleanOrPop(label) => StackEffect::branch(label, 1, 0),
+            Inst::JumpIfClean(label)
+                | Inst::JumpIfBad(label)
+                | Inst::JumpIfIs(label, _) => StackEffect::branch(label, 0, 0),
+            Inst::JumpIfGe(label)
+                | Inst::JumpIfGt(label)
+                | Inst::JumpIfLe(label)
+                | Inst::JumpIfLt(label)
+                | Inst::JumpIfEq(label)
+                | Inst::JumpIfNeq(label) => StackEffect::branch(label, 2, 2),
+            Inst::JumpIfGeLocalConst(label, ..)
+                | Inst::JumpIfGtLocalConst(label, ..)
+                | Inst::JumpIfLeLocalConst(label, ..)
+                | Inst::JumpIfLtLocalConst(label, ..) => StackEffect::branch(label, 0, 0),
+            Inst::TailCall(..)
+                | Inst::Return
+                | Inst::ReturnShared
+                | Inst::ReturnFac
+                | Inst::Halt
+                | Inst::Throw => StackEffect::end(),
+            Inst::AssertNonNull
+                | Inst::BarrierGuard(_) => StackEffect::next(0, 0),
+            Inst::PopScope(count, _) => StackEffect::next(count as usize, 0),
+            Inst::Pop => StackEffect::next(1, 0),
+            Inst::Dup => StackEffect::next(1, 2),
+            Inst::Dup2 => StackEffect::next(2, 4),
+            Inst::PushConstant(_)
+                | Inst::PushNull
+                | Inst::PushUnassigned
+                | Inst::PushTrue
+                | Inst::PushFalse
+                | Inst::BuildClosure(_)
+                | Inst::PushType(_)
+                | Inst::BuildType(_)
+                | Inst::LoadGlobal(_)
+                | Inst::LoadLocal(_)
+                | Inst::LoadLocalForWrite(_)
+                | Inst::LoadAnchorForWrite(_)
+                | Inst::PushSlotAnchor(..)
+                | Inst::LoadAnchor(_)
+                | Inst::LoadCapture(_)
+                | Inst::BuildClosureUnbound(_)
+                | Inst::BuildTypeUnbound(_)
+                | Inst::AddLocalConst(..)
+                | Inst::AddConstLocal(..)
+                | Inst::SubLocalConst(..)
+                | Inst::SubConstLocal(..) => StackEffect::next(0, 1),
+            Inst::CopyObject
+                | Inst::ShareLocal(_)
+                | Inst::StoreLocalFresh(_)
+                | Inst::StoreLocal(_)
+                | Inst::StoreAnchor(_)
+                | Inst::StoreLocalAddLocalLocal(..)
+                | Inst::BindClosureCaptures(..)
+                | Inst::BindTypeCaptures(..)
+                | Inst::IncLocal(..)
+                | Inst::CopyAnchorOut(..)
+                | Inst::DecLocal(..) => StackEffect::next(0, 0),
+            Inst::StoreLocalFreshPop(_)
+                | Inst::StoreLocalPop(_)
+                | Inst::StoreTempPop(_) => StackEffect::next(1, 0),
+            Inst::FormAnchorPath(..) => StackEffect::next(1, 1),
+            Inst::CopyAnchorIn(_, flags, _) => StackEffect::next(0, 1 + (flags & COPY_IN_WRITTEN) as usize),
+            Inst::LoadStepForWrite(_)
+                | Inst::GetIndex
+                | Inst::GetProperty => StackEffect::next(2, 1),
+            Inst::GetIndexOrNull(_)
+                | Inst::GetField(_)
+                | Inst::GetMember(_) => StackEffect::next(1, 1),
+            Inst::SetIndex
+                | Inst::SetProperty => StackEffect::next(3, 1),
+            Inst::SetField(_)
+                | Inst::SetMember(_) => StackEffect::next(2, 1),
+            Inst::SetFieldPop(_) => StackEffect::next(2, 0),
+            Inst::CheckAnchorRoot(..) => StackEffect::next(0, 0),
+            Inst::RecordAnchorRoot(_) => StackEffect::next(1, 0),
+            Inst::Array(count) => StackEffect::next(count as usize, 1),
+            Inst::Dict(count) => StackEffect::next(2 * count as usize, 1),
+            Inst::Add
+                | Inst::Subtract
+                | Inst::Multiply
+                | Inst::Divide
+                | Inst::LeftShift
+                | Inst::RightShift
+                | Inst::BitAnd
+                | Inst::BitOr
+                | Inst::BitXor
+                | Inst::Equal
+                | Inst::NotEqual
+                | Inst::LessThan
+                | Inst::LessThanEqual
+                | Inst::GreaterThan
+                | Inst::GreaterThanEqual => StackEffect::next(2, 1),
+            Inst::Negate
+                | Inst::Not
+                | Inst::BitNot
+                | Inst::Is(_)
+                | Inst::HasMember(_)
+                | Inst::MemberAdmits(..)
+                | Inst::IsShaped
+                | Inst::IsDict
+                | Inst::ArrayLen
+                | Inst::ArrayMiddle(..)
+                | Inst::ArrayElem(..)
+                | Inst::LoadRef
+                | Inst::LoadRefForWrite => StackEffect::next(1, 1),
+            Inst::StoreRef => StackEffect::next(2, 1),
+            Inst::StoreRefPop => StackEffect::next(2, 0),
+            Inst::DictRest(count)
+                | Inst::DictRestValues(count) => StackEffect::next(count as usize + 1, 1),
         }
     }
 }

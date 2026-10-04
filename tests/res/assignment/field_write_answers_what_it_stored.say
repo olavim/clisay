@@ -1,0 +1,23 @@
+type T {
+    pub var f = 0;
+    pub fn viaThis(var this) { say var loc = [1]; say var stored = (this.f = loc); &stored.push(2); return loc.length(); }
+}
+
+say var t = T();
+print(t.viaThis()); // expect: 1
+
+// @split
+type T { pub var f = 0; }
+
+say var u = T();
+say var loc = [1];
+say var stored = (u.f = loc);
+&stored.push(2);
+print(loc.length()); // expect: 1
+
+// @split
+type T { pub var f = 0; }
+
+say var u = T();
+say var loc = [1];
+(u.f = loc).push(2); // error: `push` wants an anchor receiver

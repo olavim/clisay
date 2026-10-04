@@ -1,0 +1,6 @@
+type O { pub var f = 1; }
+say var o = O();
+say var y = &o.f;
+say var s = 0;
+say var i = 0;
+while i < 500000 { s = y; i = i + 1; }

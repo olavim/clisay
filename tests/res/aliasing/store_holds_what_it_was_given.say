@@ -1,0 +1,46 @@
+fn wrap(x) { return [x]; }
+say var a = [[0]];
+say w = wrap(a[0]);
+a[0][0] = 1;
+print(w[0][0]); // expect: 0
+print(a[0][0]); // expect: 1
+
+// @split
+fn wrap(x) { say c = [x]; return c; }
+say var a = [[0]];
+say w = wrap(a[0]);
+a[0][0] = 1;
+print(w[0][0]); // expect: 0
+
+// @split
+fn wrap(x) { return [x]; }
+say a = [[0]];
+say var w = wrap(a[0]);
+w[0][0] = 7;
+print(w[0][0]); // expect: 7
+
+// @split
+fn stash(v) { say var c = []; &c.push(v); }
+say var a = [[0]];
+stash(a[0]);
+a[0][0] = 8;
+print(a[0][0]); // expect: 8
+
+// @split
+say var a = [[[0]]];
+a[0][0][0] = 4;
+print(a[0][0][0]); // expect: 4
+
+// @split
+type Inner { pub var n; pub fn bump(var this) { this.n = this.n + 1; } }
+type Outer { pub var i; }
+say o = Outer { i: Inner { n: 0 } };
+o.i.bump();
+print(o.i.n); // expect: 0
+
+// @split
+type Inner { pub var n; pub fn bump(var this) { this.n = this.n + 1; } }
+say var list = [];
+&list.push(Inner { n: 4 });
+list[0].bump();
+print(list[0].n); // expect: 4

@@ -1,0 +1,23 @@
+fn f(): fails { return Err("e"); }
+fn run(k) {
+    say x: fails = f();
+    match (k) {
+        1 => { x ?? 0; },
+        2 => { print("mid"); },
+        _ => { x ?? 0; },
+    }
+    print("end");
+}
+run(2); // expect: mid
+// expect: end
+
+// @split
+fn f(): fails { return Err("e"); }
+fn run(k) {
+    say x: fails = f();
+    match (k) {
+        1 => { print(x ?? "one"); },
+        _ => { print(x ?? "other"); },
+    }
+}
+run(1); // expect: one

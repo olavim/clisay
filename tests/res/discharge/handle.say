@@ -1,8 +1,7 @@
-// `e ?? p => h` binds the bad value to `p` and yields `h`.
-fn load()! { return Err("boom"); }
+fn load() { return Err("boom"); }
 say r = load() ?? e => e.value;
 print(r); // expect: boom
 
-say present? = 5;
+say present: opt = 5;
 say z = present ?? bad => 99;
 print(z); // expect: 5

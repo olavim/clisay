@@ -1,0 +1,38 @@
+fn f(n) {
+    say c = Ref(n);
+    fn g() { @c = @c + 1; }
+    g();
+    return @c;
+}
+
+print(f(1)); // expect: 2
+
+// @split
+fn f(&var n) {
+    fn g() { n = 1; } // error: Cannot assign to `n`; a closure captures its value, not its binding
+    g();
+}
+
+say var a = 0;
+f(&a);
+
+// @split
+fn f(&var n) {
+    fn g() { return n; }
+    n = n + 1;
+    return g();
+}
+
+say var a = 0;
+print(f(&a)); // expect: 0
+print(a); // expect: 1
+
+// @split
+fn f() {
+    say var x = 0;
+    say var y = &x;
+    fn g() { print(y); } // error: Cannot capture `y`; it is an anchor
+    g();
+}
+
+f();

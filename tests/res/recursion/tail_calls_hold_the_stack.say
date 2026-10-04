@@ -1,0 +1,26 @@
+fn count(n) {
+    if (n == 0) { return "done"; }
+    return count(n - 1);
+}
+print(count(200000)); // expect: done
+
+// @split
+fn isEven(n) { if (n == 0) { return true; } return isOdd(n - 1); }
+fn isOdd(n) { if (n == 0) { return false; } return isEven(n - 1); }
+print(isEven(200000)); // expect: true
+
+// @split
+fn count(n) {
+    defer { print("cleanup"); }
+    if (n == 0) { return "done"; }
+    return count(n - 1);
+}
+print(count(2)); // expect: cleanup
+// expect: cleanup
+// expect: cleanup
+// expect: done
+
+// @split
+fn boom(n) { throw "bang"; }
+fn f() { try { return boom(1); } catch (e) { return "caught"; } }
+print(f()); // expect: caught

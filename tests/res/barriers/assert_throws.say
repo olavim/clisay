@@ -1,3 +1,6 @@
-// `!` on a null value throws at the assertion.
-say maybe? = null;
-say w = maybe!; // error: unexpected null
+say maybe: opt = null;
+try { say w = maybe!; } catch (e) { print(e); } // expect: null
+
+// @split
+say maybe: opt = null;
+say w = maybe!; // error: Uncaught exception: null

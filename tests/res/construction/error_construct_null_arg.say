@@ -1,0 +1,2 @@
+type Box { pub v; init(this, x) { this.v = x; } }
+say b = Box(null); // error: expected non-null argument

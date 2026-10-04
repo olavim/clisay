@@ -7,3 +7,23 @@ type A {
 
 say obj = A();
 print(obj.val); // expect: b
+// @split
+type T { pub x; init(this, c) { this.x = 5; if (c) { return; } this.x = 9; } }
+print(T(true).x); // expect: 5
+print(T(false).x); // expect: 9
+
+// @split
+type T { pub x; pub y; init(this, c) { this.x = 1; this.y = 2; while (c) { if (c) { return; } } this.x = 9; } }
+say a = T(true);
+print(a.x); // expect: 1
+print(a.y); // expect: 2
+print(T(false).x); // expect: 9
+
+// @split
+trait P { pub fn go(this) { return 1; } }
+type C { pub e gives P; init(this, c) { this.e = 5; if (c) { return; } } } // error: Uncaught exception: "Delegate field 'e' does not provide trait 'P'"
+C(true);
+
+// @split
+type C { pub x; init(this) { say f = () => { return; }; f(); this.x = 5; } }
+print(C().x); // expect: 5

@@ -8,17 +8,19 @@ use smallvec::SmallVec;
 use crate::Output;
 use crate::core::objects::{ObjBoundMethod, ObjInstance};
 use fnv::FnvHashSet;
+#[cfg(debug_assertions)]
+use fnv::FnvHashMap;
 use crate::core::value::ValueKind;
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
 use crate::core::native::array::NativeArray;
 use crate::core::native::dict::NativeDict;
-use crate::core::native::NativeType;
+use crate::core::native::NativeTypeBuilder;
 use crate::core::stack::{CachedStack, Stack};
-use crate::core::value::{DictKey, Value};
+use crate::core::value::{DictKey, FrameGeneration, Value};
 use crate::core::gc::{Gc, GcTraceable};
-use crate::core::host::Host;
-use crate::core::objects::{self, BuiltinLayout, TypeMember, NativeFn, ObjArray, ObjDict, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, ObjUpvalue, Object, ObjectKind, TypeId};
+use crate::core::host::{Host, Thrown};
+use crate::core::objects::{self, BuiltinLayout, TypeMember, NativeFn, ObjArray, ObjDict, ObjType, ObjClosure, ObjFn, ObjNativeFn, ObjString, Object, ObjectKind, TypeId};
 use crate::ast::BuiltinType;
 
 use crate::backend::bytecode::chunk::BytecodeChunk;
@@ -32,8 +34,7 @@ const CALL_CACHE_SIZE: usize = 1024;
 
 #[derive(Clone, Copy)]
 struct IndexCache {
-    /// The bytecode site, or `EMPTY_SITE` for an entry that answers nothing. A live site is an
-    /// instruction pointer.
+    /// The bytecode site, or `EMPTY_SITE`.
     site: usize,
     /// The member asked for.
     prop: *mut ObjString,
@@ -50,11 +51,8 @@ struct CallCache {
     callee: Value,
     closure: *mut ObjClosure,
     ip_start: usize,
-    retain_mask: u64,
-    needs_borrow_mark: u64
 }
 
-/// A site no instruction pointer can be, which is how an entry says it answers nothing.
 const EMPTY_SITE: usize = usize::MAX;
 
 impl IndexCache {
@@ -64,16 +62,16 @@ impl IndexCache {
 }
 
 impl CallCache {
-    /// An entry naming nothing. A collection resets to this, since what it named may be freed.
     const fn empty() -> CallCache {
-        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0, retain_mask: 0, needs_borrow_mark: u64::MAX }
+        CallCache { site: EMPTY_SITE, callee: Value::NULL, closure: std::ptr::null_mut(), ip_start: 0 }
     }
 }
 
 struct NativeTypes {
     array: *mut ObjType,
     dict: *mut ObjType,
-    err: *mut ObjType
+    err: *mut ObjType,
+    ref_type: *mut ObjType
 }
 
 impl GcTraceable for NativeTypes {
@@ -81,6 +79,7 @@ impl GcTraceable for NativeTypes {
         gc.mark_object(self.array);
         gc.mark_object(self.dict);
         gc.mark_object(self.err);
+        gc.mark_object(self.ref_type);
     }
     
     fn fmt(&self) -> String {
@@ -97,169 +96,49 @@ pub struct CallFrame {
     closure: *mut ObjClosure,
     return_ip: *const OpCode,
     stack_start: *mut Value,
-    /// Whether a factory returning from this frame should seal (deep-freeze) its instance.
-    seal: bool,
-    /// How much write-ownership was held when this frame began, so a return gives back what the
-    /// body still holds.
-    write_depth: usize,
-    /// How many borrow marks were saved when this frame began.
-    borrow_depth: usize,
+    generation: FrameGeneration,
 }
 
-/// Who holds an element's writer slot. A name lives in a frame slot, so its claim dies with the
-/// frame. A container is identified by its value, whose lifetime that frame does not bound.
-#[derive(Clone, Copy)]
-pub enum WriteOwnershipHolder {
-    Name(*mut Value),
-    Container(Value),
-    /// A `*mut` parameter whose frame is gone. The write-ownership was handed over and the taker
-    /// never handed it on, so it belongs to nobody.
-    Retired,
-}
-
-/// What a call puts in slot zero.
-#[derive(Clone, Copy, PartialEq)]
-pub enum ReceiverSlot {
-    /// The slot holds the callee, so the call has no receiver.
-    Callee,
-    /// The caller lends its receiver for the call and gets it back, and the body may hand `this`
-    /// on, so the borrow is written down where such a call can read it.
-    BorrowedRecorded,
-    Borrowed,
-    Retained,
-}
-
-impl ReceiverSlot {
-    pub fn declared(retain: bool, records: bool) -> ReceiverSlot {
-        match (retain, records) {
-            (true, _) => ReceiverSlot::Retained,
-            (false, true) => ReceiverSlot::BorrowedRecorded,
-            (false, false) => ReceiverSlot::Borrowed,
-        }
+impl CallFrame {
+    #[inline]
+    fn new(closure: *mut ObjClosure, return_ip: *const OpCode, stack_start: *mut Value, generation: FrameGeneration) -> CallFrame {
+        CallFrame { closure, return_ip, stack_start, generation }
     }
 }
 
-/// The root used to reach a target.
-#[derive(Clone, Copy)]
-pub enum WriteRoot {
-    /// The write reaches its target through a binding, named by where it lives, as in `a[0] = 1`.
-    /// The flag marks a path through the receiver.
-    Named(*mut Value, bool),
-    /// The write targets an element of an unnamed value, such as `get()[0][0] = 1`. The stash
-    /// holds the container the element came from.
-    Stashed(Value),
-    /// The write targets an unnamed value directly, such as `get()[0] = 1`. This value has no name
-    /// or container. There is nothing to compare a second writer against.
-    NoRoot,
-}
-
-/// Write-ownership of one element, held by a name or by a container.
-#[derive(Clone, Copy)]
-pub struct WriteOwnership {
-    pub value: Value,
-    pub holder: WriteOwnershipHolder,
-    pub at: u32,
-    pub how: WriteOwnershipSource,
-}
-
-/// How a holder came by write-ownership, which is what a scope exit needs to dispose of it.
-#[derive(Clone, Copy, PartialEq)]
-pub enum WriteOwnershipSource {
-    /// A name binding the value. The write-ownership returns to the source when the name dies.
-    Bound,
-    /// A store into a container. The claim re-keys to the container, which outlives the name.
-    Given,
-    /// A `*mut` hand-off to a parameter. The write-ownership does not come back, so the claim
-    /// follows the value out of the frame or retires with it.
-    Taken,
-}
-
-#[derive(Clone, Copy)]
-pub struct TryFrame {
-    origin: *mut CallFrame,
-    handler_ip: *const OpCode,
-    stack_start: *mut Value,
-    /// The borrow-stack depth when the `try` began, restored on an unwind to this handler.
-    borrow_depth: usize,
-    write_depth: usize,
-    /// The stash depth at the start of the try block.
-    stash_depth: usize
-}
-
-/// An argument a resolved call said it only borrows, watched for as long as that call runs.
-struct BorrowWatch {
-    value: Value,
-    /// Containers the callee put the argument in.
-    into: Vec<Value>,
-    /// The frame depth once the call pushed its own frame.
-    depth: usize,
-    /// The lowest slot the call's frame owns.
-    stack_start: *mut Value,
-    position: u8,
-    site: usize,
-}
-
 #[cfg(debug_assertions)]
-struct MarkWatch {
-    slot: *mut Value,
-    position: Option<u8>,
-    site: usize,
+#[derive(Clone, Copy)]
+pub(super) struct RecordedRoot {
+    pub(super) root: Value,
+    pub(super) formed_on: Value,
+    pub(super) placed: bool,
 }
 
 pub struct Vm {
     /// Forced checks this run reached, for the coverage report.
-    elisions_reached: FnvHashSet<usize>,
-    /// Whether this run puts what the analysis concluded on trial.
-    forced: bool,
-    /// Arguments a call said it only borrows, watched until that call returns.
-    borrow_watches: Vec<BorrowWatch>,
-    /// Containers a finished call put a borrowed argument into.
-    settling_containments: Vec<(Value, u8, usize)>,
-    watches_made: usize,
-    watches_settled: usize,
+    forced_checks_reached: FnvHashSet<usize>,
     #[cfg(debug_assertions)]
-    mark_watches: Vec<MarkWatch>,
-    #[cfg(debug_assertions)]
-    watched_receivers: Vec<(Value, usize, usize)>,
-    #[cfg(debug_assertions)]
-    marks_watched: usize,
-    #[cfg(debug_assertions)]
-    marks_read: usize,
-    /// Write barriers that had to collect before they could answer, split by what the collection
-    /// then said. A trace the barrier did not need is an escape no primitive recorded, so only
-    /// those sites are worth naming.
-    write_barrier_missed_sites: FnvHashSet<usize>,
-    write_barrier_traced_missed: usize,
-    write_barrier_traced_refused: usize,
-    /// The write-ownership a scope exit would have released, each with the site it would have
-    /// released at. Nothing acts on a prediction, so a wrong one costs a report rather than a
-    /// second writer. The next collection settles the list and clears it, since none of it is a
-    /// root.
-    predicted_write_ownership_releases: Vec<(Value, usize)>,
-    predicted_write_ownership_release_sites: FnvHashSet<usize>,
-    refuted_write_ownership_release_sites: FnvHashSet<usize>,
-    refuted_write_ownership_releases: usize,
+    anchor_roots: FnvHashMap<usize, RecordedRoot>,
     pub(crate) gc: Gc,
     ip: *const OpCode,
     chunk: BytecodeChunk,
     globals: HashMap<*mut ObjString, Value, BuildHasherDefault<FxHasher>>,
     pub(crate) stack: Stack<Value, MAX_STACK>,
     frames: CachedStack<CallFrame, MAX_FRAMES>,
-    try_frames: Vec<TryFrame>,
-    /// Values marked borrowed for an active call, each with its prior bit for nesting.
-    borrows: Vec<(Value, bool)>,
-    /// Values whose element writer slot is held, innermost last.
-    write_ownerships: Vec<WriteOwnership>,
-    root_stash: Vec<Value>,
-    open_upvalues: Vec<*mut ObjUpvalue>,
+    next_frame_generation: FrameGeneration,
+    tail_breadcrumbs: Vec<(*mut CallFrame, *mut ObjClosure)>,
+    held: Vec<Value>,
+    lowest_anchor_path: *mut Value,
     native_types: NativeTypes,
     index_cache: Box<[IndexCache]>,
     call_cache: Box<[CallCache]>,
+    #[cfg(debug_assertions)]
+    counting_forks: bool,
+    #[cfg(debug_assertions)]
+    forks: usize,
+    #[cfg(debug_assertions)]
+    forked_elements: usize,
     out: Vec<String>,
-    /// Whether the receiver of the native about to run is a slot the calling frame declared.
-    native_receiver_is_frame_local: bool,
-    /// One bit per argument of the running native, set where its slot was borrowed at the call.
-    native_borrowed_arguments: u64
 }
 
 macro_rules! as_short {
@@ -267,6 +146,7 @@ macro_rules! as_short {
 }
 
 mod accepts;
+mod anchors;
 mod writes;
 mod calls;
 mod closures;
@@ -281,7 +161,7 @@ fn disassemble(chunk: &BytecodeChunk) {
     Output::println("================");
 }
 
-fn build_native_type(gc: &mut Gc, native_type: impl NativeType) -> *mut ObjType {
+fn build_native_type(gc: &mut Gc, native_type: impl NativeTypeBuilder) -> *mut ObjType {
     let ty = native_type.build_type(gc);
     gc.alloc(ty)
 }
@@ -296,33 +176,58 @@ fn apply_witness_ids(ty: &mut ObjType, ids: &[(TypeId, u16)], provided: &[TypeId
     ty.witness_ids = own.into_boxed_slice();
 }
 
-/// Builds `Err`'s runtime object from the layout the compiler resolved for its declaration.
-fn build_err_type(gc: &mut Gc, ids: &[(TypeId, u16)], layout: &BuiltinLayout) -> *mut ObjType {
-    let err = gc.intern("Err");
-    let mut ty = ObjType::new(err);
-    for (name, member) in &layout.members {
-        ty.members.insert(gc.intern(name), *member);
+fn build_builtin_type(gc: &mut Gc, name: &str, layout: &BuiltinLayout, constants: &[Value], init: NativeFn) -> ObjType {
+    let name = gc.intern(name);
+    let mut ty = ObjType::new(name);
+    for (member_name, member) in &layout.members {
+        ty.members.insert(gc.intern(member_name), *member);
     }
     ty.field_count = layout.field_count;
     ty.id = layout.id;
     ty.member_count = layout.member_count;
 
-    let init = ObjNativeFn::new(err, 1, |vm, target, args| {
+    ty.methods.insert(layout.factory_id, gc.alloc(ObjNativeFn::new(name, 1, init)).into());
+    ty.factory_id = Some(layout.factory_id);
+
+    // The methods the prelude declares, compiled into constants by codegen.
+    for (member, constant) in &layout.methods {
+        ty.methods.insert(*member, constants[*constant as usize].as_object());
+    }
+    ty.var_fields = layout.var_fields;
+    ty.anchorable_fields = layout.anchorable_fields;
+    ty.field_witness_set_pool_ids = layout.field_witness_set_pool_ids.clone();
+    ty.no_persist = layout.no_persist;
+    ty.provided.insert(layout.id);
+    ty
+}
+
+fn build_err_type(gc: &mut Gc, ids: &[(TypeId, u16)], layout: &BuiltinLayout, constants: &[Value]) -> *mut ObjType {
+    let mut ty = build_builtin_type(gc, "Err", layout, constants, |vm, target, args| {
         let instance = target.as_object().as_instance_ptr();
-        unsafe { (*instance).set(0, args[0]) };
+        unsafe { ObjInstance::set(instance, 0, args[0]) };
         vm.push(target);
         Ok(())
     });
-    ty.methods.insert(layout.factory_id, gc.alloc(init).into());
-    ty.factory_id = Some(layout.factory_id);
-    ty.provided.insert(layout.id);
     apply_witness_ids(&mut ty, ids, &[layout.id]);
     ty.build_template();
     gc.alloc(ty)
 }
 
-pub fn execute(chunk: BytecodeChunk, gc: Gc, forced: bool) -> Result<Vec<String>, anyhow::Error> {
-    Vm::execute(chunk, gc, forced)
+fn build_ref_type(gc: &mut Gc, layout: &BuiltinLayout, constants: &[Value]) -> *mut ObjType {
+    let mut ty = build_builtin_type(gc, "Ref", layout, constants, |vm, target, args| {
+        let instance = target.as_object().as_instance_ptr();
+        unsafe { ObjInstance::set(instance, objects::REF_VALUE_FIELD, args[0]) };
+        unsafe { ObjInstance::set(instance, objects::REF_LOCK_FIELD, Value::from(false)) };
+        objects::mark_as_ref(target);
+        vm.push(target);
+        Ok(())
+    });
+    ty.build_template();
+    gc.alloc(ty)
+}
+
+pub fn execute(chunk: BytecodeChunk, gc: Gc) -> Result<Vec<String>, anyhow::Error> {
+    Vm::execute(chunk, gc)
 }
 
 impl Host for Vm {
@@ -334,6 +239,14 @@ impl Host for Vm {
         &mut self.gc
     }
 
+    fn share(&mut self, value: Value) -> Value {
+        Vm::share(self, value)
+    }
+
+    fn share_into(&mut self, container: Value, value: Value) -> Result<Value, anyhow::Error> {
+        self.share_into_container(container, value)
+    }
+
     fn collect(&mut self) {
         self.start_gc();
     }
@@ -342,26 +255,10 @@ impl Host for Vm {
         self.out.push(text.clone());
         Output::println(text);
     }
-
-    fn code_index(&self) -> u32 {
-        self.current_pos_index()
-    }
-
-    fn receiver_is_frame_local(&self) -> bool {
-        self.native_receiver_is_frame_local
-    }
-
-    fn argument_is_borrowed(&self, position: usize) -> bool {
-        objects::mask_holds(self.native_borrowed_arguments, position)
-    }
-
-    fn note_containment(&mut self, container: Value, value: Value) {
-        self.note_container_took_watched_value(container, value);
-    }
 }
 
 impl Vm {
-    pub fn execute(chunk: BytecodeChunk, mut gc: Gc, forced: bool) -> Result<Vec<String>, anyhow::Error> {
+    pub fn execute(chunk: BytecodeChunk, mut gc: Gc) -> Result<Vec<String>, anyhow::Error> {
         // The test harness reads this dump, so `capture_output` has to produce it in release too.
         #[cfg(any(debug_assertions, feature = "capture_output"))] {
             disassemble(&chunk);
@@ -373,7 +270,12 @@ impl Vm {
             err: {
                 let layout = chunk.builtin_layouts[BuiltinType::Err.index()].as_ref()
                     .expect("assembly rejects a chunk with a built-in layout missing");
-                build_err_type(&mut gc, &chunk.witness_ids, layout)
+                build_err_type(&mut gc, &chunk.witness_ids, layout, &chunk.constants)
+            },
+            ref_type: {
+                let layout = chunk.builtin_layouts[BuiltinType::Ref.index()].as_ref()
+                    .expect("assembly rejects a chunk with a built-in layout missing");
+                build_ref_type(&mut gc, layout, &chunk.constants)
             }
         };
 
@@ -385,52 +287,31 @@ impl Vm {
             globals: HashMap::default(),
             stack: Stack::new(),
             frames: CachedStack::new(),
-            try_frames: Vec::new(),
-            borrows: Vec::new(),
-            write_ownerships: Vec::new(),
-            root_stash: Vec::new(),
-            open_upvalues: Vec::new(),
+            next_frame_generation: FrameGeneration::default(),
+            tail_breadcrumbs: Vec::new(),
+            held: Vec::new(),
+            lowest_anchor_path: std::ptr::null_mut::<Value>().wrapping_sub(1),
             native_types,
             index_cache: vec![IndexCache::empty(); INDEX_CACHE_SIZE].into_boxed_slice(),
             call_cache: vec![CallCache::empty(); CALL_CACHE_SIZE].into_boxed_slice(),
-            elisions_reached: FnvHashSet::default(),
-            forced,
-            borrow_watches: Vec::new(),
-            settling_containments: Vec::new(),
-            watches_made: 0,
-            watches_settled: 0,
             #[cfg(debug_assertions)]
-            mark_watches: Vec::new(),
+            counting_forks: std::env::var_os("CLISAY_FORK_COUNT").is_some(),
             #[cfg(debug_assertions)]
-            watched_receivers: Vec::new(),
+            forks: 0,
             #[cfg(debug_assertions)]
-            marks_watched: 0,
+            forked_elements: 0,
+            forced_checks_reached: FnvHashSet::default(),
             #[cfg(debug_assertions)]
-            marks_read: 0,
-            write_barrier_missed_sites: FnvHashSet::default(),
-            write_barrier_traced_missed: 0,
-            write_barrier_traced_refused: 0,
-            predicted_write_ownership_releases: Vec::new(),
-            predicted_write_ownership_release_sites: FnvHashSet::default(),
-            refuted_write_ownership_release_sites: FnvHashSet::default(),
-            refuted_write_ownership_releases: 0,
+            anchor_roots: FnvHashMap::default(),
             out: Vec::new(),
-            native_receiver_is_frame_local: false,
-            native_borrowed_arguments: 0
         };
 
         vm.stack.init();
         vm.frames.init();
         vm.ip = vm.chunk.code.as_ptr();
 
-        vm.frames.push(CallFrame {
-            closure: std::ptr::null_mut(),
-            return_ip: std::ptr::null(),
-            stack_start: vm.stack.top(),
-            seal: false,
-            write_depth: 0,
-            borrow_depth: 0,
-        });
+        let generation = vm.take_frame_generation();
+        vm.frames.push(CallFrame::new(std::ptr::null_mut(), std::ptr::null(), vm.stack.top(), generation));
 
         vm.define_native("print", 1, |vm, _target, args| {
             let value = args[0];
@@ -439,7 +320,9 @@ impl Vm {
                 ValueKind::Number => format!("{}", value.as_number()),
                 ValueKind::Boolean => format!("{}", value.as_bool()),
                 ValueKind::Object(ObjectKind::String) => format!("{}", value.as_object().as_string()),
-                ValueKind::Object(_) => format!("{}", value.as_object().fmt())
+                ValueKind::Object(_) => format!("{}", value.as_object().fmt()),
+                ValueKind::Anchor => String::from("anchor"),
+                ValueKind::MemberKey => String::from("member"),
             };
             vm.print(value_str);
             vm.push(Value::NULL);
@@ -470,99 +353,57 @@ impl Vm {
             Ok(())
         });
 
-        vm.define_native("freeze", 1, |vm, _target, args| {
-            objects::freeze_value(args[0], vm.code_index());
-            vm.push(args[0]);
-            Ok(())
-        });
-
         let err_name = vm.gc.intern("Err");
         vm.globals.insert(err_name, Value::from(vm.native_types.err));
+
+        let ref_name = vm.gc.intern("Ref");
+        vm.globals.insert(ref_name, Value::from(vm.native_types.ref_type));
 
         debug_assert_eq!(vm.globals.len(), crate::core::builtins::NAMES.len(), "built-in registration drifted from core::builtins::NAMES");
         debug_assert!(crate::core::builtins::NAMES.iter().all(|n| vm.globals.contains_key(&vm.gc.intern(*n))),
             "a name in core::builtins::NAMES was not registered as a native");
 
-        let ip = vm.ip;
-        let top = vm.stack.top();
-        let base = unsafe { (*vm.frames.top()).stack_start };
-        let result = threaded::dispatch(&mut vm, ip, top, base);
+        // An op throws by returning `Thrown`.
+        let result = loop {
+            let ip = vm.ip;
+            let top = vm.stack.top();
+            let stack_start = unsafe { (*vm.frames.top()).stack_start };
+            match threaded::dispatch(&mut vm, ip, top, stack_start).map_err(|err| err.downcast::<Thrown>()) {
+                Err(Ok(Thrown(value))) => if let Err(err) = vm.catch_thrown(value) { break Err(err) },
+                Err(Err(err)) => break Err(err),
+                Ok(()) => break Ok(std::mem::take(&mut vm.out)),
+            }
+        };
 
-        // A release is only settled by a collection, and a program can make its last allocation
-        // before its last release. Collect once more so nothing pending goes unchecked.
-        if result.is_ok() && std::env::var_os("CLISAY_BARRIER_TRACES").is_some() {
-            // The script's own locals are still rooted here, so a release the root scope made would
-            // read as reachable. Drop them first, or every top-level container refutes.
-            vm.stack.set_top(vm.stack.bottom());
-            vm.start_gc();
-        }
-
-        vm.report_elision_coverage();
-        vm.report_watch_coverage();
-        vm.report_barrier_traces();
+        vm.report_forced_checks_reached();
         Ok(result?)
     }
 
-    fn report_barrier_traces(&self) {
-        if std::env::var_os("CLISAY_BARRIER_TRACES").is_none() {
+    fn report_forced_checks_reached(&self) {
+        if self.chunk.forced_check_ends.is_empty() {
             return;
         }
-
-        // The two signals are independent. A wrongly released claim lets the write through, so it
-        // takes no trace at all, and gating one report on the other hides exactly that case.
-        if self.write_barrier_traced_missed > 0 || self.write_barrier_traced_refused > 0 {
-            eprintln!("barrier traces: {} ({} missed release over {} sites, {} refused)",
-                self.write_barrier_traced_missed + self.write_barrier_traced_refused, self.write_barrier_traced_missed,
-                self.write_barrier_missed_sites.len(), self.write_barrier_traced_refused);
-        }
-        if self.refuted_write_ownership_releases > 0 {
-            eprintln!("write-ownership release: {} refuted at {} sites",
-                self.refuted_write_ownership_releases, self.refuted_write_ownership_release_sites.len());
-        }
-        for &site in self.refuted_write_ownership_release_sites.iter() {
-            let pos = &self.chunk.code_pos[site];
-            eprintln!("  refuted {}:{} {}", pos.source.name, pos.line, pos.snippet());
-        }
-        for &site in self.write_barrier_missed_sites.iter() {
-            let pos = &self.chunk.code_pos[site];
-            eprintln!("  {}:{} {}", pos.source.name, pos.line, pos.snippet());
-        }
+        eprintln!("forced checks: {} of {} reached",
+            self.forced_checks_reached.len(), self.chunk.forced_check_ends.len());
     }
 
-    fn report_elision_coverage(&self) {
-        if self.chunk.elisions.is_empty() {
-            return;
-        }
-        eprintln!("forced checks: {} of {} elided sites reached",
-            self.elisions_reached.len(), self.chunk.elisions.len());
-    }
-
-    fn report_watch_coverage(&self) {
-        if self.watches_made > 0 {
-            eprintln!("watched borrows: {} put on trial, {} settled by a collection",
-                self.watches_made, self.watches_settled);
-        }
-        #[cfg(debug_assertions)]
-        if self.marks_watched > 0 {
-            eprintln!("watched marks: {} taken by forcing, {} reached by a read",
-                self.marks_watched, self.marks_read);
-        }
-    }
-
-    fn at_elided_site(&mut self) -> bool {
-        if self.chunk.elisions.is_empty() {
+    /// Whether the running instruction is a check that's been proven unnecessary.
+    pub(super) fn at_forced_check(&mut self) -> bool {
+        if !cfg!(debug_assertions) || self.chunk.forced_check_ends.is_empty() {
             return false;
         }
+
         let site = self.code_index_at(self.ip);
-        let forced = self.chunk.elisions.contains(&site);
+        let forced = self.chunk.forced_check_ends.contains(&site);
         if forced {
-            self.elisions_reached.insert(site);
+            self.forced_checks_reached.insert(site);
         }
+
         forced
     }
 
     #[cold]
-    fn refuted_elision_error(&self, what: &str) -> Result<(), anyhow::Error> {
+    pub(super) fn refuted_elision_error(&self, what: &str) -> Result<(), anyhow::Error> {
         self.raise(Diagnostic::new(format!("unsound elision: {what}"), self.get_source_position().clone())
             .with_help("the check pass proved this check unnecessary, and forcing it back on refuted that"))
     }
@@ -570,6 +411,46 @@ impl Vm {
     fn stringify_frame(&self, frame: &CallFrame, ip: *const OpCode) -> String {
         let name = unsafe { &(*(*frame.closure).name).value };
         format!("\tat {} ({})", name, self.source_pos_at(ip))
+    }
+
+    #[cold]
+    pub(super) fn release_tail_breadcrumbs(&mut self) {
+        let live = self.frames.top_ptr();
+        while self.tail_breadcrumbs.last().is_some_and(|&(f, _)| f >= live) {
+            self.tail_breadcrumbs.pop();
+        }
+    }
+
+    #[inline]
+    pub(super) fn record_tail_call_breadcrumb(&mut self, frame: *mut CallFrame, from: *mut ObjClosure, to: *mut ObjClosure) {
+        if self.tail_breadcrumbs.last().is_some_and(|&(f, held)| f == frame && held == to) {
+            return;
+        }
+        self.add_tail_call_breadcrumb(frame, from, to);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn add_tail_call_breadcrumb(&mut self, frame: *mut CallFrame, from: *mut ObjClosure, to: *mut ObjClosure) {
+        // `from` is the previous `to`, so only the first call in a frame has it to add.
+        if !self.tail_breadcrumbs.last().is_some_and(|&(f, _)| f == frame) {
+            self.tail_breadcrumbs.push((frame, from));
+        }
+        if !self.holds_tail_call_breadcrumb(frame, to) {
+            self.tail_breadcrumbs.push((frame, to));
+        }
+    }
+
+    fn holds_tail_call_breadcrumb(&self, frame: *mut CallFrame, closure: *mut ObjClosure) -> bool {
+        for &(f, held) in self.tail_breadcrumbs.iter().rev() {
+            if f != frame {
+                return false;
+            }
+            if held == closure {
+                return true;
+            }
+        }
+        false
     }
 
     fn stringify_op(&self, ip: *const OpCode) -> String {
@@ -585,58 +466,40 @@ impl Vm {
     }
 
     fn error(&self, message: impl Into<String>) -> Result<(), anyhow::Error> {
-        self.raise(Diagnostic::new(message, self.get_source_position().clone()))
+        self.raise(Diagnostic::new(message, self.error_position().clone()))
     }
 
-    fn error_labeled(&self, message: impl Into<String>, label: impl Into<String>) -> Result<(), anyhow::Error> {
-        self.raise(Diagnostic::new(message, self.get_source_position().clone()).with_label(label))
+    pub(super) fn error_help(&self, message: impl Into<String>, help: impl Into<String>) -> Result<(), anyhow::Error> {
+        self.raise(Diagnostic::new(message, self.error_position().clone()).with_help(help))
     }
 
-    fn immutable_error(&self, target: Value) -> Result<(), anyhow::Error> {
-        let mut diagnostic = Diagnostic::new(objects::IMMUTABLE_MUTATION, self.get_source_position().clone())
-            .with_label("this value is immutable");
-        if let Some(origin) = target.as_object().immutable_origin() {
-            let pos = self.chunk.code_pos[origin as usize].clone();
-            diagnostic = diagnostic.with_context_span(pos, "value made immutable here");
-        }
-        self.raise(diagnostic)
+    #[cold]
+    #[inline(never)]
+    fn error_position(&self) -> &SourcePosition {
+        let ip = self.frames_at_ips().map(|(_, ip)| ip).find(|&ip| !self.source_pos_at(ip).is_vm_source());
+        self.source_pos_at(ip.unwrap_or(self.ip))
     }
 
-    pub(super) fn readonly_receiver_error(&self, name: *mut ObjString, target: Value) -> Result<(), anyhow::Error> {
-        let method = unsafe { &(*name).value };
-        let mut diagnostic = Diagnostic::new(format!("`{method}` declares `mut this`, but its receiver is immutable"),
-            self.get_source_position().clone())
-            .with_label("this receiver cannot be mutated");
-        if let Some(origin) = target.as_object().immutable_origin() {
-            let pos = self.chunk.code_pos[origin as usize].clone();
-            diagnostic = diagnostic.with_context_span(pos, "value made immutable here");
-        }
-        self.raise(diagnostic)
-    }
-
-    #[inline]
-    pub(super) fn receiver_rejects_mut(&self, target: Value) -> bool {
-        matches!(target.kind(), ValueKind::Object(_)) && target.as_object().is_immutable()
-    }
-
-    fn mutable_in_immutable_error(&self) -> Result<(), anyhow::Error> {
-        self.raise(Diagnostic::new(objects::MUTABLE_IN_IMMUTABLE, self.get_source_position().clone())
-            .with_label("this container is immutable")
-            .with_help("an element is mutable; freeze it, or mark the container `mut`"))
+    /// Each frame from the top down, with its ip.
+    pub(super) fn frames_at_ips(&self) -> impl Iterator<Item = (*mut CallFrame, *const OpCode)> + '_ {
+        let top = self.frames.top();
+        self.frames.iter().rev().enumerate().scan(self.ip, move |ip, (depth, frame)| {
+            let running = *ip;
+            *ip = frame.return_ip;
+            Some((unsafe { top.sub(depth) }, running))
+        })
     }
 
     fn raise(&self, diagnostic: Diagnostic) -> Result<(), anyhow::Error> {
-        // Each frame is paused on one instruction: the current `ip` for the top frame, and each
-        // caller's saved `return_ip` for the frames below it. The base frame has no closure.
         let frames: Vec<CallFrame> = self.frames.iter().collect();
         let mut ip = self.ip;
         let mut lines = Vec::new();
         for i in (1..frames.len()).rev() {
             lines.push(self.stringify_frame(&frames[i], ip));
+            let at = unsafe { self.frames.top().sub(frames.len() - 1 - i) };
+            self.push_rendered_tail_call_breadcrumbs(at, &mut lines);
             ip = frames[i].return_ip;
         }
-        // Show the top-level script as the base of the chain, but only when a function frame sits
-        // above it. At top level the primary caret already marks the site.
         if frames.len() > 1 {
             lines.push(self.stringify_op(ip));
         }
@@ -648,21 +511,46 @@ impl Vm {
         bail!("{}", diagnostic.with_trace(trace))
     }
 
+    fn push_rendered_tail_call_breadcrumbs(&self, frame: *mut CallFrame, lines: &mut Vec<String>) {
+        let mut held = self.tail_breadcrumbs.iter().filter(|(f, _)| *f == frame).peekable();
+        if held.peek().is_none() {
+            return;
+        }
+        lines.push("	at tail calls".to_string());
+        for (_, closure) in held {
+            let name = unsafe { &(*(**closure).name).value };
+            // A breadcrumb has no call site, so it names where the function begins.
+            let entry = unsafe { self.chunk.code.as_ptr().add((**closure).ip_start + 1) };
+            lines.push(format!("	  {} ({})", name, self.source_pos_at(entry)));
+        }
+    }
+
     fn intern(&mut self, name: impl Into<String>) -> *mut ObjString {
+        self.maybe_collect();
+        self.gc.intern(name)
+    }
+
+    #[inline]
+    fn maybe_collect(&mut self) {
         if self.gc.should_collect() {
             self.start_gc();
         }
+    }
 
-        self.gc.intern(name)
+    fn alloc_array(&mut self, elements: &[Value]) -> *mut ObjArray {
+        self.maybe_collect();
+        self.gc.alloc_array(elements, elements.len())
+    }
+
+    fn alloc_instance(&mut self, type_ptr: *mut ObjType) -> *mut ObjInstance {
+        self.maybe_collect();
+        self.gc.alloc_instance(type_ptr, unsafe { &(*type_ptr).template })
     }
 
     fn alloc<T: GcTraceable>(&mut self, obj: T) -> *mut T
         where *mut T: Into<Object>
     {
-        if self.gc.should_collect() {
-            self.start_gc();
-        }
-
+        self.maybe_collect();
         self.gc.alloc(obj)
     }
 
@@ -676,16 +564,141 @@ impl Vm {
     #[cfg(debug_assertions)]
     fn verify_roots(&self) {
         let (bottom, top) = (self.stack.bottom(), self.stack.top());
-        for &upvalue in &self.open_upvalues {
-            let location = unsafe { (*upvalue).location };
-            assert!(location >= bottom && location < top, "an open upvalue points outside the live stack");
-        }
         let mut previous = bottom;
         for frame in self.frames.iter() {
             assert!(frame.stack_start >= bottom && frame.stack_start <= top, "a frame starts outside the live stack");
             assert!(frame.stack_start >= previous, "frames are out of order");
             previous = frame.stack_start;
         }
+    }
+
+    #[inline]
+    #[cfg(debug_assertions)]
+    pub(super) fn report_forks(&self) {
+        if self.counting_forks {
+            eprintln!("forks: {} copying {} elements", self.forks, self.forked_elements);
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn count_fork(&mut self, value: Value) {
+        if !self.counting_forks {
+            return;
+        }
+        self.forks += 1;
+        self.forked_elements += objects::element_count(value);
+    }
+
+    pub(super) fn fork(&mut self, value: Value) -> Value {
+        #[cfg(debug_assertions)]
+        self.count_fork(value);
+        if self.gc.should_collect() {
+            let mark = self.hold(&[value]);
+            self.start_gc();
+            self.release_held(mark);
+        }
+        objects::copy_object(&mut self.gc, value)
+    }
+
+    #[inline]
+    pub(super) fn share_in_place(&mut self, at: *mut Value) {
+        let value = unsafe { *at };
+        if !value.is_object() {
+            return;
+        }
+        let header = value.as_object().as_header_ptr();
+        if unsafe { (*header).has(objects::FLAG_IS_REF) } {
+            return;
+        }
+        if unsafe { (*header).has(objects::FLAG_ON_ANCHOR_PATH) } {
+            unsafe { *at = self.share_on_anchor_path(value) };
+            return;
+        }
+        unsafe { (*header).set(objects::FLAG_SHARED) };
+    }
+
+    #[inline]
+    pub(super) fn share(&mut self, value: Value) -> Value {
+        if !value.is_object() {
+            return value;
+        }
+        let header = value.as_object().as_header_ptr();
+        if unsafe { (*header).has(objects::FLAG_IS_REF) } {
+            return value;
+        }
+        if unsafe { (*header).has(objects::FLAG_ON_ANCHOR_PATH) } {
+            return self.share_on_anchor_path(value);
+        }
+        unsafe { (*header).set(objects::FLAG_SHARED) };
+        value
+    }
+
+    #[inline]
+    pub(super) fn share_into_container(&mut self, container: Value, value: Value) -> Result<Value, anyhow::Error> {
+        refuse_no_persist(value)?;
+        Ok(self.share_into(container, value))
+    }
+
+    #[inline]
+    #[cfg_attr(not(debug_assertions), allow(unused_variables))]
+    pub(super) fn share_into(&mut self, container: Value, value: Value) -> Value {
+        #[cfg(debug_assertions)]
+        objects::debug_assert_store_is_acyclic(container, value, self.gc.object_count());
+        self.share(value)
+    }
+
+    /// Copies a flagged value while any anchor path is live. Otherwise the flag is stale, so it
+    /// comes off and the value is shared as usual.
+    #[cold]
+    fn share_on_anchor_path(&mut self, value: Value) -> Value {
+        if self.anchor_path_is_live() {
+            return self.copy_off_anchor_path(value);
+        }
+        let header = value.as_object().as_header_ptr();
+        match unsafe { (*header).has(objects::FLAG_DETACHED) } {
+            true => objects::clear_anchor_path_flags(value),
+            false => unsafe { (*header).clear(objects::FLAG_ON_ANCHOR_PATH) },
+        }
+        unsafe { (*header).set(objects::FLAG_SHARED) };
+        value
+    }
+
+    fn anchor_path_is_live(&mut self) -> bool {
+        let mut at = self.lowest_anchor_path;
+        while at < self.stack.top() {
+            if unsafe { *at }.is_anchor_path() {
+                self.lowest_anchor_path = at;
+                return true;
+            }
+            at = unsafe { at.add(1) };
+        }
+        self.lowest_anchor_path = std::ptr::null_mut::<Value>().wrapping_sub(1);
+        false
+    }
+
+    #[cold]
+    fn copy_off_anchor_path(&mut self, value: Value) -> Value {
+        let copy = self.fork(value);
+        objects::mark_elements_shared_except_on_anchor_path(value, copy);
+        let mark = self.hold(&[copy]);
+        for (at, element) in objects::elements_on_anchor_path(copy) {
+            let element = self.copy_off_anchor_path(element);
+            objects::set_element(copy, &at, element);
+        }
+        self.release_held(mark);
+        copy
+    }
+
+    pub(super) fn hold(&mut self, values: &[Value]) -> usize {
+        debug_assert!(!values.iter().any(|v| v.is_anchor()),
+            "an anchor names storage rather than holding a value, so there is nothing here to root");
+        let mark = self.held.len();
+        self.held.extend_from_slice(values);
+        mark
+    }
+
+    pub(super) fn release_held(&mut self, mark: usize) {
+        self.held.truncate(mark);
     }
 
     fn start_gc(&mut self) {
@@ -699,12 +712,17 @@ impl Vm {
             value.mark(&mut self.gc);
         }
 
-        for &upvalue in &self.open_upvalues {
-            self.gc.mark_object(upvalue);
-        }
-
         for value in self.stack.iter() {
             value.mark(&mut self.gc);
+        }
+
+        for value in &self.held {
+            value.mark(&mut self.gc);
+        }
+
+        #[cfg(debug_assertions)]
+        for recorded in self.anchor_roots.values() {
+            recorded.formed_on.mark(&mut self.gc);
         }
 
         for frame in self.frames.iter() {
@@ -713,13 +731,11 @@ impl Vm {
             }
         }
 
-        for (value, _) in &self.borrows {
-            value.mark(&mut self.gc);
+        // A function named in a trace may be reachable from nothing else.
+        for (_, closure) in &self.tail_breadcrumbs {
+            self.gc.mark_object(*closure);
         }
 
-        for value in &self.root_stash {
-            value.mark(&mut self.gc);
-        }
 
         for entry in self.call_cache.iter_mut() {
             *entry = CallCache::empty();
@@ -729,59 +745,17 @@ impl Vm {
         }
 
         self.gc.trace();
-        self.refute_predicted_write_ownership_releases();
-        self.settle_watched_containments();
-        self.prune_borrow_watches();
-        self.prune_write_ownerships();
         self.gc.sweep();
     }
 
-    fn settle_watched_containments(&mut self) {
-        #[cfg(debug_assertions)]
-        assert!(self.gc.marks_valid(), "a containment settled outside the window where marks say what survived");
-        self.settling_containments.retain(|(container, _, _)| container.is_marked());
-    }
-
-    fn prune_borrow_watches(&mut self) {
-        #[cfg(debug_assertions)]
-        assert!(self.gc.marks_valid(), "a watch pruned outside the window where marks say what survived");
-        self.borrow_watches.retain_mut(|watch| {
-            watch.into.retain(|container| container.is_marked());
-            watch.value.is_marked()
-        });
-    }
-
-    fn refute_predicted_write_ownership_releases(&mut self) {
-        #[cfg(debug_assertions)]
-        assert!(self.gc.marks_valid(), "a prediction settled outside the window where marks say what survived");
-        for (container, site) in std::mem::take(&mut self.predicted_write_ownership_releases) {
-            if container.is_object() && container.as_object().is_marked() {
-                self.refuted_write_ownership_release_sites.insert(site);
-                self.refuted_write_ownership_releases += 1;
-            }
-        }
-    }
-
-    fn prune_write_ownerships(&mut self) {
-        #[cfg(debug_assertions)]
-        assert!(self.gc.marks_valid(), "a claim pruned outside the window where marks say what survived");
-        self.write_ownerships.retain(|held| {
-            if !held.value.is_object() || !held.value.as_object().is_marked() {
-                return false;
-            }
-            // A container not reached by the trace no longer holds the value. Clearing the bit
-            // allows subsequent writes to proceed without re-verifying.
-            if let WriteOwnershipHolder::Container(container) = held.holder {
-                if !container.is_object() || !container.as_object().is_marked() {
-                    held.value.as_object().set_write_owned(false);
-                    return false;
-                }
-            }
-            true
-        });
-    }
-
     #[inline]
+    pub(super) fn read_byte_list<'a>(&mut self) -> &'a [u8] {
+        let len = self.read_next() as usize;
+        let list = unsafe { std::slice::from_raw_parts(self.ip, len) };
+        self.ip = unsafe { self.ip.add(len) };
+        list
+    }
+
     pub fn read_next(&mut self) -> OpCode {
         let op = unsafe { *self.ip };
         self.ip = unsafe { self.ip.add(1) };
@@ -791,8 +765,16 @@ impl Vm {
     pub fn get_source_position(&self) -> &SourcePosition {
         self.source_pos_at(self.ip)
     }
+}
 
-    pub fn current_pos_index(&self) -> u32 {
-        self.code_index_at(self.ip) as u32
+pub(super) fn throw_value<T>(value: Value) -> Result<T, anyhow::Error> {
+    Err(Thrown(value).into())
+}
+
+#[inline]
+pub(super) fn refuse_no_persist(value: Value) -> Result<(), anyhow::Error> {
+    match objects::may_not_persist(value) {
+        true => throw_value(value),
+        false => Ok(()),
     }
 }

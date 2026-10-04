@@ -1,0 +1,7 @@
+type Held { } obligation held { witness Held; no persist; }
+say f: held = () => 0;
+fn g() { return f(); } // error: cannot capture value owing 'held'
+// @split
+type Held { } obligation held { witness Held; no persist; }
+say f: held = () => 0;
+print(f()); // expect: 0

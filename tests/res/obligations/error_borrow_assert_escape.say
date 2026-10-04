@@ -1,0 +1,2 @@
+obligation borrowed { no persist; no return; }
+fn leak(x: borrowed) { return x!; } // error: cannot discharge a value owing 'borrowed'

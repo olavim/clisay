@@ -1,14 +1,28 @@
-// A type instance is indexed by member name: `inst["x"]` reads and writes the same
-// member as `inst.x`, honoring visibility. This is the dict->type graduation path.
 type Point {
     pub x = 1;
-    pub y = 2;
+    pub var y = 2;
 }
 
-say p = mut Point();
+say var p = Point();
 print(p["x"]); // expect: 1
 print(p.x);    // expect: 1
 
 p["y"] = 9;
 print(p.y);    // expect: 9
 print(p["y"]); // expect: 9
+
+// @split
+type Point {
+    pub x = 1;
+}
+
+say var p = Point();
+p["x"] = 9; // error: Cannot reassign field `Point.x`
+
+// @split
+type Holder {
+    pub items = [0];
+}
+
+say var h = Holder();
+h["items"][0] = 1; // error: Cannot reassign field `Holder.items`

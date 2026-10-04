@@ -1,0 +1,38 @@
+type Box { pub var a: opt; pub var b: opt; init(this, x: opt, y: opt) { this.a = x; this.b = y; } }
+fn wipe(&var d: opt) { d = null; }
+say var box = Box(1, 2);
+if (box.a != null) {
+    wipe(&box.a);
+    if (box.a != null) { print(box.a); } else { print("gone"); } // expect: gone
+}
+
+// @split
+fn wipe(&var d: opt) { d = null; }
+say var x: opt = 5;
+if (x != null) {
+    wipe(&x);
+    say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
+}
+
+// @split
+obligation warned { witness Wt; discharge to use; }
+type Wt { pub m; }
+fn mk(n): warned opt { if (n < 0) { return Wt { m: 1 }; } return 5; }
+fn wipe(&var d: warned opt) { d = null; }
+say var x: warned opt = mk(1);
+if (x != null && !(x ~ Wt)) {
+    wipe(&x);
+    if (!(x ~ Wt)) {
+        say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
+    }
+}
+
+// @split
+fn mk(n): opt { if (n < 0) { return null; } return 5; }
+fn wipe(&var d: opt) { d = null; }
+say var x: opt = 5;
+if (x != null) {
+    wipe(&x);
+    x = mk(1);
+    say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
+}

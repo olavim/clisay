@@ -1,0 +1,32 @@
+fn take(&var a) { &a.push(1); }
+type T { pub var arr; init(this) { this.arr = []; } pub fn f(this) { take(&this.arr); } } // error: Cannot anchor non-var binding `this`
+
+// @split
+type I { pub var v; init(this) { this.v = 0; } }
+type T { pub var inner; init(this) { this.inner = I(); } pub fn f(this) { this.inner.v = 1; } } // error: Cannot write through `this`
+
+// @split
+type I { pub var v; init(this) { this.v = 0; } }
+type T { pub inner; init(this) { this.inner = I(); } pub fn f(var this) { this.inner.v = 1; } } // error: Cannot reassign field `T.inner`
+
+// @split
+fn take(&var a) { &a.push(3); }
+type I { pub var v; init(this) { this.v = 0; } }
+type T {
+    pub var n; pub var arr; pub var inner;
+    init(this) { this.n = 0; this.arr = [0]; this.inner = I(); }
+    pub fn f(&var this) { this.n = 1; this.arr[0] = 2; take(&this.arr); &this.arr.push(4); this.inner.v = 5; }
+}
+say var t = T();
+&t.f();
+print(t.n); // expect: 1
+print(t.arr[0]); // expect: 2
+print(t.arr[1]); // expect: 3
+print(t.arr[2]); // expect: 4
+print(t.inner.v); // expect: 5
+
+// @split
+type T { pub arr; init(this) { this.arr = []; &this.arr.push(9); this.arr[0] = 8; } }
+say t = T();
+print(t.arr[0]); // expect: 8
+print(t.arr.length()); // expect: 1

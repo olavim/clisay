@@ -1,0 +1,105 @@
+say var a = [[0]];
+{
+    say var c = [];
+    &c.push(a[0]);
+}
+a[0][0] = 1;
+print(a[0][0]); // expect: 1
+
+// @split
+say a = [[0]];
+{
+    say var c = [];
+    &c.push(a[0]);
+}
+{
+    say var d = a;
+    d[0][0] = 1;
+    print(d[0][0]); // expect: 1
+}
+print(a[0][0]); // expect: 0
+
+// @split
+fn stash(v) { say var c = []; &c.push(v); }
+say var a = [[0]];
+stash(a[0]);
+a[0][0] = 1;
+print(a[0][0]); // expect: 1
+
+// @split
+say var sink = [];
+say var a = [[0]];
+{
+    say var c = [];
+    &c.push(a[0]);
+    &sink.push(c);
+}
+a[0][0] = 1;
+print(sink[0][0][0]); // expect: 0
+print(a[0][0]); // expect: 1
+
+// @split
+say var a = [[0]];
+say var fns = [];
+{
+    say var c = [];
+    &c.push(a[0]);
+    &fns.push(() => c[0][0]);
+}
+a[0][0] = 1;
+print(fns[0]()); // expect: 0
+
+// @split
+say var a = [[0]];
+say var keep = [];
+{
+    say var c = [];
+    &c.push(a[0]);
+    keep = c;
+}
+a[0][0] = 1;
+print(keep[0][0]); // expect: 0
+
+// @split
+type T { pub var f; }
+say var a = [[0]];
+say var t = T { f: [] };
+{
+    say var c = [];
+    &c.push(a[0]);
+    t.f = c;
+}
+a[0][0] = 1;
+print(t.f[0][0]); // expect: 0
+
+// @split
+say var a = [[0]];
+say var outer = [[]];
+{
+    say var c = [];
+    &c.push(a[0]);
+    outer[0] = c;
+}
+a[0][0] = 1;
+print(outer[0][0][0]); // expect: 0
+
+// @split
+fn wrap(v) { say var c = []; &c.push(v); return c; }
+say var a = [[0]];
+say kept = wrap(a[0]);
+a[0][0] = 1;
+print(kept[0][0]); // expect: 0
+
+// @split
+fn wrap(v) { say var c = []; &c.push(v); return c; }
+say var a = [[0]];
+wrap(a[0]);
+a[0][0] = 1;
+print(a[0][0]); // expect: 1
+
+// @split
+type Box { pub var inner; pub fn peek(this) { return this.inner[0]; } }
+say var a = [[0]];
+{ say c = Box { inner: a[0] }; print(c.peek()); } // expect: 0
+a[0][0] = 1;
+print(a[0][0]); // expect: 1

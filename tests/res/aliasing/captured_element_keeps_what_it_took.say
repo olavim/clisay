@@ -1,0 +1,17 @@
+say var a = [[0]];
+say var fns = [];
+{ say var c = []; &c.push(a[0]); &fns.push(() => c[0][0]); }
+a[0][0] = 9;
+print(fns[0]()); // expect: 0
+print(a[0][0]); // expect: 9
+
+// @split
+say var a = [[0]];
+{ say var c = []; &c.push(a[0]); }
+{ say var d = a[0]; d[0] = 9; print(d[0]); } // expect: 9
+print(a[0][0]); // expect: 0
+
+// @split
+say var a = [[0]];
+{ say var c = []; &c.push(a[0]); }
+{ say var q = [1]; q[0] = 2; print(q[0]); } // expect: 2

@@ -1,0 +1,5 @@
+type Holder { pub var arr; init(this, arr) { this.arr = arr; } }
+fn one(&var arr, elem) { &arr.push(elem); }
+say var obj = Holder([]);
+say var i = 0;
+while i < 100000 { one(&obj.arr, i); i = i + 1; }

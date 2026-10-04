@@ -1,7 +1,5 @@
-// The debt is a set, so a transfer settles only what its destination declares. A parameter that
-// admits both obligations takes both; one that admits only part is rejected by conformance first.
-type Flag1 { } obligation obl1 { witness Flag1; discharge before drop; }
-type Flag2 { } obligation obl2 { witness Flag2; discharge before drop; }
+type Flag1 { } obligation obl1 { witness Flag1; must use; }
+type Flag2 { } obligation obl2 { witness Flag2; must use; }
 
 fn takesBoth(y: obl1 obl2) { y!; }
 fn make(): obl1 obl2 { return 1; }

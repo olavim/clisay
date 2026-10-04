@@ -1,4 +1,3 @@
-// An `Err` arriving from an opaque call is unknown statically, so `??` tests it at runtime.
 say make = () => Err("boom");
 say caught = make() ?? x => x is Err;
 print(caught); // expect: true

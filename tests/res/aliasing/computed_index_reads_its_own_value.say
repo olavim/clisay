@@ -1,0 +1,54 @@
+say var arr = [[0], [0]];
+say var i = 0;
+say var a = arr[i];
+say var b = arr[i];
+a[0] = 1;
+b[0] = 2;
+print(a[0]); // expect: 1
+print(b[0]); // expect: 2
+print(arr[0][0]); // expect: 0
+
+// @split
+say var arr = [[0], [0]];
+say var i = 0;
+say var j = 1;
+say var a = arr[i];
+say var b = arr[j];
+a[0] = 7;
+b[0] = 9;
+print(arr[0][0]); // expect: 0
+print(arr[1][0]); // expect: 0
+
+// @split
+say var arr = [[0]];
+say var i = 0;
+say var a = arr[i];
+say b = arr[i];
+a[0] = 5;
+print(b[0]); // expect: 0
+
+// @split
+say var arr = [[0]];
+say var n = 0;
+while (n < 3) {
+    say var e = arr[n - n];
+    e[0] = n;
+    n = n + 1;
+}
+print(arr[0][0]); // expect: 0
+
+// @split
+say var arr = [[0]];
+fn touch(a, k) { say var e = a[k]; e[0] = 1; return; }
+say var i = 0;
+touch(arr, i);
+touch(arr, i);
+print(arr[0][0]); // expect: 0
+
+// @split
+say var arr = [[0]];
+fn touch(a, k) { say var e = a[k]; e[0] = 1; throw "up"; }
+say var i = 0;
+try { touch(arr, i); } catch (e) { print("caught"); } // expect: caught
+try { touch(arr, i); } catch (e) { print("caught"); } // expect: caught
+print(arr[0][0]); // expect: 0

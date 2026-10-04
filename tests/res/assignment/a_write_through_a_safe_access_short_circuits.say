@@ -1,0 +1,45 @@
+type I { pub var b; init(this, b) { this.b = b; } }
+type M { pub var a: opt; init(this, a: opt) { this.a = a; } }
+fn side(v) { print("side"); return v; }
+say var m = M(I(0));
+m.a?.b = side(5); // expect: side
+print(m.a?.b ?? 0); // expect: 5
+say var n = M(null);
+n.a?.b = side(6);
+n.a?.b += side(1);
+print(n.a ?? "skipped"); // expect: skipped
+say var k = M(I(1));
+k.a?.b += 1;
+print(k.a?.b ?? 0); // expect: 2
+
+// @split
+type I { pub var b; init(this, b) { this.b = b; } }
+type M { pub var a: opt; init(this, a: opt) { this.a = a; } }
+say var m = M(I(0));
+m.a?.b = (m.a = null);
+print(m.a ?? "gone"); // expect: gone
+
+// @split
+type I { pub var b; init(this, b) { this.b = b; } }
+type M { pub var a: opt; init(this, a: opt) { this.a = a; } }
+fn key() { print("key"); return 0; }
+say var zs = [M(I(0)), M(null)];
+zs[key()].a?.b = 6; // expect: key
+zs[1].a?.b = 7;
+print(zs[0].a?.b ?? 0); // expect: 6
+
+// @split
+type I { pub var b; init(this, b) { this.b = b; } }
+fn mk(x): opt { if x { return I(1); } return null; }
+say var w: opt = mk(true);
+say var none: opt = mk(false);
+say landed: opt = (w?.b = 4);
+say skipped: opt = (none?.b = 3);
+print(landed); // expect: 4
+print(skipped); // expect: null
+
+// @split
+type I { pub var b; init(this, b) { this.b = b; } }
+fn mk(x): opt { if x { return I(1); } return null; }
+say var none: opt = mk(false);
+say r = (none?.b = 3); // error: Cannot assign a nullable value to non-null binding 'r'

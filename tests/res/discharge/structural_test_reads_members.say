@@ -1,0 +1,34 @@
+fn load() { return Err("boom"); }
+fn f() {
+    say r: fails = load();
+    if (r has Err) { print("has"); } else { print("clean"); }
+}
+f(); // expect: has
+
+// @split
+fn load() { return Err("boom"); }
+fn f() {
+    say r: fails = load();
+    if (r is Err) { print("is an Err"); }
+}
+f(); // expect: is an Err
+
+// @split
+trait Wt { }
+obligation warned { witness Wt; must use; }
+type W2 with Wt { pub a; init(this) { this.a = 1; } }
+fn f() {
+    say b: warned = W2 { a: 1 };
+    match (b) { { zz: 1 } & W2 => print("both"), _ => print("other"), }
+}
+f(); // expect: other
+
+// @split
+trait Wt { }
+obligation warned { witness Wt; must use; }
+type W2 with Wt { pub a; init(this) { this.a = 1; } }
+fn f() {
+    say b: warned = W2 { a: 1 };
+    match (b) { W2 { a: 1 } => print("both"), _ => print("other"), }
+}
+f(); // expect: both

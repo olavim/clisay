@@ -1,0 +1,169 @@
+say var a = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+say var i = 0;
+while i < 10 { if i < 5 { a[i] = () => { f(); }; } else { a[i] = () => {}; } i = i + 1; }
+say q = 1;
+fn f() { print(q); }
+a[2](); // expect: 1
+
+// @split
+say var a = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+say var i = 0;
+while i < 10 { if i < 5 { a[i] = () => { f(); }; } else { a[i] = () => {}; } i = i + 1; }
+a[2](); // error: This value cannot be used yet, because it uses 'f', which is declared below
+say q = 1;
+fn f() { print(q); }
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say f = () => a();
+    say g = f ?? f;
+    say h = g!;
+    say k = h ?? e => g;
+    say q = 2;
+    fn b() { return q; }
+    return k();
+}
+print(run()); // expect: 2
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say f = () => a();
+    say g = f ?? f;
+    say h = g!;
+    say k = h ?? e => g;
+    k(); // error: 'k' cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+}
+run();
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say d = { c: () => a() };
+    d.c(); // error: 'd' cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+}
+run();
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say d = { c: () => a() };
+    say k = "c";
+    d[k](); // error: This value cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+}
+run();
+
+// @split
+type T { pub c; }
+fn run() {
+    fn a() { return b(); }
+    say t = T{ c: () => a() };
+    say q = 2;
+    fn b() { return q; }
+    return t.c();
+}
+print(run()); // expect: 2
+
+// @split
+type T { pub c; }
+fn run() {
+    fn a() { return b(); }
+    say t = T{ c: () => a() };
+    t.c(); // error: 't' cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+}
+run();
+
+// @split
+fn h(x) { return 0; }
+fn run() {
+    fn a() { return b(); }
+    say arr = [() => a()];
+    h(arr); // error: 'arr' cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+}
+run();
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say arr = [() => a()];
+    return arr; // error: 'arr' cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+}
+run();
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say f = () => a();
+    match f { g => g(), } // error: 'f' cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+}
+run();
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say f = () => a();
+    say [g] = [f]; // error: This value cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+}
+run();
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say r = Ref(0);
+    @r = () => a(); // error: This function cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+}
+run();
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    throw () => a(); // error: This function cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+}
+run();
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say var d = { c: 0 };
+    d["c"] = () => a();
+    d["c"] = () => 1;
+    say x = d["c"]();
+    say q = 2;
+    fn b() { return q; }
+    return x;
+}
+print(run()); // expect: 1
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say var arr = [0];
+    arr[0] = () => a();
+    arr[0] = () => 1;
+    say x = arr[0](); // error: This value cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+    return x;
+}
+run();

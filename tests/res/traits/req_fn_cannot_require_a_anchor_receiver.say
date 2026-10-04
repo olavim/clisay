@@ -1,0 +1,6 @@
+trait Ok { req fn read(this); }
+type T with Ok { pub pos; init(this, pos) { this.pos = pos; } pub fn read(this) { return this.pos; } }
+print(T(3).read()); // expect: 3
+
+// @split
+trait W { req fn seek(&var this, p); } // error: A `req fn` cannot require an anchor parameter

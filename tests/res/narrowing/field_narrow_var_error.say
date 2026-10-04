@@ -1,0 +1,49 @@
+type Node {
+    pub var prev: opt;
+    init(this, p: opt) { this.prev = p; }
+    pub fn wipe(&var this) { this.prev = null; }
+}
+say var n = Node(1);
+if (n.prev != null) { print(n.prev); } // expect: 1
+
+// @split
+type Node { pub var prev: opt; init(this, p: opt) { this.prev = p; } }
+say var n = Node(1);
+if (n.prev != null) {
+    n.prev = null;
+    say y = n.prev; // error: Cannot assign a nullable value to non-null binding 'y'
+}
+
+// @split
+type Node {
+    pub var prev: opt;
+    init(this, p: opt) { this.prev = p; }
+    pub fn wipe(&var this) { this.prev = null; }
+}
+say var n = Node(1);
+if (n.prev != null) {
+    &n.wipe();
+    say y = n.prev; // error: Cannot assign a nullable value to non-null binding 'y'
+}
+
+// @split
+type Node { pub var prev: opt; init(this, p: opt) { this.prev = p; } }
+fn wipe(&var m) { m = Node(null); }
+say var n = Node(1);
+if (n.prev != null) {
+    wipe(&n);
+    say y = n.prev; // error: Cannot assign a nullable value to non-null binding 'y'
+}
+
+// @split
+type Node {
+    pub var prev: opt;
+    init(this, p: opt) { this.prev = p; }
+    pub fn check(var this) {
+        if (this.prev != null) {
+            this.prev = null;
+            say y = this.prev; // error: Cannot assign a nullable value to non-null binding 'y'
+        }
+    }
+}
+Node(1).check();

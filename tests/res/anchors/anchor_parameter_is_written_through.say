@@ -1,0 +1,13 @@
+fn bump(&var n) { n = n + 1; }
+say var x = 1;
+bump(&x);
+print(x); // expect: 2
+
+// @split
+fn peek(&n) { print(n); } // error: Invalid read-only anchor parameter
+say var x = 1;
+peek(&x);
+
+// @split
+type T { pub var n; init(this, n) { this.n = n; } fn look(&this) { return this.n; } } // error: Invalid read-only anchor parameter
+print(T(1).look());

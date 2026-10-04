@@ -1,0 +1,20 @@
+// Two values built alike, each holding one part twice at every level. A comparison that walks a
+// repeated part again for each place it appears takes time exponential in the depth.
+fn build(depth) {
+    say var v = [0];
+    say var i = 0;
+    while i < depth {
+        v = [v, v];
+        i = i + 1;
+    }
+    return v;
+}
+say a = build(18);
+say b = build(18);
+say var equal = 0;
+say var n = 0;
+while n < 5 {
+    if a == b { equal = equal + 1; }
+    n = n + 1;
+}
+print(equal);

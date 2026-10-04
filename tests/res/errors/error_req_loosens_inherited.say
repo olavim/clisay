@@ -1,0 +1,12 @@
+trait Base { req var x; }
+trait Loose with Base { req x; }
+// error(full):
+// error: `req x` loosens the `req var x` required by trait 'Base'
+//  --> error_req_loosens_inherited.say:2:29
+//   |
+// 1 | trait Base { req var x; }
+//   |                  ----- `Base` requires a reassignable `x`
+// 2 | trait Loose with Base { req x; }
+//   |                             ^ `x` is required here without `var`
+//   |
+//   = help: declare it as `req var x;`, or drop it and inherit the requirement

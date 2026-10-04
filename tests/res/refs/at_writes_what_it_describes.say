@@ -1,0 +1,28 @@
+type P { pub var pos; init(this, pos) { this.pos = pos; } }
+say c = Ref(P(0));
+print(@c.pos = 7); // expect: 7
+print(@c.pos += 3); // expect: 10
+print(@c.pos); // expect: 10
+
+// @split
+obligation kept { no persist; }
+type K { pub var v; init(this, v) { this.v = v; } }
+type Box { pub var inner; init(this, inner) { this.inner = inner; } }
+fn make(): kept { return K(1); }
+say c = Ref(Box(0));
+say w: kept = make();
+@c.inner = w; // error: cannot store value owing 'kept' in a field
+
+// @split
+obligation kept { no persist; }
+type K { pub var v; init(this, v) { this.v = v; } }
+type Box { pub var inner; init(this, inner) { this.inner = inner; } }
+fn make(): kept { return K(1); }
+fn stash(var b, w: kept) { b.inner = w; } // error: cannot store value owing 'kept' in a field
+say var box = Box(0);
+stash(box, make());
+
+// @split
+type P { pub var pos; init(this, pos) { this.pos = pos; } }
+say c = Ref(P(0));
+c.value.pos = 7; // error: Cannot write through `c`

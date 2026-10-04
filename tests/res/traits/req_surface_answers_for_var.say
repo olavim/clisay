@@ -1,0 +1,56 @@
+trait Tr { req x; pub fn set(var this) { this.x = 1; } } // error: Cannot reassign required member `Tr.x`
+
+// @split
+trait Tr { req var x; pub fn set(var this) { this.x = 1; return this.x; } }
+type A with Tr { pub var x = 0; }
+print(A().set()); // expect: 1
+
+// @split
+trait Tr { req x; pub fn get(this) { return this.x; } }
+type A with Tr { pub x = 5; }
+print(A().get()); // expect: 5
+
+// @split
+trait Tr { req var x; pub fn set(this) { this.x = 1; } } // error: Cannot write through `this`
+
+// @split
+trait Tr { req fn m(var this); } // error: A `req fn` cannot require a `var` parameter
+
+// @split
+trait Tr { req fn m(this, var n); } // error: A `req fn` cannot require a `var` parameter
+
+// @split
+trait Tr { req fn m(this); pub fn go(this) { return this.m(); } }
+type A with Tr { pub fn m(this) { return 3; } }
+print(A().go()); // expect: 3
+
+// @split
+trait Tr { req x; pub fn get(this) { return this.x; } }
+type A with Tr { pub var x = 5; }
+print(A().get()); // expect: 5
+
+// @split
+trait Tr { req var x; }
+type A with Tr { pub x = 5; } // error: member `x` does not satisfy `Tr.x`
+
+// @split
+trait Base { req x; }
+trait Tight with Base { req var x; pub fn set(var this) { this.x = 1; return this.x; } }
+type A with Tight { pub var x = 0; }
+print(A().set()); // expect: 1
+
+// @split
+trait Base { req var x; }
+trait Loose with Base { req x; } // error: `req x` loosens the `req var x` required by trait 'Base'
+
+// @split
+type Taint { } obligation taint { witness Taint; discharge to use; }
+trait Base { req x: taint; }
+trait Narrow with Base { req x; }
+type A with Narrow { pub x: taint = Taint(); } // error: member `x` does not satisfy `Narrow.x`
+
+// @split
+trait Base { req var x; }
+trait Same with Base { req var x; }
+type A with Same { pub var x = 4; }
+print(A().x); // expect: 4

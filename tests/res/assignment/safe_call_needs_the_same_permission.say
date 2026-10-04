@@ -1,0 +1,7 @@
+say var ok = [[1]];
+&ok[0]?.push(2);
+print(ok[0].length()); // expect: 2
+
+// @split
+say g = [[1]];
+&g[0]?.push(2); // error: Cannot anchor non-var binding `g`

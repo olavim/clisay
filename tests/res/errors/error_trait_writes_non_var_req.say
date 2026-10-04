@@ -1,0 +1,8 @@
+trait Tr { req x; pub fn set(var this) { this.x = 1; } }
+// error(full):
+// error: Cannot reassign required member `Tr.x`
+//  --> error_trait_writes_non_var_req.say:1:42
+//   |
+// 1 | trait Tr { req x; pub fn set(var this) { this.x = 1; } }
+//   |                                          ^^^^^^
+//   = help: a trait that writes a member must require it to be `var`, so declare it as `req var x;`

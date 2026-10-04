@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 
-use crate::ast::{AstId, Expr, FnDecl, Literal, ReqFn, ReqMember, ReturnShape, Stmt, Symbol, TraitClause, TypeDecl};
+use crate::ast::{AstId, Expr, FnDecl, Literal, ReqFn, ReqMember, Stmt, Symbol, TraitClause, TypeDecl};
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqMember, HirReqParam, HirStmt, HirTypeDecl, TypeId};
+use crate::middle::hir::{Receiver, SlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqMember, HirReqParam, HirStmt, HirTypeDecl, TypeId};
 
 use super::Lowerer;
 
@@ -116,7 +116,6 @@ impl<'a> Lowerer<'a> {
             builtin: decl.builtin,
             init,
             fields: composed.fields,
-            nullable_fields: decl.nullable_fields.clone(),
             var_fields: decl.var_fields.clone(),
             field_clauses: self.field_clauses(decl),
             field_positions: decl.field_positions.iter().cloned().collect(),
@@ -155,12 +154,14 @@ impl<'a> Lowerer<'a> {
             builtin: None,
             init,
             fields: composed.fields,
-            nullable_fields: decl.nullable_fields.clone(),
             var_fields: decl.var_fields.clone(),
             field_clauses: self.field_clauses(decl),
             field_positions: decl.field_positions.iter().cloned().collect(),
             methods: composed.methods,
-            req_fns: Vec::new(),
+            // A trait carries its own declarations, as `req_members` below does. A composing
+            // type carries everything it must satisfy, flattened. A mixed trait's are reached
+            // through `provides`.
+            req_fns: decl.req_fns.iter().map(|rf| self.lower_req_fn(rf, decl.name)).collect::<Result<_, _>>()?,
             req_members: decl.req_members.iter().map(|rm| self.lower_req_member(rm, decl.name)).collect(),
             method_traits: composed.method_traits,
             pub_members: composed.pub_members,
@@ -248,7 +249,7 @@ impl<'a> Lowerer<'a> {
     /// A `gives` delegate must be a plain, non-null field.
     fn check_gives_no_obligations(&self, decl: &TypeDecl, pos: &SourcePosition) -> Result<(), anyhow::Error> {
         for (field, trait_sym) in &decl.gives {
-            if decl.nullable_fields.contains(field) || decl.field_clauses.iter().any(|(f, _)| f == field) {
+            if decl.field_clauses.iter().any(|(f, _)| f == field) {
                 let ref_pos = decl.trait_refs.iter()
                     .find(|r| r.clause == TraitClause::Gives && r.trait_sym == *trait_sym)
                     .map_or(pos, |r| &r.pos);
@@ -311,35 +312,38 @@ impl<'a> Lowerer<'a> {
         let method = fd.name;
         let field_name = self.hir.text(field).to_string();
         let method_name = self.hir.text(method).to_string();
-        let (ret, clause) = self.return_clause(fd);
+        let clause = fd.clause.clone();
 
         let mut params = Vec::with_capacity(fd.params.len());
         let mut args = Vec::with_capacity(fd.params.len());
         for (i, param) in fd.params.iter().enumerate() {
             let psym = self.hir.intern(&format!("$g{i}"));
-            let slot = self.slot_clause(param.nullable, &param.clause);
+            let slot = param.clause.clone();
             params.push(HirParam {
+                anchor: param.anchor,
                 name: self.hir.add(HirExpr::Identifier(psym), pos.clone()),
                 pattern: None,
                 pos: pos.clone(),
-                nullable: slot.names.contains(&self.opt),
                 reassignable: param.reassignable,
                 clause: slot,
             });
-            args.push(self.hir.add(HirExpr::Identifier(psym), pos.clone()));
+            let arg = self.hir.add(HirExpr::Identifier(psym), pos.clone());
+            args.push(match param.anchor {
+                true => self.hir.add(HirExpr::Anchor(arg), pos.clone()),
+                false => arg,
+            });
         }
 
         let this = self.hir.add(HirExpr::This, pos.clone());
         let field_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(field_name)), pos.clone());
-        let field_access = self.hir.add(HirExpr::Index(this, field_lit, true), pos.clone());
+        let field_access = self.hir.add(HirExpr::Index { base: this, member: field_lit, is_dot: true, safe: false }, pos.clone());
         let method_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(method_name)), pos.clone());
-        let method_access = self.hir.add(HirExpr::Index(field_access, method_lit, true), pos.clone());
+        let method_access = self.hir.add(HirExpr::Index { base: field_access, member: method_lit, is_dot: true, safe: false }, pos.clone());
         let call = self.hir.add(HirExpr::Call(method_access, args), pos.clone());
         let ret_stmt = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
         let body = self.hir.add(HirExpr::Block(vec![ret_stmt]), pos.clone());
-        // The forwarder only reads `this.<field>`, so it needs no capability of its own.
-        let receiver = Some(HirSlotClause::default());
-        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), receiver, params, body, ret, clause }), pos.clone())
+        let receiver = Some(Receiver { pos: pos.clone(), clause: SlotClause::default(), reassignable: false, anchor: false });
+        self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), receiver, params, body, clause }), pos.clone())
     }
 
     fn lower_req_member(&self, rm: &ReqMember, trait_name: Symbol) -> HirReqMember {
@@ -348,19 +352,18 @@ impl<'a> Lowerer<'a> {
             trait_name,
             pos: rm.pos.clone(),
             reassignable: rm.reassignable,
-            clause: self.slot_clause(false, &rm.clause),
+            clause: rm.clause.clone(),
         }
     }
 
     fn lower_req_fn(&mut self, rf: &ReqFn, trait_name: Symbol) -> Result<HirReqFn, anyhow::Error> {
         let mut params = Vec::with_capacity(rf.params.len());
         for p in &rf.params {
-            let clause = self.slot_clause(p.nullable, &p.clause);
-            params.push(HirReqParam { pos: p.pos.clone(), clause, pattern: self.entry_pattern(&p.pattern)? });
+            let clause = p.clause.clone();
+            params.push(HirReqParam { pos: p.pos.clone(), clause, pattern: self.pattern_left_to_match(&p.pattern)? });
         }
-        let ret = self.slot_clause(rf.ret == ReturnShape::Nullable, &rf.clause);
-        let receiver = rf.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause));
-        Ok(HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), receiver, params, ret })
+        let ret = rf.clause.clone();
+        Ok(HirReqFn { name: rf.name, trait_name, pos: rf.pos.clone(), params, ret })
     }
 
     fn check_requirements(&self, decl: &TypeDecl, traits: &[(Symbol, &'a TypeDecl)], gives: &[Symbol], pos: &SourcePosition) -> Result<(), anyhow::Error> {
@@ -478,11 +481,11 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
         let sig_pos = decl.sig_pos.clone();
-        let receiver = decl.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause));
+        let receiver = decl.receiver.as_ref().map(|r| self.receiver(r));
         let params = self.params(&decl.params)?;
-        let (ret, clause) = self.return_clause(decl);
+        let clause = decl.clause.clone();
         let body = self.expr(&decl.body)?;
-        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, sig_pos, receiver, params, body, ret, clause }), pos))
+        Ok(self.hir.add(HirStmt::Fn(HirFnDecl { name, sig_pos, receiver, params, body, clause }), pos))
     }
 
     pub(super) fn as_qualified_method_call(&self, callee: &AstId<Expr>) -> Option<(Symbol, String)> {

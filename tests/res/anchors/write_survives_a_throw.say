@@ -1,0 +1,12 @@
+fn bump(&var n) { n = n + 1; throw "boom"; }
+
+say var a = [1, 2, 3];
+try { bump(&a[1]); } catch (e) { print(e); } // expect: boom
+print(a[1]); // expect: 3
+
+// @split
+fn bump(&var n) { n = n + 1; }
+
+say var a = [1, 2, 3];
+try { bump(&a[1]); } catch (e) { print(e); }
+print(a[1]); // expect: 3

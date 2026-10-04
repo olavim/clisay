@@ -1,16 +1,13 @@
-type T { pub var x?; }
+type T { pub var x: opt; }
 type P { a; pub b; init(this) { this.a = 1; this.b = 2; } }
 
-// a nullable field defaults to null but still counts as defined
 say t = T();
 print(t has { x: _ });      // expect: true
 
-// only public members count; a private member is not observable
 say p = P();
 print(p has { a: _ });      // expect: false
 print(p has { b: _ });      // expect: true
 
-// any non-dict, non-instance value has nothing
 print(5 has { x: _ });      // expect: false
 print("hi" has { x: _ });   // expect: false
 print(null has { x: _ });   // expect: false

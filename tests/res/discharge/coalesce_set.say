@@ -1,5 +1,4 @@
-// `??` discharges the whole obligation set: both null and Err fall to the fallback.
-fn get(flag)? {
+fn get(flag): opt {
     if (flag) { return Err("boom"); }
     return null;
 }

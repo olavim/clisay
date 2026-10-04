@@ -1,12 +1,10 @@
 //! Factory lowering.
 
-use indexmap::IndexSet;
-
-use crate::ast::{AstId, Expr, ReturnShape, Stmt, Symbol, TypeDecl, SlotClause};
+use crate::ast::{AstId, Expr, Receiver, Stmt, Symbol, TypeDecl, SlotClause};
 use crate::frontend::lex::SourcePosition;
-use crate::middle::hir::{HirSlotClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirStmt, UnOp};
+use crate::middle::hir::{HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirParam, HirStmt, UnOp};
 
-use super::Lowerer;
+use super::{Factory, Lowerer};
 
 impl<'a> Lowerer<'a> {
     pub(super) fn lower_factory(&mut self, composer_id: AstId<Stmt>, decl: &TypeDecl, field_inits: &[(Symbol, AstId<Expr>)], type_pos: &SourcePosition) -> Result<HirId<HirStmt>, anyhow::Error> {
@@ -15,7 +13,7 @@ impl<'a> Lowerer<'a> {
                 let init_pos = self.ast.pos(init_id).clone();
                 let fn_decl = self.ast_fn(init_id);
                 let params = self.params(&fn_decl.params)?;
-                let stmts = self.ast_block(&fn_decl.body);
+                let stmts = self.ast_block_stmts(&fn_decl.body);
                 (params, stmts, init_pos)
             },
             None if !self.all_defaulted_or_opt(decl, field_inits) => {
@@ -26,48 +24,49 @@ impl<'a> Lowerer<'a> {
 
         let mut body = Vec::new();
 
-        let mut params_set: IndexSet<Symbol> = IndexSet::new();
-        for param in &params {
-            let HirExpr::Identifier(slot) = self.hir.get(&param.name) else {
-                unreachable!("a parameter's slot is named by an identifier")
-            };
-            params_set.insert(*slot);
-            if let Some(pattern) = &param.pattern {
-                params_set.extend(self.hir.get(pattern).binders(&self.hir));
-            }
-        }
-        let saved_in_factory = self.in_factory.replace((decl.fields.clone(), params_set));
+        let prev_in_factory = self.in_factory.replace(Factory {
+            fields: decl.fields.clone(),
+            composer: composer_id,
+        });
 
-        // A stable field order keeps the synthesized locals deterministic.
-        let mut fields: Vec<Symbol> = decl.fields.iter().copied().collect();
-        fields.sort_by(|a, b| self.hir.text(*a).cmp(self.hir.text(*b)));
-
+        let fields = self.factory_fields();
         for &field in &fields {
             let default = field_inits.iter().find(|(f, _)| *f == field).map(|(_, v)| *v);
-            let nullable = decl.nullable_fields.contains(&field);
+            let nullable = decl.field_owes(field, self.opt);
             let value = match default {
                 Some(v) => Some(self.expr(&v)?),
                 None if nullable => Some(self.hir.add(HirExpr::Literal(HirLiteral::Null), type_pos.clone())),
                 None => None,
             };
             let clause = decl.field_clauses.iter().find(|(f, _)| *f == field).map(|(_, c)| c);
-            body.push(self.field_local_decl(field, value, nullable, clause, type_pos));
+            body.push(self.field_local_decl(field, value, clause, type_pos));
         }
 
         for stmt_id in body_stmts {
             body.push(self.stmt(stmt_id)?);
         }
 
-        self.in_factory = saved_in_factory;
-
-        // Copy each definitely-assigned field-local onto `this`, then verify `gives`. `this` is
-        // handed back by the factory epilogue.
-        for &field in &fields {
-            body.push(self.copy_field_local(field, &init_pos));
-        }
-        body.extend(self.synthesize_gives_verifications(composer_id, &init_pos)?);
+        body.extend(self.factory_epilogue(&init_pos)?);
+        self.in_factory = prev_in_factory;
 
         Ok(self.make_factory_fn(decl.init_name, params, body, &init_pos))
+    }
+
+    fn factory_fields(&self) -> Vec<Symbol> {
+        let Some(factory) = &self.in_factory else { return Vec::new() };
+        let mut fields: Vec<Symbol> = factory.fields.iter().copied().collect();
+        // Return fields in stable order.
+        fields.sort_by(|a, b| self.hir.text(*a).cmp(self.hir.text(*b)));
+        fields
+    }
+
+    pub(super) fn factory_epilogue(&mut self, pos: &SourcePosition) -> Result<Vec<HirId<HirStmt>>, anyhow::Error> {
+        let Some(composer) = self.in_factory.as_ref().map(|f| f.composer) else { return Ok(Vec::new()) };
+        let mut out: Vec<HirId<HirStmt>> = self.factory_fields().into_iter()
+            .map(|field| self.copy_field_local(field, pos))
+            .collect();
+        out.extend(self.synthesize_gives_verifications(composer, pos)?);
+        Ok(out)
     }
 
     /// A factory epilogue copy: `this.<field> = $<field>`, writing a field-local onto the instance.
@@ -82,21 +81,17 @@ impl<'a> Lowerer<'a> {
 
     fn all_defaulted_or_opt(&self, decl: &TypeDecl, field_inits: &[(Symbol, AstId<Expr>)]) -> bool {
         decl.fields.iter().all(|field| {
-            decl.nullable_fields.contains(field) || field_inits.iter().any(|(f, _)| f == field)
+            decl.field_owes(*field, self.opt) || field_inits.iter().any(|(f, _)| f == field)
         })
     }
 
     /// Declares a factory's field-local: `say var $<field> [= value]`.
-    fn field_local_decl(&mut self, field: Symbol, value: Option<HirId<HirExpr>>, nullable: bool, declared: Option<&SlotClause>, pos: &SourcePosition) -> HirId<HirStmt> {
+    fn field_local_decl(&mut self, field: Symbol, value: Option<HirId<HirExpr>>, declared: Option<&SlotClause>, pos: &SourcePosition) -> HirId<HirStmt> {
         let name = self.field_local_sym(field);
         // The local stands for the field, so it accepts exactly what the field declares.
-        let clause = match declared {
-            Some(declared) => self.slot_clause(nullable, declared),
-            None if nullable => HirSlotClause { names: vec![self.opt], ..Default::default() },
-            None => HirSlotClause::default(),
-        };
-        let field_init = HirFieldInit { name, value, nullable, reassignable: true, clause };
-        self.hir.add(HirStmt::Say(field_init), pos.clone())
+        let clause = declared.cloned().unwrap_or_default();
+        let decl = HirSayDecl { name, pattern: None, otherwise: None, value, reassignable: true, clause };
+        self.hir.add(HirStmt::Say(decl), pos.clone())
     }
 
     fn synthesize_gives_verifications(&mut self, composer_id: AstId<Stmt>, pos: &SourcePosition) -> Result<Vec<HirId<HirStmt>>, anyhow::Error> {
@@ -107,7 +102,7 @@ impl<'a> Lowerer<'a> {
 
             let this = self.hir.add(HirExpr::This, pos.clone());
             let field_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(field_name.clone())), pos.clone());
-            let access = self.hir.add(HirExpr::Index(this, field_lit, true), pos.clone());
+            let access = self.hir.add(HirExpr::Index { base: this, member: field_lit, is_dot: true, safe: false }, pos.clone());
             let matcher = HirMatcher::Type { nominal: true, name: trait_sym, shape: None };
             let matcher = self.hir.add(matcher, pos.clone());
             let is_check = self.hir.add(HirExpr::Match(access, matcher), pos.clone());
@@ -125,14 +120,13 @@ impl<'a> Lowerer<'a> {
     pub(super) fn this_method(&mut self, name: &str, pos: &SourcePosition) -> HirId<HirExpr> {
         let this_expr = self.hir.add(HirExpr::This, pos.clone());
         let name_lit = self.hir.add(HirExpr::Literal(HirLiteral::String(name.to_string())), pos.clone());
-        self.hir.add(HirExpr::Index(this_expr, name_lit, true), pos.clone())
+        self.hir.add(HirExpr::Index { base: this_expr, member: name_lit, is_dot: true, safe: false }, pos.clone())
     }
 
     fn make_factory_fn(&mut self, name: Symbol, params: Vec<HirParam>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
         let body = self.hir.add(HirExpr::Block(body), pos.clone());
-        // A factory always has a receiver: the instance it is building up.
-        let receiver = Some(HirSlotClause::default());
-        let fn_decl = HirFnDecl { name, sig_pos: pos.clone(), receiver, params, body, ret: ReturnShape::Inferred, clause: HirSlotClause::default() };
+        let receiver = Some(Receiver { pos: pos.clone(), clause: SlotClause::default(), reassignable: true, anchor: false });
+        let fn_decl = HirFnDecl { name, sig_pos: pos.clone(), receiver, params, body, clause: SlotClause::default() };
         self.hir.add(HirStmt::Fn(fn_decl), pos.clone())
     }
 }

@@ -1,3 +1,2 @@
-// A nullable value passed to a non-null native parameter is rejected.
-say x? = null;
+say x: opt = null;
 gcStress(x); // error: expected non-null argument

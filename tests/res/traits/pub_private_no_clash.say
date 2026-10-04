@@ -1,9 +1,9 @@
 trait Greeter {
-    pub fn greet(this)! { return "hello"; }
+    pub fn greet(this) { return "hello"; }
 }
 trait Secret {
-    fn greet(this)! { return "shh"; }
-    pub fn reveal(this)! { return this.greet(); }
+    fn greet(this) { return "shh"; }
+    pub fn reveal(this) { return this.greet(); }
 }
 
 type Person with Greeter, Secret {}

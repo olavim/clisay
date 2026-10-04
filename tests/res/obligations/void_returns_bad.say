@@ -1,5 +1,12 @@
-// A void return that owes an obligation may return that obligation's bad value.
-fn maybe(k): void opt { if (k) { return null; } print("kept"); }
-fn readIt(k): void fails { if (k) { return Err("bad"); } print("done"); }
-maybe(false); // expect: kept
-readIt(false); // expect: done
+fn maybe(k): opt { if (k) { return null; } return 1; }
+fn keep(k): void { if (k) { return; } print("kept"); }
+keep(false); // expect: kept
+print(maybe(true) ?? "none"); // expect: none
+
+// @split
+fn maybe(k): void opt { if (k) { return null; } } // error: A void return cannot also owe an obligation
+maybe(false);
+
+// @split
+fn readIt(k): void fails { if (k) { return Err("bad"); } } // error: A void return cannot also owe an obligation
+readIt(false);

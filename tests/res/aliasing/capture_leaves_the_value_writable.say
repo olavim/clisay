@@ -1,0 +1,38 @@
+type T { pub x; }
+say var sink = [];
+say t = T { x: sink };
+&sink.push(1);
+print(sink.length()); // expect: 1
+print(t.x.length()); // expect: 0
+// @split
+type T { pub x; }
+say sink = Ref([]);
+fn add(v) { sink.mutate((&var list) => { &list.push(v); }); }
+add(1);
+say t = T { x: @sink };
+print(t.x.length()); // expect: 1
+// @split
+say sink = Ref([]);
+fn add(v) { sink.mutate((&var list) => { &list.push(v); }); }
+add(1);
+say frozen = [@sink];
+sink.mutate((&var list) => { &list.push(2); });
+print(frozen[0].length()); // expect: 1
+print(@sink.length()); // expect: 2
+// @split
+say var sink = [];
+fn add(v) { &sink.push(v); } // error: Cannot take an anchor into `sink`; it is captured
+add(1);
+&sink.push(2);
+print(sink.length());
+// @split
+type C { pub var n; init(this) { this.n = 0; } pub fn bump(var this) { this.n = 1; } }
+say c = C();
+fn touch() { c.bump(); }
+touch();
+c.bump();
+print(c.n); // expect: 0
+// @split
+say sink = [];
+say kept = [sink.length()];
+print(kept[0]); // expect: 0

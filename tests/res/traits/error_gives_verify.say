@@ -1,4 +1,4 @@
-trait Powered { pub fn start(this)! { return "vroom"; } }
+trait Powered { pub fn start(this) { return "vroom"; } }
 
 type Car {
     engine gives Powered;

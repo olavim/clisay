@@ -1,11 +1,11 @@
-fn isOne(n)! {
+fn isOne(n) {
     if (n == 1) {
         return true;
     }
     return false;
 }
 
-fn isOneOrTwo(n)! {
+fn isOneOrTwo(n) {
     if (n == 1) {
         return true;
     } else if (n == 2) {

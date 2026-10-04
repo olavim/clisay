@@ -1,0 +1,47 @@
+say var k = [];
+{ say c = [1]; k = c; }
+print(k[0]); // expect: 1
+
+// @split
+say var a = [1];
+{ say c = a; }
+a[0] = 5;
+print(a[0]); // expect: 5
+
+// @split
+say var a = [1];
+say var k = [];
+{ say c = a; k = c; }
+a[0] = 5;
+print(a[0]); // expect: 5
+print(k[0]); // expect: 1
+
+// @split
+say a = [1];
+say var k = [];
+{ say c = a; k = c; }
+k[0] = 5;
+print(k[0]); // expect: 5
+
+// @split
+fn run(k) {
+    say var a = [1];
+    say var b = [2];
+    { say var h = []; if (k == 1) { h = a; } else { h = b; } }
+    a[0] = 5;
+    b[0] = 6;
+    print(a[0]); // expect: 5
+    print(b[0]); // expect: 6
+}
+run(1);
+
+// @split
+fn run(k) {
+    say var a = [1];
+    say b = [2];
+    say var kept = [];
+    { say var h = []; if (k == 1) { h = a; } else { h = b; } kept = h; }
+    a[0] = 5;
+    return kept[0];
+}
+print(run(1)); // expect: 1

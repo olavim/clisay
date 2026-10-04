@@ -1,4 +1,4 @@
-fn walk(v?) {
+fn walk(v: opt) {
     match v {
         { outer } => {
             match outer {

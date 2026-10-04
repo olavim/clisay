@@ -1,0 +1,3 @@
+say var x = [[0]];
+&x?[0].push(x);
+print(x[0][1][0].length()); // expect: 1

@@ -17,6 +17,7 @@ pub enum Access {
     ArrayFront(usize),
     ArrayBack(usize),
     ArrayMiddle(usize, usize),
+    DictRest(Vec<Scalar>, bool),
 }
 
 /// How to reach a nested value from the value being matched.
@@ -31,8 +32,9 @@ pub enum ValueTest {
     Equal(Scalar),
     Nominal(TypeId),
     ArrayLen { min: usize, exact: bool },
-    /// The value is a dict or instance, the only kinds a shape matches.
+    /// The value is a dict or instance.
     Shaped,
+    Dict,
 }
 
 /// A single step in matching one clause: test a path, bind a path, or run a nested matcher at a path.
@@ -44,6 +46,7 @@ enum MatchStep {
     /// would reload its entire path each time the nested pattern's sub-values are read. A nested matcher
     /// loads the path once, so that such sub-values can be matched efficiently.
     Nested(Path, HirId<HirMatcher>),
+    Every(Path, HirId<HirMatcher>),
 }
 
 /// One alternative's steps: an AND that must all hold for the alternative to match.
@@ -60,6 +63,7 @@ type Alternatives = Vec<Steps>;
 pub struct Clause<'a> {
     pub tests: Vec<(Path, ValueTest)>,
     pub nested: Vec<(Path, HirId<HirMatcher>)>,
+    pub every: Vec<(Path, HirId<HirMatcher>)>,
     pub binds: Vec<(Path, u8)>,
     pub guard: Option<HirId<HirExpr>>,
     pub body: Label,
@@ -72,15 +76,17 @@ impl<'a> Clause<'a> {
     fn from_steps(steps: Steps, guard: Option<HirId<HirExpr>>, body: Label, binders: &'a [(Symbol, u8)]) -> Clause<'a> {
         let mut tests = Vec::new();
         let mut nested = Vec::new();
+        let mut every = Vec::new();
         let mut binds = Vec::new();
         for step in steps {
             match step {
                 MatchStep::Test(path, test) => tests.push((path, test)),
                 MatchStep::Nested(path, matcher) => nested.push((path, matcher)),
+                MatchStep::Every(path, matcher) => every.push((path, matcher)),
                 MatchStep::Bind(path, slot) => binds.push((path, slot)),
             }
         }
-        Clause { tests, nested, binds, guard, body, binders }
+        Clause { tests, nested, every, binds, guard, body, binders }
     }
 
     /// A copy with the `i`th test discharged, for the branch where that test held.
@@ -128,6 +134,8 @@ pub enum DecisionTree<'a> {
     Switch { path: Path, cases: Vec<(Scalar, DecisionTree<'a>)>, default: Box<DecisionTree<'a>> },
     /// A clause-unique nested matcher at a path.
     Nested { path: Path, matcher: HirId<HirMatcher>, binders: &'a [(Symbol, u8)], matched: Box<DecisionTree<'a>>, unmatched: Box<DecisionTree<'a>> },
+    /// A clause-unique quantified matcher over what the value at a path holds.
+    Every { path: Path, matcher: HirId<HirMatcher>, binders: &'a [(Symbol, u8)], matched: Box<DecisionTree<'a>>, unmatched: Box<DecisionTree<'a>> },
 }
 
 impl<'a> Compiler<'a> {
@@ -165,12 +173,12 @@ impl<'a> Compiler<'a> {
         self.emit_tree(&tree, scrut_slot, scrutinee, end, stmt_id)?;
 
         for (i, arm) in arms.iter().enumerate() {
-            self.ir.bind(body_labels[i]);
+            self.bind_label(body_labels[i]);
             self.expression_stmt(&arm.body)?;
             self.emit(Inst::Jump(end), stmt_id);
         }
 
-        self.ir.bind(end);
+        self.bind_label(end);
         self.exit_scope(stmt_id)?;
         Ok(())
     }
@@ -192,7 +200,7 @@ impl<'a> Compiler<'a> {
                         let guard_fail = self.ir.new_label();
                         self.emit(Inst::JumpIfFalse(guard_fail), node);
                         self.emit(Inst::Jump(*body), node);
-                        self.ir.bind(guard_fail);
+                        self.bind_label(guard_fail);
                         self.emit_tree(otherwise, scrut_slot, scrut_expr, end, node)?;
                     },
                 }
@@ -203,7 +211,7 @@ impl<'a> Compiler<'a> {
                 let unmatched_lbl = self.ir.new_label();
                 self.emit(Inst::JumpIfFalse(unmatched_lbl), node);
                 self.emit_tree(matched, scrut_slot, scrut_expr, end, node)?;
-                self.ir.bind(unmatched_lbl);
+                self.bind_label(unmatched_lbl);
                 self.emit_tree(unmatched, scrut_slot, scrut_expr, end, node)?;
             },
             DecisionTree::Switch { path, cases, default } => {
@@ -223,9 +231,18 @@ impl<'a> Compiler<'a> {
                         self.emit(Inst::Pop, node);
                     }
                     self.emit_tree(subtree, scrut_slot, scrut_expr, end, node)?;
-                    self.ir.bind(next);
+                    self.bind_label(next);
                 }
                 self.emit_tree(default, scrut_slot, scrut_expr, end, node)?;
+            },
+            DecisionTree::Every { path, matcher, binders, matched, unmatched } => {
+                self.load_path(scrut_slot, path, node)?;
+                self.emit_every_element(matcher, Some(binders), scrut_expr)?;
+                let unmatched_lbl = self.ir.new_label();
+                self.emit(Inst::JumpIfFalse(unmatched_lbl), node);
+                self.emit_tree(matched, scrut_slot, scrut_expr, end, node)?;
+                self.bind_label(unmatched_lbl);
+                self.emit_tree(unmatched, scrut_slot, scrut_expr, end, node)?;
             },
             DecisionTree::Nested { path, matcher, binders, matched, unmatched } => {
                 self.load_path(scrut_slot, path, node)?;
@@ -233,7 +250,7 @@ impl<'a> Compiler<'a> {
                 let unmatched_lbl = self.ir.new_label();
                 self.emit(Inst::JumpIfFalse(unmatched_lbl), node);
                 self.emit_tree(matched, scrut_slot, scrut_expr, end, node)?;
-                self.ir.bind(unmatched_lbl);
+                self.bind_label(unmatched_lbl);
                 self.emit_tree(unmatched, scrut_slot, scrut_expr, end, node)?;
             },
         }
@@ -254,6 +271,17 @@ impl<'a> Compiler<'a> {
                 Access::ArrayMiddle(prefix, suffix) => {
                     self.emit(Inst::ArrayMiddle(*prefix as u8, *suffix as u8), node);
                 },
+                Access::DictRest(keys, values_only) => {
+                    for key in keys {
+                        let idx = self.scalar_constant(key)?;
+                        self.emit(Inst::PushConstant(idx), node);
+                    }
+                    let named = keys.len() as u8;
+                    self.emit(match values_only {
+                        true => Inst::DictRestValues(named),
+                        false => Inst::DictRest(named),
+                    }, node);
+                },
             }
         }
         Ok(())
@@ -268,9 +296,9 @@ impl<'a> Compiler<'a> {
             },
             ValueTest::Admits { key, null_allowed, witnesses } => {
                 let idx = self.scalar_constant(key)?;
-                let allow = self.accepted_witness_set(witnesses, *null_allowed);
-                let allow_idx = self.ir.add_witness_allow(allow)?;
-                self.emit(Inst::MemberAdmits(idx, allow_idx), node);
+                let witness_set = self.accepted_witness_set(witnesses, *null_allowed);
+                let witness_set_pool_id = self.ir.intern_witness_set(witness_set)?;
+                self.emit(Inst::MemberAdmits(idx, witness_set_pool_id), node);
             },
             ValueTest::Equal(lit) => self.emit_equal(lit, node)?,
             ValueTest::Nominal(id) => self.emit(Inst::Is(*id), node),
@@ -281,6 +309,7 @@ impl<'a> Compiler<'a> {
                 self.emit(if *exact { Inst::Equal } else { Inst::GreaterThanEqual }, node);
             },
             ValueTest::Shaped => self.emit(Inst::IsShaped, node),
+            ValueTest::Dict => self.emit(Inst::IsDict, node),
         }
         Ok(())
     }
@@ -307,9 +336,27 @@ impl<'a> Compiler<'a> {
                 alts
             },
             HirMatcher::Type { nominal, name, shape } => self.lower_type(matcher, *nominal, *name, shape, path, binders, node)?,
-            HirMatcher::Shape(fields) if fields.is_empty() => vec![vec![MatchStep::Test(path.to_vec(), ValueTest::Shaped)]],
-            HirMatcher::Shape(fields) => {
+            HirMatcher::Shape { fields, rest } if fields.is_empty() && rest.is_none() => vec![vec![MatchStep::Test(path.to_vec(), ValueTest::Shaped)]],
+            HirMatcher::Dict(shape) => {
+                let mut alts = self.lower_matcher(shape, path, binders, node)?;
+                prepend_step(&[MatchStep::Test(path.to_vec(), ValueTest::Dict)], &mut alts);
+                alts
+            },
+            HirMatcher::Shape { fields, rest } => {
+                let keys: Vec<Scalar> = fields.iter().map(|f| Scalar::from(&f.key)).collect();
                 let mut groups = Vec::with_capacity(fields.len());
+                if let Some(rest) = rest {
+                    if let Some(name) = rest.binder {
+                        let mut rest_path = path.to_vec();
+                        rest_path.push(Access::DictRest(keys.clone(), false));
+                        groups.push(vec![vec![MatchStep::Bind(rest_path, slot_of(binders, name))]]);
+                    }
+                    if let Some(every) = rest.every.filter(|_| rest.tests_something(self.hir)) {
+                        let mut rest_path = path.to_vec();
+                        rest_path.push(Access::DictRest(keys.clone(), true));
+                        groups.push(vec![vec![MatchStep::Every(rest_path, every)]]);
+                    }
+                }
                 for field in fields {
                     let key = Scalar::from(&field.key);
                     let mut field_path = path.to_vec();
@@ -397,10 +444,19 @@ impl<'a> Compiler<'a> {
                 groups.push(self.lower_value(matcher, elem_path, binders, node)?);
             }
         }
-        if let Some(HirMatchElem::Rest(Some(name))) = rest {
-            let mut rest_path = path.to_vec();
-            rest_path.push(Access::ArrayMiddle(prefix.len(), suffix.len()));
-            groups.push(vec![vec![MatchStep::Bind(rest_path, slot_of(binders, *name))]]);
+        if let Some(HirMatchElem::Rest(r)) = rest {
+            let middle = |path: &[Access]| {
+                let mut rest_path = path.to_vec();
+                rest_path.push(Access::ArrayMiddle(prefix.len(), suffix.len()));
+                rest_path
+            };
+            if let Some(name) = r.binder {
+                groups.push(vec![vec![MatchStep::Bind(middle(path), slot_of(binders, name))]]);
+            }
+            // A matcher that accepts everything is a static annotation, so it costs nothing here.
+            if let Some(every) = r.every.filter(|_| r.tests_something(self.hir)) {
+                groups.push(vec![vec![MatchStep::Every(middle(path), every)]]);
+            }
         }
         for (i, elem) in suffix.iter().enumerate() {
             if let HirMatchElem::Elem(matcher) = elem {
@@ -460,6 +516,8 @@ pub fn build_tree<'a>(clauses: &[Clause<'a>]) -> DecisionTree<'a> {
         }
     } else if let Some((path, matcher)) = first.nested.first() {
         build_nested(clauses, path.clone(), *matcher, first.binders)
+    } else if let Some((path, matcher)) = first.every.first() {
+        build_every(clauses, path.clone(), *matcher, first.binders)
     } else {
         build_leaf(clauses)
     }
@@ -547,6 +605,20 @@ fn build_switch_or_test<'a>(clauses: &[Clause<'a>], path: Path, test: ValueTest)
     DecisionTree::Switch { path, cases, default: Box::new(build_tree(&default)) }
 }
 
+fn build_every<'a>(clauses: &[Clause<'a>], path: Path, matcher: HirId<HirMatcher>, binders: &'a [(Symbol, u8)]) -> DecisionTree<'a> {
+    let (mut matched, unmatched) = partition(&clauses[1..], |_| Branch::Both);
+    let mut first = clauses[0].clone();
+    first.every.remove(0);
+    matched.insert(0, first);
+    DecisionTree::Every {
+        path,
+        matcher,
+        binders,
+        matched: Box::new(build_tree(&matched)),
+        unmatched: Box::new(build_tree(&unmatched)),
+    }
+}
+
 /// Runs a clause-unique nested matcher. Only its owning clause (the first) takes the matched branch,
 /// minus the nested step. The clauses below the owner take both branches, since the nested match does
 /// not decide them.
@@ -588,7 +660,8 @@ fn needs_nested_matcher(hir: &Hir, matcher: &HirId<HirMatcher>) -> bool {
         // A structural type tests each surface member, a shaped type tests the shape too, and the
         // rest read several sub-values or bind and re-match.
         HirMatcher::Type { .. }
-        | HirMatcher::Shape(_)
+        | HirMatcher::Shape { .. }
+        | HirMatcher::Dict(_)
         | HirMatcher::Array(_)
         | HirMatcher::As(..)
         | HirMatcher::And(_)

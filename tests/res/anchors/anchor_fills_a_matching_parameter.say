@@ -1,0 +1,42 @@
+fn boom() { return Err("x"); }
+fn f(&var v: fails) { v = boom(); print(v ?? 0); } // expect: 0
+fn call(h, &var x: fails) { h(&x); }
+
+say var x: fails = 1;
+call(f, &x);
+print(x ?? 0); // expect: 0
+
+// @split
+fn boom() { return Err("x"); }
+fn f(&var v: fails) { v = boom(); print(v ?? 0); } // error: an anchor and the parameter it fills do not admit the same values
+fn call(h, &var x) { h(&x); }
+
+say var x = 1;
+call(f, &x);
+print(x);
+
+// @split
+type Tag { } obligation tagged { witness Tag; no return; }
+fn tag(&var x: tagged) { x = Tag(); }
+fn pick() { return tag; }
+
+say var y: tagged = 0;
+pick()(&y);
+print(y ~ Tag); // expect: true
+
+// @split
+type Tag { } obligation tagged { witness Tag; no return; }
+fn tag(&var x: tagged) { x = Tag(); } // error: an anchor and the parameter it fills do not admit the same values
+fn pick() { return tag; }
+
+say var y = 0;
+pick()(&y);
+
+// @split
+type Tag { } obligation tagged { witness Tag; no return; }
+type Box { pub var v = 0; }
+fn tag(&var x: tagged) { x = Tag(); } // error: an anchor and the parameter it fills do not admit the same values
+fn pick() { return tag; }
+
+say var b = Box();
+pick()(&b.v);

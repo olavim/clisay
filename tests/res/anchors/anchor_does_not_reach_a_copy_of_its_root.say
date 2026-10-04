@@ -1,0 +1,112 @@
+type T { pub var value; }
+say var t = T { value: 0 };
+say var p = &t.value;
+say b = t;
+p = 99;
+print(t.value); // expect: 99
+print(b.value); // expect: 0
+
+// @split
+say var a = [1];
+say var p = &a[0];
+say b = a;
+p = 99;
+print(a[0]); // expect: 99
+print(b[0]); // expect: 1
+
+// @split
+fn bump(&var n) { n = n + 1; }
+type T { pub var value; }
+say var t = T { value: 0 };
+say b = t;
+bump(&t.value);
+print(t.value); // expect: 1
+print(b.value); // expect: 0
+
+// @split
+type T { pub var value; }
+say var t = T { value: 0 };
+say var p = &t.value;
+say var b = T { value: 1 };
+b = t;
+p = 99;
+print(t.value); // expect: 99
+print(b.value); // expect: 0
+
+// @split
+type T { pub var value; }
+type Box { pub var f; }
+say var t = T { value: 0 };
+say var p = &t.value;
+say var box = Box { f: T { value: 1 } };
+box.f = t;
+p = 99;
+print(t.value); // expect: 99
+print(box.f.value); // expect: 0
+
+// @split
+type T { pub var value; }
+say var t = T { value: 0 };
+say var p = &t.value;
+say var a = [T { value: 1 }];
+a[0] = t;
+p = 99;
+print(t.value); // expect: 99
+print(a[0].value); // expect: 0
+
+// @split
+type T { pub var value; }
+say var t = T { value: 0 };
+say var p = &t.value;
+say var a = [t];
+p = 99;
+print(t.value); // expect: 99
+print(a[0].value); // expect: 0
+
+// @split
+type T { pub var value; }
+type Box { pub var f; }
+say var t = T { value: 0 };
+say var p = &t.value;
+say var box = Box { f: t };
+p = 99;
+print(t.value); // expect: 99
+print(box.f.value); // expect: 0
+
+// @split
+type T { pub var value; }
+say var t = T { value: 0 };
+say var p = &t.value;
+say var a = [];
+&a.push(t);
+p = 99;
+print(t.value); // expect: 99
+print(a[0].value); // expect: 0
+
+// @split
+fn id(o) { return o; }
+type T { pub var value; }
+say var t = T { value: 0 };
+say var p = &t.value;
+say var q = id(t);
+p = 99;
+print(t.value); // expect: 99
+print(q.value); // expect: 0
+
+// @split
+type C { pub var v; }
+type B { pub var c; }
+say var b = B { c: C { v: 0 } };
+say var p = &b.c.v;
+say var q = b;
+p = 99;
+print(b.c.v); // expect: 99
+print(q.c.v); // expect: 0
+
+// @split
+say var d = { k: 0 };
+say var p = &d["k"];
+say var holder = [d];
+p = 99;
+print(d["k"]); // expect: 99
+print(holder[0]["k"]); // expect: 0

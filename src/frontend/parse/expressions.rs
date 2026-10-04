@@ -4,13 +4,12 @@ use super::*;
 
 pub(super) struct LambdaSig {
     params: Vec<Param>,
-    ret: ReturnShape,
     clause: SlotClause,
 }
 
 impl LambdaSig {
     fn of(params: Vec<Param>) -> LambdaSig {
-        LambdaSig { params, ret: ReturnShape::Inferred, clause: SlotClause::default() }
+        LambdaSig { params, clause: SlotClause::default() }
     }
 }
 
@@ -31,21 +30,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             params.push(param);
             self.tokens.next_if(TokenType::Comma);
         }
-        let (ret, clause) = self.parse_lambda_return().ok()?;
+        let clause = self.parse_slot_clause(SlotKind::Return).ok()?;
 
         if !self.tokens.matches(TokenType::FatArrow) {
             return None;
         }
 
-        Some(LambdaSig { params, ret, clause })
-    }
-
-    fn parse_lambda_return(&mut self) -> Result<(ReturnShape, SlotClause), anyhow::Error> {
-        let ret = match self.parse_return_shape() {
-            ReturnShape::Void => ReturnShape::Inferred,
-            marked => marked,
-        };
-        Ok((ret, self.parse_slot_clause(SlotKind::Return)?))
+        Some(LambdaSig { params, clause })
     }
 
     pub(super) fn make_lambda(&mut self, params: Vec<AstId<Expr>>, body: AstId<Expr>) -> Expr {
@@ -54,7 +45,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             let pos = self.ast.pos(&param).clone();
             let Expr::Identifier(sym) = self.ast.get(&param) else { unreachable!("a lambda parameter is an identifier") };
             let pattern = self.ast.add_matcher(Matcher::Binder(*sym), pos.clone());
-            lambda_params.push(Param { pattern, pos, nullable: false, reassignable: false, clause: SlotClause::default() });
+            lambda_params.push(Param { anchor: false, pattern, pos, reassignable: false, clause: SlotClause::default() });
         }
         self.lambda_of(LambdaSig::of(lambda_params), body)
     }
@@ -67,7 +58,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             receiver: None,
             params: sig.params,
             body,
-            ret: sig.ret,
             clause: sig.clause,
         }))
     }
@@ -155,8 +145,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     /// Parses a primary expression: a literal, an array or dict literal, or an identifier.
     pub(super) fn parse_primary(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
-            return self.parse_value_mut();
+        if self.tokens.matches(TokenType::Amp) {
+            return self.parse_anchor();
+        }
+        if self.tokens.matches(TokenType::At) {
+            return self.parse_ref_access();
         }
         match Operator::parse_prefix(self.tokens, 0) {
             Some(op) => self.parse_expr_prefix(op),
@@ -164,11 +157,110 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
     }
 
-    /// Parses `mut <operand>`, the value-mutability marker on a construction.
-    fn parse_value_mut(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
-        let pos = self.tokens.next().pos.clone();
-        let inner = self.parse_expr_precedence(Operator::UNARY_PREFIX_PRECEDENCE)?;
-        Ok(self.node_expr(Expr::Mut(inner), pos))
+    /// anchor := "&" path | "&" path step "(" args ")"
+    /// path := ( identifier | "this" ) step*
+    /// step := "?"? ( "." identifier | "[" expr "]" )
+    fn parse_anchor(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        let start = self.tokens.expect(TokenType::Amp)?.pos.clone();
+        let mut path = self.parse_anchor_root(&start)?;
+        let mut any_safe_access = false;
+
+        loop {
+            let pos = self.ast.pos(&path).clone();
+            let safe = self.tokens.peek(0).kind == TokenType::Question
+                && matches!(self.tokens.peek(1).kind, TokenType::Dot | TokenType::LeftBracket);
+            if safe {
+                let question = self.tokens.next().pos.clone();
+                self.require_attached_question(&pos, &question)?;
+                any_safe_access = true;
+            }
+            match self.tokens.peek(0).kind {
+                TokenType::Dot => {
+                    self.tokens.next();
+                    let name = self.parse_identifier()?;
+                    let name = self.ast.add_expr(Expr::Literal(Literal::String(name)), pos.clone());
+                    path = self.node_expr(access_expr(path, name, true, safe), pos);
+                },
+                TokenType::LeftBracket => {
+                    let open = self.tokens.next().pos.clone();
+                    let key = self.parse_expr()?;
+                    self.tokens.expect_close(TokenType::RightBracket, &open)?;
+                    path = self.node_expr(access_expr(path, key, false, safe), pos);
+                },
+                _ => break,
+            }
+        }
+
+        let is_access = matches!(self.ast.get(&path), Expr::Index(..) | Expr::SafeAccess(..));
+        let calls = self.tokens.matches(TokenType::LeftParen)
+            || self.tokens.peek(0).kind == TokenType::Question && self.tokens.peek(1).kind == TokenType::LeftParen;
+        if is_access && calls {
+            return self.parse_anchor_receiver_call(&start, path);
+        }
+
+        let pos = start.to(&self.tokens.previous().pos);
+        // A failed safe access skips a method call, but an anchor passed on or bound would name nothing.
+        if any_safe_access {
+            return Err(self.error_help("An anchor cannot be formed through `?`", &pos,
+                "check the value first, then anchor it, or call a method through `?`, as in `&x?.bump()`"));
+        }
+        Ok(self.node_expr(Expr::Anchor(path), pos))
+    }
+
+    /// `&x.y.bump(args)`, `&x.y?.bump(args)` or `&x.y.bump?(args)`
+    fn parse_anchor_receiver_call(&mut self, start: &SourcePosition, path: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
+        let (receiver, method, is_dot, safe) = match *self.ast.get(&path) {
+            Expr::Index(receiver, method, is_dot) => (receiver, method, is_dot, false),
+            Expr::SafeAccess(receiver, method, is_dot) => (receiver, method, is_dot, true),
+            _ => unreachable!("the caller checked for an access"),
+        };
+        let receiver_pos = start.to(self.ast.pos(&receiver));
+        let anchor = self.node_expr(Expr::Anchor(receiver), receiver_pos);
+        let callee_pos = self.ast.pos(&path).clone();
+        let callee = self.node_expr(access_expr(anchor, method, is_dot, safe), callee_pos.clone());
+        let tested = self.tokens.peek(0).kind == TokenType::Question;
+        if tested {
+            let question = self.tokens.next().pos.clone();
+            self.require_attached_question(&callee_pos, &question)?;
+        }
+        let open = self.tokens.expect(TokenType::LeftParen)?.pos.clone();
+        let args = self.parse_call_arguments(&open)?;
+        let call = match tested {
+            true => Expr::SafeCall(callee, args),
+            false => Expr::Call(callee, args),
+        };
+        Ok(self.node_expr(call, callee_pos))
+    }
+
+    fn require_attached_question(&self, operand: &SourcePosition, question: &SourcePosition) -> Result<(), anyhow::Error> {
+        match operand.end == question.start {
+            true => Ok(()),
+            false => Err(self.error_help("`?` must attach to the value it guards", question, "remove the space, as in `foo?.bar`")),
+        }
+    }
+
+    /// `@x`
+    fn parse_ref_access(&mut self) -> Result<AstId<Expr>, anyhow::Error> {
+        let start = self.tokens.expect(TokenType::At)?.pos.clone();
+        let inner = match self.tokens.matches(TokenType::LeftParen) {
+            true => self.parse_primary()?,
+            false => self.parse_expr_atom()?,
+        };
+        Ok(self.node_expr(Expr::RefAccess(inner), start))
+    }
+
+    fn parse_anchor_root(&mut self, start: &SourcePosition) -> Result<AstId<Expr>, anyhow::Error> {
+        let token = self.tokens.peek(0);
+        let pos = token.pos.clone();
+        match token.kind {
+            TokenType::Identifier => self.parse_identifier_expr(),
+            TokenType::This => {
+                self.tokens.next();
+                Ok(self.ast.add_expr(Expr::This, pos))
+            },
+            _ => Err(self.error_help("An anchor names a binding or a path into one", start,
+                "an anchor starts at a name, as in `&x`, `&x.f` or `&x[i]`")),
+        }
     }
 
     pub(super) fn parse_expr_infix(&mut self, op: Operator, expr: AstId<Expr>) -> Result<AstId<Expr>, anyhow::Error> {
@@ -176,9 +268,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
         let kind = match &op {
             Operator::MemberAccess => {
+                let through_ref = self.tokens.next_if(TokenType::At).is_some();
                 let id = self.parse_identifier()?;
                 let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                Expr::Index(expr, id, true) // `.name` member access
+                let access = Expr::Index(expr, id, true); // `.name` member access
+                match through_ref {
+                    true => Expr::RefAccess(self.node_expr(access, pos.clone())),
+                    false => access,
+                }
             },
             Operator::Is => {
                 let name_token = self.tokens.peek(0).clone();
@@ -247,12 +344,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Operator::Group => {
                 match self.tokens.next_if(TokenType::RightParen) {
                     Some(_) => {
-                        let (ret, clause) = self.parse_lambda_return()?;
+                        let clause = self.parse_slot_clause(SlotKind::Return)?;
                         let Some(Operator::Arrow) = Operator::parse_infix(self.tokens, 0) else {
                             parse_error!(self, &pos, "Unexpected token: Expected '=>'")
                         };
                         let right = self.parse_block_or_expr(Operator::Arrow.infix_precedence().unwrap())?;
-                        self.lambda_of(LambdaSig { params: Vec::new(), ret, clause }, right)
+                        self.lambda_of(LambdaSig { params: Vec::new(), clause }, right)
                     },
                     None if let Some(sig) = self.parse_lambda_sig() => {
                         let Some(Operator::Arrow) = Operator::parse_infix(self.tokens, 0) else {
@@ -404,17 +501,22 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 self.tokens.expect_close(TokenType::RightBracket, &open)?;
                 Ok(self.node_expr(Expr::Index(expr, index, false), pos)) // `[expr]` data access
             },
-            Operator::Guard => {
-                // `?` binds tight to its operand, then must guard an access.
-                if self.ast.pos(&expr).end != open.start {
-                    return Err(self.error_help("`?` must attach to the value it guards", &open, "remove the space, as in `foo?.bar`"));
-                }
+            Operator::SafeAccess => {
+                self.require_attached_question(&self.ast.pos(&expr).clone(), &open)?;
                 match self.tokens.peek(0).kind {
                     TokenType::Dot => {
                         self.tokens.next();
+                        let through_ref = self.tokens.next_if(TokenType::At).is_some();
                         let id = self.parse_identifier()?;
                         let id = self.ast.add_expr(Expr::Literal(Literal::String(id)), pos.clone());
-                        Ok(self.node_expr(Expr::SafeAccess(expr, id, true), pos)) // `?.name`
+                        let access = Expr::SafeAccess(expr, id, true); // `?.name`
+                        Ok(match through_ref {
+                            true => {
+                                let guarded = self.node_expr(access, pos.clone());
+                                self.node_expr(Expr::RefAccess(guarded), pos)
+                            },
+                            false => self.node_expr(access, pos),
+                        })
                     },
                     TokenType::LeftBracket => {
                         let bracket = self.tokens.next().pos.clone();
@@ -473,5 +575,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 Ok(args.as_comma_separated(self.ast))
             }
         }
+    }
+}
+
+/// `base.key` or `base[key]`, or the safe access `base?.key` or `base?[key]` when `safe`.
+fn access_expr(base: AstId<Expr>, key: AstId<Expr>, is_dot: bool, safe: bool) -> Expr {
+    match safe {
+        true => Expr::SafeAccess(base, key, is_dot),
+        false => Expr::Index(base, key, is_dot),
     }
 }

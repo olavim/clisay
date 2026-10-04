@@ -58,7 +58,6 @@ pub enum ContextualKeyword {
     Gives,
     Pub,
     Inner,
-    Mut,
     Var,
     Discharge,
     No,
@@ -73,7 +72,6 @@ impl ContextualKeyword {
             "gives" => ContextualKeyword::Gives,
             "pub" => ContextualKeyword::Pub,
             "inner" => ContextualKeyword::Inner,
-            "mut" => ContextualKeyword::Mut,
             "var" => ContextualKeyword::Var,
             "discharge" => ContextualKeyword::Discharge,
             "no" => ContextualKeyword::No,
@@ -91,7 +89,6 @@ impl fmt::Display for ContextualKeyword {
             ContextualKeyword::Gives => "gives",
             ContextualKeyword::Pub => "pub",
             ContextualKeyword::Inner => "inner",
-            ContextualKeyword::Mut => "mut",
             ContextualKeyword::Var => "var",
             ContextualKeyword::Discharge => "discharge",
             ContextualKeyword::No => "no",
@@ -157,6 +154,7 @@ tokens! {
     Has => "has",
 
     Return => "return",
+    Defer => "defer",
     Break => "break",
     Continue => "continue",
     Say => "say",
@@ -221,6 +219,5 @@ tokens! {
     AmpAmpEqual => "&&=",
     PipePipeEqual => "||=",
     QuestionQuestion => "??",
-    QuestionBang => "?!",
-    StarMut => "*mut"
+    QuestionBang => "?!"
 }

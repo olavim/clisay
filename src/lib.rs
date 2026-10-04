@@ -1,5 +1,6 @@
 // Tail-call dispatch (`become`) in the VM needs this. Nightly-only until it stabilizes.
 #![feature(explicit_tail_calls)]
+#![feature(macro_metavar_expr_concat)]
 #![feature(variant_count)]
 #![allow(incomplete_features)]
 
@@ -34,18 +35,18 @@ pub use output::Output;
 /// and not a stable public API.
 #[doc(hidden)]
 pub mod internals {
-    pub use crate::ast::{MatchArm, Ast, AstId, Capability, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Operator, Param, ReturnShape, Stmt, Symbol, TypeDecl};
+    pub use crate::ast::{MatchArm, Ast, AstId, Expr, SayDecl, FnDecl, Literal, MatchArrayElem, MatchShapeField, MatchScalar, Matcher, ObligationRules, Operator, Param, Stmt, Symbol, TypeDecl};
     pub use crate::frontend::lex::{ContextualKeyword, Token, TokenType};
     pub use crate::middle::hir::{
-        Hir, HirMatchArm, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, HirTypeDecl,
+        Hir, HirMatchArm, HirExpr, HirSayDecl, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, HirTypeDecl,
     };
     pub use crate::core::objects::TypeMember;
     pub use crate::middle::bind::{Bindings, TypeLayout};
     pub use crate::middle::check::Barriers;
-    pub use crate::middle::check::scope::{intersect_narrowings, merge_local_flow, LocalFlow};
-    pub use crate::middle::check::alias::{ElementKey, WriteOwnershipTransfer, TransferSite};
+    pub use crate::middle::check::scope::{merge_local_flow, LocalFlow};
+    pub use crate::middle::check::{FlowPath, PathMap, ProvenFacts, PathStep};
     pub use crate::middle::obligations::Obligations;
-    pub use crate::middle::signatures::{CallableId, Mutability, TypeTag};
+    pub use crate::middle::signatures::{CallableId, NativeType, TypeTag};
 
     pub use crate::middle::codegen::matching::{Scalar, tree::{build_tree, Access, Clause, DecisionTree, Path, ValueTest}};
     pub use crate::middle::ir::{Ir, Label};
@@ -73,14 +74,24 @@ pub mod internals {
         Parser::parse_matcher_root(&mut TokenStream::new(&lex(src))).map_err(|e| e.to_string())
     }
 
+    fn parse_program(src: &str) -> Ast {
+        let tokens = lex(src);
+        let prelude = crate::prelude_tokens().expect("lex error");
+        Parser::parse_with_prelude(&mut TokenStream::new(&tokens), &mut TokenStream::new(&prelude))
+            .expect("parse error")
+    }
+
     pub fn try_resolve(src: &str) -> Result<(), String> {
-        crate::middle::names::resolve(&parse(src)).map(|_| ()).map_err(|e| e.to_string())
+        crate::middle::names::resolve(&parse_program(src)).map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    fn lower_ast(ast: Ast) -> Hir {
+        let names = crate::middle::names::resolve(&ast).expect("name resolution error");
+        crate::middle::lower::lower(ast, &names).expect("lower error")
     }
 
     pub fn lower(src: &str) -> Hir {
-        let ast = parse(src);
-        let names = crate::middle::names::resolve(&ast).expect("name resolution error");
-        crate::middle::lower::lower(ast, &names).expect("lower error")
+        lower_ast(parse_program(src))
     }
 
     pub fn bind(src: &str) -> (Hir, Bindings) {
@@ -95,7 +106,8 @@ pub mod internals {
     }
 
     pub fn nullck(src: &str) -> Barriers {
-        let (hir, bindings) = bind(src);
+        let hir = lower_ast(parse(src));
+        let bindings = crate::middle::bind::resolve(&hir).expect("bind error");
         let sigs = crate::middle::signatures::collect(&hir, &bindings);
         crate::middle::check::check(&hir, &bindings, &sigs, crate::RunConfig::default()).expect("nullck error")
     }
@@ -122,13 +134,16 @@ pub struct RunConfig {
     /// Whether codegen emits the checks the check pass proved unnecessary.
     pub force_checks: bool,
     pub drop_guards: bool,
-    pub drop_escape_refusal: bool,
 }
 
 impl Default for RunConfig {
     fn default() -> RunConfig {
-        RunConfig { optimize: true, force_checks: false, drop_guards: false, drop_escape_refusal: false }
+        RunConfig { optimize: true, force_checks: false, drop_guards: false }
     }
+}
+
+fn prelude_tokens() -> Result<Vec<crate::frontend::lex::Token>, anyhow::Error> {
+    tokenize(String::from(core::prelude::NAME), String::from(core::prelude::SOURCE))
 }
 
 pub fn run(file_name: &str, src: &str) -> Result<Vec<String>, anyhow::Error> {
@@ -139,7 +154,8 @@ pub fn run_with(file_name: &str, src: &str, config: RunConfig) -> Result<Vec<Str
     let mut gc = Gc::new();
 
     let tokens = tokenize(String::from(file_name), String::from(src))?;
-    let ast = Parser::parse(&mut TokenStream::new(&tokens))?;
+    let prelude = prelude_tokens()?;
+    let ast = Parser::parse_with_prelude(&mut TokenStream::new(&tokens), &mut TokenStream::new(&prelude))?;
 
     let names = resolve_names(&ast)?;
     let hir = lower(ast, &names)?;
@@ -147,9 +163,9 @@ pub fn run_with(file_name: &str, src: &str, config: RunConfig) -> Result<Vec<Str
     let sigs = collect_signatures(&hir, &bindings);
     check_shape(&hir, &bindings, &sigs)?;
     let barriers = check(&hir, &bindings, &sigs, config)?;
-    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs, config.drop_guards)?;
+    let ir = Compiler::compile(&hir, &mut gc, &bindings, &barriers, &sigs, config.drop_guards, config.force_checks)?;
     let ir = if config.optimize { optimize(ir) } else { ir };
 
     let chunk = assemble(ir)?;
-    runtime::execute(chunk, gc, config.force_checks)
+    runtime::execute(chunk, gc)
 }

@@ -1,0 +1,30 @@
+fn f() {
+    defer { say y = "y"; print(y); }
+    return 7;
+}
+print(f()); // expect: y
+// expect: 7
+
+// @split
+fn f() {
+    defer { say y = "y"; print(y); }
+    if (true) { return 7; }
+    say z = 1;
+    return z;
+}
+print(f()); // expect: y
+// expect: 7
+
+// @split
+fn f() {
+    defer { say a = "outer"; print(a); }
+    say q = 1;
+    {
+        defer { say b = "inner"; print(b); }
+        say w = 2;
+        return q + w;
+    }
+}
+print(f()); // expect: inner
+// expect: outer
+// expect: 3

@@ -1,49 +1,24 @@
-//! Tail-call threaded dispatch.
+//! Tail-call threaded dispatch. Each op has a handler of its own, which ends by jumping through
+//! `HANDLERS` to the next op.
 
+// A handler is named after its opcode, as `op_LOAD_LOCAL`.
+#![allow(non_snake_case)]
+
+use super::calls::return_arity_matches;
+use crate::core::equality;
 use super::*;
 
-type R = Result<Vec<String>, anyhow::Error>;
+type R = Result<(), anyhow::Error>;
 
-/// Read one operand byte, advancing the local cursor.
-macro_rules! rb {
+macro_rules! read_u8 {
     ($ip:ident) => {{ let b = unsafe { *$ip }; $ip = unsafe { $ip.add(1) }; b }}
 }
 
-/// Read a `u16` operand, advancing the local cursor.
-macro_rules! rs {
+macro_rules! read_u16 {
     ($ip:ident) => {{
         let lo = unsafe { *$ip }; $ip = unsafe { $ip.add(1) };
         let hi = unsafe { *$ip }; $ip = unsafe { $ip.add(1) };
         as_short!(lo, hi)
-    }}
-}
-
-/// Push onto the stack top. Every unbounded growth of the value stack runs through here, so this
-/// is where the stack's limit is enforced.
-macro_rules! push {
-    ($vm:ident, $ip:ident, $top:ident, $v:expr) => {{
-        let v = $v;
-        if $top >= $vm.stack.end() { return overflowed($vm, $ip, $top); }
-        unsafe { *$top = v; }
-        $top = unsafe { $top.add(1) };
-    }}
-}
-
-/// Reports a value-stack overflow.
-#[cold]
-#[inline(never)]
-fn overflowed(vm: &mut Vm, ip: *const OpCode, top: *mut Value) -> R {
-    vm.stack.set_top(top);
-    vm.ip = ip;
-    Err(vm.stack_overflow())
-}
-
-/// Pop from the stack top.
-macro_rules! pop {
-    ($vm:ident, $top:ident) => {{
-        $top = unsafe { $top.sub(1) };
-        if $top < $vm.stack.borrowed_end() { $vm.stack.prune_borrowed($top); }
-        unsafe { *$top }
     }}
 }
 
@@ -52,495 +27,758 @@ macro_rules! peek {
     ($top:ident, $n:expr) => { unsafe { *$top.sub($n + 1) } }
 }
 
-/// Reads the opcode at `ip` and tail-calls its handler.
-pub(super) fn dispatch(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let op = unsafe { *ip };
-    let ip = unsafe { ip.add(1) };
-    match op {
-        opcode::LOAD_LOCAL => become load_local(vm, ip, top, base),
-        opcode::STORE_LOCAL => become store_local(vm, ip, top, base),
-        opcode::STORE_LOCAL_POP => become store_local_pop(vm, ip, top, base),
-        opcode::LOAD_UPVALUE => become load_upvalue(vm, ip, top, base),
-        opcode::STORE_UPVALUE => become store_upvalue(vm, ip, top, base),
-        opcode::STORE_UPVALUE_POP => become store_upvalue_pop(vm, ip, top, base),
-        opcode::PUSH_CONSTANT => become push_constant(vm, ip, top, base),
-        opcode::PUSH_NULL => become push_null(vm, ip, top, base),
-        opcode::PUSH_TRUE => become push_true(vm, ip, top, base),
-        opcode::PUSH_FALSE => become push_false(vm, ip, top, base),
-        opcode::POP => become pop_op(vm, ip, top, base),
-        opcode::JUMP => become jump(vm, ip, top, base),
-        opcode::JUMP_IF_FALSE => become jump_if_false(vm, ip, top, base),
-        opcode::JUMP_IF_GE => become jump_if_ge(vm, ip, top, base),
-        opcode::JUMP_IF_GT => become jump_if_gt(vm, ip, top, base),
-        opcode::JUMP_IF_LE => become jump_if_le(vm, ip, top, base),
-        opcode::JUMP_IF_LT => become jump_if_lt(vm, ip, top, base),
-        opcode::JUMP_IF_GE_LOCAL_CONST => become jump_if_ge_lc(vm, ip, top, base),
-        opcode::JUMP_IF_GT_LOCAL_CONST => become jump_if_gt_lc(vm, ip, top, base),
-        opcode::JUMP_IF_LE_LOCAL_CONST => become jump_if_le_lc(vm, ip, top, base),
-        opcode::JUMP_IF_LT_LOCAL_CONST => become jump_if_lt_lc(vm, ip, top, base),
-        opcode::JUMP_IF_EQ => become jump_if_eq(vm, ip, top, base),
-        opcode::JUMP_IF_NEQ => become jump_if_neq(vm, ip, top, base),
-        opcode::STORE_LOCAL_ADD_LOCAL_LOCAL => become store_local_add(vm, ip, top, base),
-        opcode::ADD_LOCAL_CONST => become add_local_const(vm, ip, top, base),
-        opcode::ADD_CONST_LOCAL => become add_const_local(vm, ip, top, base),
-        opcode::INC_LOCAL => become inc_local(vm, ip, top, base),
-        opcode::DEC_LOCAL => become dec_local(vm, ip, top, base),
-        opcode::ADD => become add(vm, ip, top, base),
-        opcode::SUB_LOCAL_CONST => become sub_local_const(vm, ip, top, base),
-        opcode::SUB_CONST_LOCAL => become sub_const_local(vm, ip, top, base),
-        opcode::SUBTRACT => become subtract(vm, ip, top, base),
-        opcode::MULTIPLY => become multiply(vm, ip, top, base),
-        opcode::DIVIDE => become divide(vm, ip, top, base),
-        opcode::CALL => become call(vm, ip, top, base),
-        opcode::RETURN => become ret(vm, ip, top, base),
-        opcode::HALT => become halt(vm, ip, top, base),
-        opcode::NOT => become not(vm, ip, top, base),
-        opcode::DUP => become dup(vm, ip, top, base),
-        _ => become cold(vm, ip, top, base),
-    }
+macro_rules! pop {
+    ($top:ident) => {{
+        $top = unsafe { $top.sub(1) };
+        unsafe { *$top }
+    }}
 }
 
-/// Less common opcodes.
-fn cold(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R {
-    let op = unsafe { *ip.sub(1) };
-    vm.stack.set_top(top);
-    vm.ip = ip;
-    match op {
-        opcode::CONSTRUCT => vm.op_construct()?,
-        opcode::CALL_MUT => vm.op_call_mut()?,
-        opcode::RETURN_FAC => vm.op_return_factory()?,
-        opcode::THROW => vm.op_throw()?,
-        opcode::PUSH_TRY => vm.op_push_try(),
-        opcode::POP_TRY => vm.op_pop_try(),
-        opcode::JUMP_IF_FALSE_OR_POP => vm.op_jump_if_false_or_pop(),
-        opcode::JUMP_IF_TRUE_OR_POP => vm.op_jump_if_true_or_pop(),
-        opcode::JUMP_IF_NOT_NULL_OR_POP => vm.op_jump_if_not_null_or_pop(),
-        opcode::JUMP_IF_NULL => vm.op_jump_if_null(),
-        opcode::JUMP_IF_CLEAN => vm.op_jump_if_clean(),
-        opcode::JUMP_IF_BAD => vm.op_jump_if_bad(),
-        opcode::JUMP_IF_IS => vm.op_jump_if_is(),
-        opcode::ASSERT_NON_NULL => vm.op_assert_non_null()?,
-        opcode::ASSERT_IMMUTABLE => vm.op_assert_immutable()?,
-        opcode::STASH_ROOT => vm.op_stash_root(),
-        opcode::BARRIER_GUARD => vm.op_barrier_guard()?,
-        opcode::ASSERT_NO_RETAIN => vm.op_assert_no_retain()?,
-        opcode::TRANSFER_WRITE_OWNERSHIP => vm.op_transfer_write_ownership()?,
-        opcode::TRANSFER_WRITE_OWNERSHIP_UP => vm.op_transfer_write_ownership_up()?,
-        opcode::TRANSFER_WRITE_OWNERSHIP_AT => vm.op_transfer_write_ownership_at()?,
-        opcode::RELEASE_WRITE_OWNERSHIP => vm.op_release_write_ownership(),
-        opcode::POP_SCOPE => vm.op_pop_scope(),
-        opcode::CLOSE_UPVALUE => vm.op_close_upvalue(),
-        opcode::CLOSE_SLOT_UPVALUE => vm.op_close_slot_upvalue(),
-        opcode::ARRAY => vm.op_array()?,
-        opcode::DICT => vm.op_dict()?,
-        opcode::MUT => vm.op_mut(),
-        opcode::SEAL_CHECK => vm.op_seal_check()?,
-        opcode::PUSH_CLOSURE => vm.op_push_closure()?,
-        opcode::PUSH_TYPE => vm.op_push_type(),
-        opcode::BUILD_TYPE => vm.op_build_type()?,
-        opcode::LOAD_GLOBAL => vm.op_load_global()?,
-        opcode::INVOKE => vm.op_invoke()?,
-        opcode::INVOKE_THIS => vm.op_invoke_this()?,
-        opcode::GET_INDEX => vm.op_get_index()?,
-        opcode::SET_INDEX => vm.op_set_index()?,
-        opcode::GET_INDEX_OR_NULL => vm.op_get_index_or_null(),
-        opcode::GET_PROPERTY => vm.op_get_property()?,
-        opcode::SET_PROPERTY => vm.op_set_property()?,
-        opcode::GET_FIELD => vm.op_get_field()?,
-        opcode::SET_FIELD => vm.op_set_field()?,
-        opcode::SET_FIELD_POP => vm.op_set_field_pop()?,
-        opcode::NEGATE => vm.op_negate()?,
-        opcode::LEFT_SHIFT => vm.op_left_shift()?,
-        opcode::RIGHT_SHIFT => vm.op_right_shift()?,
-        opcode::BIT_AND => vm.op_bit_and()?,
-        opcode::BIT_OR => vm.op_bit_or()?,
-        opcode::BIT_XOR => vm.op_bit_xor()?,
-        opcode::BIT_NOT => vm.op_bit_not()?,
-        opcode::EQUAL => vm.op_equal()?,
-        opcode::NOT_EQUAL => vm.op_not_equal()?,
-        opcode::LESS_THAN => vm.op_less_than()?,
-        opcode::LESS_THAN_EQUAL => vm.op_less_than_equal()?,
-        opcode::GREATER_THAN => vm.op_greater_than()?,
-        opcode::GREATER_THAN_EQUAL => vm.op_greater_than_equal()?,
-        opcode::IS => vm.op_is(),
-        opcode::HAS_MEMBER => vm.op_has_member(),
-        opcode::MEMBER_ADMITS => vm.op_member_admits(),
-        opcode::IS_SHAPED => vm.op_is_shaped(),
-        opcode::ARRAY_LEN => vm.op_array_len(),
-        opcode::ARRAY_MIDDLE => vm.op_array_middle(),
-        opcode::ARRAY_ELEM => vm.op_array_elem(),
-        _ => unsafe { std::hint::unreachable_unchecked() }
-    }
-    let top = vm.stack.top();
-    let base = unsafe { (*vm.frames.top()).stack_start };
-    become dispatch(vm, vm.ip, top, base)
+macro_rules! push {
+    ($vm:ident, $ip:ident, $top:ident, $stack_start:ident, $v:expr) => {{
+        let v = $v;
+        if $top >= $vm.stack.end() { become stack_full($vm, $ip, $top, $stack_start); }
+        unsafe { *$top = v; }
+        $top = unsafe { $top.add(1) };
+    }}
 }
 
-fn load_local(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut ip = ip;
-    let mut top = top;
-    let idx = rb!(ip) as usize;
-    let from = unsafe { base.add(idx) };
-    debug_assert!(!vm.stack.is_borrowed(top), "a push destination carried a stale borrow mark");
-    if vm.stack.is_borrowed(from) {
-        vm.stack.mark_borrowed(top, vm.stack.borrow_origin(from));
-        if vm.forced {
-            vm.carry_watched_mark(from, top);
+macro_rules! constant {
+    ($vm:ident, $idx:expr) => {{
+        let idx = $idx;
+        debug_assert!(idx < $vm.chunk.constants.len(), "constant {idx} is outside the pool");
+        unsafe { *$vm.chunk.constants.get_unchecked(idx) }
+    }}
+}
+
+macro_rules! next {
+    ($vm:expr, $ip:expr, $top:expr, $stack_start:expr) => {{
+        let ip: *const OpCode = $ip;
+        let op = unsafe { *ip } as usize;
+        become OP_HANDLERS[op]($vm, unsafe { ip.add(1) }, $top, $stack_start)
+    }}
+}
+
+/// Continues at code `offset` when `cond` holds, and at `ip` otherwise.
+macro_rules! jump_if {
+    ($vm:expr, $cond:expr, $offset:expr, $ip:expr, $top:expr, $stack_start:expr) => {{
+        // Branch into different code based on the condition. If we instead just picked
+        // the target ip based on the condition and then continued execution, LLVM would
+        // generate a conditional move instead of a branch. Waiting on the comparison
+        // turns out to be slower than waiting on the branch predictor.
+        if $cond {
+            // `next!` uses `become` so the code won't continue below this if.
+            next!($vm, unsafe { $vm.chunk.code.as_ptr().add($offset) }, $top, $stack_start);
+        }
+        next!($vm, $ip, $top, $stack_start)
+    }}
+}
+
+type Handler = fn(&mut Vm, *const OpCode, *mut Value, *mut Value) -> R;
+
+/// Runs the code.
+#[inline(never)]
+pub(super) fn dispatch(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    next!(vm, ip, top, stack_start)
+}
+
+macro_rules! vm_op {
+    ($fn:ident, $vm:ident => $body:expr) => {
+        #[inline(never)]
+        fn $fn($vm: &mut Vm, ip: *const OpCode, top: *mut Value, _stack_start: *mut Value) -> R {
+            $vm.stack.set_top(top);
+            $vm.ip = ip;
+            $body;
+            let top = $vm.stack.top();
+            let stack_start = unsafe { (*$vm.frames.top()).stack_start };
+            next!($vm, $vm.ip, top, stack_start)
         }
     }
-    push!(vm, ip, top, unsafe { *from });
-    become dispatch(vm, ip, top, base)
 }
 
-fn store_local(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut ip = ip;
-    let idx = rb!(ip) as usize;
-    let value = peek!(top, 0);
-    vm.carry_borrowed(unsafe { top.sub(1) }, unsafe { base.add(idx) });
-    let accepted = vm.accept_slot_write(base, idx as u8, ip, top, value)?;
-    vm.write_slot(accepted);
-    become dispatch(vm, ip, top, base)
-}
+/// Lists every op's handler. A handler is named after its op, so `LOAD_LOCAL` runs in
+/// `op_LOAD_LOCAL`. A `vm_backed` op's handler is generated.
+macro_rules! handlers {
+    (
+        hot { $( $hot_op:ident, )* }
+        vm_backed($vm:ident) { $( $vm_op:ident => $body:expr, )* }
+    ) => {
+        $( vm_op!(${concat(op_, $vm_op)}, $vm => $body); )*
 
-fn store_local_pop(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut ip = ip;
-    let mut top = top;
-    let idx = rb!(ip) as usize;
-    let into = unsafe { base.add(idx) };
-    vm.carry_borrowed(unsafe { top.sub(1) }, into);
-    let value = pop!(vm, top);
-    let accepted = vm.accept_slot_write(base, idx as u8, ip, top, value)?;
-    vm.write_slot(accepted);
-    become dispatch(vm, ip, top, base)
-}
-
-fn load_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut ip = ip;
-    let mut top = top;
-    let idx = rb!(ip) as usize;
-    let upvalue = vm.get_upvalue(idx);
-    push!(vm, ip, top, unsafe { *(*upvalue).location });
-    become dispatch(vm, ip, top, base)
-}
-
-fn store_upvalue(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut ip = ip;
-    let idx = rb!(ip) as usize;
-    let slot = unsafe { top.sub(1) };
-    let value = peek!(top, 0);
-    // A captured variable outlives the call that borrowed the value, so it may not be stored into one.
-    if vm.slot_carries_borrow(slot, value) {
-        vm.stack.set_top(top);
-        vm.ip = ip;
-        vm.ensure_borrowed_does_not_persist(value, slot, crate::middle::ir::WRITE_ROOT_UPVALUE, idx as u8)?;
+        const OP_HANDLER_ROWS: &[(OpCode, Handler)] = &[
+            $( (opcode::$hot_op, ${concat(op_, $hot_op)} as Handler), )*
+            $( (opcode::$vm_op, ${concat(op_, $vm_op)} as Handler), )*
+        ];
     }
-    // The slot written belongs to an enclosing frame, so the value outlives this one and the
-    // claim over it moves there rather than dying with this frame.
-    vm.stack.set_top(top);
-    vm.ip = ip;
-    vm.hand_write_ownership_to_upvalue(idx, value)?;
-    vm.store_through_upvalue(idx, value)?;
-    become dispatch(vm, ip, top, base)
 }
 
-fn store_upvalue_pop(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut ip = ip;
-    let mut top = top;
-    let idx = rb!(ip) as usize;
-    // Ask before the pop, which would prune the mark this reads.
-    let slot = unsafe { top.sub(1) };
-    let value = peek!(top, 0);
-    if vm.slot_carries_borrow(slot, value) {
-        vm.stack.set_top(top);
-        vm.ip = ip;
-        vm.ensure_borrowed_does_not_persist(value, slot, crate::middle::ir::WRITE_ROOT_UPVALUE, idx as u8)?;
+handlers! {
+    hot {
+        PUSH_CONSTANT,
+        PUSH_NULL,
+        PUSH_TRUE,
+        PUSH_FALSE,
+        POP,
+        DUP,
+        NOT,
+
+        LOAD_LOCAL,
+        LOAD_LOCAL_FOR_WRITE,
+        STORE_LOCAL,
+        STORE_LOCAL_FRESH,
+        STORE_LOCAL_FRESH_POP,
+        STORE_LOCAL_POP,
+        LOAD_CAPTURE,
+        SHARE_LOCAL,
+
+        ADD,
+        SUBTRACT,
+        MULTIPLY,
+        DIVIDE,
+        ADD_LOCAL_CONST,
+        ADD_CONST_LOCAL,
+        SUB_LOCAL_CONST,
+        SUB_CONST_LOCAL,
+        INC_LOCAL,
+        DEC_LOCAL,
+        STORE_LOCAL_ADD_LOCAL_LOCAL,
+
+        JUMP,
+        JUMP_IF_FALSE,
+        JUMP_IF_GE,
+        JUMP_IF_GT,
+        JUMP_IF_LE,
+        JUMP_IF_LT,
+        JUMP_IF_GE_LOCAL_CONST,
+        JUMP_IF_GT_LOCAL_CONST,
+        JUMP_IF_LE_LOCAL_CONST,
+        JUMP_IF_LT_LOCAL_CONST,
+        JUMP_IF_EQ,
+        JUMP_IF_NEQ,
+
+        CALL,
+        RETURN,
+        RETURN_SHARED,
+        HALT,
     }
-    let _ = pop!(vm, top);
-    vm.stack.set_top(top);
-    vm.ip = ip;
-    vm.hand_write_ownership_to_upvalue(idx, value)?;
-    vm.store_through_upvalue(idx, value)?;
-    become dispatch(vm, ip, top, base)
+    vm_backed(vm) {
+        CONSTRUCT => vm.op_construct()?,
+        TAIL_CALL => vm.op_tail_call()?,
+        RETURN_FAC => vm.op_return_factory()?,
+        THROW => vm.op_throw()?,
+        JUMP_IF_FALSE_OR_POP => vm.op_jump_if_false_or_pop(),
+        JUMP_IF_TRUE_OR_POP => vm.op_jump_if_true_or_pop(),
+        JUMP_IF_CLEAN_OR_POP => vm.op_jump_if_clean_or_pop(),
+        JUMP_IF_CLEAN => vm.op_jump_if_clean(),
+        JUMP_IF_BAD => vm.op_jump_if_bad(),
+        JUMP_IF_IS => vm.op_jump_if_is(),
+        ASSERT_NON_NULL => vm.op_assert_non_null()?,
+        DUP2 => vm.op_dup2(),
+        BARRIER_GUARD => vm.op_barrier_guard()?,
+        POP_SCOPE => vm.op_pop_scope(),
+        PUSH_SLOT_ANCHOR => vm.op_push_slot_anchor(),
+        FORM_ANCHOR_PATH => vm.op_form_anchor_path()?,
+        LOAD_ANCHOR => vm.op_load_anchor()?,
+        STORE_ANCHOR => vm.op_store_anchor()?,
+        STORE_TEMP_POP => vm.op_store_temp_pop(),
+        ARRAY => vm.op_array()?,
+        DICT => vm.op_dict()?,
+        BUILD_CLOSURE => vm.build_closure(true)?,
+        PUSH_TYPE => vm.op_push_type()?,
+        BUILD_TYPE => vm.build_type(true)?,
+        BUILD_CLOSURE_UNBOUND => vm.build_closure(false)?,
+        BUILD_TYPE_UNBOUND => vm.build_type(false)?,
+        PUSH_UNASSIGNED => vm.push_checked(Value::unassigned())?,
+        LOAD_GLOBAL => vm.op_load_global()?,
+        INVOKE => vm.op_invoke()?,
+        INVOKE_THIS => vm.op_invoke_this()?,
+        GET_INDEX => vm.op_get_index()?,
+        LOAD_STEP_FOR_WRITE => vm.op_load_step_for_write()?,
+        LOAD_ANCHOR_FOR_WRITE => vm.op_load_anchor_for_write()?,
+        BIND_CLOSURE_CAPTURES => vm.op_bind_captures(),
+        BIND_TYPE_CAPTURES => vm.op_bind_type_captures(),
+        COPY_OBJECT => vm.op_copy_object(),
+        GET_INDEX_OR_NULL => vm.op_get_index_or_null()?,
+        GET_PROPERTY => vm.op_get_property()?,
+        GET_MEMBER => vm.op_get_member()?,
+        SET_MEMBER => vm.op_set_member()?,
+        CHECK_ANCHOR_ROOT => vm.op_check_anchor_root()?,
+        RECORD_ANCHOR_ROOT => vm.op_record_anchor_root()?,
+        COPY_ANCHOR_OUT => vm.op_copy_anchor_out(),
+        COPY_ANCHOR_IN => vm.op_copy_anchor_in()?,
+        GET_FIELD => vm.op_get_field()?,
+        SET_FIELD => vm.op_set_field()?,
+        SET_FIELD_POP => vm.op_set_field_pop()?,
+        NEGATE => vm.op_negate()?,
+        LEFT_SHIFT => vm.op_left_shift()?,
+        RIGHT_SHIFT => vm.op_right_shift()?,
+        BIT_AND => vm.op_bit_and()?,
+        BIT_OR => vm.op_bit_or()?,
+        BIT_XOR => vm.op_bit_xor()?,
+        BIT_NOT => vm.op_bit_not()?,
+        EQUAL => vm.op_equal()?,
+        NOT_EQUAL => vm.op_not_equal()?,
+        LESS_THAN => vm.op_less_than()?,
+        LESS_THAN_EQUAL => vm.op_less_than_equal()?,
+        GREATER_THAN => vm.op_greater_than()?,
+        GREATER_THAN_EQUAL => vm.op_greater_than_equal()?,
+        IS => vm.op_is(),
+        HAS_MEMBER => vm.op_has_member(),
+        MEMBER_ADMITS => vm.op_member_admits(),
+        IS_SHAPED => vm.op_is_shaped(),
+        IS_DICT => vm.op_is_dict(),
+        LOAD_REF => vm.op_load_ref()?,
+        LOAD_REF_FOR_WRITE => vm.op_load_ref_for_write()?,
+        STORE_REF => vm.op_store_ref::<false>()?,
+        STORE_REF_POP => vm.op_store_ref::<true>()?,
+        SET_INDEX => vm.op_set_index()?,
+        SET_PROPERTY => vm.op_set_property()?,
+        DICT_REST => vm.op_dict_rest(false)?,
+        DICT_REST_VALUES => vm.op_dict_rest(true)?,
+        ARRAY_LEN => vm.op_array_len(),
+        ARRAY_MIDDLE => vm.op_array_middle(),
+        ARRAY_ELEM => vm.op_array_elem(),
+    }
 }
 
-fn push_constant(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
+const fn handler_table(rows: &[(OpCode, Handler)]) -> [Handler; 256] {
+    let mut table = [unknown_op as Handler; 256];
+    let mut filled = [false; 256];
+
+    let mut i = 0;
+    while i < rows.len() {
+        let (op, handler) = rows[i];
+        assert!(!filled[op as usize], "an opcode has two handlers");
+        table[op as usize] = handler;
+        filled[op as usize] = true;
+        i += 1;
+    }
+
+    let mut op = 0;
+    while op < opcode::COUNT {
+        assert!(filled[op], "an opcode should have a handler");
+        op += 1;
+    }
+
+    table
+}
+
+/// Each opcode's handler.
+static OP_HANDLERS: [Handler; 256] = handler_table(OP_HANDLER_ROWS);
+
+/// Fills the table slots of opcodes that do not exist.
+fn unknown_op(_vm: &mut Vm, ip: *const OpCode, _top: *mut Value, _stack_start: *mut Value) -> R {
+    unreachable!("no handler for opcode {}", unsafe { *ip.sub(1) })
+}
+
+fn op_PUSH_CONSTANT(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
     let mut ip = ip;
     let mut top = top;
-    let idx = rb!(ip) as usize;
-    push!(vm, ip, top, vm.chunk.constants[idx]);
-    become dispatch(vm, ip, top, base)
+    let idx = read_u8!(ip) as usize;
+    push!(vm, ip, top, stack_start, constant!(vm, idx));
+    next!(vm, ip, top, stack_start)
 }
 
-fn push_null(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
+fn op_PUSH_NULL(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
     let mut top = top;
-    push!(vm, ip, top, Value::NULL);
-    become dispatch(vm, ip, top, base)
+    push!(vm, ip, top, stack_start, Value::NULL);
+    next!(vm, ip, top, stack_start)
 }
 
-fn push_true(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
+fn op_PUSH_TRUE(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
     let mut top = top;
-    push!(vm, ip, top, Value::TRUE);
-    become dispatch(vm, ip, top, base)
+    push!(vm, ip, top, stack_start, Value::TRUE);
+    next!(vm, ip, top, stack_start)
 }
 
-fn push_false(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
+fn op_PUSH_FALSE(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
     let mut top = top;
-    push!(vm, ip, top, Value::FALSE);
-    become dispatch(vm, ip, top, base)
+    push!(vm, ip, top, stack_start, Value::FALSE);
+    next!(vm, ip, top, stack_start)
 }
 
-fn pop_op(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
+fn op_POP(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
     let top = unsafe { top.sub(1) };
-    vm.stack.prune_borrowed(top);
-    become dispatch(vm, ip, top, base)
+    next!(vm, ip, top, stack_start)
 }
 
-fn jump(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let lo = unsafe { *ip };
-    let hi = unsafe { *ip.add(1) };
-    let offset = as_short!(lo, hi) as usize;
-    become dispatch(vm, unsafe { vm.chunk.code.as_ptr().add(offset) }, top, base)
+fn op_DUP(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let mut top = top;
+    push!(vm, ip, top, stack_start, peek!(top, 0));
+    next!(vm, ip, top, stack_start)
 }
 
-fn jump_if_false(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
+fn op_NOT(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let v = peek!(top, 0);
+    unsafe { *top.sub(1) = Value::from(v.is_falsy()) };
+    next!(vm, ip, top, stack_start)
+}
+
+fn op_LOAD_LOCAL(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
     let mut ip = ip;
     let mut top = top;
-    let offset = rs!(ip) as usize;
-    let value = pop!(vm, top);
-    if value.is_falsy() {
-        become dispatch(vm, unsafe { vm.chunk.code.as_ptr().add(offset) }, top, base);
-    }
-    become dispatch(vm, ip, top, base)
+    let idx = read_u8!(ip) as usize;
+    let from = unsafe { stack_start.add(idx) };
+    debug_assert!(!unsafe { *from }.is_unassigned(), "LOAD_LOCAL read an unassigned slot the check pass should have refused");
+    push!(vm, ip, top, stack_start, unsafe { *from });
+    next!(vm, ip, top, stack_start)
 }
 
-macro_rules! cmp_jump_fn {
-    ($fn:ident, $op:tt, $token:literal) => {
-        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-            let mut ip = ip;
-            let mut top = top;
-            let offset = rs!(ip) as usize;
-            let b = pop!(vm, top);
-            let a = pop!(vm, top);
+fn op_LOAD_LOCAL_FOR_WRITE(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let start = ip;
+    let mut ip = ip;
+    let mut top = top;
+    let idx = read_u8!(ip) as usize;
+    let value = unsafe { *stack_start.add(idx) };
+    debug_assert!(!value.is_unassigned(), "LOAD_LOCAL_FOR_WRITE read an unassigned slot the check pass should have refused");
+    if objects::is_shared(value) {
+        become load_local_forking(vm, start, top, stack_start);
+    }
+    push!(vm, ip, top, stack_start, value);
+    next!(vm, ip, top, stack_start)
+}
+
+macro_rules! store_local_fn {
+    ($fn:ident, $pop:literal, $fresh:literal) => {
+        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+            let value = peek!(top, 0);
+            if objects::needs_accepts_check(value) || !$fresh && value.is_object() {
+                become store_local_checked::<$pop, $fresh>(vm, ip, top, stack_start);
+            }
+            unsafe { *stack_start.add(*ip as usize) = value };
+            next!(vm, unsafe { ip.add(1) }, unsafe { top.sub($pop as usize) }, stack_start)
+        }
+    }
+}
+
+store_local_fn!(op_STORE_LOCAL, false, false);
+store_local_fn!(op_STORE_LOCAL_FRESH, false, true);
+store_local_fn!(op_STORE_LOCAL_FRESH_POP, true, true);
+store_local_fn!(op_STORE_LOCAL_POP, true, false);
+
+fn op_LOAD_CAPTURE(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let mut ip = ip;
+    let mut top = top;
+    let idx = read_u8!(ip) as usize;
+    debug_assert!(!vm.capture(idx).is_unassigned(), "LOAD_CAPTURE read an unbound capture the check pass should have refused");
+    push!(vm, ip, top, stack_start, vm.capture(idx));
+    next!(vm, ip, top, stack_start)
+}
+
+fn op_SHARE_LOCAL(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let start = ip;
+    let mut ip = ip;
+    let idx = read_u8!(ip) as usize;
+    if unsafe { *stack_start.add(idx) }.is_object() {
+        become share_local_object(vm, start, top, stack_start);
+    }
+    next!(vm, ip, top, stack_start)
+}
+
+macro_rules! num_binop_fn {
+    ($fn:ident, $op:tt, $vm_op:ident) => {
+        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+            let b = peek!(top, 0);
+            let a = peek!(top, 1);
             if !a.is_number() || !b.is_number() {
-                vm.stack.set_top(top);
-                vm.ip = ip;
-                vm.error(format!("Operator '{}' cannot be applied to operands {} and {}", $token, a, b))?;
-            } else if a.as_number() $op b.as_number() {
-                ip = unsafe { vm.chunk.code.as_ptr().add(offset) };
+                become ${concat($fn, _slow)}(vm, ip, top, stack_start);
             }
-            become dispatch(vm, ip, top, base)
+            // Two operands come off and one result goes on, so the stack cannot overflow.
+            let top = unsafe { top.sub(1) };
+            unsafe { *top.sub(1) = Value::from(a.as_number() $op b.as_number()) };
+            next!(vm, ip, top, stack_start)
         }
+
+        // A string `+` takes this path, so it stays apart from the shared `arith_slow`.
+        vm_op!(${concat($fn, _slow)}, vm => vm.$vm_op()?);
     }
 }
 
-cmp_jump_fn!(jump_if_ge, >=, "<");
-cmp_jump_fn!(jump_if_gt, >, "<=");
-cmp_jump_fn!(jump_if_le, <=, ">");
-cmp_jump_fn!(jump_if_lt, <, ">=");
-
-/// Jump if `local <op> const`
-macro_rules! cmp_jump_lc_fn {
-    ($fn:ident, $op:tt, $token:literal) => {
-        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-            let mut ip = ip;
-            let offset = rs!(ip) as usize;
-            let a_idx = rb!(ip) as usize;
-            let b_idx = rb!(ip) as usize;
-            let a = unsafe { *base.add(a_idx) };
-            let b = vm.chunk.constants[b_idx];
-            if !a.is_number() {
-                vm.stack.set_top(top);
-                vm.ip = ip;
-                vm.error(format!("Operator '{}' cannot be applied to operands {} and {}", $token, a, b))?;
-            } else if a.as_number() $op b.as_number() {
-                ip = unsafe { vm.chunk.code.as_ptr().add(offset) };
-            }
-            become dispatch(vm, ip, top, base)
-        }
-    }
-}
-
-cmp_jump_lc_fn!(jump_if_ge_lc, >=, "<");
-cmp_jump_lc_fn!(jump_if_gt_lc, >, "<=");
-cmp_jump_lc_fn!(jump_if_le_lc, <=, ">");
-cmp_jump_lc_fn!(jump_if_lt_lc, <, ">=");
-
-fn jump_if_eq(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut ip = ip;
-    let mut top = top;
-    let offset = rs!(ip) as usize;
-    let b = pop!(vm, top);
-    let a = pop!(vm, top);
-    if a.value_eq(b) {
-        ip = unsafe { vm.chunk.code.as_ptr().add(offset) };
-    }
-    become dispatch(vm, ip, top, base)
-}
-
-fn jump_if_neq(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut ip = ip;
-    let mut top = top;
-    let offset = rs!(ip) as usize;
-    let b = pop!(vm, top);
-    let a = pop!(vm, top);
-    if !a.value_eq(b) {
-        ip = unsafe { vm.chunk.code.as_ptr().add(offset) };
-    }
-    become dispatch(vm, ip, top, base)
-}
-
-fn store_local_add(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut ip = ip;
-    let mut top = top;
-    let dst = rb!(ip) as usize;
-    let a_idx = rb!(ip) as usize;
-    let b_idx = rb!(ip) as usize;
-    let a = unsafe { *base.add(a_idx) };
-    let b = unsafe { *base.add(b_idx) };
-    if a.is_number() && b.is_number() {
-        unsafe { *base.add(dst) = Value::from(a.as_number() + b.as_number()) };
-    } else {
-        push!(vm, ip, top, a);
-        push!(vm, ip, top, b);
-        vm.stack.set_top(top);
-        vm.ip = ip;
-        vm.op_add()?;
-        top = vm.stack.top();
-        let result = pop!(vm, top);
-        unsafe { *base.add(dst) = result };
-    }
-    become dispatch(vm, ip, top, base)
-}
-
-/// In-place `local = local <+/-> const`.
-macro_rules! inc_dec_fn {
-    ($fn:ident, $op:tt, $slow:ident) => {
-        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-            let mut ip = ip;
-            let mut top = top;
-            let l = rb!(ip) as usize;
-            let c = rb!(ip) as usize;
-            let a = unsafe { *base.add(l) };
-            let b = vm.chunk.constants[c];
-            if a.is_number() && b.is_number() {
-                unsafe { *base.add(l) = Value::from(a.as_number() $op b.as_number()) };
-            } else {
-                push!(vm, ip, top, a);
-                push!(vm, ip, top, b);
-                vm.stack.set_top(top);
-                vm.ip = ip;
-                vm.$slow()?;
-                top = vm.stack.top();
-                let result = pop!(vm, top);
-                unsafe { *base.add(l) = result };
-            }
-            become dispatch(vm, ip, top, base)
-        }
-    }
-}
-
-inc_dec_fn!(inc_local, +, op_add);
-inc_dec_fn!(dec_local, -, op_subtract);
+num_binop_fn!(op_ADD, +, op_add);
+num_binop_fn!(op_SUBTRACT, -, op_subtract);
+num_binop_fn!(op_MULTIPLY, *, op_multiply);
+num_binop_fn!(op_DIVIDE, /, op_divide);
 
 /// Fused `local <op> const`.
 macro_rules! fused_lc_fn {
-    ($fn:ident, $op:tt, $slow:ident) => {
-        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
+    ($fn:ident, $op:tt) => {
+        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+            let start = ip;
             let mut ip = ip;
             let mut top = top;
-            let a_idx = rb!(ip) as usize;
-            let b_idx = rb!(ip) as usize;
-            let a = unsafe { *base.add(a_idx) };
-            let b = vm.chunk.constants[b_idx];
-            if a.is_number() && b.is_number() {
-                push!(vm, ip, top, Value::from(a.as_number() $op b.as_number()));
-            } else {
-                push!(vm, ip, top, a);
-                push!(vm, ip, top, b);
-                vm.stack.set_top(top);
-                vm.ip = ip;
-                vm.$slow()?;
-                top = vm.stack.top();
+            let a_idx = read_u8!(ip) as usize;
+            let b_idx = read_u8!(ip) as usize;
+            let a = unsafe { *stack_start.add(a_idx) };
+            let b = constant!(vm, b_idx);
+            if !a.is_number() || !b.is_number() {
+                become arith_slow(vm, start, top, stack_start);
             }
-            become dispatch(vm, ip, top, base)
+            push!(vm, ip, top, stack_start, Value::from(a.as_number() $op b.as_number()));
+            next!(vm, ip, top, stack_start)
         }
     }
 }
 
 /// Fused `const <op> local`.
 macro_rules! fused_cl_fn {
-    ($fn:ident, $op:tt, $slow:ident) => {
-        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
+    ($fn:ident, $op:tt) => {
+        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+            let start = ip;
             let mut ip = ip;
             let mut top = top;
-            let a_idx = rb!(ip) as usize;
-            let b_idx = rb!(ip) as usize;
-            let a = vm.chunk.constants[a_idx];
-            let b = unsafe { *base.add(b_idx) };
-            if a.is_number() && b.is_number() {
-                push!(vm, ip, top, Value::from(a.as_number() $op b.as_number()));
-            } else {
-                push!(vm, ip, top, a);
-                push!(vm, ip, top, b);
-                vm.stack.set_top(top);
-                vm.ip = ip;
-                vm.$slow()?;
-                top = vm.stack.top();
+            let a_idx = read_u8!(ip) as usize;
+            let b_idx = read_u8!(ip) as usize;
+            let a = constant!(vm, a_idx);
+            let b = unsafe { *stack_start.add(b_idx) };
+            if !a.is_number() || !b.is_number() {
+                become arith_slow(vm, start, top, stack_start);
             }
-            become dispatch(vm, ip, top, base)
+            push!(vm, ip, top, stack_start, Value::from(a.as_number() $op b.as_number()));
+            next!(vm, ip, top, stack_start)
         }
     }
 }
 
-fused_lc_fn!(add_local_const, +, op_add);
-fused_cl_fn!(add_const_local, +, op_add);
-fused_lc_fn!(sub_local_const, -, op_subtract);
-fused_cl_fn!(sub_const_local, -, op_subtract);
+fused_lc_fn!(op_ADD_LOCAL_CONST, +);
+fused_cl_fn!(op_ADD_CONST_LOCAL, +);
+fused_lc_fn!(op_SUB_LOCAL_CONST, -);
+fused_cl_fn!(op_SUB_CONST_LOCAL, -);
 
-macro_rules! num_binop_fn {
-    ($fn:ident, $op:tt, $slow:ident) => {
-        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-            let mut top = top;
+/// In-place `local = local <+/-> const`.
+macro_rules! inc_dec_fn {
+    ($fn:ident, $op:tt) => {
+        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+            let start = ip;
+            let mut ip = ip;
+            let l = read_u8!(ip) as usize;
+            let c = read_u8!(ip) as usize;
+            let a = unsafe { *stack_start.add(l) };
+            let b = constant!(vm, c);
+            if !a.is_number() || !b.is_number() {
+                become arith_slow(vm, start, top, stack_start);
+            }
+            unsafe { *stack_start.add(l) = Value::from(a.as_number() $op b.as_number()) };
+            next!(vm, ip, top, stack_start)
+        }
+    }
+}
+
+inc_dec_fn!(op_INC_LOCAL, +);
+inc_dec_fn!(op_DEC_LOCAL, -);
+
+fn op_STORE_LOCAL_ADD_LOCAL_LOCAL(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let start = ip;
+    let mut ip = ip;
+    let dst = read_u8!(ip) as usize;
+    let a_idx = read_u8!(ip) as usize;
+    let b_idx = read_u8!(ip) as usize;
+    let a = unsafe { *stack_start.add(a_idx) };
+    let b = unsafe { *stack_start.add(b_idx) };
+    if !a.is_number() || !b.is_number() {
+        become arith_slow(vm, start, top, stack_start);
+    }
+    unsafe { *stack_start.add(dst) = Value::from(a.as_number() + b.as_number()) };
+    next!(vm, ip, top, stack_start)
+}
+
+fn op_JUMP(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let lo = unsafe { *ip };
+    let hi = unsafe { *ip.add(1) };
+    let offset = as_short!(lo, hi) as usize;
+    next!(vm, unsafe { vm.chunk.code.as_ptr().add(offset) }, top, stack_start)
+}
+
+fn op_JUMP_IF_FALSE(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let mut ip = ip;
+    let mut top = top;
+    let offset = read_u16!(ip) as usize;
+    let value = pop!(top);
+    jump_if!(vm, value.is_falsy(), offset, ip, top, stack_start)
+}
+
+macro_rules! cmp_jump_fn {
+    ($fn:ident, $op:tt) => {
+        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+            let start = ip;
+            let mut ip = ip;
+            let offset = read_u16!(ip) as usize;
             let b = peek!(top, 0);
             let a = peek!(top, 1);
-            if a.is_number() && b.is_number() {
-                top = unsafe { top.sub(2) };
-                vm.stack.prune_borrowed(top);
-                push!(vm, ip, top, Value::from(a.as_number() $op b.as_number()));
-            } else {
-                vm.stack.set_top(top);
-                vm.ip = ip;
-                vm.$slow()?;
-                top = vm.stack.top();
+            if !a.is_number() || !b.is_number() {
+                become compare_error(vm, start, top, stack_start);
             }
-            become dispatch(vm, ip, top, base)
+            jump_if!(vm, a.as_number() $op b.as_number(), offset, ip, unsafe { top.sub(2) }, stack_start)
         }
     }
 }
 
-num_binop_fn!(add, +, op_add);
-num_binop_fn!(subtract, -, op_subtract);
-num_binop_fn!(multiply, *, op_multiply);
-num_binop_fn!(divide, /, op_divide);
+cmp_jump_fn!(op_JUMP_IF_GE, >=);
+cmp_jump_fn!(op_JUMP_IF_GT, >);
+cmp_jump_fn!(op_JUMP_IF_LE, <=);
+cmp_jump_fn!(op_JUMP_IF_LT, <);
 
-#[inline]
-fn closure_call(value: Value, arg_count: usize) -> Option<(*mut ObjClosure, usize, u64, u64)> {
-    if value.is_callable() {
-        let object = value.as_object();
-        if object.tag() == objects::TAG_CLOSURE {
-            let ptr = object.as_closure_ptr();
-            let closure = unsafe { &*ptr };
-            if arg_count == closure.arity as usize {
-                return Some((ptr, closure.ip_start, closure.retain_mask, closure.needs_borrow_mark));
+/// Jump if `local <op> const`
+macro_rules! cmp_jump_lc_fn {
+    ($fn:ident, $op:tt) => {
+        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+            let start = ip;
+            let mut ip = ip;
+            let offset = read_u16!(ip) as usize;
+            let a_idx = read_u8!(ip) as usize;
+            let b_idx = read_u8!(ip) as usize;
+            let a = unsafe { *stack_start.add(a_idx) };
+            let b = constant!(vm, b_idx);
+            if !a.is_number() {
+                become compare_error(vm, start, top, stack_start);
             }
+            jump_if!(vm, a.as_number() $op b.as_number(), offset, ip, top, stack_start)
         }
     }
-    None
 }
 
-fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R {
+cmp_jump_lc_fn!(op_JUMP_IF_GE_LOCAL_CONST, >=);
+cmp_jump_lc_fn!(op_JUMP_IF_GT_LOCAL_CONST, >);
+cmp_jump_lc_fn!(op_JUMP_IF_LE_LOCAL_CONST, <=);
+cmp_jump_lc_fn!(op_JUMP_IF_LT_LOCAL_CONST, <);
+
+macro_rules! eq_jump_fn {
+    ($fn:ident, $jumps_when:expr) => {
+        fn $fn(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+            let start = ip;
+            let mut ip = ip;
+            let offset = read_u16!(ip) as usize;
+            let b = peek!(top, 0);
+            let a = peek!(top, 1);
+            let Some(equal) = equality::quick_eq(a, b) else {
+                become eq_jump_deep(vm, start, top, stack_start);
+            };
+            jump_if!(vm, equal == $jumps_when, offset, ip, unsafe { top.sub(2) }, stack_start)
+        }
+    }
+}
+
+eq_jump_fn!(op_JUMP_IF_EQ, true);
+eq_jump_fn!(op_JUMP_IF_NEQ, false);
+
+fn op_CALL(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let start = ip;
     let mut ip = ip;
-    let arg_count = rb!(ip) as usize;
+    let operand = read_u8!(ip);
+    let arg_count = read_u8!(ip) as usize;
+
+    if operand & ir::CALL_ARGS_SETTLED == 0 && arg_count != 0 {
+        become call_slow(vm, start, top, stack_start);
+    }
+
+    let value = peek!(top, arg_count);
+    let code_base = vm.chunk.code.as_ptr();
+    let site = unsafe { ip.offset_from(code_base) } as usize;
+    let cache = unsafe { *vm.call_cache.get_unchecked(site & (CALL_CACHE_SIZE - 1)) };
+
+    if cache.site != site || cache.callee != value || vm.frames.is_full() {
+        become call_slow(vm, start, top, stack_start);
+    }
+
+    let callee_stack_start = unsafe { top.sub(arg_count + 1) };
+    let generation = vm.take_frame_generation();
+    vm.frames.push(CallFrame::new(cache.closure, ip, callee_stack_start, generation));
+    next!(vm, unsafe { code_base.add(cache.ip_start) }, top, callee_stack_start)
+}
+
+fn op_RETURN(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    if !vm.tail_breadcrumbs.is_empty() {
+        become ret_releasing(vm, ip, top, stack_start);
+    }
+
+    // The top-level ends in HALT, so every RETURN has a caller frame to pop.
+    let frame = vm.frames.pop();
+    let (ip, top, caller_stack_start) = return_to_caller(vm, frame, top);
+    next!(vm, ip, top, caller_stack_start)
+}
+
+fn op_RETURN_SHARED(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    if unsafe { *top.sub(1) }.is_object() {
+        become ret_shared_object(vm, ip, top, stack_start);
+    }
+    become op_RETURN(vm, ip, top, stack_start)
+}
+
+/// Terminates the program.
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+fn op_HALT(vm: &mut Vm, _ip: *const OpCode, _top: *mut Value, _stack_start: *mut Value) -> R {
+    #[cfg(debug_assertions)]
+    vm.report_forks();
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn stack_full(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _stack_start: *mut Value) -> R {
+    vm.stack.set_top(top);
+    vm.ip = ip;
+    Err(vm.stack_overflow())
+}
+
+/// A write that reaches a shared value forks it first, so the write lands in a copy.
+#[inline(never)]
+fn load_local_forking(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let mut ip = ip;
+    let mut top = top;
+    let idx = read_u8!(ip) as usize;
+    let from = unsafe { stack_start.add(idx) };
+    vm.stack.set_top(top);
+    vm.ip = ip;
+    let forked = vm.fork(unsafe { *from });
+    unsafe { *from = forked };
+    push!(vm, ip, top, stack_start, forked);
+    next!(vm, ip, top, stack_start)
+}
+
+/// A local store whose value has to be checked against the slot.
+#[inline(never)]
+fn store_local_checked<const POP: bool, const FRESH: bool>(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let mut ip = ip;
+    let mut top = top;
+    let idx = read_u8!(ip) as usize;
+
+    let value = match POP {
+        true => pop!(top),
+        false => peek!(top, 0),
+    };
+
+    match FRESH {
+        true => {
+            vm.check_slot_accepts(idx as u8, ip, top, value)?;
+            unsafe { *stack_start.add(idx) = value };
+        },
+        false => {
+            let accepted = vm.accept_slot_write(stack_start, idx as u8, ip, top, value)?;
+            vm.write_slot(accepted);
+        },
+    }
+
+    next!(vm, ip, top, stack_start)
+}
+
+#[inline(never)]
+fn share_local_object(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let mut ip = ip;
+    let idx = read_u8!(ip) as usize;
+    vm.share_in_place(unsafe { stack_start.add(idx) });
+    next!(vm, ip, top, stack_start)
+}
+
+/// The arithmetic handlers' path for operands that are not both numbers.
+#[cold]
+#[inline(never)]
+fn arith_slow(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let op = unsafe { *ip.sub(1) };
+    let mut ip = ip;
+    let mut top = top;
+
+    // The local the result goes to, when it doesn't stay on the stack.
+    let dst = match op {
+        opcode::INC_LOCAL | opcode::DEC_LOCAL => {
+            let l = read_u8!(ip) as usize;
+            let c = read_u8!(ip) as usize;
+            push!(vm, ip, top, stack_start, unsafe { *stack_start.add(l) });
+            push!(vm, ip, top, stack_start, vm.chunk.constants[c]);
+            Some(l)
+        },
+        opcode::ADD_LOCAL_CONST | opcode::SUB_LOCAL_CONST => {
+            let (a_idx, b_idx) = (read_u8!(ip) as usize, read_u8!(ip) as usize);
+            let a = unsafe { *stack_start.add(a_idx) };
+            let b = vm.chunk.constants[b_idx];
+            push!(vm, ip, top, stack_start, a);
+            push!(vm, ip, top, stack_start, b);
+            None
+        },
+        opcode::ADD_CONST_LOCAL | opcode::SUB_CONST_LOCAL => {
+            let (a_idx, b_idx) = (read_u8!(ip) as usize, read_u8!(ip) as usize);
+            let a = vm.chunk.constants[a_idx];
+            let b = unsafe { *stack_start.add(b_idx) };
+            push!(vm, ip, top, stack_start, a);
+            push!(vm, ip, top, stack_start, b);
+            None
+        },
+        opcode::STORE_LOCAL_ADD_LOCAL_LOCAL => {
+            let (out, a_idx, b_idx) = (read_u8!(ip) as usize, read_u8!(ip) as usize, read_u8!(ip) as usize);
+            let a = unsafe { *stack_start.add(a_idx) };
+            let b = unsafe { *stack_start.add(b_idx) };
+            push!(vm, ip, top, stack_start, a);
+            push!(vm, ip, top, stack_start, b);
+            Some(out)
+        },
+        _ => unreachable!("{} has a slow path of its own", opcode::name(op)),
+    };
+
+    vm.stack.set_top(top);
+    vm.ip = ip;
+
+    match op {
+        opcode::DEC_LOCAL | opcode::SUB_LOCAL_CONST | opcode::SUB_CONST_LOCAL => vm.op_subtract()?,
+        _ => vm.op_add()?,
+    }
+
+    let mut top = vm.stack.top();
+
+    if let Some(l) = dst {
+        let result = pop!(top);
+        unsafe { *stack_start.add(l) = result };
+    }
+
+    next!(vm, ip, top, stack_start)
+}
+
+#[cold]
+#[inline(never)]
+fn compare_error(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let op = unsafe { *ip.sub(1) };
+    let mut ip = ip;
+    let mut top = top;
+    let _offset = read_u16!(ip);
+
+    let (a, b) = match op {
+        opcode::JUMP_IF_GE_LOCAL_CONST | opcode::JUMP_IF_GT_LOCAL_CONST
+        | opcode::JUMP_IF_LE_LOCAL_CONST | opcode::JUMP_IF_LT_LOCAL_CONST => {
+            let (a_idx, b_idx) = (read_u8!(ip) as usize, read_u8!(ip) as usize);
+            (unsafe { *stack_start.add(a_idx) }, vm.chunk.constants[b_idx])
+        },
+        _ => {
+            let b = pop!(top);
+            (pop!(top), b)
+        },
+    };
+
+    // A jump leaves a loop or a branch when its condition fails, so the source wrote the opposite.
+    let token = match op {
+        opcode::JUMP_IF_GE | opcode::JUMP_IF_GE_LOCAL_CONST => "<",
+        opcode::JUMP_IF_GT | opcode::JUMP_IF_GT_LOCAL_CONST => "<=",
+        opcode::JUMP_IF_LE | opcode::JUMP_IF_LE_LOCAL_CONST => ">",
+        _ => ">=",
+    };
+
+    vm.stack.set_top(top);
+    vm.ip = ip;
+    vm.operands_refused(token, a, b)
+}
+
+#[inline(never)]
+fn eq_jump_deep(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let jumps_when = unsafe { *ip.sub(1) } == opcode::JUMP_IF_EQ;
+    let mut ip = ip;
+    let mut top = top;
+    let offset = read_u16!(ip) as usize;
+    let b = pop!(top);
+    let a = pop!(top);
+    jump_if!(vm, vm.values_equal(a, b) == jumps_when, offset, ip, top, stack_start)
+}
+
+#[inline(never)]
+fn call_slow(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let mut ip = ip;
+    let operand = read_u8!(ip);
+    let arg_count = read_u8!(ip) as usize;
     let value = peek!(top, arg_count);
     let code_base = vm.chunk.code.as_ptr();
     let site = unsafe { ip.offset_from(code_base) } as usize;
@@ -548,112 +786,78 @@ fn call(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R
 
     // Resolve the callee: a cache hit skips the checks and closure deref.
     let cache = unsafe { *vm.call_cache.get_unchecked(slot) };
-    let (closure, ip_start, retain_mask, needs_borrow_mark) = if cache.site == site && cache.callee == value {
-        (cache.closure, cache.ip_start, cache.retain_mask, cache.needs_borrow_mark)
-    } else if let Some((closure, ip_start, retain_mask, needs_borrow_mark)) = closure_call(value, arg_count) {
-        unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start, retain_mask, needs_borrow_mark } };
-        (closure, ip_start, retain_mask, needs_borrow_mark)
+    let (closure, ip_start) = if cache.site == site && cache.callee == value {
+        (cache.closure, cache.ip_start)
+    } else if let Some((closure, ip_start)) = closure_call(value, arg_count).filter(|(c, _)| return_arity_matches(*c, operand)) {
+        unsafe { *vm.call_cache.get_unchecked_mut(slot) = CallCache { site, callee: value, closure, ip_start } };
+        (closure, ip_start)
     } else {
         vm.stack.set_top(top);
         vm.ip = ip;
-        vm.call(arg_count, value, true)?;
+        vm.call(arg_count, value, operand)?;
         let top = vm.stack.top();
-        let base = unsafe { (*vm.frames.top()).stack_start };
-        become dispatch(vm, vm.ip, top, base);
+        let stack_start = unsafe { (*vm.frames.top()).stack_start };
+        next!(vm, vm.ip, top, stack_start);
     };
 
     if vm.frames.is_full() {
-        vm.stack.set_top(top);
-        vm.ip = ip;
-        return Err(vm.stack_overflow());
+        become stack_full(vm, ip, top, stack_start);
     }
 
-    let stack_start = unsafe { top.sub(arg_count + 1) };
-    vm.frames.push(CallFrame { closure, return_ip: ip, stack_start, seal: true, write_depth: vm.write_ownerships.len(), borrow_depth: vm.borrows.len() });
-    // The transfer records the site it happened at, so `ip` has to be current for the diagnostic.
+    let callee_stack_start = unsafe { top.sub(arg_count + 1) };
+
     if arg_count != 0 {
         vm.stack.set_top(top);
         vm.ip = ip;
-        // The call cache holds the retain mask so a cached call never reads the closure.
-        // Only a forced run needs the escape mask, so an ordinary run still skips that read.
-        let escape_mask = match vm.forced {
-            true => unsafe { (*closure).escape_mask },
-            false => 0,
-        };
-
-        // Both of the transfer's own early-outs, asked before the call rather than inside it. That
-        // duplication is deliberate: skipping the call is worth 3.8% on a recursive one-argument
-        // call, and the closure stays unread, which is what the cache exists for.
-        if retain_mask | needs_borrow_mark != 0 || vm.forced || objects::any_argument_null_or_container(stack_start, arg_count) {
-            vm.transfer_argument_write_ownership(retain_mask, escape_mask, needs_borrow_mark, unsafe { (*closure).param_accepts }, stack_start, arg_count, ReceiverSlot::Callee)?;
-        }
+        vm.check_arguments_accepted(unsafe { (*closure).param_list_pool_id }, callee_stack_start, arg_count, operand)?;
     }
-    become dispatch(vm, unsafe { code_base.add(ip_start) }, top, stack_start)
+
+    let generation = vm.take_frame_generation();
+    vm.frames.push(CallFrame::new(closure, ip, callee_stack_start, generation));
+    next!(vm, unsafe { code_base.add(ip_start) }, top, callee_stack_start)
 }
 
-/// Terminates the program.
-fn halt(vm: &mut Vm, _ip: *const OpCode, _top: *mut Value, _base: *mut Value) -> R {
-    Ok(std::mem::take(&mut vm.out))
-}
-
-/// Whether the value about to be returned took a borrow in.
 #[inline]
-fn returns_a_held_borrow(top: *mut Value) -> bool {
-    let returning = unsafe { *top.sub(1) };
-    returning.is_object() && returning.as_object().holds_borrow()
-}
-
-fn ret(vm: &mut Vm, ip: *const OpCode, top: *mut Value, _base: *mut Value) -> R {
-    // The top-level ends in HALT, so every RETURN has a caller frame to pop.
-    let nothing_to_unwind = vm.open_upvalues.is_empty() && vm.write_ownerships.is_empty();
-    if nothing_to_unwind && vm.borrows.is_empty() && !returns_a_held_borrow(top) {
-        let frame = vm.frames.pop();
-        let returned_from = unsafe { top.sub(1) };
-        let value = unsafe { *returned_from };
-
-        // Handing a borrowed value back does not end the borrow.
-        let handed_back_borrow = returned_from < vm.stack.borrowed_end()
-            && !value.is_object()
-            && vm.stack.borrow_outlives(returned_from, frame.stack_start);
-
-        // The result lands in the callee slot, which the call may have marked borrowed.
-        vm.stack.prune_borrowed(frame.stack_start);
-        unsafe { *frame.stack_start = value };
-
-        if handed_back_borrow {
-            vm.stack.mark_borrowed(frame.stack_start, vm.stack.borrow_origin(returned_from));
-            if vm.forced {
-                vm.carry_watched_mark(returned_from, frame.stack_start);
+fn closure_call(value: Value, arg_count: usize) -> Option<(*mut ObjClosure, usize)> {
+    if value.is_callable() {
+        let object = value.as_object();
+        if object.tag() == objects::TAG_CLOSURE {
+            let ptr = object.as_closure_ptr();
+            let closure = unsafe { &*ptr };
+            if arg_count == closure.arity as usize {
+                return Some((ptr, closure.ip_start));
             }
         }
-
-        let top = unsafe { frame.stack_start.add(1) };
-        let base = unsafe { (*vm.frames.top()).stack_start };
-        become dispatch(vm, frame.return_ip, top, base);
     }
+    None
+}
 
+/// A return that cleans breadcrumbs left by tail calls.
+#[cold]
+#[inline(never)]
+fn ret_releasing(vm: &mut Vm, _ip: *const OpCode, top: *mut Value, _stack_start: *mut Value) -> R {
+    let frame = vm.frames.pop();
+    vm.release_tail_breadcrumbs();
+    let (ip, top, caller_stack_start) = return_to_caller(vm, frame, top);
+    next!(vm, ip, top, caller_stack_start)
+}
+
+/// Returns object after marking it shared.
+#[inline(never)]
+fn ret_shared_object(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
     vm.stack.set_top(top);
     vm.ip = ip;
-
-    match nothing_to_unwind {
-        true => vm.return_ending_borrows()?,
-        false => { vm.op_return()?; },
-    }
-
-    let top = vm.stack.top();
-    let base = unsafe { (*vm.frames.top()).stack_start };
-    become dispatch(vm, vm.ip, top, base)
+    vm.share_in_place(unsafe { top.sub(1) });
+    become op_RETURN(vm, ip, top, stack_start)
 }
 
-fn not(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut top = top;
-    let v = pop!(vm, top);
-    push!(vm, ip, top, Value::from(v.is_falsy()));
-    become dispatch(vm, ip, top, base)
-}
-
-fn dup(vm: &mut Vm, ip: *const OpCode, top: *mut Value, base: *mut Value) -> R {
-    let mut top = top;
-    push!(vm, ip, top, peek!(top, 0));
-    become dispatch(vm, ip, top, base)
+/// Moves the returned value into the slot that held the function, where the caller expects it.
+/// Gives the `ip`, stack top and stack start the caller resumes with.
+#[inline(always)]
+fn return_to_caller(vm: &Vm, frame: CallFrame, top: *mut Value) -> (*const OpCode, *mut Value, *mut Value) {
+    let value = unsafe { *top.sub(1) };
+    unsafe { *frame.stack_start = value };
+    let top = unsafe { frame.stack_start.add(1) };
+    let caller_stack_start = unsafe { (*vm.frames.top()).stack_start };
+    (frame.return_ip, top, caller_stack_start)
 }

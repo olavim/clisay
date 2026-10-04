@@ -1,4 +1,3 @@
-// A closure in init may not capture the partially-constructed `this`.
 type T {
     pub x;
     grab = () => this; // error: the partially-constructed 'this' is not a value in a factory

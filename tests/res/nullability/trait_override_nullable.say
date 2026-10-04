@@ -1,11 +1,30 @@
-// A composer may not override a trait's non-null method with a nullable one.
 trait Powered {
-    pub fn start(this)! {
+    pub fn start(this) {
         return 1;
     }
 }
 type Car with Powered {
-    pub fn start(this)? { // error: override is more nullable than the trait allows
+    pub fn start(this): opt { // error: override is more nullable than the trait allows
         return null;
     }
 }
+
+// @split
+trait P { pub fn go(this): fails { return 1; } }
+type E with P { init(this) {} pub fn go(this) { return 2; } }
+print(E().go()); // expect: 2
+
+// @split
+trait P { pub fn go(this) { return 1; } }
+type E with P { init(this) {} pub fn go(this): fails { return Err("x"); } } // error: override owes 'fails' where the trait does not
+E();
+
+// @split
+trait P { pub fn go(this): fails { return 1; } }
+type E with P { init(this) {} pub fn go(this): fails { return Err("x"); } }
+E().go() ?? e => print("handled"); // expect: handled
+
+// @split
+trait P { pub fn go(this): void { } }
+type E with P { init(this) {} pub fn go(this): fails { return Err("x"); } } // error: override owes 'fails' where the trait does not
+E();

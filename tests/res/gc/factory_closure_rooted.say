@@ -1,0 +1,16 @@
+
+type Holder {
+    pub items;
+    init(this, xs) {
+        this.items = xs;
+    }
+}
+
+say var i = 0;
+say var last = Holder([0, 0, 0]);
+while i < 2000 {
+    last = Holder([i, i + 1, i + 2]);
+    i = i + 1;
+}
+
+print(last.items[2]); // expect: 2001

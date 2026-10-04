@@ -1,10 +1,9 @@
-// A `?!` in an argument position still propagates, so `use1` is inferred `: fails`.
-fn readConfig(flag)! {
+fn readConfig(flag) {
     if (flag) { return Err("boom"); }
     return "ok";
 }
-fn echo(x)! { return x; }
-fn use1(flag)! {
+fn echo(x) { return x; }
+fn use1(flag) {
     return echo(readConfig(flag)?!);
 }
 print(use1(false)); // expect: ok

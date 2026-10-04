@@ -1,0 +1,36 @@
+type H { pub value = 7; } obligation held { witness H; discharge to use; }
+type P { pub value = 5; }
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn held(this): held { return H(); } pub fn good(this) { return P(); } }
+fn f(v) { print(v.bad()?.value ?? "short"); print(v.held()?.value ?? "short"); print(v.good()?.value ?? "short"); }
+f(A());
+// expect: short
+// expect: short
+// expect: 5
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn good(this) { return [5]; } }
+fn f(v) { print(v.bad()?[0] ?? "short"); print(v.good()?[0] ?? "short"); }
+f(A());
+// expect: short
+// expect: 5
+
+// @split
+type C { pub var f: opt = null; }
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn good(this) { return C{f: () => "called"}; } }
+fn f(v) { print(v.bad()?.f?() ?? "short"); print(v.good()?.f?() ?? "short"); print(C().f?() ?? "short"); }
+f(A());
+// expect: short
+// expect: called
+// expect: short
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn good(this) { return () => "called"; } }
+fn f(v) { print(v.bad()?() ?? "short"); print(v.good()?() ?? "short"); }
+f(A());
+// expect: short
+// expect: called
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } }
+fn f(v) { say r = v.bad()?.value; } // error: Uncaught exception: <instance <type Err>>
+f(A());

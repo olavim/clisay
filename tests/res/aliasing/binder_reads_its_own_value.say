@@ -1,0 +1,41 @@
+say var a = [[0]];
+if (a ~ [b]) {
+    say var d = a[0];
+    d[0] = 7;
+    print(b[0]); // expect: 0
+}
+
+// @split
+say a = [[0]];
+if (a ~ [b]) {
+    print(b[0]); // expect: 0
+}
+
+// @split
+say var a = [[0], [0]];
+if (a ~ [b, c]) {
+    a[0][0] = 1;
+    a[1][0] = 2;
+    print(b[0]); // expect: 0
+    print(c[0]); // expect: 0
+}
+
+// @split
+say var a = [[0]];
+match a {
+    [b] => {
+        a[0][0] = 2;
+        print(b[0]); // expect: 0
+    },
+    _ => { print("no"); },
+}
+
+// @split
+say var a = [[0]];
+say var x = [[0]];
+if (a ~ [b] && x ~ [c]) {
+    a[0][0] = 1;
+    x[0][0] = 2;
+    print(b[0]); // expect: 0
+    print(c[0]); // expect: 0
+}

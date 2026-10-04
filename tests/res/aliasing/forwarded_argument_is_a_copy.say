@@ -1,0 +1,15 @@
+fn inner(y) { return y; }
+fn outer(x) { inner(x); }
+say var a = [1, 2];
+outer(a);
+a[0] = 5;
+print(a[0]); // expect: 5
+
+// @split
+fn inner(y) { return y; }
+fn outer(x) { return inner(x); }
+say var a = [1, 2];
+say var b = outer(a);
+a[0] = 5;
+print(a[0]); // expect: 5
+print(b[0]); // expect: 1

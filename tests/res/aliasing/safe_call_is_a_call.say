@@ -1,0 +1,43 @@
+fn f(var v) { &v.push(1); }
+say a = [1];
+f(a);
+print(a.length()); // expect: 1
+
+// @split
+fn f(var v) { &v.push(1); }
+say a = [1];
+f?(a);
+print(a.length()); // expect: 1
+
+// @split
+fn hand(x) { return x; }
+say var a = [1];
+say var b = hand(a);
+a[0] = 5;
+print(a[0]); // expect: 5
+print(b[0]); // expect: 1
+
+// @split
+fn hand(x) { return x; }
+say var a = [1];
+say var b = hand?(a)!;
+a[0] = 5;
+print(a[0]); // expect: 5
+print(b[0]); // expect: 1
+
+// @split
+fn hand(x) { return x; }
+say a = [1];
+say var b = hand?(a)!;
+b[0] = 5;
+print(b[0]); // expect: 5
+
+// @split
+fn twice(n) { return n + n; }
+say var cb: opt = null;
+cb = twice;
+print(cb?(4) ?? 0); // expect: 8
+
+// @split
+say var cb: opt = null;
+print(cb?(4) ?? 7); // expect: 7

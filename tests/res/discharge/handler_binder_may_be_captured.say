@@ -1,0 +1,7 @@
+type W { pub d; init(this, d) { this.d = d; } }
+obligation warned { witness W; discharge to use; }
+
+fn f(x: warned) { return x ?? e => (() => e.d); }
+
+say g = f(W(7));
+print(g()); // expect: 7

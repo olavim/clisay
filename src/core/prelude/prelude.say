@@ -1,0 +1,21 @@
+type Err {
+    pub value;
+
+    init(this, value) { this.value = value; }
+}
+
+type Ref {
+    var value;
+    var locked = false;
+
+    init(this, value) { this.value = value; }
+
+    pub fn update(var this, f) { say v = f(@this); @this = v; return v; }
+
+    pub fn mutate(var this, f) {
+        if (this.locked) { throw "A `Ref` cannot be written while its `mutate` runs"; }
+        this.locked = true;
+        defer { this.locked = false; }
+        f(&this.value);
+    }
+}

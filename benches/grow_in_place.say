@@ -1,0 +1,7 @@
+// Accumulation by in-place mutation: the boundary `&var` and regions have to deliver.
+say var a = [];
+say var i = 0;
+while i < 5000 {
+    &a.push(i);
+    i = i + 1;
+}

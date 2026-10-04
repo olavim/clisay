@@ -1,0 +1,42 @@
+say calls = Ref(0);
+fn idx() { @calls = @calls + 1; return 0; }
+say var a = [10];
+a[idx()] += 1;
+print(a[0]); // expect: 11
+print(@calls); // expect: 1
+type Box { pub var v; init(this) { this.v = 10; } }
+say b = Ref(Box());
+fn get() { @calls = @calls + 1; return b; }
+say v = (@(get()).v *= 3);
+print(v); // expect: 30
+print(@b.v); // expect: 30
+print(@calls); // expect: 2
+type Counter {
+    pub var n;
+    init(this) { this.n = 1; }
+    pub fn bump(&var this) { this.n += 4; }
+}
+say var c = Counter();
+&c.bump();
+print(c.n); // expect: 5
+say var x = 3;
+x -= 8;
+print(x); // expect: -5
+say var d = { k: 2 };
+d["k"] <<= 3;
+print(d["k"]); // expect: 16
+type W { pub d; init(this, d) { this.d = d; } }
+obligation warned { witness W; discharge to use; }
+fn pick(i): warned { return W(i); }
+say var e = [1, 2, 3];
+say j = 1;
+e[j] += pick(40) ?? h => h.d;
+print(e[1]); // expect: 42
+say log = Ref("");
+say r = Ref([0]);
+fn recv() { @log = @log + "recv "; return r; }
+fn key() { @log = @log + "key "; return 0; }
+fn val() { @log = @log + "val "; return 9; }
+@(recv())[key()] = val();
+print(@log); // expect: recv key val 
+print(@r[0]); // expect: 9

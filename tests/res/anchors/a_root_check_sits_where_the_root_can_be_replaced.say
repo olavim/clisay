@@ -1,0 +1,61 @@
+say var a = [1];
+say var r = &a[0];
+r = 2;
+print(a[0]); // expect: 2
+// expect asm:
+// 0: PUSH_NULL
+// 1: PUSH_NULL
+// 2: PUSH_CONSTANT 1
+// 4: ARRAY <1>
+// 6: STORE_LOCAL_FRESH L2
+// 8: PUSH_CONSTANT 0
+// 10: STORE_TEMP_POP L1
+// 12: LOAD_LOCAL_FOR_WRITE L2
+// 14: FORM_ANCHOR_PATH L0 [0]
+// 18: STORE_LOCAL L3
+// 20: PUSH_CONSTANT 2
+// 22: STORE_ANCHOR L3
+// 24: POP
+// 25: LOAD_GLOBAL "print"
+// 27: LOAD_LOCAL L2
+// 29: PUSH_CONSTANT 0
+// 31: GET_INDEX
+// 32: CALL <discards> <1>
+// 35: POP
+// 36: POP_SCOPE <2> <4>
+// 39: PUSH_NULL
+// 40: HALT
+
+// @split
+say var a = [1];
+say var r = &a[0];
+r = 2;
+a = [3];
+print(a[0]); // expect: 3
+// expect asm:
+// 0: PUSH_NULL
+// 1: PUSH_NULL
+// 2: PUSH_CONSTANT 1
+// 4: ARRAY <1>
+// 6: STORE_LOCAL_FRESH L2
+// 8: PUSH_CONSTANT 0
+// 10: STORE_TEMP_POP L1
+// 12: LOAD_LOCAL_FOR_WRITE L2
+// 14: FORM_ANCHOR_PATH L0 [0]
+// 18: STORE_LOCAL L3
+// 20: PUSH_CONSTANT 2
+// 22: CHECK_ANCHOR_ROOT L2 <0> L0
+// 26: STORE_ANCHOR L3
+// 28: POP
+// 29: PUSH_CONSTANT 3
+// 31: ARRAY <1>
+// 33: STORE_LOCAL_FRESH_POP L2
+// 35: LOAD_GLOBAL "print"
+// 37: LOAD_LOCAL L2
+// 39: PUSH_CONSTANT 0
+// 41: GET_INDEX
+// 42: CALL <discards> <1>
+// 45: POP
+// 46: POP_SCOPE <2> <4>
+// 49: PUSH_NULL
+// 50: HALT

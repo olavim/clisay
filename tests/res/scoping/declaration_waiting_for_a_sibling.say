@@ -1,0 +1,109 @@
+fn run() {
+    fn a() { return b(); }
+    say q = 2;
+    fn b() { return q; }
+    return a();
+}
+print(run()); // expect: 2
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say x = a(); // error: 'a' cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+    return x;
+}
+run();
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say q = a(); // error: 'a' cannot be used yet, because it uses 'b', which is declared below
+    fn b() { return q; }
+    return q;
+}
+run();
+
+// @split
+fn a() { return b(); }
+fn b() { return c(); }
+print(a()); // error: 'a' cannot be used yet, because it uses 'c', which is declared below
+fn c() { return 1; }
+
+// @split
+fn a() { return b(); }
+fn b() { return c(); }
+fn c() { return 1; }
+print(a()); // expect: 1
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say f = a;
+    say q = 2;
+    fn b() { return q; }
+    return f();
+}
+print(run()); // expect: 2
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say f = a;
+    say x = f(); // error: 'f' cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+    return x;
+}
+run();
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say arr = [a];
+    say q = 2;
+    fn b() { return q; }
+    return arr[0]();
+}
+print(run()); // expect: 2
+
+// @split
+fn run() {
+    fn a() { return b(); }
+    say arr = [a];
+    say x = arr[0](); // error: This value cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+    return x;
+}
+run();
+
+// @split
+say k = T;
+type T { pub v = 1; }
+print(k().v); // expect: 1
+
+// @split
+say k = T;
+say t = k(); // error: 'k' cannot be used yet, because it uses 'T', which is declared below
+type T { pub v = 1; }
+
+// @split
+fn run() {
+    type T { pub fn m(this) { return b(); } }
+    say x = T().m(); // error: 'T' cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+    return x;
+}
+run();
+
+// @split
+fn run() {
+    type T { pub fn m(this) { return b(); } }
+    say q = 2;
+    fn b() { return q; }
+    return T().m();
+}
+print(run()); // expect: 2

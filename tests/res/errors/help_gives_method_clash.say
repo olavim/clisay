@@ -1,5 +1,5 @@
-trait Spin { pub fn go(this)! { return "spin"; } }
-trait Roll { pub fn go(this)! { return "roll"; } }
+trait Spin { pub fn go(this) { return "spin"; } }
+trait Roll { pub fn go(this) { return "roll"; } }
 type Engine with Spin { init(this) {} }
 type Wheel with Roll { init(this) {} }
 type Car {

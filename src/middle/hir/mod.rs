@@ -7,8 +7,14 @@ use std::collections::HashSet;
 use std::fmt;
 use std::marker::PhantomData;
 
-pub use crate::frontend::ast::{builtin_obligation_rules, Capability, ObligationRules, ReturnShape, Symbol};
+pub use crate::frontend::ast::{builtin_obligation_rules, ObligationRules, Receiver, SlotClause, Symbol};
 use crate::frontend::lex::{SourcePosition, TokenType};
+
+impl SlotClause {
+    pub fn owed(&self) -> crate::middle::obligations::Obligations {
+        self.names.iter().copied().collect()
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
@@ -29,6 +35,12 @@ pub enum BinOp {
     BitAnd,
     BitOr,
     BitXor,
+}
+
+impl BinOp {
+    pub fn yields_an_operand(self) -> bool {
+        matches!(self, BinOp::And | BinOp::Or)
+    }
 }
 
 /// A runtime unary operator.
@@ -85,71 +97,65 @@ pub enum HirLiteral {
     Lambda(HirFnDecl),
 }
 
-/// Where a value came from.
-pub enum ValueSource<'a> {
-    Name(Symbol),
-    Receiver,
-    Call(&'a HirId<HirExpr>, &'a [HirId<HirExpr>]),
-    Element,
-    Closure,
-    Yields(Vec<HirId<HirExpr>>),
-    Holds(Vec<HirId<HirExpr>>),
-    Fresh,
-}
-
 pub enum HirExpr {
     Block(Vec<HirId<HirStmt>>),
     Unary(UnOp, HirId<HirExpr>),
     Binary(BinOp, HirId<HirExpr>, HirId<HirExpr>),
     Assign(HirId<HirExpr>, HirId<HirExpr>),
+    CompoundAssign(HirId<HirExpr>, BinOp, HirId<HirExpr>),
     Call(HirId<HirExpr>, Vec<HirId<HirExpr>>),
-    Index(HirId<HirExpr>, HirId<HirExpr>, bool),
+    /// `a.b` and `a[b]`. `safe` is the `?.` and `?[` form, which short-circuits on a bad operand.
+    Index { base: HirId<HirExpr>, member: HirId<HirExpr>, is_dot: bool, safe: bool },
     Literal(HirLiteral),
     Identifier(Symbol),
-    /// Brace construction `C { field: value, ... }`: the callee type expression, an unused args
-    /// slot (the combined form is retired), then the brace fields.
+    /// Brace construction `C { field: value, ... }`
     Construct(HirId<HirExpr>, Vec<(Symbol, HirId<HirExpr>)>),
-    /// A `mut`-minted construction (`mut {}`, `mut []`, `mut Ctor()`).
-    Mut(HirId<HirExpr>),
     This,
-    /// Coalesce `a ?? b`: discharges `a`'s obligation set, yielding `a` when it is clean, else `b`.
-    /// Short-circuit lowering is deferred to codegen.
+    /// `a ?? b`
     Coalesce(HirId<HirExpr>, HirId<HirExpr>),
-    /// The `?` access-guard `a?.b` / `a?[i]`: on a bad operand the chain short-circuits to it,
-    /// carrying its obligation; otherwise the access runs. `is_dot` distinguishes `.name` from
-    /// `[expr]` (see `HirExpr::Index`).
-    SafeAccess(HirId<HirExpr>, HirId<HirExpr>, bool),
-    /// The `?` access-guard on a call `cb?(args)`: short-circuits to the callee on a bad operand,
-    /// carrying its obligation; otherwise the call runs.
+    /// `cb?(args)`
     SafeCall(HirId<HirExpr>, Vec<HirId<HirExpr>>),
-    /// The propagate operator `a?!`: on a bad value the enclosing function returns it.
+    /// `a?!`
     Propagate(HirId<HirExpr>),
-    /// The handler `e ?? p => h`: on a bad value binds it to `p` and yields `h`, else yields `e`.
+    /// `e ?? p => h`
     Handle(HirId<HirExpr>, Symbol, HirId<HirExpr>),
-    /// The non-null assertion `a!`: yields the value, checking against null at runtime.
+    /// `a!`
     Assert(HirId<HirExpr>),
+    /// `&x`
+    Anchor(HirId<HirExpr>),
+    RefValue { holder: HirId<HirExpr>, safe: bool },
     Match(HirId<HirExpr>, HirId<HirMatcher>),
 }
 
-/// A lowered matcher: it tests a value and binds sub-values out into names.
+#[derive(Clone, PartialEq)]
+pub struct HirMatchRest {
+    pub binder: Option<Symbol>,
+    pub every: Option<HirId<HirMatcher>>,
+}
+
+impl HirMatchRest {
+    pub fn tests_something(&self, hir: &Hir) -> bool {
+        self.every.is_some_and(|e| !hir.get(&e).is_irrefutable(hir))
+    }
+}
+
 pub enum HirMatcher {
-    /// `_`: matches anything, binds nothing.
+    /// `_`
     Wildcard,
-    /// A scalar literal compared with `==`.
     Literal(HirLiteral),
-    /// A bare name that binds the whole value.
     Binder(Symbol),
-    /// `is T shape?` or `has T shape?`.
+    /// `is T shape?`
     Type { nominal: bool, name: Symbol, shape: Option<HirId<HirMatcher>> },
-    /// A structural shape `{ k: m, ... }`.
-    Shape(Vec<HirMatchField>),
-    /// An array shape `[ ... ]` with at most one rest element.
+    /// `{ k: m, ..x @ q }`
+    Shape { fields: Vec<HirMatchField>, rest: Option<HirMatchRest> },
+    Dict(HirId<HirMatcher>),
+    /// `[ ... ]`
     Array(Vec<HirMatchElem>),
-    /// `name @ m`: binds the whole value and also matches `m`.
+    /// `name @ m`
     As(Symbol, HirId<HirMatcher>),
-    /// `a | b | ...`: alternatives tried left to right.
+    /// `a | b | ...`
     Or(Vec<HirId<HirMatcher>>),
-    /// `a & b & ...`: all must match.
+    /// `a & b & ...`
     And(Vec<HirId<HirMatcher>>),
 }
 
@@ -162,34 +168,34 @@ pub struct HirMatchField {
 /// An element of an array matcher. `Rest` is `..` or `..name`, at most one per array.
 pub enum HirMatchElem {
     Elem(HirId<HirMatcher>),
-    Rest(Option<Symbol>),
+    Rest(HirMatchRest),
 }
 
 impl HirMatcher {
-    /// The names this matcher binds, in the left-to-right order codegen stores them.
     pub fn binders(&self, hir: &Hir) -> Vec<Symbol> {
         let mut out = Vec::new();
         self.collect_binders(hir, &mut out);
         out
     }
 
-    /// Whether this matcher binds any name, without allocating the binder list.
     pub fn binds_anything(&self, hir: &Hir) -> bool {
         match self {
             HirMatcher::Wildcard | HirMatcher::Literal(_) => false,
             HirMatcher::Binder(_) | HirMatcher::As(..) => true,
             HirMatcher::Type { shape, .. } => shape.is_some_and(|s| hir.get(&s).binds_anything(hir)),
-            HirMatcher::Shape(fields) => fields.iter().any(|f| hir.get(&f.value).binds_anything(hir)),
+            HirMatcher::Shape { fields, rest } => fields.iter().any(|f| hir.get(&f.value).binds_anything(hir))
+                || rest.as_ref().is_some_and(|r| r.binder.is_some() || r.every.is_some_and(|e| hir.get(&e).binds_anything(hir))),
+            HirMatcher::Dict(shape) => hir.get(shape).binds_anything(hir),
             HirMatcher::Array(elements) => elements.iter().any(|e| match e {
                 HirMatchElem::Elem(m) => hir.get(m).binds_anything(hir),
-                HirMatchElem::Rest(name) => name.is_some(),
+                HirMatchElem::Rest(rest) => rest.binder.is_some()
+                    || rest.every.is_some_and(|e| hir.get(&e).binds_anything(hir)),
             }),
             HirMatcher::And(parts) => parts.iter().any(|p| hir.get(p).binds_anything(hir)),
             HirMatcher::Or(alternatives) => alternatives.iter().any(|a| hir.get(a).binds_anything(hir)),
         }
     }
 
-    /// Whether this matcher accepts every value, so a guardless arm using it is a catch-all.
     pub fn is_irrefutable(&self, hir: &Hir) -> bool {
         match self {
             HirMatcher::Wildcard | HirMatcher::Binder(_) => true,
@@ -200,14 +206,12 @@ impl HirMatcher {
         }
     }
 
-    /// Whether matching this proves the value is not null. A bare binder, a wildcard, and a `null`
-    /// literal each admit null, so they prove nothing.
     pub fn rejects_null(&self, hir: &Hir) -> bool {
         match self {
             HirMatcher::Wildcard | HirMatcher::Binder(_) => false,
             HirMatcher::Literal(HirLiteral::Null) => false,
             HirMatcher::Literal(_) => true,
-            HirMatcher::Type { .. } | HirMatcher::Shape(_) | HirMatcher::Array(_) => true,
+            HirMatcher::Type { .. } | HirMatcher::Shape { .. } | HirMatcher::Dict(_) | HirMatcher::Array(_) => true,
             HirMatcher::As(_, inner) => hir.get(inner).rejects_null(hir),
             HirMatcher::And(parts) => parts.iter().any(|p| hir.get(p).rejects_null(hir)),
             HirMatcher::Or(alternatives) => alternatives.iter().all(|a| hir.get(a).rejects_null(hir)),
@@ -219,12 +223,21 @@ impl HirMatcher {
             HirMatcher::Wildcard | HirMatcher::Literal(_) => {},
             HirMatcher::Binder(name) => out.push(*name),
             HirMatcher::Type { shape, .. } => if let Some(shape) = shape { hir.get(shape).collect_binders(hir, out) },
-            HirMatcher::Shape(fields) => for field in fields { hir.get(&field.value).collect_binders(hir, out) },
+            HirMatcher::Shape { fields, rest } => {
+                for field in fields { hir.get(&field.value).collect_binders(hir, out) }
+                if let Some(rest) = rest {
+                    out.extend(rest.binder);
+                    if let Some(every) = rest.every { hir.get(&every).collect_binders(hir, out) }
+                }
+            },
+            HirMatcher::Dict(shape) => hir.get(shape).collect_binders(hir, out),
             HirMatcher::Array(elements) => for element in elements {
                 match element {
                     HirMatchElem::Elem(matcher) => hir.get(matcher).collect_binders(hir, out),
-                    HirMatchElem::Rest(Some(name)) => out.push(*name),
-                    HirMatchElem::Rest(None) => {},
+                    HirMatchElem::Rest(rest) => {
+                        out.extend(rest.binder);
+                        if let Some(every) = &rest.every { hir.get(every).collect_binders(hir, out) }
+                    },
                 }
             },
             HirMatcher::As(name, inner) => { out.push(*name); hir.get(inner).collect_binders(hir, out); },
@@ -240,70 +253,232 @@ impl HirMatcher {
     }
 }
 
-/// A slot's lowered `:` clause.
-#[derive(Default, Clone)]
-pub struct HirSlotClause {
-    pub capability: Capability,
-    pub names: Vec<Symbol>,
-    pub container: bool,
-    pub void: bool,
-    pub pos: Option<SourcePosition>,
-}
-
-impl HirSlotClause {
-    /// The obligations the clause declares.
-    pub fn owed(&self) -> crate::middle::obligations::Obligations {
-        self.names.iter().copied().collect()
-    }
-}
-
-pub struct HirFieldInit {
+pub struct HirSayDecl {
     pub name: Symbol,
+    pub otherwise: Option<HirId<HirExpr>>,
+    pub pattern: Option<HirId<HirMatcher>>,
     pub value: Option<HirId<HirExpr>>,
-    /// Declared nullable with a `?` marker (`say x?`). Non-null otherwise.
-    pub nullable: bool,
-    /// Declared reassignable with a `var` modifier (`say var x`). Fixed otherwise.
     pub reassignable: bool,
-    pub clause: HirSlotClause,
+    pub clause: SlotClause,
 }
 
-/// A function/method/lambda parameter: its bound identifier plus the declared nullability marker
-/// and the reassignability slot reserves.
 pub struct HirParam {
+    pub anchor: bool,
     pub name: HirId<HirExpr>,
     /// The parameter's pattern, when it does more than name its slot.
     pub pattern: Option<HirId<HirMatcher>>,
     /// The `name[: clause]` span.
     pub pos: SourcePosition,
-    pub nullable: bool,
     pub reassignable: bool,
-    pub clause: HirSlotClause,
+    pub clause: SlotClause,
+}
+
+pub enum WritePlace {
+    /// `x`
+    Name(Symbol),
+    /// `this`
+    Receiver,
+    /// `base.f` and `base[i]`
+    Path { base: HirId<HirExpr>, member: HirId<HirExpr>, is_dot: bool, safe: bool },
+    /// `a!` and `a?!`
+    Wrapped(HirId<HirExpr>),
+    /// `@t`
+    Ref(HirId<HirExpr>),
+    /// Names no slot, so a write cannot target it.
+    Value,
+}
+
+/// One step of an `a.b[0].c` path.
+#[derive(Clone, Copy)]
+pub struct AccessStep {
+    pub key: HirId<HirExpr>,
+    pub is_dot: bool,
+    /// The access node when this step is a safe access, like `?.name` or `?[key]`.
+    pub safe: Option<HirId<HirExpr>>,
+}
+
+pub fn access_path_steps(hir: &Hir, path: &HirId<HirExpr>) -> (HirId<HirExpr>, Vec<AccessStep>) {
+    let mut steps = Vec::new();
+    let mut at = *path;
+    loop {
+        match hir.write_place_of(&at) {
+            WritePlace::Path { base, member, is_dot, safe } => {
+                steps.push(AccessStep { key: member, is_dot, safe: safe.then_some(at) });
+                at = base;
+            },
+            WritePlace::Wrapped(inner) => at = inner,
+            _ => break,
+        }
+    }
+    steps.reverse();
+    (at, steps)
+}
+
+pub fn access_path_root(hir: &Hir, path: &HirId<HirExpr>) -> HirId<HirExpr> {
+    let mut at = *path;
+    loop {
+        match hir.write_place_of(&at) {
+            WritePlace::Path { base, .. } => at = base,
+            WritePlace::Wrapped(inner) => at = inner,
+            _ => return at,
+        }
+    }
+}
+
+pub fn same_scalar(a: &HirLiteral, b: &HirLiteral) -> bool {
+    match (a, b) {
+        (HirLiteral::Null, HirLiteral::Null) => true,
+        (HirLiteral::Boolean(a), HirLiteral::Boolean(b)) => a == b,
+        (HirLiteral::Number(a), HirLiteral::Number(b)) => a == b,
+        (HirLiteral::String(a), HirLiteral::String(b)) => a == b,
+        _ => false,
+    }
 }
 
 pub struct HirFnDecl {
     pub name: Symbol,
     /// The `name(params): clause` signature span.
     pub sig_pos: SourcePosition,
-    /// The declared `this` clause, present on an instance method and absent on a plain function.
-    pub receiver: Option<HirSlotClause>,
+    pub receiver: Option<Receiver>,
     pub params: Vec<HirParam>,
     pub body: HirId<HirExpr>,
-    /// The declared return shape (the postfix marker after the parameter list).
-    pub ret: ReturnShape,
-    pub clause: HirSlotClause,
+    pub clause: SlotClause,
+}
+
+impl Hir {
+    pub fn path_has_safe_access(&self, expr: &HirId<HirExpr>) -> bool {
+        match self.get(expr) {
+            HirExpr::Index { base: inner, safe, .. } | HirExpr::RefValue { holder: inner, safe } =>
+                *safe || self.path_has_safe_access(inner),
+            HirExpr::Anchor(path) => self.path_has_safe_access(path),
+            _ => false,
+        }
+    }
+
+    /// The step each `?` on a path checks, rightmost `?` first.
+    pub fn safe_access_checked_steps(&self, path: &HirId<HirExpr>) -> Vec<HirId<HirExpr>> {
+        let mut bases = Vec::new();
+        let mut at = *path;
+        loop {
+            match self.get(&at) {
+                HirExpr::Index { base: inner, safe, .. } | HirExpr::RefValue { holder: inner, safe } => {
+                    if *safe {
+                        bases.push(*inner);
+                    }
+                    at = *inner;
+                },
+                HirExpr::Assert(inner) | HirExpr::Propagate(inner) => at = *inner,
+                _ => return bases,
+            }
+        }
+    }
+
+    /// The keys a path evaluates on its way to its value.
+    pub fn path_keys(&self, path: &HirId<HirExpr>) -> Vec<HirId<HirExpr>> {
+        let mut keys = Vec::new();
+        let mut at = *path;
+        loop {
+            match self.get(&at) {
+                HirExpr::Index { base, member, .. } => {
+                    keys.push(*member);
+                    at = *base;
+                },
+                HirExpr::RefValue { holder, .. } => {
+                    keys.push(*holder);
+                    at = *holder;
+                },
+                HirExpr::Assert(inner) | HirExpr::Propagate(inner) => at = *inner,
+                _ => return keys,
+            }
+        }
+    }
+
+    /// The reads of a name or a path, as `a` or `a.b[0]`, whose value `expr` can hand back
+    /// unchanged. `a && b` hands back what `a` or `b` reads, and `x!` what `x` reads. A literal,
+    /// a construction, a call and a `~` test hand back no stored value.
+    pub fn reads_handed_back(&self, expr: &HirId<HirExpr>) -> Vec<HirId<HirExpr>> {
+        match self.get(expr) {
+            HirExpr::Identifier(_)
+                | HirExpr::This 
+                | HirExpr::Index { .. } 
+                | HirExpr::RefValue { .. } => vec![*expr],
+            HirExpr::Binary(op, left, right) | HirExpr::CompoundAssign(left, op, right) if op.yields_an_operand() => {
+                [self.reads_handed_back(left), self.reads_handed_back(right)].concat()
+            },
+            HirExpr::Coalesce(left, right) | HirExpr::Handle(left, _, right) => {
+                [self.reads_handed_back(left), self.reads_handed_back(right)].concat()
+            },
+            HirExpr::Assign(_, value)
+                | HirExpr::Assert(value)
+                | HirExpr::Propagate(value) => self.reads_handed_back(value),
+            HirExpr::Literal(_)
+                | HirExpr::Unary(..)
+                | HirExpr::Binary(..)
+                | HirExpr::CompoundAssign(..)
+                | HirExpr::Construct(..)
+                | HirExpr::Call(..)
+                | HirExpr::SafeCall(..)
+                | HirExpr::Anchor(_)
+                | HirExpr::Match(..)
+                | HirExpr::Block(_) => Vec::new(),
+        }
+    }
+
+    pub fn passes_anchor_receiver(&self, callee: &HirId<HirExpr>) -> bool {
+        matches!(self.get(callee), HirExpr::Index { base, .. } if matches!(self.get(base), HirExpr::Anchor(_)))
+    }
+
+    /// A call's receiver when written `&x.m()`, then its arguments.
+    pub fn call_anchors(&self, callee: &HirId<HirExpr>, args: &[HirId<HirExpr>]) -> Vec<HirId<HirExpr>> {
+        let receiver = match self.get(callee) {
+            HirExpr::Index { base, .. } if matches!(self.get(base), HirExpr::Anchor(_)) => Some(*base),
+            _ => None,
+        };
+        receiver.into_iter().chain(args.iter().copied()).collect()
+    }
+
+    /// The names a node may rebind.
+    pub fn rebound_names(&self, node: &HirId<HirExpr>) -> Vec<HirId<HirExpr>> {
+        match self.get(node) {
+            HirExpr::Assign(lhs, _) | HirExpr::CompoundAssign(lhs, _, _) => vec![*lhs],
+            HirExpr::Call(callee, args) | HirExpr::SafeCall(callee, args) => self.call_anchors(callee, args).iter()
+                .filter_map(|arg| match self.get(arg) {
+                    HirExpr::Anchor(path) => Some(*path),
+                    _ => None,
+                })
+                .filter(|path| matches!(self.get(path), HirExpr::Identifier(_) | HirExpr::This))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The `this` node when `expr` is `this` or `&this`.
+    pub fn as_this(&self, expr: &HirId<HirExpr>) -> Option<HirId<HirExpr>> {
+        match self.get(expr) {
+            HirExpr::This => Some(*expr),
+            HirExpr::Anchor(inner) if matches!(self.get(inner), HirExpr::This) => Some(*inner),
+            _ => None,
+        }
+    }
+
+    pub fn write_place_of(&self, node: &HirId<HirExpr>) -> WritePlace {
+        match self.get(node) {
+            HirExpr::Identifier(name) => WritePlace::Name(*name),
+            HirExpr::This => WritePlace::Receiver,
+            HirExpr::Index { base, member, is_dot, safe } => WritePlace::Path { base: *base, member: *member, is_dot: *is_dot, safe: *safe },
+            HirExpr::RefValue { holder, .. } => WritePlace::Ref(*holder),
+            HirExpr::Assert(inner) | HirExpr::Propagate(inner) | HirExpr::Anchor(inner) => WritePlace::Wrapped(*inner),
+            HirExpr::Block(..) | HirExpr::Unary(..) | HirExpr::Binary(..) | HirExpr::Assign(..)
+            | HirExpr::CompoundAssign(..) | HirExpr::Call(..) | HirExpr::Literal(..)
+            | HirExpr::Construct(..) | HirExpr::Coalesce(..) | HirExpr::SafeCall(..)
+            | HirExpr::Handle(..) | HirExpr::Match(..) => WritePlace::Value,
+        }
+    }
 }
 
 impl HirFnDecl {
-    pub(crate) fn is_unmarked(&self) -> bool {
-        if self.clause.void {
-            return false;
-        }
-        // Lowering maps a declared return clause to `Inferred` too, so the shape alone does not
-        // say whether anything was annotated. An empty clause beside it is what does.
-        self.ret == ReturnShape::Void
-            || (self.ret == ReturnShape::Inferred
-                && self.clause.names.is_empty()
-                && self.clause.capability == Capability::None)
+    pub(crate) fn has_no_return_clause(&self) -> bool {
+        !self.clause.void && self.clause.is_empty()
     }
 }
 
@@ -313,15 +488,12 @@ pub struct HirReqFn {
     pub trait_name: Symbol,
     /// The `name(params): clause` span in the trait.
     pub pos: SourcePosition,
-    /// What the hole asks of `this`. A satisfier may ask less and not more.
-    pub receiver: Option<HirSlotClause>,
     /// Each parameter's clause and `name: clause` span.
     pub params: Vec<HirReqParam>,
     /// What the return may carry. A satisfier may promise fewer obligations.
-    pub ret: HirSlotClause,
+    pub ret: SlotClause,
 }
 
-/// A `req "var"? name (":" clause)?;` state hole a composer must fill.
 pub struct HirReqMember {
     pub name: Symbol,
     /// The trait that declares this hole.
@@ -331,19 +503,19 @@ pub struct HirReqMember {
     /// Required to be reassignable, with the `var` marker.
     pub reassignable: bool,
     /// What the member must owe.
-    pub clause: HirSlotClause,
+    pub clause: SlotClause,
 }
 
 /// What lowering names a parameter whose pattern binds no name for the whole value.
 pub const SYNTHETIC_PARAM: &str = "$p";
 
-/// A `req fn` parameter hole.
 pub struct HirReqParam {
     pub pos: SourcePosition,
-    pub clause: HirSlotClause,
+    pub clause: SlotClause,
     pub pattern: Option<HirId<HirMatcher>>,
 }
 
+/// `catch (param) { .. }`
 pub struct HirCatchClause {
     pub param: Option<HirId<HirExpr>>,
     pub body: HirId<HirExpr>,
@@ -352,7 +524,6 @@ pub struct HirCatchClause {
 pub use crate::core::objects::TypeId;
 pub use crate::frontend::ast::BuiltinType;
 
-/// What a declaration id stands for.
 pub struct TypeInfo {
     pub name: Symbol,
     pub is_trait: bool,
@@ -363,32 +534,32 @@ pub struct HirTypeDecl {
     pub id: TypeId,
     pub init: HirId<HirStmt>,
     pub fields: IndexSet<Symbol>,
-    /// Fields declared nullable with a `?` marker (`next?;`).
-    pub nullable_fields: HashSet<Symbol>,
-    /// Fields declared reassignable with a `var` modifier (`var count;`).
     pub var_fields: HashSet<Symbol>,
-    /// Each field's declared `:` clause, for the fields that have one.
-    pub field_clauses: HashMap<Symbol, HirSlotClause>,
+    pub field_clauses: HashMap<Symbol, SlotClause>,
     /// Where each field is declared.
     pub field_positions: HashMap<Symbol, SourcePosition>,
     pub methods: Vec<HirId<HirStmt>>,
     pub req_fns: Vec<HirReqFn>,
-    /// The `req <member>` holes this composer must satisfy.
     pub req_members: Vec<HirReqMember>,
-    /// The declaring trait of each method in `methods`.
     pub method_traits: Vec<Option<Symbol>>,
     pub pub_members: IndexSet<Symbol>,
     pub inner_members: IndexSet<Symbol>,
     pub trait_privates: HashMap<Symbol, HashMap<Symbol, Symbol>>,
     /// Which built-in this declares, if any.
     pub builtin: Option<BuiltinType>,
-    /// A trait's declared surface. Ordered since a surface test emits one check per name in this order.
+    /// A trait's declared surface.
     pub surface: IndexSet<Symbol>,
+    /// What this type provides for `x is T`.
     pub provides: Vec<(Symbol, TypeId)>,
     pub gives: Vec<(Symbol, Symbol, TypeId)>,
 }
 
-/// One arm of a `match`.
+impl HirTypeDecl {
+    pub fn field_owes(&self, field: Symbol, obligation: Symbol) -> bool {
+        self.field_clauses.get(&field).is_some_and(|c| c.owes(obligation))
+    }
+}
+
 pub struct HirMatchArm {
     pub matcher: HirId<HirMatcher>,
     pub guard: Option<HirId<HirExpr>>,
@@ -403,12 +574,24 @@ pub enum HirStmt {
     While(HirId<HirExpr>, HirId<HirExpr>),
     If(HirId<HirExpr>, HirId<HirExpr>, Option<HirId<HirStmt>>),
     Block(HirId<HirExpr>),
-    Say(HirFieldInit),
+    Defer(HirId<HirExpr>),
+    Say(HirSayDecl),
+    Discard(HirId<HirExpr>),
     Fn(HirFnDecl),
     Type(Box<HirTypeDecl>),
     Trait(Box<HirTypeDecl>),
     Match(HirId<HirExpr>, Vec<HirMatchArm>),
     Nop,
+}
+
+impl HirStmt {
+    pub fn declares_slot(&self) -> bool {
+        match self {
+            HirStmt::Fn(_) => true,
+            HirStmt::Type(decl) => decl.builtin.is_none(),
+            _ => false,
+        }
+    }
 }
 
 pub enum HirNodeKind {
@@ -483,7 +666,6 @@ impl<T> std::hash::Hash for HirId<T> {
     }
 }
 
-/// The type or trait an obligation names as its bad state.
 pub struct ObligationWitness {
     pub name: Symbol,
     pub id: TypeId,
@@ -535,6 +717,11 @@ impl Hir {
         self.ident_ids.get(text).copied().map(Symbol::from_raw)
     }
 
+    pub(crate) fn member_symbol(&self, member: &HirId<HirExpr>) -> Option<Symbol> {
+        let HirExpr::Literal(HirLiteral::String(text)) = self.get(member) else { return None };
+        self.symbol_of(text)
+    }
+
     pub(crate) fn intern(&mut self, text: &str) -> Symbol {
         if let Some(&id) = self.ident_ids.get(text) {
             return Symbol::from_raw(id);
@@ -543,6 +730,20 @@ impl Hir {
         self.ident_texts.push(text.to_string());
         self.ident_ids.insert(text.to_string(), id);
         Symbol::from_raw(id)
+    }
+
+    pub fn expr_at(&self, index: usize) -> Option<&HirExpr> {
+        match &self.nodes[index].kind {
+            HirNodeKind::Expr(expr) => Some(expr),
+            _ => None,
+        }
+    }
+
+    pub fn stmt_at(&self, index: usize) -> Option<&HirStmt> {
+        match &self.nodes[index].kind {
+            HirNodeKind::Stmt(stmt) => Some(stmt),
+            _ => None,
+        }
     }
 
     pub fn get<T: HirNode>(&self, id: &HirId<T>) -> &T {
@@ -564,34 +765,10 @@ impl Hir {
         HirId { id: self.nodes.len() - 1, _marker: PhantomData }
     }
 
-    pub(crate) fn stmt_at(&self, index: usize) -> Option<HirId<HirStmt>> {
-        match self.nodes.get(index).map(|n| &n.kind) {
-            Some(HirNodeKind::Stmt(_)) => Some(HirId { id: index, _marker: PhantomData }),
+    pub fn script_body(&self) -> Option<HirId<HirExpr>> {
+        match self.get(&self.get_root()) {
+            HirStmt::Expression(body) | HirStmt::Block(body) => Some(*body),
             _ => None,
-        }
-    }
-
-    pub(crate) fn lambda_ids(&self) -> Vec<HirId<HirExpr>> {
-        self.nodes.iter().enumerate()
-            .filter(|(_, n)| matches!(&n.kind, HirNodeKind::Expr(HirExpr::Literal(HirLiteral::Lambda(_)))))
-            .map(|(i, _)| HirId { id: i, _marker: PhantomData })
-            .collect()
-    }
-
-    pub fn condition_pattern_binder_sources(&self, cond: &HirId<HirExpr>) -> Vec<(Symbol, HirId<HirExpr>)> {
-        match self.get(cond) {
-            HirExpr::Match(scrutinee, matcher) => self.get(matcher).binders(self).into_iter().map(|n| (n, *scrutinee)).collect(),
-            HirExpr::Binary(BinOp::And, left, right) => {
-                let mut out = self.condition_pattern_binder_sources(left);
-                out.extend(self.condition_pattern_binder_sources(right));
-                out
-            },
-            // An `or` binds the same names on both sides, so either side names their sources.
-            HirExpr::Binary(BinOp::Or, left, _) => match self.condition_pattern_binders(cond).is_empty() {
-                true => Vec::new(),
-                false => self.condition_pattern_binder_sources(left),
-            },
-            _ => Vec::new(),
         }
     }
 
@@ -613,40 +790,6 @@ impl Hir {
         }
     }
 
-    pub(crate) fn value_source(&self, value: &HirId<HirExpr>) -> ValueSource<'_> {
-        match self.get(value) {
-            HirExpr::Identifier(name) => ValueSource::Name(*name),
-            HirExpr::This => ValueSource::Receiver,
-            HirExpr::Call(callee, args) | HirExpr::SafeCall(callee, args) => ValueSource::Call(callee, args),
-            HirExpr::Index(..) | HirExpr::SafeAccess(..) => ValueSource::Element,
-            HirExpr::Literal(HirLiteral::Lambda(_)) => ValueSource::Closure,
-
-            HirExpr::Mut(x) | HirExpr::Assert(x) | HirExpr::Propagate(x) => ValueSource::Yields(vec![*x]),
-            HirExpr::Coalesce(l, r) | HirExpr::Handle(l, _, r) => ValueSource::Yields(vec![*l, *r]),
-            HirExpr::Binary(BinOp::And | BinOp::Or, l, r) => ValueSource::Yields(vec![*l, *r]),
-            HirExpr::Assign(_, rhs) => ValueSource::Yields(vec![*rhs]),
-
-            HirExpr::Construct(_, brace) => ValueSource::Holds(brace.iter().map(|(_, v)| *v).collect()),
-            HirExpr::Literal(HirLiteral::Array(elems)) => ValueSource::Holds(elems.clone()),
-            HirExpr::Literal(HirLiteral::Dict(pairs)) => ValueSource::Holds(pairs.iter().flat_map(|(k, v)| [*k, *v]).collect()),
-
-            HirExpr::Unary(..) | HirExpr::Binary(..) | HirExpr::Match(..) | HirExpr::Block(_)
-            | HirExpr::Literal(HirLiteral::Null | HirLiteral::Boolean(_)
-                | HirLiteral::Number(_) | HirLiteral::String(_)) => ValueSource::Fresh,
-        }
-    }
-
-    pub(crate) fn expression_body(&self, body: &HirId<HirExpr>) -> Option<HirId<HirExpr>> {
-        match self.get(body) {
-            HirExpr::Block(_) => None,
-            _ => Some(*body),
-        }
-    }
-
-    pub(crate) fn body_returns_a_value(&self, body: &HirId<HirExpr>) -> bool {
-        self.expression_body(body).is_some() || self.definitely_returns(body)
-    }
-
     pub(crate) fn definitely_returns(&self, body: &HirId<HirExpr>) -> bool {
         match self.get(body) {
             HirExpr::Block(stmts) => stmts.iter().any(|s| self.stmt_returns(s)),
@@ -659,16 +802,12 @@ impl Hir {
             HirStmt::Return(_) | HirStmt::Throw(_) => true,
             HirStmt::Block(body) => self.definitely_returns(body),
             HirStmt::If(_, then, Some(otherwise)) => self.definitely_returns(then) && self.stmt_returns(otherwise),
-            // A `finally` that returns always runs. Otherwise the try returns when its body does
-            // and any catch does too.
             HirStmt::Try(body, catch, finally) => {
                 if finally.as_ref().is_some_and(|f| self.definitely_returns(f)) {
                     return true;
                 }
                 self.definitely_returns(body) && catch.as_ref().map_or(true, |c| self.definitely_returns(&c.body))
             },
-            // A match returns on every path when it cannot fall through: some guardless arm is a
-            // catch-all, and every arm returns.
             HirStmt::Match(_, arms) => {
                 arms.iter().any(|a| a.guard.is_none() && self.get(&a.matcher).is_irrefutable(self))
                     && arms.iter().all(|a| self.definitely_returns(&a.body))

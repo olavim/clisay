@@ -1,8 +1,0 @@
-trait Sink {
-    req fn accept(this, x: [fails]);
-}
-type Db with Sink {
-    pub fn accept(this, x: fails) { } // error: parameter shape does not match the trait
-    init(this) {}
-}
-print("unreachable");

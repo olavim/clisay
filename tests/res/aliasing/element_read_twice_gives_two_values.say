@@ -1,0 +1,95 @@
+say var arr = [[0]];
+say var i = 0;
+say var a = arr[i];
+say var b = arr[i];
+a[0] = 1;
+b[0] = 2;
+print(a[0]); // expect: 1
+print(b[0]); // expect: 2
+print(arr[0][0]); // expect: 0
+
+// @split
+say arr = [[0]];
+say var i = 0;
+say var a = arr[0];
+say var b = arr[i];
+a[0] = 1;
+b[0] = 2;
+print(arr[0][0]); // expect: 0
+
+// @split
+say var m = {};
+say k = "a";
+m[k] = [0];
+say var c = m[k];
+say var d = m[k];
+c[0] = 1;
+d[0] = 2;
+print(m[k][0]); // expect: 0
+
+// @split
+say var m = {};
+m[true] = [0];
+say var c = m[true];
+say var d = m[true];
+c[0] = 7;
+d[0] = 1;
+print(m[true][0]); // expect: 0
+
+// @split
+type H { pub var item; init(this) { this.item = [0]; } }
+say h = H();
+say var c = h.item;
+say var d = h.item;
+c[0] = 7;
+d[0] = 1;
+print(h.item[0]); // expect: 0
+
+// @split
+say arr = [[0], [0]];
+say var c = arr[0];
+say var d = arr[1];
+d = arr[0];
+c[0] = 7;
+d[0] = 1;
+print(c[0]); // expect: 7
+print(d[0]); // expect: 1
+print(arr[0][0]); // expect: 0
+
+// @split
+say arr = [[0]];
+say var i = 0;
+say var a = arr[i];
+say var b = arr[i];
+&a.push(1);
+b[0] = 2;
+print(a.length()); // expect: 2
+print(b.length()); // expect: 1
+
+// @split
+say arr = [[0]];
+fn down(a, n) { say var e = a[n - n]; e[0] = n; if (n > 0) { down(a, n - 1); } }
+down(arr, 1);
+print(arr[0][0]); // expect: 0
+
+// @split
+say arr = [[0], [0], [0]];
+say var a = arr[0];
+say var b = arr[1];
+say var c = arr[2];
+a[0] = 1;
+b[0] = 2;
+c[0] = 3;
+print(arr[2][0]); // expect: 0
+print(c[0]); // expect: 3
+
+// @split
+say var arr = [[0], [0]];
+say var i = 0;
+while (i < 2) {
+    say var e = arr[i];
+    e[0] = 1;
+    i = i + 1;
+}
+print(arr[0][0]); // expect: 0
+print(arr[1][0]); // expect: 0

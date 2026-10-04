@@ -1,0 +1,3 @@
+say var x = 0;
+say var i = 0;
+while i < 500000 { x = i; i = i + 1; }

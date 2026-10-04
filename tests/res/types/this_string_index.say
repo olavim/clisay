@@ -1,13 +1,12 @@
-// Inside a method, `this["x"]` resolves to the same member as `this.x` (statically).
 type Counter {
     pub var n = 0;
 
-    pub fn bump(mut this) {
+    pub fn bump(&var this) {
         this["n"] = this["n"] + 1;
     }
 }
 
-say c = mut Counter();
-c.bump();
-c.bump();
+say var c = Counter();
+&c.bump();
+&c.bump();
 print(c.n); // expect: 2

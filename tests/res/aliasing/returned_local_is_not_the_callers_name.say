@@ -1,0 +1,31 @@
+fn helper() { say var g = [1]; return g; }
+say var g = [2];
+say var r = helper();
+g[0] = 5;
+print(g[0]); // expect: 5
+print(r[0]); // expect: 1
+
+// @split
+type T { pub var n; pub fn get(this) { return this.n; } }
+say var n = [1];
+say t = T { n: [2] };
+say var r = t.get();
+n[0] = 5;
+print(n[0]); // expect: 5
+print(r[0]); // expect: 2
+
+// @split
+say var g = [1];
+fn helper() { return g; }
+say var r = helper();
+g[0] = 5;
+print(g[0]); // expect: 5
+print(r[0]); // expect: 1
+
+// @split
+fn keep(v) { return v; }
+say var a = [1];
+say var r = keep(a);
+a[0] = 5;
+print(a[0]); // expect: 5
+print(r[0]); // expect: 1

@@ -1,0 +1,8 @@
+say x = 1;
+{
+    defer { print(x); }
+    say x = 2;
+    print(x);
+}
+// expect: 2
+// expect: 1

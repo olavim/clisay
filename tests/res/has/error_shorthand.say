@@ -1,2 +1,2 @@
 say d = { x: 1 };
-d has { x }; // error: unexpected binder in a `has` test
+d has { x }; // error: unexpected binding in a `has` test

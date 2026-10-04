@@ -1,27 +1,26 @@
-// A matcher binder takes a name like any declaration, so a built-in's name is refused there too.
 
 say x = 1;
 match (x) { print => print(2), _ => print(3), }
 
 // error(full):
 // error: 'print' is a built-in and cannot be redeclared
-//  --> builtin_binder_reserved.say:4:13
+//  --> builtin_binder_reserved.say:3:13
 //   |
-// 3 | say x = 1;
-// 4 | match (x) { print => print(2), _ => print(3), }
+// 2 | say x = 1;
+// 3 | match (x) { print => print(2), _ => print(3), }
 //   |             ^^^^^
 
 // @split
 say a = [1, 2, 3];
-match (a) { [first, ..freeze] => print(first), _ => print(0), }
+match (a) { [first, ..gcCollect] => print(first), _ => print(0), }
 
 // error(full):
-// error: 'freeze' is a built-in and cannot be redeclared
+// error: 'gcCollect' is a built-in and cannot be redeclared
 //  --> builtin_binder_reserved.say:2:23
 //   |
 // 1 | say a = [1, 2, 3];
-// 2 | match (a) { [first, ..freeze] => print(first), _ => print(0), }
-//   |                       ^^^^^^
+// 2 | match (a) { [first, ..gcCollect] => print(first), _ => print(0), }
+//   |                       ^^^^^^^^^
 
 // @split
 say v = 1;

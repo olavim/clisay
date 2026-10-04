@@ -1,12 +1,13 @@
 type Tainted { } obligation tainted { witness Tainted; discharge to use; }
-say t: tainted = "x";
+fn mk(n): tainted { if n < 0 { return Tainted { }; } return "x"; }
+say t: tainted = mk(1);
 say n = t + 1;
 // error(full):
 // error: unchecked value owes 'tainted'
-//  --> error_undischarged_use.say:3:9
+//  --> error_undischarged_use.say:4:9
 //   |
-// 2 | say t: tainted = "x";
-// 3 | say n = t + 1;
+// 3 | say t: tainted = mk(1);
+// 4 | say n = t + 1;
 //   |         ^ might be Tainted
 //   |
 //   = help: make sure `t` is not Tainted before using it

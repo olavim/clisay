@@ -1,0 +1,26 @@
+type I { pub var b; init(this, b) { this.b = b; } }
+type M { pub var a; init(this, a) { this.a = a; } }
+type W { pub r; init(this, r) { this.r = r; } }
+fn maybe(x): opt { if x { return W(Ref(M(I(0)))); } return null; }
+
+say w: opt = maybe(true);
+w?.@r.a.b = 5;
+print(w?.@r.a.b ?? 0);    // expect: 5
+
+say none: opt = maybe(false);
+none?.@r.a.b = 9;
+print(none?.@r.a.b ?? 0); // expect: 0
+
+say t = Ref(M(I(0)));
+@t?.a.b = 7;
+print(@t.a.b);            // expect: 7
+
+// @split
+type I { pub var b; init(this, b) { this.b = b; } }
+type M { pub var a: opt; init(this, a: opt) { this.a = a; } }
+say t = Ref(M(I(0)));
+@t.a?.b = 5;
+print(@t.a?.b ?? 0); // expect: 5
+say u = Ref(M(null));
+@u.a?.b = 5;
+print(@u.a?.b ?? 0); // expect: 0

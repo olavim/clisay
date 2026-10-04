@@ -1,0 +1,25 @@
+trait Wt { }
+obligation warned { witness Wt; must use; }
+type W with Wt { }
+say sink = Ref([]);
+fn stash(v) { sink.mutate((&var list) => { &list.push(v); }); }
+fn f(g) {
+    say b: warned = W { };
+    g(b); // error: Uncaught exception: <instance <type W>>
+    print(b ?? "handled");
+}
+f(stash);
+
+// @split
+trait Wt { }
+obligation warned { witness Wt; must use; }
+type W with Wt { }
+say sink = Ref([]);
+fn stash(v: warned) { sink.mutate((&var list) => { &list.push(v); }); }
+fn f(g) {
+    say b: warned = W { };
+    g(b);
+    print(b ?? "handled"); // expect: handled
+}
+f(stash);
+print(@sink.length()); // expect: 1

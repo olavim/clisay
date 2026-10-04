@@ -1,0 +1,5 @@
+say r = Ref(1);
+print(r ~ Ref && @r == 1); // expect: true
+
+say x = 5;
+print(@x); // error: `@` needs a `Ref`, found 5

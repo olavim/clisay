@@ -1,0 +1,30 @@
+type Node { pub v: opt; }
+fn f(x) { match (x) { n @ Node => { say y = n.v; print(y); }, _ => { print("no"); } } } // error: Cannot assign a nullable value to non-null binding 'y'
+f(Node { v: null });
+
+// @split
+type Node { pub v: opt; }
+fn f(x) { match (x) { n @ Node => { print(n.v ?? "none"); }, _ => { print("no"); } } }
+f(Node { v: null }); // expect: none
+
+// @split
+trait W { req fn go(this); }
+type T with W { pub v: opt; pub fn go(this) { return 1; } }
+fn f(x) { match (x) { n @ W => { print(n.go()); }, _ => { print("no"); } } }
+f(T { v: 1 }); // expect: 1
+
+// @split
+type Node { pub v: opt; }
+say b = Node { v: null };
+if (b ~ n @ Node) { say y = n.v; print(y); } // error: Cannot assign a nullable value to non-null binding 'y'
+
+// @split
+type Node { pub v: opt; }
+fn f(x) { match (x) { n @ (Node { v: 1 } | Node) => { say y = n.v; print(y); }, _ => { print("no"); } } } // error: Cannot assign a nullable value to non-null binding 'y'
+f(Node { v: null });
+
+// @split
+type Node { pub v: opt; }
+type Leaf { pub v; }
+fn f(x) { match (x) { n @ (Node | Leaf) => { say y = n.v; print(y); }, _ => { print("no"); } } }
+f(Leaf { v: 7 }); // expect: 7

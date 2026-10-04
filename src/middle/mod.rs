@@ -9,6 +9,7 @@ pub mod shape;
 pub mod signatures;
 pub mod diagnose;
 pub mod walk;
+pub mod anchors;
 pub mod check;
 pub mod codegen;
 pub mod optimize;

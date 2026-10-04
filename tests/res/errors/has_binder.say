@@ -1,7 +1,7 @@
 say d = { nested: { a: 10 } };
 d has { nested: shape };
 // error(full):
-// error: unexpected binder in a `has` test
+// error: unexpected binding in a `has` test
 //  --> has_binder.say:2:17
 //   |
 // 1 | say d = { nested: { a: 10 } };

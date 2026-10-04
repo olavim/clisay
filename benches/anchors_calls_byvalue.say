@@ -1,0 +1,10 @@
+fn bump(var n) { n = n + 1; }
+say var a = [0, 0, 0, 0];
+say var i = 0;
+while i < 200000 {
+    bump(a[0]);
+    bump(a[1]);
+    bump(a[2]);
+    bump(a[3]);
+    i = i + 1;
+}

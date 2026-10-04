@@ -1,5 +1,4 @@
-// A `null` matcher matches only null, so it dispatches null apart from any other value.
-fn classify(v?) {
+fn classify(v: opt) {
     match v {
         null => print("null"),
         { k } => print(k),

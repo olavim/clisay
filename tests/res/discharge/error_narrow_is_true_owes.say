@@ -1,5 +1,4 @@
-// The true branch of `v is Err` confirms the type but keeps the obligation, so a use still fails.
-fn get(flag)! {
+fn get(flag) {
     if (flag) { return Err("boom"); }
     return 42;
 }

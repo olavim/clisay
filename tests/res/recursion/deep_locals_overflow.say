@@ -1,5 +1,3 @@
-// Locals are pushed one at a time by the dispatch loop, so that is where the value stack's
-// limit has to hold. 80 locals over 201 frames outgrow it before the frame stack fills.
 fn rec(n) {
     say a00 = 0; say a01 = 0; say a02 = 0; say a03 = 0; say a04 = 0; say a05 = 0; say a06 = 0; say a07 = 0;
     say a10 = 0; say a11 = 0; say a12 = 0; say a13 = 0; say a14 = 0; say a15 = 0; say a16 = 0; say a17 = 0;

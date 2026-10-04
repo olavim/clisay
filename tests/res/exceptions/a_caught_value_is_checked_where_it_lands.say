@@ -1,0 +1,12 @@
+fn take(h) { print(h ~ Err); }
+try { throw Err("x"); } catch (e) { take(e!); } // error: Uncaught exception: <instance <type Err>>
+
+// @split
+fn take(h) { print(h ~ Err); }
+try { throw Err("x"); } catch (e) { if (e != null) { take(e); } } // error: Uncaught exception: <instance <type Err>>
+
+// @split
+fn take(h) { print(h + 1); }
+try { throw 41; } catch (e) { take(e!); } // expect: 42
+try { throw 1; } catch (e) { take(e); } // expect: 2
+try { throw Err("boom"); } catch (e) { if (e ~ Err) { print(e.value); } } // expect: boom

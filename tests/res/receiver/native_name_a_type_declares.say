@@ -1,0 +1,11 @@
+type Box { pub v = 1; init(this) {} pub fn remove(this) { return this.v; } }
+fn f(b) { return b.remove(); }
+
+say var x = Box();
+print(f(x)); // expect: 1
+
+// @split
+fn f(b) { &b.push(1); } // error: Cannot anchor non-var binding `b`
+
+say var a = [];
+f(a);

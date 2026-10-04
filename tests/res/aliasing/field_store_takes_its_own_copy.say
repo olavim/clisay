@@ -1,0 +1,31 @@
+type B {
+  pub var v;
+  init(this) { this.v = 0; }
+  pub fn keep(var this, f, x) { say y = f(x); this.v = y; }
+}
+fn hand(a) { return a; }
+say b = B();
+b.keep(hand, 7);
+print(b.v); // expect: 0
+
+// @split
+type B {
+  pub var v;
+  init(this) { this.v = 0; }
+  pub fn keep(var this, f, x) { say y = f(x); return this.v = y; }
+}
+fn hand(a) { return a; }
+say b = B();
+print(b.keep(hand, 7)); // expect: 7
+print(b.v); // expect: 0
+
+// @split
+type B {
+  pub var v;
+  init(this) { this.v = 0; }
+  pub fn keep(&var this, f, x) { say y = f(x); this.v = y; }
+}
+fn hand(a) { return a; }
+say var b = B();
+&b.keep(hand, 7);
+print(b.v); // expect: 7

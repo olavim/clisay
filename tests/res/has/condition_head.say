@@ -1,4 +1,3 @@
-// In an `if`/`while` head a trailing `{` is the body, not part of a `has`/`is` test.
 trait K { req a; }
 type T with K { pub a; pub b; init(this) { this.a = 1; this.b = 2; } }
 say x = T();

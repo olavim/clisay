@@ -1,0 +1,41 @@
+say c = Ref(1);
+@c = 5;
+print(@c); // expect: 5
+
+// @split
+say var c = Ref(1);
+c.value = 5; // error: Invalid index: Ref doesn't have member "value"
+
+// @split
+say c = Ref(1);
+print(c["value"]); // error: Invalid index: Ref doesn't have member "value"
+
+// @split
+type P { pub var x; init(this, x) { this.x = x; } }
+say c = Ref(P(0));
+@c.x = 7;
+print(@c.x); // expect: 7
+
+// @split
+type P { pub var x; init(this, x) { this.x = x; } }
+say var c = Ref(P(0));
+c.value.x = 7; // error: Invalid index: Ref doesn't have member "value"
+
+// @split
+say c = Ref(1);
+c = Ref(2); // error: Cannot reassign binding `c`
+
+// @split
+fn maybe(): opt { return null; }
+say c = Ref(1);
+@c = maybe(); // error: Cannot store a nullable value in a `Ref`
+
+// @split
+say c = Ref(1);
+@c = null; // error: Cannot store null in a `Ref`
+
+// @split
+fn maybe(): opt { return 5; }
+say c = Ref(1);
+@c = maybe() ?? 0;
+print(@c); // expect: 5

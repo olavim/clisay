@@ -1,6 +1,0 @@
-// The restriction rides the rule, so a user obligation declaring it is bound the same way.
-type Held { } obligation held { witness Held; discharge to use; discharge before drop; }
-type Box {
-    r: held; // error: A field cannot owe 'held'
-    init(this, v) { this.r = v; }
-}

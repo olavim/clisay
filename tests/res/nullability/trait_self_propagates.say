@@ -1,4 +1,3 @@
-// The trait-self tag propagates across assignment, so a copy is still surface-restricted.
 trait Greeter {
     pub fn greet(this) {
         say self = this;

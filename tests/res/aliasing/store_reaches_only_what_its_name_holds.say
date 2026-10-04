@@ -1,0 +1,79 @@
+say var a = [0];
+a[0] = 1;
+a[0] = 2;
+print(a[0]); // expect: 2
+
+// @split
+fn id(c) { return c; }
+say fns = [id];
+say var a = [0];
+a[0] = 1;
+say b = fns[0](a);
+a[0] = 2;
+print(a[0]); // expect: 2
+print(b[0]); // expect: 1
+
+// @split
+fn id(c) { return c; }
+say fns = [id];
+say var a = [0];
+a[0] = 1;
+say var b = fns[0](a);
+b[0] = 2;
+print(b[0]); // expect: 2
+
+// @split
+type T { pub var x; init(this) { this.x = 0; } }
+say var t = T();
+t.x = 1;
+print(t.x); // expect: 1
+
+// @split
+type T { pub var x; init(this) { this.x = 0; } }
+fn id(c) { return c; }
+say fns = [id];
+say var t = T();
+t.x = 1;
+say u = fns[0](t);
+t.x = 2;
+print(t.x); // expect: 2
+print(u.x); // expect: 1
+
+// @split
+say var e = [0];
+e[0] = 1;
+say var a = [e];
+a[0][0] = 2;
+print(a[0][0]); // expect: 2
+print(e[0]); // expect: 1
+
+// @split
+say var e = [0];
+e[0] = 1;
+say a = [e];
+print(a[0][0]); // expect: 1
+
+// @split
+say var a = [0];
+{
+    a[0] = 1;
+}
+say var b = [a];
+b[0][0] = 2;
+print(b[0][0]); // expect: 2
+print(a[0]); // expect: 1
+
+// @split
+say var a = [0];
+a[0] = 1;
+print(a[0]); // expect: 1
+a[0] = 2;
+print(a[0]); // expect: 2
+
+// @split
+say var a = [0];
+a[0] = 1;
+&a.push(2);
+a[0] = 3;
+print(a.length()); // expect: 2
+print(a[0]); // expect: 3

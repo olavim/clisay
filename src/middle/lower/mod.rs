@@ -1,6 +1,7 @@
 //! Lowering: AST to HIR transformation.
 
 mod init;
+mod ref_access;
 mod traits;
 
 use indexmap::IndexSet;
@@ -10,10 +11,9 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
-use crate::ast::{MatchArm, Ast, AstId, Capability, CatchClause, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, Param, ReturnShape, SlotClause, Stmt, Symbol, TypeDecl};
-use crate::middle::hir::{
-    BinOp, Hir, HirSlotClause, HirMatchArm, HirCatchClause, HirExpr, HirFieldInit, HirFnDecl, HirId, HirLiteral, HirMatcher, HirMatchElem, HirMatchField, HirParam, HirStmt, ObligationWitness, TypeId, UnOp,
-};
+use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchArm, MatchArrayElem, MatchRest, MatchScalar, Matcher, Operator, Param, Receiver, SayDecl, SlotClause, Stmt, Symbol, TypeDecl};
+use crate::core::objects::UNDECLARED;
+use crate::middle::hir::{BinOp, Hir, HirCatchClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatchElem, HirMatchField, HirMatchRest, HirMatcher, HirParam, HirSayDecl, HirStmt, ObligationWitness, TypeId, UnOp};
 use crate::middle::names::NameBindings;
 
 pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
@@ -33,25 +33,31 @@ pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
         type_ids: HashMap::new(),
         emitted_aliases: HashSet::new(),
         in_factory: None,
+        nested_bodies: 0,
+        expr_substitution: None,
     };
     lowerer.stmt(&root)?;
     Ok(lowerer.hir)
+}
+
+pub(super) struct Factory {
+    pub(super) fields: IndexSet<Symbol>,
+    pub(super) composer: AstId<Stmt>,
 }
 
 struct Lowerer<'a> {
     ast: &'a Ast,
     names: &'a NameBindings,
     hir: Hir,
-    /// The interned `opt` symbol.
     opt: Symbol,
     /// The traits the composer currently being lowered provides.
     provided_traits: HashSet<Symbol>,
     type_ids: HashMap<AstId<Stmt>, TypeId>,
+    /// Method name aliases (`"<Trait>.<method>"`) usable in the current composer.
     emitted_aliases: HashSet<String>,
-    /// While lowering a factory body or its field defaults, the enclosing type's field names and the
-    /// factory's param names. Inside a factory `this` is not a value, and each `this.<field>` or bare
-    /// field name (not shadowed by a param) is the field's synthetic local.
-    in_factory: Option<(IndexSet<Symbol>, IndexSet<Symbol>)>,
+    in_factory: Option<Factory>,
+    nested_bodies: usize,
+    expr_substitution: Option<(AstId<Expr>, HirId<HirExpr>)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -67,7 +73,6 @@ impl<'a> Lowerer<'a> {
         anyhow!("{}", Diagnostic::new(msg, pos.clone()).with_help(help))
     }
 
-    /// The name a binder node carries. A rest element holds one so its name has a position.
     fn binder_name(&self, binder: &AstId<Matcher>) -> Symbol {
         match self.ast.get(binder) {
             Matcher::Binder(name) => *name,
@@ -75,16 +80,14 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// A declaration's identity. Whichever site asks first assigns it, so a type mixing a trait
-    /// declared later still names the same id that trait gets when it gets lowered.
+    /// A declaration's identity, assigned on first request.
     fn type_id(&mut self, decl: AstId<Stmt>) -> Result<TypeId, anyhow::Error> {
         if let Some(id) = self.type_ids.get(&decl) {
             return Ok(*id);
         }
-        // `TypeId::MAX` marks a type the VM builds for itself, so it is not handed out.
-        let next = TypeId::try_from(self.type_ids.len()).ok().filter(|id| *id < TypeId::MAX);
+        let next = TypeId::try_from(self.type_ids.len()).ok().filter(|id| *id != UNDECLARED);
         let Some(next) = next else {
-            return Err(self.error(format!("a program may declare at most {} types and traits", TypeId::MAX as usize), &decl));
+            return Err(self.error(format!("a program may declare at most {} types and traits", UNDECLARED as usize), &decl));
         };
         self.type_ids.insert(decl, next);
         Ok(next)
@@ -104,7 +107,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn ast_block(&self, id: &AstId<Expr>) -> &'a [AstId<Stmt>] {
+    fn ast_block_stmts(&self, id: &AstId<Expr>) -> &'a [AstId<Stmt>] {
         match self.ast.get(id) {
             Expr::Block(stmts) => stmts,
             _ => unreachable!("expected a block expression"),
@@ -115,6 +118,14 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(stmt_id).clone();
         let kind = match self.ast.get(stmt_id) {
             Stmt::Expression(expr) => HirStmt::Expression(self.expr(expr)?),
+            Stmt::Discard(value) => HirStmt::Discard(self.expr(value)?),
+            Stmt::Return(None) if self.in_factory.is_some() && self.nested_bodies == 0 => {
+                let pos = self.ast.pos(stmt_id).clone();
+                let mut out = self.factory_epilogue(&pos)?;
+                out.push(self.hir.add(HirStmt::Return(None), pos.clone()));
+                let block = self.hir.add(HirExpr::Block(out), pos.clone());
+                HirStmt::Block(block)
+            },
             Stmt::Return(expr) => HirStmt::Return(self.opt_expr(expr)?),
             Stmt::Throw(expr) => HirStmt::Throw(self.expr(expr)?),
             Stmt::Try(body, catch, finally) => {
@@ -137,12 +148,13 @@ impl<'a> Lowerer<'a> {
                 HirStmt::If(cond, then, otherwise)
             },
             Stmt::Block(body) => HirStmt::Block(self.expr(body)?),
+            Stmt::Defer(body) => HirStmt::Defer(self.expr(body)?),
             Stmt::Match(scrutinee, arms) => {
                 let scrutinee = self.expr(scrutinee)?;
                 let arms = arms.iter().map(|arm| self.lower_match_arm(arm)).collect::<Result<_, _>>()?;
                 HirStmt::Match(scrutinee, arms)
             },
-            Stmt::Say(field) => HirStmt::Say(self.field_init(field)?),
+            Stmt::Say(field) => HirStmt::Say(self.say_decl(field)?),
             Stmt::Obligation { name, witness, rules } => {
                 let (name, witness, rules) = (*name, *witness, *rules);
                 let witness = match witness {
@@ -176,6 +188,11 @@ impl<'a> Lowerer<'a> {
     }
 
     fn expr(&mut self, expr_id: &AstId<Expr>) -> Result<HirId<HirExpr>, anyhow::Error> {
+        if let Some((at, with)) = self.expr_substitution {
+            if at == *expr_id {
+                return Ok(with);
+            }
+        }
         let pos = self.ast.pos(expr_id).clone();
         let kind = match self.ast.get(expr_id) {
             Expr::Block(stmts) => {
@@ -201,7 +218,7 @@ impl<'a> Lowerer<'a> {
                         // Inside a factory `this` is not a value, so `this.<field>` names a field and
                         // nothing else. It desugars to the field's synthetic local.
                         if self.in_factory.is_some() {
-                            let field = self.hir.symbol_of(name).filter(|sym| self.in_factory.as_ref().unwrap().0.contains(sym));
+                            let field = self.hir.symbol_of(name).filter(|sym| self.in_factory.as_ref().unwrap().fields.contains(sym));
                             if let Some(field) = field {
                                 let local = self.field_local_sym(field);
                                 return Ok(self.hir.add(HirExpr::Identifier(local), pos));
@@ -213,21 +230,17 @@ impl<'a> Lowerer<'a> {
                         return Err(self.error("`this` is not a value in a factory; index only its fields by name".to_string(), expr_id));
                     }
                 }
-                HirExpr::Index(self.expr(target)?, self.expr(member)?, *is_dot)
+                if let Expr::Literal(Literal::String(name)) = self.ast.get(member) {
+                    self.hir.intern(&name);
+                }
+                HirExpr::Index { base: self.expr(target)?, member: self.expr(member)?, is_dot: *is_dot, safe: false }
             },
             Expr::Literal(lit) => HirExpr::Literal(self.literal(lit)?),
             Expr::Identifier(name) => {
                 if self.names.trait_ref(*expr_id).is_some() {
                     return Err(self.error(format!("'{}' is a trait and cannot be used as a value (traits are not instantiable)", self.hir.text(*name)), expr_id));
                 }
-                // In a factory a bare field name is an implicit `this.<field>`, so it is the field's
-                // synthetic local. A param of the same name shadows it.
-                let is_field = self.in_factory.as_ref().is_some_and(|(fields, params)| fields.contains(name) && !params.contains(name));
-                if is_field {
-                    HirExpr::Identifier(self.field_local_sym(*name))
-                } else {
-                    HirExpr::Identifier(*name)
-                }
+                HirExpr::Identifier(*name)
             },
             // `x is T` is `x ~ T`: the same nominal test, and the same code.
             Expr::Is(target, name) => {
@@ -236,8 +249,7 @@ impl<'a> Lowerer<'a> {
                 HirExpr::Match(target, self.hir.add(matcher, pos.clone()))
             },
             Expr::Construct(callee, fields) => {
-                // The callee is a bare type name `C` or an empty call `C()`. The parser rejects
-                // arguments beside a brace, so only the type expression is left to evaluate.
+                // The callee is a bare type name `C` or an empty call `C()`.
                 let callee = match self.ast.get(callee) {
                     Expr::Call(c, _) => self.expr(c)?,
                     _ => self.expr(callee)?,
@@ -248,7 +260,6 @@ impl<'a> Lowerer<'a> {
                 }
                 HirExpr::Construct(callee, brace)
             },
-            Expr::Mut(inner) => return self.lower_value_mut(expr_id, inner),
             Expr::This => {
                 // A `this.<field>` access is handled in the `Index` arm above. Reaching here means
                 // `this` is used as a value, which a factory forbids.
@@ -258,17 +269,19 @@ impl<'a> Lowerer<'a> {
                 }
                 HirExpr::This
             },
-            Expr::SafeAccess(target, member, is_dot) => HirExpr::SafeAccess(self.expr(target)?, self.expr(member)?, *is_dot),
+            Expr::SafeAccess(target, member, is_dot) => HirExpr::Index { base: self.expr(target)?, member: self.expr(member)?, is_dot: *is_dot, safe: true },
             Expr::SafeCall(callee, args) => HirExpr::SafeCall(self.expr(callee)?, self.exprs(args)?),
             Expr::Propagate(operand) => HirExpr::Propagate(self.expr(operand)?),
             Expr::Handle(left, binder, handler) => HirExpr::Handle(self.expr(left)?, *binder, self.expr(handler)?),
             Expr::Assert(operand) => HirExpr::Assert(self.expr(operand)?),
+            Expr::Anchor(path) => HirExpr::Anchor(self.expr(path)?),
             Expr::Has(left, matcher) => {
                 let left = self.expr(left)?;
                 self.validate_has_operand(matcher)?;
                 // `x has M` is equivalent to `x ~ has M`.
                 HirExpr::Match(left, self.lower_matcher(matcher)?)
             },
+            Expr::RefAccess(inner) => self.read_ref_access(&inner.clone())?,
             Expr::Match(scrutinee, matcher) => {
                 let scrutinee = self.expr(scrutinee)?;
                 HirExpr::Match(scrutinee, self.lower_matcher(matcher)?)
@@ -279,16 +292,21 @@ impl<'a> Lowerer<'a> {
 
     fn binary(&mut self, expr_id: &AstId<Expr>, op: &Operator, left: &AstId<Expr>, right: &AstId<Expr>) -> Result<HirId<HirExpr>, anyhow::Error> {
         let pos = self.ast.pos(expr_id).clone();
-        // A compound assignment desugars to `target = target <op> value`.
         if let Some(binop) = compound_assign_binop(op) {
-            let value = HirExpr::Binary(binop, self.expr(left)?, self.expr(right)?);
-            let value = self.hir.add(value, self.ast.pos(right).clone());
-            let kind = HirExpr::Assign(self.expr(left)?, value);
+            if let Some(target) = self.ref_access_target_of(left) {
+                return self.assign_through_ref_access(target, Some(binop), right, &pos);
+            }
+            let kind = HirExpr::CompoundAssign(self.expr(left)?, binop, self.expr(right)?);
             return Ok(self.hir.add(kind, pos));
+        }
+        if matches!(op, Operator::Assign) {
+            if let Some(target) = self.ref_access_target_of(left) {
+                return self.assign_through_ref_access(target, None, right, &pos);
+            }
         }
         let kind = match op {
             Operator::Assign => HirExpr::Assign(self.expr(left)?, self.expr(right)?),
-            Operator::MemberAccess => HirExpr::Index(self.expr(left)?, self.expr(right)?, true),
+            Operator::MemberAccess => HirExpr::Index { base: self.expr(left)?, member: self.expr(right)?, is_dot: true, safe: false },
             Operator::Comma => return Err(self.error("Unexpected ','", right)),
             // Null-coalescing stays a dedicated HIR node. Codegen short-circuits it later.
             Operator::Coalesce => HirExpr::Coalesce(self.expr(left)?, self.expr(right)?),
@@ -297,38 +315,32 @@ impl<'a> Lowerer<'a> {
         Ok(self.hir.add(kind, pos))
     }
 
-    fn lower_value_mut(&mut self, node: &AstId<Expr>, inner: &AstId<Expr>) -> Result<HirId<HirExpr>, anyhow::Error> {
-        let constructs = match self.ast.get(inner) {
-            Expr::Literal(Literal::Array(_)) | Expr::Literal(Literal::Dict(_)) | Expr::Construct(..) => true,
-            Expr::Call(callee, _) => self.calls_a_type(callee),
-            _ => false,
-        };
-        if !constructs {
-            return Err(self.error_help_at("invalid operand of `mut`", self.ast.pos(node),
-                "`mut` can only prefix a construction like `mut {}`, `mut []`, or `mut Ctor()`"));
-        }
-        let lowered = self.expr(inner)?;
-        Ok(self.hir.add(HirExpr::Mut(lowered), self.ast.pos(node).clone()))
-    }
-
-    /// Whether a call constructs, which is what `mut` may mark. Any other call returns a value it
-    /// did not make, so marking it would re-mark what someone else holds.
-    fn calls_a_type(&self, callee: &AstId<Expr>) -> bool {
-        match self.ast.get(callee) {
-            Expr::Identifier(name) => self.names.is_type_or_trait(*name),
-            _ => false,
-        }
+    fn lower_with_expr_substitution(&mut self, node: &AstId<Expr>, at: AstId<Expr>, with: HirId<HirExpr>) -> Result<HirId<HirExpr>, anyhow::Error> {
+        let outer = self.expr_substitution.replace((at, with));
+        let lowered = self.expr(node);
+        self.expr_substitution = outer;
+        lowered
     }
 
     fn exprs(&mut self, exprs: &[AstId<Expr>]) -> Result<Vec<HirId<HirExpr>>, anyhow::Error> {
         exprs.iter().map(|e| self.expr(e)).collect()
     }
 
+    fn lower_rest(&mut self, rest: &MatchRest) -> Result<HirMatchRest, anyhow::Error> {
+        let every = rest.matcher.map(|e| self.lower_matcher(&e)).transpose()?;
+        if let Some(every) = every.filter(|e| self.hir.get(e).binds_anything(&self.hir)) {
+            return Err(self.error_at(
+                "a quantified matcher runs once per value, so it cannot bind a name".to_string(),
+                self.hir.pos(&every)));
+        }
+        Ok(HirMatchRest { binder: rest.binder.map(|b| self.binder_name(&b)), every })
+    }
+
     fn validate_has_operand(&self, id: &AstId<Matcher>) -> Result<(), anyhow::Error> {
         match self.ast.get(id) {
             Matcher::Wildcard | Matcher::Literal(_) => Ok(()),
             Matcher::Binder(_) => Err(self.error_help_at(
-                "unexpected binder in a `has` test",
+                "unexpected binding in a `has` test",
                 self.ast.pos(id),
                 "`has` only tests. To test and bind, use the `~` match operator; to test without binding, use `_`")),
             Matcher::As(..) => Err(self.error("`has` binds nothing; an `@` as-binding is only for `match`", id)),
@@ -342,13 +354,20 @@ impl<'a> Lowerer<'a> {
                     None => Ok(()),
                 }
             },
-            Matcher::Shape(fields) => {
+            Matcher::Dict(shape) => self.validate_has_operand(&shape.clone()),
+            Matcher::Shape { fields, rest } => {
+                if rest.is_some() {
+                    return Err(self.error_help_at(
+                        "a `has` shape cannot take a rest",
+                        self.ast.pos(id),
+                        "`has { }` tests an instance as well as a dict, and only a dict has a remainder. Use `~ { .. }` to match a dict"));
+                }
                 for field in fields {
                     if let Matcher::Binder(b) = self.ast.get(&field.value) {
                         if let MatchScalar::String(s) = &field.key {
                             if s == self.hir.text(*b) {
                                 return Err(self.error_help_at(
-                                    "unexpected binder in a `has` test",
+                                    "unexpected binding in a `has` test",
                                     self.ast.pos(&field.value),
                                     format!("for key presence write `{{ {s}: _ }}`")));
                             }
@@ -361,10 +380,12 @@ impl<'a> Lowerer<'a> {
             Matcher::Array(elements) => {
                 for element in elements {
                     match element {
-                        MatchElem::Elem(m) => self.validate_has_operand(m)?,
-                        MatchElem::Rest(None) => {},
-                        MatchElem::Rest(Some(_)) => return Err(self.error(
+                        MatchArrayElem::Elem(m) => self.validate_has_operand(m)?,
+                        MatchArrayElem::Rest(rest) if rest.binder.is_some() => return Err(self.error(
                             "a `has` array cannot bind a rest; `..name` is only for `match`. Use a nameless `..` to skip the middle", id)),
+                        MatchArrayElem::Rest(rest) => {
+                            if let Some(every) = &rest.matcher { self.validate_has_operand(every)?; }
+                        },
                     }
                 }
                 Ok(())
@@ -394,21 +415,27 @@ impl<'a> Lowerer<'a> {
                 };
                 HirMatcher::Type { nominal: *nominal, name: *name, shape }
             },
-            Matcher::Shape(fields) => {
+            Matcher::Shape { fields, rest } => {
+                let rest = rest.clone();
                 let fields: Vec<_> = fields.iter().map(|f| (match_scalar(&f.key), f.value)).collect();
                 let mut lowered = Vec::with_capacity(fields.len());
                 for (key, value) in fields {
+                    if let HirLiteral::String(text) = &key {
+                        self.hir.intern(&text.clone());
+                    }
                     lowered.push(HirMatchField { key, value: self.lower_matcher(&value)? });
                 }
-                HirMatcher::Shape(lowered)
+                let rest = rest.as_ref().map(|rest| self.lower_rest(rest)).transpose()?;
+                HirMatcher::Shape { fields: lowered, rest }
             },
+            Matcher::Dict(shape) => HirMatcher::Dict(self.lower_matcher(&shape.clone())?),
             Matcher::Array(elements) => {
                 let elements: Vec<_> = elements.to_vec();
                 let mut lowered = Vec::with_capacity(elements.len());
                 for element in &elements {
                     lowered.push(match element {
-                        MatchElem::Elem(matcher) => HirMatchElem::Elem(self.lower_matcher(matcher)?),
-                        MatchElem::Rest(binder) => HirMatchElem::Rest(binder.map(|b| self.binder_name(&b))),
+                        MatchArrayElem::Elem(matcher) => HirMatchElem::Elem(self.lower_matcher(matcher)?),
+                        MatchArrayElem::Rest(rest) => HirMatchElem::Rest(self.lower_rest(rest)?),
                     });
                 }
                 HirMatcher::Array(lowered)
@@ -442,51 +469,27 @@ impl<'a> Lowerer<'a> {
         })
     }
 
-    /// Each field's lowered `:` clause. A field with no clause carries nothing.
-    pub(super) fn field_clauses(&self, decl: &TypeDecl) -> HashMap<Symbol, HirSlotClause> {
+    pub(super) fn field_clauses(&self, decl: &TypeDecl) -> HashMap<Symbol, SlotClause> {
         decl.field_clauses.iter()
-            .map(|(field, clause)| (*field, self.slot_clause(decl.nullable_fields.contains(field), clause)))
+            .map(|(field, clause)| (*field, clause.clone()))
             .collect()
     }
 
-    fn slot_clause(&self, marker_nullable: bool, clause: &SlotClause) -> HirSlotClause {
-        let mut names = clause.names.clone();
-        if marker_nullable && !names.contains(&self.opt) {
-            names.push(self.opt);
-        }
-        HirSlotClause {
-            capability: clause.capability,
-            names,
-            container: clause.container,
-            void: clause.void,
-            pos: clause.pos.clone()
-        }
-    }
-
-    pub(super) fn return_clause(&self, decl: &FnDecl) -> (ReturnShape, HirSlotClause) {
-        let clause = self.slot_clause(decl.ret == ReturnShape::Nullable, &decl.clause);
-        let ret = if decl.clause.void {
-            ReturnShape::Void
-        } else if clause.names.contains(&self.opt) {
-            ReturnShape::Nullable
-        } else if !decl.clause.names.is_empty() || decl.clause.capability != Capability::None {
-            ReturnShape::Inferred
-        } else {
-            decl.ret
-        };
-        (ret, clause)
+    fn receiver(&self, receiver: &Receiver) -> Receiver {
+        let clause = receiver.clause.clone();
+        Receiver { pos: receiver.pos.clone(), clause, reassignable: receiver.reassignable, anchor: receiver.anchor }
     }
 
     /// Lowers a parameter list, desugaring each param's `?` marker and `:` clause into one clause.
     pub(super) fn params(&mut self, params: &[Param]) -> Result<Vec<HirParam>, anyhow::Error> {
         params.iter().enumerate().map(|(i, p)| {
-            let clause = self.slot_clause(p.nullable, &p.clause);
+            let clause = p.clause.clone();
             let (sym, pattern) = self.param_slot(p, i)?;
             Ok(HirParam {
+                anchor: p.anchor,
                 name: self.hir.add(HirExpr::Identifier(sym), p.pos.clone()),
                 pattern,
                 pos: p.pos.clone(),
-                nullable: clause.names.contains(&self.opt),
                 reassignable: p.reassignable,
                 clause,
             })
@@ -499,27 +502,48 @@ impl<'a> Lowerer<'a> {
             Some(name) => name,
             None => self.hir.intern(&format!("{}{index}", crate::middle::hir::SYNTHETIC_PARAM)),
         };
-        Ok((name, self.entry_pattern(&param.pattern)?))
+        Ok((name, self.pattern_left_to_match(&param.pattern)?))
     }
 
-    /// The part of a parameter's pattern an entry step still has to match.
-    pub(super) fn entry_pattern(&mut self, pattern: &AstId<Matcher>) -> Result<Option<HirId<HirMatcher>>, anyhow::Error> {
+    /// What a pattern still has to match once the slot has taken its name. A lone name leaves
+    /// nothing, and `name @ inner` leaves the inner, since the name became the slot.
+    pub(super) fn pattern_left_to_match(&mut self, pattern: &AstId<Matcher>) -> Result<Option<HirId<HirMatcher>>, anyhow::Error> {
         match self.ast.get(pattern) {
             Matcher::Binder(_) | Matcher::Wildcard => Ok(None),
             Matcher::As(_, inner) => Ok(Some(self.lower_matcher(&(*inner))?)),
-            _ => Ok(Some(self.lower_matcher(pattern)?)),
+            // Listed rather than caught, so a new matcher has to answer here.
+            Matcher::Literal(_)
+            | Matcher::Type { .. }
+            | Matcher::Shape { .. }
+            | Matcher::Dict(_)
+            | Matcher::Array(_)
+            | Matcher::Or(_)
+            | Matcher::And(_) => Ok(Some(self.lower_matcher(pattern)?)),
         }
     }
 
+    fn wrap_expression_body(&mut self, body: HirId<HirExpr>, at: &AstId<Expr>) -> HirId<HirExpr> {
+        if matches!(self.hir.get(&body), HirExpr::Block(_)) {
+            return body;
+        }
+        let pos = self.ast.pos(at).clone();
+        let ret = self.hir.add(HirStmt::Return(Some(body)), pos.clone());
+        self.hir.add(HirExpr::Block(vec![ret]), pos)
+    }
+
     fn fn_decl(&mut self, decl: &FnDecl) -> Result<HirFnDecl, anyhow::Error> {
-        let (ret, clause) = self.return_clause(decl);
+        let clause = decl.clause.clone();
+        let receiver = decl.receiver.as_ref().map(|r| self.receiver(r));
+        let params = self.params(&decl.params)?;
+        self.nested_bodies += 1;
+        let body = self.expr(&decl.body).map(|body| self.wrap_expression_body(body, &decl.body));
+        self.nested_bodies -= 1;
         Ok(HirFnDecl {
             name: decl.name,
             sig_pos: decl.sig_pos.clone(),
-            receiver: decl.receiver.as_ref().map(|r| self.slot_clause(false, &r.clause)),
-            params: self.params(&decl.params)?,
-            body: self.expr(&decl.body)?,
-            ret,
+            receiver,
+            params,
+            body: body?,
             clause,
         })
     }
@@ -531,12 +555,17 @@ impl<'a> Lowerer<'a> {
         self.hir.intern(&name)
     }
 
-    fn field_init(&mut self, field: &FieldInit) -> Result<HirFieldInit, anyhow::Error> {
-        let clause = self.slot_clause(field.nullable, &field.clause);
-        Ok(HirFieldInit {
+    fn say_decl(&mut self, field: &SayDecl) -> Result<HirSayDecl, anyhow::Error> {
+        let clause = field.clause.clone();
+        let pattern = match &field.pattern {
+            Some(pattern) => self.pattern_left_to_match(pattern)?,
+            None => None,
+        };
+        Ok(HirSayDecl {
             name: field.name,
+            pattern,
+            otherwise: self.opt_expr(&field.otherwise)?,
             value: self.opt_expr(&field.value)?,
-            nullable: clause.names.contains(&self.opt),
             reassignable: field.reassignable,
             clause,
         })

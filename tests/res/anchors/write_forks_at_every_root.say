@@ -1,0 +1,58 @@
+say var nested = [[1]];
+nested[0][0] = 9;
+say var shared = nested;
+shared[0][0] = 7;
+print(nested[0][0]); // expect: 9
+
+// @split
+say a = Ref([1, 2]);
+say b = @a;
+fn writes() { @a[0] = 9; }
+writes();
+print(@a[0]); // expect: 9
+print(b[0]); // expect: 1
+
+// @split
+type H { pub var arr; init(this, arr) { this.arr = arr; } pub fn bump(&var this) { this.arr[0] = 9; } }
+say var src = [1];
+say var h = H(src);
+&h.bump();
+print(h.arr[0]); // expect: 9
+print(src[0]); // expect: 1
+
+// @split
+fn many(&var n) { say s = n[0]+n[0]+n[0]+n[0]+n[0]+n[0]+n[0]+n[0]; n[0] = s; }
+say var a = [1];
+say b = a;
+many(&a);
+print(a[0]); // expect: 8
+print(b[0]); // expect: 1
+
+// @split
+type Box { pub var v = 0; pub fn bump(&var this) { this.v = this.v + 1; } }
+say a = Box { v: 0 };
+say m = a.bump; // error: `bump` wants an anchor receiver, so it cannot be bound as a value
+
+// @split
+say var a = [[[1]]];
+say var b = a;
+b[0][0][0] = 7;
+print(a[0][0][0]); // expect: 1
+print(b[0][0][0]); // expect: 7
+
+// @split
+say var a = [[[1]]];
+a[0][0][0] = 9;
+say var b = a;
+b[0][0][0] = 7;
+print(a[0][0][0]); // expect: 9
+
+// @split
+type C { pub var v; }
+type B { pub var c; }
+type A { pub var b; }
+say var x = A { b: B { c: C { v: 1 } } };
+say var y = x;
+y.b.c.v = 7;
+print(x.b.c.v); // expect: 1
+print(y.b.c.v); // expect: 7

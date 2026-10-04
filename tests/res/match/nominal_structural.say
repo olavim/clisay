@@ -1,9 +1,6 @@
-// Nominal and structural tests mix per level: a nominal outer with a structural inner, and a
-// structural outer with a nominal inner.
-type Move { pub from; pub to; init(this, *a, *b) { this.from = a; this.to = b; } }
+type Move { pub from; pub to; init(this, a, b) { this.from = a; this.to = b; } }
 trait Logger { pub fn log(this) { } }
 type Console with Logger { init(this) { } pub fn log(this) { print("logged"); } }
-
 fn handle(event) {
     match event {
         Move { from: { x, y }, to } => { print(x); print(y); print(to); },
@@ -11,7 +8,6 @@ fn handle(event) {
         _ => print("none"),
     }
 }
-
 handle(Move({ x: 1, y: 2 }, 9)); // expect: 1
 // expect: 2
 // expect: 9

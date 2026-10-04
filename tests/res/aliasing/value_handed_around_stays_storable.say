@@ -1,0 +1,76 @@
+fn drop(c) { }
+fn run(g, c) { g(c); }
+fn get(x) { return x; }
+say f = get;
+say var keep = [];
+say var e = [0];
+run(drop, e);
+&keep.push(f(e));
+e[0] = 3;
+print(keep[0][0]); // expect: 0
+print(e[0]); // expect: 3
+
+// @split
+fn drop(c) { }
+fn run(g, c) { g(c); }
+fn get(x) { return x; }
+say f = get;
+say var e = [0];
+run(drop, e);
+say w = [f(e)];
+e[0] = 3;
+print(w[0][0]); // expect: 0
+
+// @split
+fn drop(c) { }
+fn run(g, c) { g(c); }
+fn get(x) { return x; }
+say f = get;
+say var keep = [0];
+say var e = [0];
+run(drop, e);
+keep[0] = f(e);
+e[0] = 3;
+print(keep[0][0]); // expect: 0
+
+// @split
+type Box { pub var item; init(this) { this.item = 0; } }
+fn drop(c) { }
+fn run(g, c) { g(c); }
+fn get(x) { return x; }
+say f = get;
+say var b = Box();
+say var e = [0];
+run(drop, e);
+b.item = f(e);
+e[0] = 3;
+print(b.item[0]); // expect: 0
+
+// @split
+fn drop(c) { }
+fn run(g, c) { g(c); }
+fn get(x) { return x; }
+say f = get;
+say var e = [0];
+run(drop, e);
+say w = { "k": f(e) };
+e[0] = 3;
+print(w["k"][0]); // expect: 0
+
+// @split
+fn drop(c) { }
+fn run(g, c) { g(c); }
+fn get(x) { return x; }
+say f = get;
+say e = [1];
+run(drop, e);
+print(f(e)[0]); // expect: 1
+
+// @split
+fn get(x) { return x; }
+say f = get;
+say var keep = [];
+say e = [0];
+&keep.push(f(e));
+keep[0][0] = 7;
+print(keep[0][0]); // expect: 7

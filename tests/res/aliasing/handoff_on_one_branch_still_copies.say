@@ -1,0 +1,10 @@
+fn eat(x) { }
+fn run(k, g) {
+    say var a = [1];
+    say var sink = [0];
+    if (k == 1) { g(a); } else { sink = a; }
+    say var c = a;
+    c[0] = 99;
+    print(sink[0]); // expect: 1
+}
+run(2, eat);

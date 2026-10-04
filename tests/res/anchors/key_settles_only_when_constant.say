@@ -1,0 +1,25 @@
+fn take(&var a, &var b) { a = 7; b = 8; }
+
+say var g = [[0, 0], [0, 0]];
+say var i = 0;
+say var p = &g[i];
+{ say var i = 1; take(&p[i], &g[i]); }
+print(g[0][1]); // expect: 7
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [[0], [0]];
+say var i = 0;
+say var p = &a[i];
+i = 1;
+f(&p[0], &a[i][0]);
+print(a[0][0]); // expect: 1
+print(a[1][0]); // expect: 2
+
+// @split
+type G { pub var m = 0; }
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var g = G();
+f(&g.m, &g.m); // error: Two anchors in one call name the same storage

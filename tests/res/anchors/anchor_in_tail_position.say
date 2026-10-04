@@ -1,0 +1,27 @@
+fn h(&var n) { say var p = 1; say var q = 2; n = 42; return q; }
+fn g() { say var a = 5; say var b = 6; say var x = 1; return h(&x); }
+print(g()); // expect: 2
+
+// @split
+fn h(&var n) { n = 42; return 0; }
+fn g() { say var x = 1; h(&x); return x; }
+print(g()); // expect: 42
+
+// @split
+fn h(&var n) { n = 42; return 0; }
+
+fn g(&var arr) { say var t = &arr[0]; return h(&t); }
+
+say var arr = [1, 2, 3];
+g(&arr);
+print(arr[0]); // expect: 42
+
+// @split
+fn down(&var acc, n) {
+    if (n == 0) { return acc; }
+    acc = acc + n;
+    return down(&acc, n - 1);
+}
+
+say var a = 0;
+print(down(&a, 100000)); // expect: 5000050000

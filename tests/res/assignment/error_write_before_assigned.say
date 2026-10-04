@@ -1,0 +1,15 @@
+say var a;
+a[0] = 1; // error: 'a' is used before it is assigned
+
+// @split
+say var a;
+a.b = 1; // error: 'a' is used before it is assigned
+
+// @split
+say var a;
+a![0] = 1; // error: 'a' is used before it is assigned
+
+// @split
+say var a = [1];
+a[0] = 9;
+print(a[0]); // expect: 9

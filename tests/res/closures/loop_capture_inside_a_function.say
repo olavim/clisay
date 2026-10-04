@@ -1,0 +1,12 @@
+say box = Ref([]);
+fn go() {
+    say var i = 0;
+    while (i < 2) {
+        say a = i * 100;
+        box.mutate((&var list) => { &list.push(() => a); });
+        i = i + 1;
+    }
+}
+go();
+print(@box[0]()); // expect: 0
+print(@box[1]()); // expect: 100

@@ -1,0 +1,5 @@
+{
+    say x = 1;
+    defer { print(x); } // expect: 1
+    say x = 2;
+}

@@ -1,5 +1,5 @@
-trait Adder  { fn helper(this)! { return 1; }  pub fn add(this, n)!  { return n + helper(); } }
-trait Subber { fn helper(this)! { return 10; } pub fn sub(this, n)!  { return n - helper(); } }
+trait Adder  { fn helper(this) { return 1; }  pub fn add(this, n)  { return n + this.helper(); } }
+trait Subber { fn helper(this) { return 10; } pub fn sub(this, n)  { return n - this.helper(); } }
 
 type Calc with Adder, Subber { init(this) {} }
 say c = Calc();

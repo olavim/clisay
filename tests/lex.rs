@@ -59,15 +59,6 @@ fn token_snippet_is_its_byte_span() {
 }
 
 #[test]
-fn mut_is_a_contextual_keyword() {
-    // `mut` is a modifier in declaration position, like `pub`/`inner`, so it lexes as
-    // an identifier and is recognized contextually.
-    let toks = lex("mut");
-    assert_eq!(toks[0].kind, TokenType::Identifier);
-    assert_eq!(toks[0].contextual(), Some(ContextualKeyword::Mut));
-}
-
-#[test]
 fn obligation_is_a_hard_keyword() {
     assert_eq!(kinds("obligation"), vec![TokenType::Obligation]);
 }

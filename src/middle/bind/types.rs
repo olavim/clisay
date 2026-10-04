@@ -9,10 +9,12 @@ use anyhow::bail;
 use crate::compiler_error;
 use crate::core::objects::TypeMember;
 use crate::middle::hir::{
-    HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, ReturnShape, Symbol,
+    HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, HirTypeDecl, Symbol,
 };
 
-use super::{FnKind, MemberClause, Resolver, TypeFrame, TypeLayout};
+
+use crate::middle::obligations::Obligations;
+use super::{FnKind, Resolver, TypeFrame, TypeLayout};
 
 impl<'a> Resolver<'a> {
     /// The per-trait renamed slot for `name`.
@@ -22,10 +24,20 @@ impl<'a> Resolver<'a> {
         frame.trait_privates.get(&trait_sym).and_then(|m| m.get(&name)).copied()
     }
 
-    /// The member id `name` resolves to as an implicit-`this` field of the enclosing type.
-    pub(super) fn this_field_id(&self, name: Symbol) -> Option<u8> {
-        let layout = &self.type_frames.last()?.layout;
-        layout.resolve_id(self.private_member(name).unwrap_or(name))
+    /// Whether `name` is a member of the enclosing type.
+    fn is_member(&self, name: Symbol) -> bool {
+        self.type_frames.last().is_some_and(|frame| frame.layout.resolve_id(self.private_member(name).unwrap_or(name)).is_some())
+    }
+
+    pub(super) fn error_unresolved_name<T: 'static>(&self, name: Symbol, node: &HirId<T>, undefined: String) -> anyhow::Error {
+        let text = self.hir.text(name);
+        if self.is_member(name) {
+            return self.error_help(format!("`{text}` is a member of `this`, not a name in scope"), node, format!("write `this.{text}`"));
+        }
+        if let Err(private) = self.deny_private_member(name, node) {
+            return private;
+        }
+        self.error(undefined, node)
     }
 
     pub(super) fn deny_private_member<T: 'static>(&self, name: Symbol, node: &HirId<T>) -> Result<(), anyhow::Error> {
@@ -138,16 +150,13 @@ impl<'a> Resolver<'a> {
             if decl.inner_members.contains(field) {
                 layout.inner.insert(next_member_id);
             }
-            if decl.nullable_fields.contains(field) {
-                layout.nullable.insert(next_member_id);
-            }
             if decl.var_fields.contains(field) {
                 layout.reassignable.insert(next_member_id);
             }
             if let Some(clause) = decl.field_clauses.get(field) {
-                let owed = clause.owed();
-                if !owed.is_empty() {
-                    layout.clauses.insert(next_member_id, MemberClause { owed, container: clause.container });
+                let admits: Obligations = clause.names.iter().copied().collect();
+                if !admits.is_empty() {
+                    layout.clauses.insert(next_member_id, admits);
                 }
             }
             next_member_id += 1;
@@ -158,9 +167,6 @@ impl<'a> Resolver<'a> {
             layout.members.insert(method.name, TypeMember::Method(next_member_id));
             if !decl.pub_members.contains(&method.name) {
                 layout.non_public.insert(next_member_id);
-            }
-            if method.ret == ReturnShape::Nullable {
-                layout.nullable.insert(next_member_id);
             }
             next_member_id += 1;
         }
@@ -197,13 +203,13 @@ impl<'a> Resolver<'a> {
         let outer_trait = self.current_trait.take();
 
         if let HirStmt::Fn(init) = self.hir.get(&decl.init) {
-            self.function(init, FnKind::Factory)?;
+            self.function(init, FnKind::Factory, None)?;
         }
 
         for (stmt_id, trait_sym) in decl.methods.iter().zip(&decl.method_traits) {
             self.current_trait = *trait_sym;
             let method = self.fn_decl(stmt_id);
-            self.function(method, FnKind::Method)?;
+            self.function(method, FnKind::Method, None)?;
         }
 
         self.current_trait = outer_trait;
@@ -238,7 +244,7 @@ impl<'a> Resolver<'a> {
         let was_validating = std::mem::replace(&mut self.validating_trait, true);
         for stmt_id in &decl.methods {
             let method = self.fn_decl(stmt_id);
-            self.function(method, FnKind::Method)?;
+            self.function(method, FnKind::Method, None)?;
         }
         self.validating_trait = was_validating;
         self.current_trait = outer_trait;

@@ -1,0 +1,4 @@
+{
+    defer { print(x); } // error: Undefined variable 'x'
+    say x = 1;
+}

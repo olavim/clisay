@@ -1,7 +1,0 @@
-// Calling a `mut` method on `this` needs the caller's receiver to be mutable too.
-type Counter {
-    var n;
-    init(this) { this.n = 0; }
-    pub fn bump(mut this) { this.n = this.n + 1; }
-    pub fn twice(this) { this.bump(); } // error: expected mutable receiver
-}

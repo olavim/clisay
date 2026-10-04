@@ -1,0 +1,15 @@
+type U { pub var xs = []; }
+
+say var a = [1];
+say var u = U { xs: a };
+&a.push(2);
+print(u.xs.length()); // expect: 1
+
+// @split
+type U { pub var xs = []; }
+
+say var b = [1];
+say var v = U { xs: [] };
+v.xs = b;
+&b.push(3);
+print(v.xs.length()); // expect: 1

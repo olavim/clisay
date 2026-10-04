@@ -1,0 +1,8 @@
+fn find(): opt {
+    return null;
+}
+say var h: opt = find();
+if (h != null) {
+    h = find();
+    h.x; // error: unchecked value owes 'opt'
+}

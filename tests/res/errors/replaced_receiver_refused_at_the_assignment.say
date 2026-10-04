@@ -1,0 +1,15 @@
+type T {
+    pub var f;
+    init(this, f) { this.f = f; }
+    pub fn take(&var this, o: opt) { this = o; }
+}
+
+say var a = T(1);
+&a.take(null);
+// error(full):
+// error: Cannot assign a nullable value to non-null receiver 'this'
+//  --> replaced_receiver_refused_at_the_assignment.say:4:38
+//   |
+// 3 |     init(this, f) { this.f = f; }
+// 4 |     pub fn take(&var this, o: opt) { this = o; }
+//   |                                      ^^^^

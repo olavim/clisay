@@ -1,0 +1,32 @@
+trait Tr { pub fn tag(this) { return 9; } }
+type A with Tr { pub v; init(this, v) { this.v = v; } }
+obligation ot { witness Tr; discharge to use; }
+fn probe(x: ot) { if (x is A) { print(x.v); } }
+probe(A(1)); // expect: 1
+
+// @split
+trait Tr { pub fn tag(this) { return 9; } }
+type A with Tr { pub v; init(this, v) { this.v = v; } }
+obligation oa { witness A; discharge to use; }
+obligation ot { witness Tr; discharge to use; }
+fn probe(x: oa ot) { if (x is A) { print(x.v); } }
+probe(A(1)); // expect: 1
+
+// @split
+trait Tr { pub fn tag(this) { return 9; } }
+type A with Tr { pub v; init(this, v) { this.v = v; } }
+obligation ot { witness Tr; discharge to use; }
+fn probe(x: ot) { print(x.v); } // error: unchecked value owes 'ot'
+probe(A(1));
+
+// @split
+trait Tr { pub fn tag(this) { return 9; } }
+type B { pub v; init(this, v) { this.v = v; } }
+obligation ot { witness Tr; discharge to use; }
+fn probe(x: ot) { if (x is B) { print(x.v); } }
+probe(B(1)); // expect: 1
+
+// @split
+type A { pub v; init(this, v) { this.v = v; } }
+fn make(): opt { return A(1); }
+print(make().v); // error: unchecked value owes 'opt'

@@ -1,3 +1,4 @@
 type Taint { } obligation taint { witness Taint; discharge to use; }
-say a: [taint] = [];
+fn mk(n): taint { if n < 0 { return Taint { }; } return 1; }
+say a = [mk(1)];
 print(a[0] + 1); // error: unchecked value owes 'taint'

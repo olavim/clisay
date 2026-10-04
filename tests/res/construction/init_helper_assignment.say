@@ -1,4 +1,3 @@
-// Calling a method on the half-built `this` is illegal because `this` is not a value in a factory.
 type T {
     pub var value = 0;
     init(this) {

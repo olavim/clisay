@@ -1,0 +1,16 @@
+type T {
+    pub f;
+    init(this) { this.f = 1; }
+    pub fn f(this) { }
+}
+// error(full):
+// error: 'f' is declared more than once
+//  --> error_duplicate_member.say:4:12
+//   |
+// 2 |     pub f;
+//   |     ------ already declared as a field
+// ...
+// 4 |     pub fn f(this) { }
+//   |            ^^^^^^^ declared again as a method
+//   |
+//   = help: give one of them another name, or drop it

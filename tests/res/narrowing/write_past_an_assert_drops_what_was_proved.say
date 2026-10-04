@@ -1,0 +1,23 @@
+fn maybe(n): opt { if (n > 0) { return n; } return null; }
+say var x = [1];
+x![0] = maybe(0);
+print(x[0]!); // error: Uncaught exception: null
+// @split
+fn maybe(n): opt { if (n > 0) { return n; } return null; }
+say var x = [1];
+x![0] = maybe(1);
+print(x[0]!); // expect: 1
+// @split
+fn maybe(n): opt { if (n > 0) { return n; } return null; }
+fn g(var x: opt): opt {
+    x?![0] = maybe(0);
+    return x?![0]!; // error: Uncaught exception: null
+}
+print(g([1]));
+// @split
+fn maybe(n): opt { if (n > 0) { return n; } return null; }
+fn g(var x: opt): opt {
+    x?![0] = maybe(1);
+    return x?![0]!;
+}
+print(g([1])); // expect: 1

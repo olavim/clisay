@@ -1,5 +1,0 @@
-type Box { pub var v; init(this) { this.v = 0; } }
-fn hand(mut z)!: mut { return z; }
-fn outer(mut w, mut sink) { sink.v = hand(w); } // error: cannot retain a borrowed argument
-say b = mut Box();
-outer(mut [1], b);

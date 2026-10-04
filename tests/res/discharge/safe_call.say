@@ -1,9 +1,8 @@
-// The `?` access-guard chains a call: a null callee short-circuits to null.
-say f? = null;
-say r? = f?();
+say f: opt = null;
+say r: opt = f?();
 print(r); // expect: null
 
-fn double(x)! { return x * 2; }
-say g? = double;
-say v? = g?(21);
+fn double(x) { return x * 2; }
+say g: opt = double;
+say v: opt = g?(21);
 print(v); // expect: 42

@@ -1,4 +1,3 @@
-// `is`/`has` are singular tests; combine them with `&&`/`||` like any boolean.
 trait Polygon { req sides; }
 trait Logger { req log; }
 type Shape { pub sides; init(this) { this.sides = 3; } }
@@ -12,7 +11,6 @@ say e = { sides: 3 };
 print(e has Polygon && e has Logger); // expect: false
 print(e has Polygon || e has Logger); // expect: true
 
-// `&&`/`||` mix structural and nominal freely
 say s = Shape();
 print(s has Polygon && s is Shape); // expect: true
 print(d has Polygon && d is Shape); // expect: false

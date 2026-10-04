@@ -1,8 +1,0 @@
-type Counter {
-    var n;
-    init(this) { this.n = 0; }
-    pub fn bump(mut this) { this.n = this.n + 1; }
-}
-
-say c = Counter();
-c.bump(); // error: expected mutable receiver

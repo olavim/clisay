@@ -1,4 +1,4 @@
-type Move { pub from; pub to; init(this, *a, *b) { this.from = a; this.to = b; } }
+type Move { pub from; pub to; init(this, a, b) { this.from = a; this.to = b; } }
 fn h(e) {
     match e {
         Move { from: { x, y }, to } => { print(x); print(y); print(to); },

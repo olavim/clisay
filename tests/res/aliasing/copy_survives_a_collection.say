@@ -1,0 +1,43 @@
+say var sink = [];
+say var a = [[0]];
+&sink.push(a[0]);
+gcCollect();
+a[0][0] = 1;
+print(sink[0][0]); // expect: 0
+print(a[0][0]); // expect: 1
+
+// @split
+say var sink = [];
+say a = [[0]];
+&sink.push(a[0]);
+gcCollect();
+sink[0][0] = 5;
+print(sink[0][0]); // expect: 5
+
+// @split
+fn wrap(v) { say var c = []; &c.push(v); return c; }
+say var a = [[0]];
+say kept = wrap(a[0]);
+gcCollect();
+a[0][0] = 1;
+print(kept[0][0]); // expect: 0
+
+// @split
+fn stash(v) { say var c = []; &c.push(v); }
+say var i = 0;
+while (i < 200) { say b = [[0]]; stash(b[0]); i = i + 1; }
+gcCollect();
+say size = gcHeapSize();
+i = 0;
+while (i < 200) { say b = [[0]]; stash(b[0]); i = i + 1; }
+gcCollect();
+print(gcHeapSize() <= size); // expect: true
+
+// @split
+say var a = [[0]];
+say var e = a[0];
+e[0] = 1;
+gcCollect();
+a[0][0] = 2;
+print(e[0]); // expect: 1
+print(a[0][0]); // expect: 2

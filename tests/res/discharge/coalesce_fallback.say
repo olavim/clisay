@@ -1,8 +1,7 @@
-// `e ?? d` yields the fallback on a bad value, discharging the obligation.
-say x? = null;
+say x: opt = null;
 say y = x ?? 7;
 print(y); // expect: 7
 
-say present? = 5;
+say present: opt = 5;
 say z = present ?? 7;
 print(z); // expect: 5

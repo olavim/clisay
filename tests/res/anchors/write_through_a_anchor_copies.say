@@ -1,0 +1,23 @@
+fn f(&var x, &var y) { say var a = [1, 2, 3]; x = a; y = a; }
+
+say var p = 0;
+say var q = 0;
+f(&p, &q);
+p[0] = 99;
+print(q[0]); // expect: 1
+
+// @split
+say var a = [1, 2, 3];
+say var p = a;
+say var q = a;
+p[0] = 99;
+print(q[0]); // expect: 1
+
+// @split
+fn set(&var x, v) { x = v; }
+
+say var a = [1, 2, 3];
+say var p = 0;
+set(&p, a);
+p[0] = 99;
+print(a[0]); // expect: 1

@@ -1,0 +1,46 @@
+type U { pub id; pub var name; init(this) { this.id = 1; this.name = "a"; } }
+say u = U();
+u.name = "b"; // error: Cannot write through `u`
+
+// @split
+type U { pub id; pub var name; init(this) { this.id = 1; this.name = "a"; } }
+say var u = U();
+u.name = "b";
+print(u.name); // expect: b
+
+// @split
+type U { pub id; pub var name; init(this) { this.id = 1; this.name = "a"; } }
+say var u = U();
+u.id = 2; // error: Cannot reassign field `U.id`
+
+// @split
+type U { pub id; pub var name; init(this) { this.id = 1; this.name = "a"; } }
+say u = U();
+u.id = 2; // error: Cannot write through `u`
+
+// @split
+type U { pub id; pub var name; init(this) { this.id = 1; this.name = "a"; } }
+say u = U();
+print(u.id); // expect: 1
+
+// @split
+type U { pub id; init(this, n) { this.id = n; } }
+say var u = U(1);
+u = U(2);
+print(u.id); // expect: 2
+
+// @split
+type U { pub id; pub var name; init(this) { this.id = [1]; this.name = [2]; } }
+say var u = U();
+u.id[0] = 9; // error: Cannot reassign field `U.id`
+
+// @split
+type U { pub id; pub var name; init(this) { this.id = [1]; this.name = [2]; } }
+say var u = U();
+u.name[0] = 9;
+print(u.name[0]); // expect: 9
+
+// @split
+type U { pub id; init(this) { this.id = [1]; } }
+say var u = U();
+&u.id.push(9); // error: Cannot anchor non-var field `U.id`

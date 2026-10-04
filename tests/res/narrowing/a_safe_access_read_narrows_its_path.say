@@ -1,0 +1,12 @@
+type I { pub b: opt; init(this, b: opt) { this.b = b; } }
+type M { pub a: opt; init(this, a: opt) { this.a = a; } }
+fn show(m) {
+    if m.a?.b != null {
+        print(m.a?.b!);
+    } else {
+        print("absent");
+    }
+}
+show(M(I(1))); // expect: 1
+show(M(I(null))); // expect: absent
+show(M(null)); // expect: absent

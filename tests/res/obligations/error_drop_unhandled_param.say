@@ -1,2 +1,1 @@
-// The caller handed the debt over, so the callee owes it.
-fn f(x: fails) { } // error: 'x' owes 'fails' and is never discharged
+fn f(x: fails) { } // error: 'x' owes 'fails' and is never used

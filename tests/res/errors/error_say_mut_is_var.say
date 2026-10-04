@@ -1,7 +1,0 @@
-say mut x = 1;
-// error(full):
-// error: A reassignable binding is declared with `var`, not `mut`
-//  --> error_say_mut_is_var.say:1:5
-//   |
-// 1 | say mut x = 1;
-//   |     ^^^

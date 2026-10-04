@@ -1,0 +1,95 @@
+say var a = [[1]];
+a[0][0] = 5;
+fn f() { return a[0]; }
+say var got = f();
+got[0] = 9;
+print(a[0][0]); // expect: 5
+
+// @split
+say var a = [[1]];
+a[0][0] = 5;
+say f = () => a[0];
+say var got = f();
+got[0] = 9;
+print(a[0][0]); // expect: 5
+
+// @split
+type Box { pub var inner; init(this, inner) { this.inner = inner; } pub fn get(this) { return this.inner; } }
+say var b = Box([1]);
+say var got = b.get();
+got[0] = 9;
+print(b.inner[0]); // expect: 1
+
+// @split
+fn build() { return [1, 2]; }
+say var x = build();
+x[0] = 9;
+print(x[0]); // expect: 9
+
+// @split
+fn pass(n) { return n; }
+say var made = [1];
+say var got = pass(made);
+got[0] = 9;
+print(made[0]); // expect: 1
+print(got[0]); // expect: 9
+
+// @split
+say var a = [[1]];
+a[0][0] = 5;
+fn f() { return true && a[0]; }
+say var got = f();
+got[0] = 9;
+print(a[0][0]); // expect: 5
+
+// @split
+say var a = [[1]];
+a[0][0] = 5;
+fn f() { return null || a[0]; }
+say var got = f();
+got[0] = 9;
+print(a[0][0]); // expect: 5
+
+// @split
+fn f(n) { return n > 1 && n < 5; }
+print(f(3)); // expect: true
+
+// @split
+say var a = [[1]];
+a[0][0] = 5;
+fn coalesce() { return null ?? a[0]; }
+say var got = coalesce();
+got[0] = 9;
+print(a[0][0]); // expect: 5
+
+// @split
+say var a = [[1]];
+a[0][0] = 5;
+fn assign() { say var t = [0]; return (t = a[0]); }
+say var got = assign();
+got[0] = 9;
+print(a[0][0]); // expect: 5
+
+// @split
+say var a = [[1]];
+a[0][0] = 5;
+fn assert() { return a[0]!; }
+say var got = assert();
+got[0] = 9;
+print(a[0][0]); // expect: 5
+
+// @split
+say var a = [[1]];
+a[0][0] = 5;
+fn safe() { return a?[0]; }
+say var got = safe();
+got[0] = 9;
+print(a[0][0]); // expect: 5
+
+// @split
+say var a = [[1]];
+a[0][0] = 5;
+fn f(c) { return c[0]; }
+say var got = f(a);
+got[0] = 9;
+print(a[0][0]); // expect: 5

@@ -1,0 +1,90 @@
+type T {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn bump(this) { this.n = 1; } // error: Cannot write through `this`
+}
+T();
+
+// @split
+type T {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn bump(var this) { this.n = 1; return this.n; }
+}
+say t = T();
+print(t.bump()); // expect: 1
+
+// @split
+type T {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn bump(this) { this.n = 1; } // error: Cannot write through `this`
+}
+T();
+
+// @split
+type T {
+    pub var n;
+    init(this) { this.n = 7; }
+    pub fn read(this) { return this.n; }
+}
+print(T().read()); // expect: 7
+
+// @split
+type T {
+    pub var arr;
+    init(this) { this.arr = [1]; }
+    pub fn set(this) { this.arr[0] = 9; } // error: Cannot write through `this`
+}
+T();
+
+// @split
+type T {
+    pub var arr;
+    init(this) { this.arr = [1]; }
+    pub fn set(var this) { this.arr[0] = 9; return this.arr[0]; }
+}
+print(T().set()); // expect: 9
+
+// @split
+type T {
+    pub var arr;
+    init(this) { this.arr = []; }
+    pub fn add(this, x) { &this.arr.push(x); } // error: Cannot anchor non-var binding `this`
+}
+T();
+
+// @split
+type T {
+    pub var n;
+    init(this) { this.n = 0; }
+    pub fn bump(var this) { say f = () => { this.n = 1; }; f(); return this.n; } // error: Cannot write through `this`; a closure captures its value, not its binding
+}
+print(T().bump());
+
+// @split
+type T {
+    pub var n;
+    init(this, start) { this.n = start; }
+}
+print(T(4).n); // expect: 4
+
+// @split
+type T { pub fn f(x, var this) { } } // error: 'this' must be the first parameter
+
+// @split
+type T {
+    var arr = [];
+    pub fn withElem(var this, n) { &this.arr.push(n); return this; }
+    pub fn count(this) { return this.arr.length(); }
+}
+say t = T();
+print(t.withElem(1).count()); // expect: 1
+
+// @split
+type T {
+    pub var arr;
+    init(this) { this.arr = [1]; }
+    pub fn set(this) { this!.arr[0] = 9; } // error: Cannot write through `this`
+}
+T();

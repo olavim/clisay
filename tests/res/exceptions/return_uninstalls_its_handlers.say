@@ -1,0 +1,20 @@
+fn f() { try { return 1; } catch (e) { print("stale"); } }
+f();
+try { throw "outside"; } catch (e) { print(e); } // expect: outside
+
+// @split
+fn f() {
+    try {
+        try { return 1; } catch (e) { print("stale"); }
+    } finally {
+        throw "from finally";
+    }
+}
+try { f(); } catch (e) { print(e); } // expect: from finally
+
+// @split
+fn f() {
+    try { throw "a"; } catch (e) { return 1; } finally { print("finally"); } // expect: finally
+}
+f();
+try { throw "outside"; } catch (e) { print(e); } // expect: outside

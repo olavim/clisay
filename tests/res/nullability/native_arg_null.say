@@ -1,2 +1,1 @@
-// A null argument to a non-null native parameter is rejected.
 gcStress(null); // error: expected non-null argument

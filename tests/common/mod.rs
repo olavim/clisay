@@ -42,13 +42,6 @@ pub fn test_file(file: &str) -> Result<(), Failed> {
         }
         return Ok(());
     }
-
-    if std::env::var_os("CLISAY_DROP_ESCAPE_REFUSAL").is_some() {
-        for section in sections {
-            require_still_refused(name, section, RunConfig { drop_escape_refusal: true, ..RunConfig::default() })?;
-        }
-        return Ok(());
-    }
     for section in sections {
         check_section(name, section, RunConfig { force_checks, ..RunConfig::default() }, !force_checks)?;
         check_section(name, section, RunConfig { optimize: false, force_checks, ..RunConfig::default() }, false)
@@ -115,9 +108,16 @@ fn check_section(name: &str, section: &str, config: RunConfig, check_asm: bool) 
 }
 
 pub fn run_forced(src: &str) -> Result<Vec<String>, String> {
+    run_configured("forced", src, RunConfig { force_checks: true, ..RunConfig::default() })
+}
+
+pub fn run_unguarded(src: &str) -> Result<Vec<String>, String> {
+    run_configured("unguarded", src, RunConfig { drop_guards: true, ..RunConfig::default() })
+}
+
+fn run_configured(name: &str, src: &str, config: RunConfig) -> Result<Vec<String>, String> {
     Output::clear();
-    let config = RunConfig { force_checks: true, ..RunConfig::default() };
-    let result = run_with("forced", src, config).map_err(|e| e.to_string());
+    let result = run_with(name, src, config).map_err(|e| e.to_string());
     Output::clear();
     result
 }

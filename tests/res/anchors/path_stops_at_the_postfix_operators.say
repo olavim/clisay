@@ -1,0 +1,17 @@
+type T { pub var v; init(this, v) { this.v = v; } }
+fn bump(&var n) { n = n + 1; }
+
+say var t = T(1);
+bump(&t.v);
+print(t.v); // expect: 2
+
+// @split
+fn bump(&var n) { n = n + 1; }
+
+say var a = 1;
+bump(&a!); // error: An anchor is not a value
+
+// @split
+fn bump(&var n) { n = n + 1; }
+
+bump(&1); // error: An anchor names a binding or a path into one

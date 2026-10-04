@@ -1,0 +1,33 @@
+say var x = [0];
+say var z = [0];
+{ say inner = [[1]]; x = inner[0]; z = inner[0]; }
+x[0] = 5;
+z[0] = 6;
+print(x[0]); // expect: 5
+print(z[0]); // expect: 6
+
+// @split
+say inner = [[1]];
+say var x = inner[0];
+say var z = inner[0];
+x[0] = 5;
+z[0] = 6;
+print(x[0]); // expect: 5
+print(z[0]); // expect: 6
+print(inner[0][0]); // expect: 1
+
+// @split
+say var x = [0];
+say var z = [0];
+{ say inner = [[1], [2]]; x = inner[0]; z = inner[1]; }
+x[0] = 5;
+z[0] = 6;
+print(x[0]); // expect: 5
+print(z[0]); // expect: 6
+
+// @split
+say var x = [0];
+{ say inner = [[1]]; x = inner[0]; }
+x[0] = 5;
+x[0] = 6;
+print(x[0]); // expect: 6

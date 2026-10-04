@@ -1,0 +1,28 @@
+fn bump(&var n) { n = n + 1; }
+
+say var d = {};
+say k = [1, 2];
+d[k] = 5;
+bump(&d[k]);
+print(d[k]); // expect: 6
+
+// @split
+fn bump(&var n) { n = n + 1; }
+
+say var outer = {};
+say var inner = {};
+say k = [1, 2];
+inner[k] = 7;
+outer[k] = inner;
+bump(&outer[k][k]);
+print(outer[k][k]); // expect: 8
+
+// @split
+type Point { pub var x; init(this, x) { this.x = x; } }
+fn bump(&var n) { n = n + 1; }
+
+say var d = {};
+say k = Point(3);
+d[k] = 1;
+bump(&d[k]);
+print(d[k]); // expect: 2

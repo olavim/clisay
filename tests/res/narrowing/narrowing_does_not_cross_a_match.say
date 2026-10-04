@@ -1,6 +1,4 @@
-// Both arms prove `x` is not null, and the narrowing still does not survive the match. Without the
-// reset, a mutation run showed nothing catching it: every other test here happens to pass either way.
-fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
+fn maybe(k) : opt { if (k == 1) { return null; } return "v"; }
 fn run(k) {
     say x: opt = maybe(k);
     match k {

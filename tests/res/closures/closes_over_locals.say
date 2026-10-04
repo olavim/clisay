@@ -1,11 +1,20 @@
-fn getCounter()! {
-    say var n = 0;
-    fn inc()! {
-        n += 1;
-        return n;
+fn getCounter() {
+    say n = Ref(0);
+    fn inc() {
+        @n += 1;
+        return @n;
     }
     return inc;
 }
 say counter = getCounter();
 print(counter()); // expect: 1
 print(counter()); // expect: 2
+
+// @split
+// each call gets its own `Ref`, so two counters do not share one count
+fn getCounter() { say n = Ref(0); return () => { @n += 1; return @n; }; }
+say a = getCounter();
+say b = getCounter();
+print(a()); // expect: 1
+print(a()); // expect: 2
+print(b()); // expect: 1

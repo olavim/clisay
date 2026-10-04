@@ -1,0 +1,36 @@
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn none(this): opt { return null; } pub fn good(this) { return 5; } }
+fn f(v) { print(v.bad() ?? "handled"); print(v.none() ?? "handled"); print(v.good() ?? "handled"); }
+f(A());
+// expect: handled
+// expect: handled
+// expect: 5
+
+// @split
+type H { } obligation held { witness H; discharge to use; }
+type A { pub fn held(this): held { return H(); } }
+fn f(v) { return v.held() ?? "handled"; }
+print(f(A())); // expect: handled
+
+// @split
+type H { } obligation held { witness H; discharge to use; }
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn held(this): held { return H(); } pub fn good(this) { return 5; } }
+fn f(v) { print(v.bad() ?? e => "handled"); print(v.held() ?? e => "handled"); print(v.good() ?? e => "handled"); }
+f(A());
+// expect: handled
+// expect: handled
+// expect: 5
+
+// @split
+type H { } obligation held { witness H; discharge to use; }
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn held(this): held { return H(); } pub fn good(this) { return 5; } }
+fn fails_through(v): fails { say x = v.bad()?!; return x; }
+fn held_through(v): held { say x = v.held()?!; return x; }
+fn clean_through(v): fails { say x = v.good()?!; return x; }
+print(fails_through(A()) ?? "propagated"); // expect: propagated
+print(held_through(A()) ?? "propagated"); // expect: propagated
+print(clean_through(A()) ?? "propagated"); // expect: 5
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } }
+fn f(v): opt { say x = v.bad()?!; return x; } // error: Uncaught exception: <instance <type Err>>
+f(A());

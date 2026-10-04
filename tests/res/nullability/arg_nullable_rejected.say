@@ -1,4 +1,3 @@
-// A nullable argument into a non-null parameter is rejected.
 fn f(x) { print(x); }
-say y? = null;
+say y: opt = null;
 f(y); // error: expected non-null argument

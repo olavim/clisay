@@ -1,12 +1,10 @@
-//! Return inference: each function's return type tag and return mutability.
+//! Return inference.
 
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirStmt};
+use crate::middle::hir::{HirExpr, HirId, HirStmt};
 
-use super::CallableId;
-use super::Signatures;
-use super::{Collector, Mutability, TypeTag};
-use crate::middle::walk::Child;
-use crate::middle::walk;
+use crate::middle::walk::{self, Child};
+
+use super::{BodyFacts, CallableId, Collector, Signatures, TypeTag};
 
 impl<'a> Collector<'a> {
     /// Infers every function's return type tag.
@@ -15,78 +13,31 @@ impl<'a> Collector<'a> {
         for stmt in &callables {
             self.sigs.ret_tags.insert(*stmt, TypeTag::Unknown);
         }
-        loop {
-            let mut changed = false;
-            for stmt in &callables {
-                let tag = self.infer_body_tag(&self.returns[stmt]);
-                if self.sigs.ret_tags.get(stmt) != Some(&tag) {
-                    self.sigs.ret_tags.insert(*stmt, tag);
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
+        self.converge_groups(Self::record_ret_tag);
     }
 
-    pub(super) fn infer_ret_mut(&mut self) {
-        let callables: Vec<CallableId> = self.sigs.fns.keys().copied().collect();
-        for stmt in &callables {
-            self.sigs.ret_mut.insert(*stmt, Mutability::Unknown);
+    fn record_ret_tag(&mut self, stmt: CallableId) -> bool {
+        let tag = self.infer_body_tag(stmt);
+        if self.sigs.ret_tags.get(&stmt) == Some(&tag) {
+            return false;
         }
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for stmt in &callables {
-                let Some(decl) = Signatures::decl_of(self.hir, *stmt) else { continue };
-                let mutability = self.ret_mut_of(decl, &self.returns[stmt]);
-                changed |= self.sigs.ret_mut.insert(*stmt, mutability) != Some(mutability);
-            }
-        }
+        self.sigs.ret_tags.insert(stmt, tag);
+        true
     }
 
-    /// Walks each function body once, so the tag and mutability passes share the return list.
-    pub(super) fn collect_all_returns(&mut self) {
+    pub(super) fn collect_body_facts(&mut self) {
         let callables: Vec<CallableId> = self.sigs.fns.keys().copied().collect();
         for stmt in callables {
             let Some(decl) = Signatures::decl_of(self.hir, stmt) else { continue };
-            let mut returns = Vec::new();
-            self.collect_returns(&decl.body, &mut returns);
-            self.returns.insert(stmt, returns);
+            self.current = Some(stmt);
+            let facts = self.read_body_facts(&decl.body);
+            self.bodies.insert(stmt, facts);
         }
     }
 
-    /// A function's return mutability, inferred from its body.
-    fn ret_mut_of(&self, decl: &HirFnDecl, returns: &[HirId<HirExpr>]) -> Mutability {
-        if decl.clause.capability.is_mut() {
-            return Mutability::Mutable;
-        }
-        if !returns.is_empty() && returns.iter().all(|r| self.returns_mutable(r)) {
-            Mutability::Mutable
-        } else {
-            Mutability::Unknown
-        }
-    }
-
-    /// Whether a return hands back a statically-mutable value: a `mut`-minted construction or a call
-    /// to a function inferred to return a mutable.
-    fn returns_mutable(&self, expr: &HirId<HirExpr>) -> bool {
-        match self.hir.get(expr) {
-            HirExpr::Mut(_) => true,
-            HirExpr::Call(callee, _) => {
-                let HirExpr::Identifier(name) = self.hir.get(callee) else { return false };
-                let Some(stmt) = self.sigs.fns_by_name.get(name) else { return false };
-                self.sigs.ret_mut_of_callable(stmt) == Mutability::Mutable
-            },
-            _ => false,
-        }
-    }
-
-    /// The joined return type tag of a body: a single tag if every return agrees, else unknown.
-    fn infer_body_tag(&self, returns: &[HirId<HirExpr>]) -> TypeTag {
+    fn infer_body_tag(&self, within: CallableId) -> TypeTag {
         let mut joined: Option<TypeTag> = None;
-        for ret in returns {
+        for ret in self.body_returns(within) {
             let tag = self.classify_return(ret);
             joined = Some(match joined {
                 None => tag,
@@ -100,29 +51,42 @@ impl<'a> Collector<'a> {
     fn classify_return(&self, expr: &HirId<HirExpr>) -> TypeTag {
         match self.hir.get(expr) {
             HirExpr::This => TypeTag::SelfType,
-            // A `: mut` factory returns `mut Ctor()`, so classify the wrapped construction.
-            HirExpr::Mut(inner) => self.classify_return(inner),
             HirExpr::Construct(callee, _) => self.resolved().constructed_tag(callee),
             // A callee naming a type is a factory call, so it reports the type it builds.
             HirExpr::Call(callee, _) => match self.resolved().type_named(callee) {
                 Some(decl) => TypeTag::Concrete(decl),
-                None => match self.hir.get(callee) {
-                    HirExpr::Identifier(name) => self.sigs.fns_by_name.get(name)
-                        .and_then(|stmt| self.sigs.ret_tag_of(stmt).cloned())
-                        .unwrap_or(TypeTag::Unknown),
-                    _ => TypeTag::Unknown,
-                },
+                None => self.callee_decl_with_tag(callee)
+                    .and_then(|(stmt, recv)| self.sigs.ret_tag_of(&stmt).map(|t| t.resolve(&recv)))
+                    .unwrap_or(TypeTag::Unknown),
             },
             _ => TypeTag::Unknown,
         }
     }
 
+    fn read_body_facts(&self, body: &HirId<HirExpr>) -> BodyFacts {
+        let mut facts = BodyFacts::default();
+        walk::visit_body(self.hir, body, &mut |node| match node {
+            Child::Stmt(s) => match self.hir.get(&s) {
+                HirStmt::Return(Some(e)) => facts.returns.push(*e),
+                _ => {},
+            },
+            Child::Expr(e) => match self.hir.get(&e) {
+                HirExpr::Propagate(operand) => facts.propagates.push(*operand),
+                HirExpr::Call(callee, _) | HirExpr::SafeCall(callee, _) => {
+                    if let Some(id) = self.callee_decl(callee).map(CallableId::from) {
+                        if !facts.callees.contains(&id) {
+                            facts.callees.push(id);
+                        }
+                    }
+                },
+                _ => {},
+            },
+        });
+        facts
+    }
+
     /// A nested function's returns belong to that function, which the walk treats as a leaf.
     pub(super) fn collect_returns(&self, expr: &HirId<HirExpr>, out: &mut Vec<HirId<HirExpr>>) {
-        if let Some(value) = self.hir.expression_body(expr) {
-            out.push(value);
-            return;
-        }
         walk::visit_body(self.hir, expr, &mut |node| {
             if let Child::Stmt(s) = node {
                 if let HirStmt::Return(Some(e)) = self.hir.get(&s) { out.push(*e); }

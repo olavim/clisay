@@ -17,7 +17,6 @@ fn main() {
         optimize: env::var_os("CLISAY_NO_OPTIMIZE").is_none(),
         force_checks: cfg!(debug_assertions) && env::var_os("CLISAY_FORCE_CHECKS").is_some(),
         drop_guards: cfg!(debug_assertions) && env::var_os("CLISAY_DROP_GUARDS").is_some(),
-        drop_escape_refusal: cfg!(debug_assertions) && env::var_os("CLISAY_DROP_ESCAPE_REFUSAL").is_some(),
     };
 
     let file = args[1].as_str();

@@ -1,10 +1,8 @@
-// A field default must initialize the member, even when its name collides with an
-// enclosing-scope local. It must never assign (clobber) that outer variable.
 say field = 0;
 
 type T {
     field = 1;
-    pub fn get(this)! {
+    pub fn get(this) {
         return this.field;
     }
 }

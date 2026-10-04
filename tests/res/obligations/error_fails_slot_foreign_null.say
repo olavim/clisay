@@ -1,4 +1,4 @@
-// A `fails` slot allows an Err but not a null. A foreign null crossing the dynamic boundary is rejected.
-say arr = [null];
+fn make() { return [null]; }
+say arr = make();
 say r: fails = arr[0]; // error: unexpected null
 print(r ?? "reached");

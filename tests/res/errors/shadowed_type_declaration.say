@@ -1,6 +1,6 @@
-trait Tr { pub fn go(this)! { return "outer"; } }
+trait Tr { pub fn go(this) { return "outer"; } }
 fn f() {
-    trait Tr { pub fn other(this)! { return "inner"; } }
+    trait Tr { pub fn other(this) { return "inner"; } }
     type H with Tr { pub v; init(this) { this.v = 1; } }
 }
 // error(full):
@@ -8,6 +8,6 @@ fn f() {
 //  --> shadowed_type_declaration.say:3:5
 //   |
 // 2 | fn f() {
-// 3 |     trait Tr { pub fn other(this)! { return "inner"; } }
-//   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+// 3 |     trait Tr { pub fn other(this) { return "inner"; } }
+//   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 //   = help: rename it, since the outer declaration cannot be named here

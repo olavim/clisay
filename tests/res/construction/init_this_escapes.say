@@ -1,4 +1,3 @@
-// Binding the raw `this` in init would let a half-built object outlive construction.
 type T {
     pub x;
     init(this) {

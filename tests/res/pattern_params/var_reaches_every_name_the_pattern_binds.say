@@ -1,0 +1,28 @@
+type Box { pub var data; init(this, d) { this.data = d; } }
+fn peek(x @ Box { data }) {
+    &x.data.push(2); // error: Cannot anchor non-var binding `x`
+}
+peek(Box([1]));
+
+// @split
+type Box { pub var data; init(this, d) { this.data = d; } }
+fn peek(var x @ Box { data }) {
+    &x.data.push(2);
+    &data.push(3);
+    &data.push(4);
+    print(x.data.length()); // expect: 2
+    print(data.length()); // expect: 3
+}
+say b = Box([1]);
+peek(b);
+print(b.data.length()); // expect: 1
+
+// @split
+type Box { pub data; init(this, d) { this.data = d; } }
+fn peek(var Box { data }) {
+    &data.push(2);
+    print(data.length()); // expect: 2
+}
+say b = Box([1]);
+peek(b);
+print(b.data.length()); // expect: 1

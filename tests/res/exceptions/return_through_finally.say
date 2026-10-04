@@ -1,4 +1,5 @@
-fn fromTry()! {
+
+fn fromTry() {
     try {
         return "try";
     } finally {
@@ -8,7 +9,7 @@ fn fromTry()! {
 // expect: finally1
 print(fromTry()); // expect: try
 
-fn fromCatch()! {
+fn fromCatch() {
     try {
         throw "boom";
     } catch (e) {
@@ -20,7 +21,7 @@ fn fromCatch()! {
 // expect: finally2
 print(fromCatch()); // expect: catch
 
-fn returnInFinally()! {
+fn returnInFinally() {
     try {
         return "try";
     } finally {
@@ -29,7 +30,7 @@ fn returnInFinally()! {
 }
 print(returnInFinally()); // expect: finally
 
-fn siblingReturns(c)! {
+fn siblingReturns(c) {
     try {
         if (c) { return "a"; }
         return "b";

@@ -1,29 +1,25 @@
 type Math {
-    pub fn add(this, a, b)! {
+    pub fn add(this, a, b) {
         return a + b;
     }
-    pub fn double(this, x)! {
+    pub fn double(this, x) {
         return this.add(x, x);
     }
 }
-
 say m = Math();
 print(m.add(2, 3)); // expect: 5
 print(m.double(4)); // expect: 8
-
-fn makeInc()! {
-    fn inc(n)! {
+fn makeInc() {
+    fn inc(n) {
         return n + 1;
     }
     return inc;
 }
-
 type Holder {
     pub fn_field;
-    init(this, *f) {
+    init(this, f) {
         this.fn_field = f;
     }
 }
-
 say h = Holder(makeInc());
 print(h.fn_field(10)); // expect: 11

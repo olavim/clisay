@@ -1,4 +1,3 @@
-// A `this` narrowing proved in one arm must not hold after the match, however the arms are ordered.
 type Box {
     pub value: opt;
     pub fn run(this, k): void {

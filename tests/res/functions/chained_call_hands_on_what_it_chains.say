@@ -1,0 +1,23 @@
+fn nothing() { print("ran"); }
+fn f() { return nothing?(); }
+f(); // expect: ran
+
+// @split
+fn nothing() { print("ran"); }
+fn f() { return nothing?(); }
+print(f()); // error: Argument 1 is a void result; the call returns no value
+
+// @split
+fn nothing(c): opt { if (c) { return null; } return 1; }
+fn f(c) { return nothing?(c); }
+print(f(true) ?? "none"); // expect: none
+
+// @split
+fn nothing(c): opt { if (c) { return null; } return 1; }
+fn f(c): opt { return nothing?(c); }
+print(f(false) ?? "none"); // expect: 1
+
+// @split
+fn f(g) { return g?(); }
+fn one() { return 1; }
+print(f(one)); // expect: 1

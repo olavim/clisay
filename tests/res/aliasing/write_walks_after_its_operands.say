@@ -1,0 +1,75 @@
+fn key() { print("key"); return 0; }
+fn value() { print("value"); return 1; }
+say var a = [0];
+a[key()] = value(); // expect: key
+// expect: value
+a[key()] = a; // expect: key
+
+// @split
+fn at(x) { print(x); return x; }
+say var a = [[0, 0]];
+a[at(0)][at(1)] = a; // expect: 0
+// expect: 1
+print(a[0][1][0][0]); // expect: 0
+
+// @split
+say var i = 0;
+say var a = [5, 6];
+a[i] = (i = 1);
+print(a[0]); // expect: 1
+print(a[1]); // expect: 6
+
+// @split
+fn id(x) { return x; }
+say var a = {"b": {"c": 0}};
+a["b"]["c"] = (a["b"] = {"c": 5})["c"] + 1;
+print(a["b"]["c"]); // expect: 6
+a["b"]["c"] = id((a["b"] = {"c": 7})["c"] + 1);
+print(a["b"]["c"]); // expect: 8
+
+// @split
+say var a = {"b": {"c": 1}};
+a["b"]["c"] += (a["b"] = {"c": 5})["c"];
+print(a["b"]["c"]); // expect: 6
+
+// @split
+say var a = {"b": [0]};
+&a["b"].push((a["b"] = [9])[0]);
+print(a["b"].length()); // expect: 2
+print(a["b"][1]); // expect: 9
+
+// @split
+say var i = 0;
+say var a = [[5], [6]];
+a[i][0] = (i = 1);
+print(a[0][0]); // expect: 1
+print(a[1][0]); // expect: 6
+
+// @split
+say refs = [Ref([0]), Ref([0])];
+say k = Ref(0);
+fn next() { print("next"); @k = @k + 1; return @k - 1; }
+fn f() { print("f"); return 5; }
+@(refs[next()])[0] += f(); // expect: next
+// expect: f
+print(@(refs[0])[0]); // expect: 5
+print(@(refs[1])[0]); // expect: 0
+
+// @split
+type Bag {
+    pub var items;
+    init(this) { this.items = []; }
+    pub fn keep(&var this, x) { &this.items.push(x); }
+}
+fn g() { return 0; }
+say var a = [[0]];
+say var b = Bag();
+&b.keep(a[g()][0] = 7);
+print(a[0][0]); // expect: 7
+print(b.items[0]); // expect: 7
+
+// @split
+say var a = [0];
+a[0] = (a = [5, 6])[1];
+print(a[0]); // expect: 6
+print(a[1]); // expect: 6

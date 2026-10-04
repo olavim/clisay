@@ -1,4 +1,3 @@
-// Every discharge form settles the deadline, as does handing the debt to a slot that declares it.
 fn fail(): fails { return Err("boom"); }
 fn takes(y: fails) { y ?? 0; }
 fn relay(): fails { say r: fails = fail(); return r?!; }

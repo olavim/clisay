@@ -1,0 +1,13 @@
+type T { pub var v = 0; }
+fn set(&var n) { n = 1; }
+
+say var t = T();
+set(&t.v);
+print(t.v); // expect: 1
+
+// @split
+type T { pub v = 0; }
+fn set(&var n) { n = 1; }
+
+say var t = T();
+set(&t.v); // error: Cannot anchor non-var field `T.v`

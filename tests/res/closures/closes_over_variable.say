@@ -1,14 +1,12 @@
-fn getClosure()! {
-    say var x = "foo";
-
-    fn closure(arg)? {
-        fn get()! {
-            return x;
+fn getClosure() {
+    say x = Ref("foo");
+    fn closure(arg): opt {
+        fn get() {
+            return @x;
         }
-        fn set(*val) {
-            x = val;
+        fn set(val) {
+            @x = val;
         }
-
         if arg == "get" {
             return get;
         } else if arg == "set" {
@@ -23,3 +21,13 @@ say closure = getClosure();
 print(closure("get")()); // expect: foo
 closure("set")("foz");
 print(closure("get")()); // expect: foz
+
+// @split
+// a closure holds the value, so the enclosing binding is untouched
+fn getReader() {
+    say var x = "foo";
+    fn get() { return x; }
+    x = "foz";
+    return get;
+}
+print(getReader()()); // expect: foo

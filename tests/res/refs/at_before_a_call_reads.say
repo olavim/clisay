@@ -1,0 +1,12 @@
+type Counter {
+    pub var n;
+    init(this, n) { this.n = n; }
+    pub fn read(this) { return this.n; }
+    pub fn bump(&var this) { this.n = this.n + 1; }
+}
+
+say c = Ref(Counter(5));
+print(@c.read()); // expect: 5
+
+c.mutate((&var v) => { &v.bump(); });
+print(@c.read()); // expect: 6

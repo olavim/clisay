@@ -1,6 +1,5 @@
-// An `is`-test recovers tracking on an untyped value.
 type Cache {
-    pub fn find(this)? {
+    pub fn find(this): opt {
         return null;
     }
 }

@@ -1,0 +1,23 @@
+// The same sort with the array in a local, for the floor.
+say var a = [];
+say var k = 0;
+while k < 400 {
+    &a.push((400 - k) * 7 - ((400 - k) / 13) * 91);
+    k = k + 1;
+}
+say var n = 400;
+say var i = 1;
+while i < n {
+    say var j = i;
+    while j > 0 {
+        if a[j - 1] <= a[j] { j = 0; }
+        else {
+            say var t = a[j - 1];
+            a[j - 1] = a[j];
+            a[j] = t;
+            j = j - 1;
+        }
+    }
+    i = i + 1;
+}
+print(a[0]);

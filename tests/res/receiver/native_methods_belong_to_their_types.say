@@ -1,0 +1,32 @@
+type B { pub var push: opt = null; }
+say var b = B{push: (v) => print(v)};
+b.push?(1); // expect: 1
+
+// @split
+fn f(&var v) { &v.push(1); }
+say var xs = [0];
+f(&xs);
+print(xs.length()); // expect: 2
+
+// @split
+fn f(v) { return v.push(1); } // error: `push` wants an anchor receiver
+print("before"); // expect: before
+f([0]);
+
+// @split
+say var xs = [0];
+&xs.push(1);
+print(xs.length()); // expect: 2
+
+// @split
+say var xs = [0];
+xs.push(1); // error: `push` wants an anchor receiver
+
+// @split
+fn nothing(): opt { return null; }
+fn g(&var v) {
+    &v.push(nothing());
+    say y = v[0]; // error: unexpected null
+}
+say var xs = [];
+g(&xs);

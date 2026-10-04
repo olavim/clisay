@@ -1,6 +1,6 @@
-// A debt is settled only if every path settles it.
 fn fail(): fails { return Err("boom"); }
 fn f(c) {
-    say r: fails = fail(); // error: 'r' owes 'fails' and is never discharged
+    say r: fails = fail();
     if c { r ?? 0; }
+    say s = r; // error: cannot assign a value owing 'fails' to 's'
 }

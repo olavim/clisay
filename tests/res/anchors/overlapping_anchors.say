@@ -1,0 +1,99 @@
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = 0;
+say var b = 0;
+f(&a, &b);
+print(a); // expect: 1
+print(b); // expect: 2
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [0, 0];
+f(&a[0], &a[1]);
+print(a[0]); // expect: 1
+print(a[1]); // expect: 2
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [0, 0];
+say var i = 0;
+say var j = 1;
+f(&a[i], &a[j]);
+print(a[0]); // expect: 1
+print(a[1]); // expect: 2
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = 0;
+f(&a, &a); // error: Two anchors in one call name the same storage
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [[0]];
+f(&a[0], &a[0][0]); // error: Two anchors in one call name the same storage
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [0, 0];
+say var i = 1;
+say var j = 1;
+f(&a[i], &a[j]); // error: Uncaught exception: "two anchors in one call name the same storage"
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [0, 0];
+say var i = 1;
+say var j = 1;
+try { f(&a[i], &a[j]); } catch (e) { print(e); } // expect: two anchors in one call name the same storage
+print(a[1]); // expect: 0
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+type T { pub var a; pub var b; init(this, a, b) { this.a = a; this.b = b; } }
+
+say var t = T(0, 0);
+f(&t.a, &t.b);
+print(t.a); // expect: 1
+print(t.b); // expect: 2
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+type T { pub var a; init(this, a) { this.a = a; } }
+
+say var t = T(0);
+f(&t.a, &t["a"]); // error: Two anchors in one call name the same storage
+
+// @split
+type T { pub var f = 1; pub fn two(&var this, &var p) { this.f = 9; p = 5; } }
+say var t = T();
+say var u = 0;
+&t.two(&u);
+print(t.f); // expect: 9
+print(u); // expect: 5
+
+// @split
+type T { pub var f = 1; pub fn two(&var this, &var p) { this.f = 9; p = 5; } }
+say var t = T();
+&t.two(&t.f); // error: Two anchors in one call name the same storage
+
+// @split
+type T { pub var f = 1; pub fn two(&var this, &var p) { this.f = 9; p = 5; } }
+say var ts = [T(), T()];
+say var i = 0;
+say var j = 1;
+&ts[i].two(&ts[j].f);
+print(ts[0].f); // expect: 9
+print(ts[1].f); // expect: 5
+
+// @split
+type T { pub var f = 1; pub fn two(&var this, &var p) { this.f = 9; p = 5; } }
+say var ts = [T(), T()];
+say var i = 1;
+say var j = 1;
+&ts[i].two(&ts[j].f); // error: Uncaught exception: "two anchors in one call name the same storage"

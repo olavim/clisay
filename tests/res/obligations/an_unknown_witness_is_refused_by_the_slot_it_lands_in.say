@@ -1,0 +1,61 @@
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type PBox { pub var value: parsed; init(this, value: parsed) { this.value = value; } }
+fn opaque(x) { return x; }
+say b = opaque(PBox(Token(1)));
+say boom = b.value; // error: Uncaught exception: <instance <type Token>>
+
+// @split
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type PBox { pub var value: parsed; init(this, value: parsed) { this.value = value; } }
+fn opaque(x) { return x; }
+say b = opaque(PBox(Token(1)));
+say var z = 1;
+z = b.value; // error: Uncaught exception: <instance <type Token>>
+
+// @split
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type PBox { pub var value: parsed; init(this, value: parsed) { this.value = value; } }
+type T { pub var v; init(this) { this.v = 1; } }
+fn opaque(x) { return x; }
+say b = opaque(PBox(Token(1)));
+say var t = T();
+t.v = b.value; // error: Uncaught exception: <instance <type Token>>
+
+// @split
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type PBox { pub var value: parsed; init(this, value: parsed) { this.value = value; } }
+fn opaque(x) { return x; }
+fn takes(x) { print(x); }
+say b = opaque(PBox(Token(1)));
+takes(b.value); // error: Uncaught exception: <instance <type Token>>
+
+// @split
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type PBox { pub var value: parsed; init(this, value: parsed) { this.value = value; } }
+fn opaque(x) { return x; }
+say b = opaque(PBox(Token(1)));
+fn read() { return b.value; } // error: Uncaught exception: <instance <type Token>>
+print(read());
+
+// @split
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type PBox { pub var value: parsed; init(this, value: parsed) { this.value = value; } }
+fn opaque(x) { return x; }
+say b = opaque(PBox(Token(1)));
+say kept: parsed = b.value;
+print(kept ?? "token"); // expect: token
+
+// @split
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type PBox { pub var value: parsed; init(this, value: parsed) { this.value = value; } }
+fn opaque(x) { return x; }
+say b = opaque(PBox(5));
+say ok = b.value;
+print(ok); // expect: 5

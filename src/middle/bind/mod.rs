@@ -13,25 +13,61 @@ use fnv::{FnvHashMap, FnvHashSet};
 use nohash_hasher::IntSet;
 
 use crate::compiler_error;
-use crate::core::objects::{TypeMember, UpvalueLocation};
+use crate::core::objects::{TypeMember, CaptureLocation};
+use crate::core::value::Value;
 use crate::middle::hir::{
-    BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt, Symbol,
+    BinOp, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt, Symbol, WritePlace,
 };
 use crate::middle::obligations::Obligations;
+
+pub struct FrameTemps {
+    pub defer_slot: Option<u8>,
+    pub count: usize,
+}
+
+#[derive(Clone, Copy)]
+pub struct AnchorParam {
+    pub anchor_slot: u8,
+    pub value_slot: u8,
+    pub written: bool,
+    pub captured: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct AnchorPathSlots {
+    first_slot: u8,
+    steps: u8,
+    saved_root: Option<u8>,
+}
+
+impl AnchorPathSlots {
+    pub fn new(first_slot: u8, steps: usize, saved_root: Option<u8>) -> AnchorPathSlots {
+        AnchorPathSlots { first_slot, steps: steps as u8, saved_root }
+    }
+
+    pub fn target(&self) -> u8 {
+        self.first_slot
+    }
+
+    /// Where a root check saves the root's value.
+    pub fn saved_root(&self) -> Option<u8> {
+        self.saved_root
+    }
+
+    pub fn width(steps: usize) -> usize {
+        steps + Value::ANCHOR_KEY_OFFSET
+    }
+
+    pub fn key(&self, step: usize) -> u8 {
+        Value::anchor_key_slot(self.first_slot as usize, self.steps as usize, step) as u8
+    }
+}
 
 #[derive(Clone, Copy)]
 pub enum Place {
     Local(u8),
-    Upvalue(u8),
-    Field(u8, Receiver),
+    Capture(u8),
     Global(Symbol),
-}
-
-/// Where a method's receiver sits in the running frame.
-#[derive(Clone, Copy)]
-pub enum Receiver {
-    Slot,
-    Upvalue(u8),
 }
 
 #[derive(Clone, Copy)]
@@ -41,26 +77,16 @@ pub enum FnKind {
     Factory,
 }
 
-/// What a member's `:` clause declares. `container` marks `[obl]`, where the elements owe the
-/// obligations rather than the member itself.
-#[derive(Clone)]
-pub struct MemberClause {
-    pub owed: Obligations,
-    pub container: bool,
-}
-
 #[derive(Clone)]
 pub struct TypeLayout {
     pub name: Symbol,
     pub members: FnvHashMap<Symbol, TypeMember>,
     pub fields: Vec<u8>,
     pub non_public: IntSet<u8>,
-    /// Nullable fields and nullable-returning methods.
-    pub nullable: IntSet<u8>,
     /// Fields declared reassignable with `var`.
     pub reassignable: IntSet<u8>,
     /// What each member's `:` clause declares, for the members that have one.
-    pub clauses: FnvHashMap<u8, MemberClause>,
+    pub clauses: FnvHashMap<u8, Obligations>,
     pub inner: IntSet<u8>,
     pub member_count: u8,
     /// Member id of the factory function.
@@ -74,7 +100,6 @@ impl TypeLayout {
             members: FnvHashMap::default(),
             fields: Vec::new(),
             non_public: IntSet::default(),
-            nullable: IntSet::default(),
             reassignable: IntSet::default(),
             clauses: FnvHashMap::default(),
             inner: IntSet::default(),
@@ -87,12 +112,12 @@ impl TypeLayout {
         self.members.get(&name).copied()
     }
 
-    fn resolve_id(&self, name: Symbol) -> Option<u8> {
+    pub(crate) fn resolve_id(&self, name: Symbol) -> Option<u8> {
         self.resolve(name).map(|m| m.id())
     }
 
-    pub fn is_nullable(&self, name: Symbol) -> bool {
-        self.resolve_id(name).is_some_and(|id| self.nullable.contains(&id))
+    pub fn member_owes(&self, name: Symbol, obligation: Symbol) -> bool {
+        self.clause_of(name).is_some_and(|c| c.contains(&obligation))
     }
 
     pub fn is_reassignable(&self, name: Symbol) -> bool {
@@ -100,17 +125,16 @@ impl TypeLayout {
     }
 
     /// What a member's clause declares, or nothing where it declares none.
-    pub fn clause_of(&self, name: Symbol) -> Option<&MemberClause> {
+    pub fn clause_of(&self, name: Symbol) -> Option<&Obligations> {
         self.resolve_id(name).and_then(|id| self.clauses.get(&id))
     }
 
-    /// What a member's declaration says its value owes.
-    pub fn owed(&self, name: Symbol, opt: Symbol) -> Obligations {
-        let mut owed = self.clause_of(name).map(|c| c.owed.clone()).unwrap_or_default();
-        if self.is_nullable(name) {
-            owed.insert(opt);
-        }
-        owed
+    pub fn owed(&self, name: Symbol) -> Obligations {
+        self.clause_of(name).cloned().unwrap_or_default()
+    }
+
+    pub fn owed_at(&self, id: u8) -> Obligations {
+        self.clauses.get(&id).cloned().unwrap_or_default()
     }
 
     /// Whether the member is a field rather than a method.
@@ -127,6 +151,12 @@ impl TypeLayout {
     }
 }
 
+pub enum Declared {
+    Param(HirId<HirExpr>),
+    Say(HirId<HirStmt>),
+    Other,
+}
+
 #[derive(Default)]
 pub struct Bindings {
     /// Identifier uses and assignment targets => their binding.
@@ -137,37 +167,43 @@ pub struct Bindings {
     slots: FnvHashMap<HirId<HirStmt>, u8>,
     /// Identifier uses => the node that declared the binding they reach.
     decls: FnvHashMap<HirId<HirExpr>, usize>,
-    /// Function bodies => the captured upvalues of that function.
-    upvalues: FnvHashMap<HirId<HirExpr>, Vec<UpvalueLocation>>,
+    function_refs: FnvHashMap<HirId<HirExpr>, HirId<HirStmt>>,
+    parameter_decls: FnvHashSet<usize>,
+    say_decls: FnvHashSet<usize>,
+    /// Function bodies => the captures of that function.
+    captures: FnvHashMap<HirId<HirExpr>, Vec<CaptureLocation>>,
+    frame_temps: FnvHashMap<HirId<HirExpr>, FrameTemps>,
+    /// Each function body's anchor parameters.
+    anchor_params: FnvHashMap<HirId<HirExpr>, Vec<AnchorParam>>,
+    anchor_path_slots: FnvHashMap<HirId<HirExpr>, AnchorPathSlots>,
+    /// Each `try` with a `finally`, and the slot that keeps a returned or thrown value while the `finally` runs.
+    finally_slots: FnvHashMap<HirId<HirStmt>, u8>,
+    /// Each name that reads an anchor binding, and where that binding's anchor came from.
+    anchor_bindings: FnvHashMap<HirId<HirExpr>, HirId<HirExpr>>,
     /// Type declarations => their member layout.
     types: FnvHashMap<HirId<HirStmt>, TypeLayout>,
-    /// Type/trait declaration => its public member names, for the `x has T` surface form. A type
-    /// contributes its public members; a trait its declared surface.
+    /// Type/trait declaration => its public member names.
     surfaces: FnvHashMap<HirId<HirStmt>, Vec<Symbol>>,
-    /// Statements and function bodies (by HIR node index) => frame slots live where they begin.
-    frame_slot_counts: FnvHashMap<usize, u8>,
-    /// Scope nodes (by HIR node index) => frame slots live where they end.
-    exit_frame_slot_counts: FnvHashMap<usize, u8>,
+    /// Statements and function bodies (by HIR node index) => the frame stack height where they begin.
+    frame_stack_heights: FnvHashMap<usize, u8>,
+    /// Scope nodes (by HIR node index) => the frame stack height where they end.
+    exit_frame_stack_heights: FnvHashMap<usize, u8>,
     /// Scope nodes (by HIR node index) => how many locals die on exit.
     cleanups: FnvHashMap<usize, u8>,
-    /// Declaration nodes whose binding some nested body captures. A binding absent here is named by
-    /// nothing but its own frame.
     captured: FnvHashSet<usize>,
     /// Each type test => the type or trait declaration its name resolves to.
     type_refs: FnvHashMap<HirId<HirMatcher>, HirId<HirStmt>>,
-    /// Each identifier naming a type => that declaration, so a construction and the tag it
-    /// produces name one declaration rather than a name several may share.
+    /// Each identifier naming a type => that declaration.
     expr_types: FnvHashMap<HirId<HirExpr>, HirId<HirStmt>>,
     /// Brace-construction expressions => the resolved member ids of their brace fields.
     construct_fields: FnvHashMap<HirId<HirExpr>, Vec<u8>>,
-    /// Nodes that publish matcher binders (a binding `match`, a pattern parameter) => each
+    /// Nodes that publish pattern binders (a binding `match`, a pattern parameter) => each
     /// binder's name and the local slot it stores into.
     match_binders: FnvHashMap<HirId<HirExpr>, Vec<(Symbol, u8)>>,
     /// `match` statements => their scrutinee temp and per-arm binder slots.
     match_info: FnvHashMap<HirId<HirStmt>, MatchInfo>,
     /// `e ?? p => h` handler nodes => the local slot binding the bad value.
     handle_binders: FnvHashMap<HirId<HirExpr>, u8>,
-    /// Every node this pass declared a binding from.
     #[cfg(debug_assertions)]
     declared: FnvHashSet<usize>,
 }
@@ -189,7 +225,35 @@ impl Bindings {
         self.declared.insert(decl);
     }
 
-    /// Whether some nested body names the binding this node declares.
+    pub fn declaration_of(&self, id: &HirId<HirExpr>) -> Option<Declared> {
+        let decl = *self.decls.get(id)?;
+        if self.parameter_decls.contains(&decl) {
+            return Some(Declared::Param(HirId::from_index(decl)));
+        }
+        match self.say_decls.contains(&decl) {
+            true => Some(Declared::Say(HirId::from_index(decl))),
+            false => Some(Declared::Other),
+        }
+    }
+
+    pub fn declaring_node(&self, id: &HirId<HirExpr>) -> Option<usize> {
+        self.decls.get(id).copied()
+    }
+
+    pub fn function_named(&self, id: &HirId<HirExpr>) -> Option<HirId<HirStmt>> {
+        self.function_refs.get(id).copied()
+    }
+
+    pub fn names_parameter(&self, id: &HirId<HirExpr>) -> bool {
+        self.decls.get(id).is_some_and(|decl| self.parameter_decls.contains(decl))
+    }
+
+    pub fn names_outliving_binding(&self, id: &HirId<HirExpr>) -> bool {
+        self.decls.get(id).is_some_and(|decl| {
+            self.parameter_decls.contains(decl) || self.captured.contains(decl)
+        })
+    }
+
     pub fn is_captured(&self, decl: usize) -> bool {
         #[cfg(debug_assertions)]
         assert!(self.declared.contains(&decl), "asked about a node that declared no binding");
@@ -213,12 +277,8 @@ impl Bindings {
         self.slots[id]
     }
 
-    pub fn declaring_node(&self, id: &HirId<HirExpr>) -> Option<usize> {
-        self.decls.get(id).copied()
-    }
-
-    pub fn upvalues(&self, body: &HirId<HirExpr>) -> &[UpvalueLocation] {
-        &self.upvalues[body]
+    pub fn captures(&self, body: &HirId<HirExpr>) -> &[CaptureLocation] {
+        &self.captures[body]
     }
 
     pub fn type_layout(&self, id: &HirId<HirStmt>) -> &TypeLayout {
@@ -258,6 +318,26 @@ impl Bindings {
         self.match_binders.get(id).map(Vec::as_slice)
     }
 
+    pub fn finally_slot(&self, try_stmt: &HirId<HirStmt>) -> u8 {
+        self.finally_slots[try_stmt]
+    }
+
+    pub fn frame_temps(&self, body: &HirId<HirExpr>) -> Option<&FrameTemps> {
+        self.frame_temps.get(body)
+    }
+
+    pub fn anchor_params(&self, body: &HirId<HirExpr>) -> &[AnchorParam] {
+        self.anchor_params.get(body).map_or(&[], |params| params)
+    }
+
+    pub fn anchor_binding(&self, name: &HirId<HirExpr>) -> Option<HirId<HirExpr>> {
+        self.anchor_bindings.get(name).copied()
+    }
+
+    pub fn anchor_path_slots(&self, anchor: &HirId<HirExpr>) -> Option<AnchorPathSlots> {
+        self.anchor_path_slots.get(anchor).copied()
+    }
+
     pub fn match_info(&self, id: &HirId<HirStmt>) -> &MatchInfo {
         &self.match_info[id]
     }
@@ -266,12 +346,12 @@ impl Bindings {
         self.handle_binders[id]
     }
 
-    pub fn frame_slot_count_at<T: 'static>(&self, id: &HirId<T>) -> u8 {
-        self.frame_slot_counts[&id.index()]
+    pub fn frame_stack_height_at<T: 'static>(&self, id: &HirId<T>) -> u8 {
+        self.frame_stack_heights[&id.index()]
     }
 
-    pub fn exit_frame_slot_count_at<T: 'static>(&self, scope: &HirId<T>) -> u8 {
-        self.exit_frame_slot_counts[&scope.index()]
+    pub fn exit_frame_stack_height_at<T: 'static>(&self, scope: &HirId<T>) -> u8 {
+        self.exit_frame_stack_heights[&scope.index()]
     }
 }
 
@@ -282,6 +362,8 @@ struct Local {
     is_captured: bool,
     /// The node that declared this binding.
     decl: Option<usize>,
+    anchor: Option<HirId<HirExpr>>,
+    function: Option<HirId<HirStmt>>,
 }
 
 /// A type or trait name visible at some scope depth. This is the order
@@ -292,13 +374,15 @@ struct TypeInScope {
 }
 
 struct FnFrame {
-    upvalues: Vec<UpvalueLocation>,
+    captures: Vec<CaptureLocation>,
     name: Symbol,
     /// Where this frame's slots start in `locals`.
     local_offset: usize,
     type_frame: Option<u8>,
     /// Whether slot 0 of this frame is the receiver.
     owns_receiver: bool,
+    /// The slot of `this` when the method declared `&var this`.
+    receiver_copy_slot: Option<u8>,
     body: HirId<HirExpr>,
 }
 
@@ -323,6 +407,9 @@ pub struct Resolver<'a> {
     type_index: FnvHashMap<Symbol, HirId<HirStmt>>,
     current_trait: Option<Symbol>,
     validating_trait: bool,
+    /// How many locals were declared where the `defer` was written, and where
+    /// the body's own locals start.
+    defer_scope: Option<(usize, usize)>,
 }
 
 pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
@@ -337,9 +424,15 @@ pub fn resolve(hir: &Hir) -> Result<Bindings, anyhow::Error> {
         type_index: FnvHashMap::default(),
         current_trait: None,
         validating_trait: false,
+        defer_scope: None,
     };
 
     let root = resolver.hir.get_root();
+    // The script is a frame too, so its own `defer` needs the same slot a function's does.
+    if let Some(body) = resolver.hir.script_body() {
+        let facts = resolver.scan_body_facts(&body);
+        resolver.reserve_frame_temp_slots(&body, &facts)?;
+    }
     resolver.statement(&root)?;
     Ok(resolver.bindings)
 }
@@ -349,8 +442,13 @@ impl<'a> Resolver<'a> {
         anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node_id).clone()))
     }
 
+    /// The same, carrying a `help:` note on how to fix it.
+    fn error_help<T: 'static>(&self, msg: impl Into<String>, node_id: &HirId<T>, help: impl Into<String>) -> anyhow::Error {
+        anyhow!("{}", Diagnostic::new(msg, self.hir.pos(node_id).clone()).with_help(help))
+    }
+
     fn statement(&mut self, stmt_id: &HirId<HirStmt>) -> Result<(), anyhow::Error> {
-        self.record_frame_slot_count(stmt_id);
+        self.record_frame_stack_height(stmt_id);
         match self.hir.get(stmt_id) {
             HirStmt::Return(expr) => {
                 if let Some(expr) = expr {
@@ -379,20 +477,34 @@ impl<'a> Resolver<'a> {
                 let slot = self.resolve_local(name)
                     .expect("fn declarations are reserved by hoisting");
                 self.bindings.slots.insert(*stmt_id, slot);
-                self.function(decl, FnKind::Function)?;
+                self.function(decl, FnKind::Function, Some(*stmt_id))?;
             },
             HirStmt::Type(decl) => self.type_declaration(stmt_id, decl)?,
             HirStmt::Trait(decl) => self.trait_declaration(stmt_id, decl)?,
             HirStmt::Say(field) => {
-                // Resolve the initializer before declaring the binding, so a name inside it
-                // refers to the prior (shadowed) binding, not the one being introduced.
                 if let Some(expr) = &field.value {
                     self.expression(expr)?;
                 }
+
+                if let Some(otherwise) = &field.otherwise {
+                    self.expression(otherwise)?;
+                }
+
                 let slot = self.declare_local(field.name, stmt_id.index())?;
+                self.bindings.say_decls.insert(stmt_id.index());
+                if let Some(anchor) = field.value.filter(|v| matches!(self.hir.get(v), HirExpr::Anchor(_))) {
+                    self.declare_anchor_binding(anchor);
+                }
                 self.bindings.slots.insert(*stmt_id, slot);
+
+                // A destructuring binding names the whole value, then reads its binders out.
+                if let (Some(pattern), Some(value)) = (&field.pattern, &field.value) {
+                    self.resolve_matcher_types(pattern);
+                    let binders = self.declare_matcher_binders(pattern, stmt_id.index())?;
+                    self.bindings.match_binders.insert(*value, binders);
+                }
             },
-            HirStmt::Expression(expr) => self.expression(expr)?,
+            HirStmt::Expression(expr) | HirStmt::Discard(expr) => self.expression(expr)?,
             HirStmt::While(cond, body) => self.conditioned(cond, body)?,
             HirStmt::If(cond, then, otherwise) => {
                 self.conditioned(cond, then)?;
@@ -400,15 +512,13 @@ impl<'a> Resolver<'a> {
                     self.statement(otherwise)?;
                 }
             },
-            HirStmt::Block(body) => self.expression(body)?,
+            HirStmt::Block(body) | HirStmt::Defer(body) => self.expression(body)?,
             HirStmt::Nop => {},
             HirStmt::Match(scrutinee, arms) => {
                 self.expression(scrutinee)?;
                 self.enter_scope();
 
                 // Store the scrutinee in a temp so each arm can access it without re-evaluating.
-                // If the scrutinee is a local, we could reuse its slot, but that would require
-                // complex analysis across all arms to ensure it's not e.g. mutated or shadowed.
                 let scrut_slot = self.declare_temp()?;
 
                 // One binder block sized to the widest arm, counting a binding guard's binders too.
@@ -498,7 +608,7 @@ impl<'a> Resolver<'a> {
             HirExpr::Match(scrutinee, matcher) => {
                 self.expression(scrutinee)?;
                 self.resolve_matcher_types(matcher);
-                let binders = self.declare_binders(matcher, decl)?;
+                let binders = self.declare_matcher_binders(matcher, decl)?;
                 if record && !binders.is_empty() {
                     self.bindings.match_binders.insert(*cond, binders);
                 }
@@ -510,8 +620,21 @@ impl<'a> Resolver<'a> {
 
     fn statement_body(&mut self, body: &[HirId<HirStmt>]) -> Result<(), anyhow::Error> {
         self.hoist_declarations(body)?;
+        let mut defers = Vec::new();
         for stmt_id in body {
+            if let HirStmt::Defer(_) = self.hir.get(stmt_id) {
+                defers.push((*stmt_id, self.locals.len()));
+                continue;
+            }
             self.statement(stmt_id)?;
+        }
+
+        // A defer body runs where the block exits.
+        for (stmt_id, visible) in defers.into_iter().rev() {
+            let outer = self.defer_scope.replace((visible, self.locals.len()));
+            let result = self.statement(&stmt_id);
+            self.defer_scope = outer;
+            result?;
         }
         Ok(())
     }
@@ -527,12 +650,12 @@ impl<'a> Resolver<'a> {
         for stmt_id in body {
             // A trait declares a name a test may name, but emits no runtime value, so it takes no
             // slot. Both kinds are hoisted, so a test may precede the declaration it names.
-            let (name, names_a_type, takes_slot) = match self.hir.get(stmt_id) {
-                HirStmt::Fn(decl) => (decl.name, false, true),
-                HirStmt::Type(decl) => (decl.name, true, decl.builtin.is_none()),
-                HirStmt::Trait(decl) => (decl.name, true, false),
+            let (name, names_a_type) = match self.hir.get(stmt_id) {
+                HirStmt::Fn(decl) => (decl.name, false),
+                HirStmt::Type(decl) | HirStmt::Trait(decl) => (decl.name, true),
                 _ => continue,
             };
+            let takes_slot = self.hir.get(stmt_id).declares_slot();
 
             if names_a_type {
                 self.type_scope.push(TypeInScope { name, depth: self.scope_depth });
@@ -541,6 +664,9 @@ impl<'a> Resolver<'a> {
 
             if takes_slot {
                 self.declare_local(name, stmt_id.index())?;
+                if !names_a_type {
+                    self.declare_function(*stmt_id);
+                }
             }
 
             if let HirStmt::Type(decl) = self.hir.get(stmt_id) {
@@ -567,9 +693,17 @@ impl<'a> Resolver<'a> {
                 }
             },
             HirMatcher::As(_, inner) => self.resolve_matcher_types(inner),
-            HirMatcher::Shape(fields) => for field in fields { self.resolve_matcher_types(&field.value) },
+            HirMatcher::Shape { fields, rest } => {
+                let rest = rest.as_ref().and_then(|r| r.every);
+                for field in fields { self.resolve_matcher_types(&field.value) }
+                if let Some(every) = rest { self.resolve_matcher_types(&every) }
+            },
+            HirMatcher::Dict(shape) => self.resolve_matcher_types(&shape.clone()),
             HirMatcher::Array(elements) => for element in elements {
-                if let HirMatchElem::Elem(m) = element { self.resolve_matcher_types(m) }
+                match element {
+                    HirMatchElem::Elem(m) => self.resolve_matcher_types(m),
+                    HirMatchElem::Rest(rest) => if let Some(every) = &rest.every { self.resolve_matcher_types(every) },
+                }
             },
             HirMatcher::Or(parts) | HirMatcher::And(parts) => for part in parts { self.resolve_matcher_types(part) },
             _ => {},
@@ -586,19 +720,21 @@ impl<'a> Resolver<'a> {
         match self.hir.get(expr) {
             HirExpr::Block(stmts) => self.scoped_body(stmts, expr)?,
             HirExpr::Unary(_, operand) => self.expression(operand)?,
+            HirExpr::Anchor(path) => self.expression(path)?,
+            HirExpr::RefValue { holder, .. } => self.expression(holder)?,
             HirExpr::Binary(_, left, right) => {
                 self.expression(left)?;
                 self.expression(right)?;
             },
             HirExpr::Assign(left, right) => self.assign(left, right)?,
+            HirExpr::CompoundAssign(left, _, right) => self.assign(left, right)?,
             HirExpr::Call(callee, args) => self.call_expression(callee, args)?,
-            HirExpr::Index(target, member, _) => self.index(target, member)?,
             HirExpr::Literal(lit) => self.literal(lit)?,
             HirExpr::Identifier(name) => {
                 let place = self.resolve_place(*name, expr)?;
                 if let Place::Global(g) = place {
                     if !crate::core::builtins::is_builtin(self.hir.text(g)) {
-                        compiler_error!(self, expr, "Undefined variable '{}'", self.hir.text(g));
+                        return Err(self.error_unresolved_name(g, expr, format!("Undefined variable '{}'", self.hir.text(g))));
                     }
                 }
                 self.bindings.places.insert(*expr, place);
@@ -616,13 +752,12 @@ impl<'a> Resolver<'a> {
                 let brace = brace.clone();
                 self.construct(expr, &callee, &brace)?;
             },
-            HirExpr::Mut(inner) => self.expression(inner)?,
             HirExpr::This => self.resolve_this(expr)?,
             HirExpr::Coalesce(left, right) => {
                 self.expression(left)?;
                 self.expression(right)?;
             },
-            HirExpr::SafeAccess(target, member, _) => self.index(target, member)?,
+            HirExpr::Index { base, member, .. } => self.index(base, member)?,
             HirExpr::SafeCall(callee, args) => self.call_expression(callee, args)?,
             HirExpr::Propagate(operand) => self.expression(operand)?,
             HirExpr::Handle(left, binder, handler) => {
@@ -640,19 +775,17 @@ impl<'a> Resolver<'a> {
     }
 
     fn assign(&mut self, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        match self.hir.get(lhs) {
-            HirExpr::Identifier(name) => {
-                let name = *name;
+        match self.hir.write_place_of(lhs) {
+            WritePlace::Name(name) => {
                 let place = self.resolve_place(name, lhs)?;
                 if let Place::Global(_) = place {
-                    compiler_error!(self, lhs, "Cannot assign to undefined variable '{}'", self.hir.text(name));
+                    return Err(self.error_unresolved_name(name, lhs, format!("Cannot assign to undefined variable '{}'", self.hir.text(name))));
                 }
                 self.bindings.places.insert(*lhs, place);
                 self.expression(rhs)?;
                 Ok(())
             },
-            HirExpr::Index(obj, member, _) => {
-                let (obj, member) = (*obj, *member);
+            WritePlace::Path { base: obj, member, .. } => {
                 if matches!(self.hir.get(&obj), HirExpr::This) {
                     self.this_member_access(&obj, &member, true)?;
                     self.expression(rhs)?;
@@ -663,13 +796,27 @@ impl<'a> Resolver<'a> {
                 }
                 Ok(())
             },
-            _ => compiler_error!(self, lhs, "Invalid assignment"),
+            WritePlace::Ref(holder) => {
+                self.expression(rhs)?;
+                self.expression(&holder)?;
+                Ok(())
+            },
+            // `this = v` replaces what a `&var this` receiver names. A receiver held by value has
+            // no slot of the caller's to write, so there is nothing for it to mean.
+            WritePlace::Receiver if self.fn_frames.last().is_some_and(|f| f.receiver_copy_slot.is_some()) => {
+                self.expression(rhs)?;
+                self.resolve_this(lhs)?;
+                Ok(())
+            },
+            WritePlace::Receiver
+            | WritePlace::Wrapped(_)
+            | WritePlace::Value => compiler_error!(self, lhs, "Invalid assignment"),
         }
     }
 
     fn index(&mut self, target: &HirId<HirExpr>, member: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        if matches!(self.hir.get(target), HirExpr::This) {
-            return self.this_member_access(target, member, false);
+        if let Some(this) = self.hir.as_this(target) {
+            return self.this_member_access(&this, member, false);
         }
 
         self.expression(target)?;
@@ -705,6 +852,6 @@ impl<'a> Resolver<'a> {
     }
 
     fn lambda(&mut self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
-        self.function(decl, FnKind::Function)
+        self.function(decl, FnKind::Function, None)
     }
 }

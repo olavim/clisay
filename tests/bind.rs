@@ -12,34 +12,22 @@ fn first_type_layout<'a>(hir: &Hir, bindings: &'a clisay::internals::Bindings) -
 }
 
 #[test]
-fn field_nullability_and_reassignability_on_layout() {
-    let (hir, bindings) = bind("type T { pub next?; pub var count; pub fixed; }");
+fn field_obligations_and_reassignability_on_layout() {
+    let (hir, bindings) = bind("type T { pub next: opt; pub var count; pub fixed; }");
     let layout = first_type_layout(&hir, &bindings);
 
-    let next = hir.symbol_of("next").expect("next not interned");
-    let count = hir.symbol_of("count").expect("count not interned");
-    let fixed = hir.symbol_of("fixed").expect("fixed not interned");
+    let sym = |name: &str| hir.symbol_of(name).unwrap_or_else(|| panic!("{name} not interned"));
+    let (next, count, fixed) = (sym("next"), sym("count"), sym("fixed"));
+    let opt = sym("opt");
 
-    assert!(layout.is_nullable(next));
+    assert!(layout.member_owes(next, opt));
     assert!(!layout.is_reassignable(next));
 
     assert!(layout.is_reassignable(count));
-    assert!(!layout.is_nullable(count));
+    assert!(!layout.member_owes(count, opt));
 
-    assert!(!layout.is_nullable(fixed));
+    assert!(!layout.member_owes(fixed, opt));
     assert!(!layout.is_reassignable(fixed));
-}
-
-#[test]
-fn method_return_nullability_on_layout() {
-    let (hir, bindings) = bind("type T { pub fn maybe(this)? { return null; } pub fn always(this)! { return 1; } }");
-    let layout = first_type_layout(&hir, &bindings);
-
-    let maybe = hir.symbol_of("maybe").expect("maybe not interned");
-    let always = hir.symbol_of("always").expect("always not interned");
-
-    assert!(layout.is_nullable(maybe));
-    assert!(!layout.is_nullable(always));
 }
 
 /// The declaration the compiler supplies for a built-in, which `top_stmts` leaves out.
@@ -66,7 +54,7 @@ fn say_value(hir: &Hir, stmts: &[clisay::internals::HirId<HirStmt>], index: usiz
 }
 
 const SAME_NAME: &str = "\
-fn mk()! { type T { pub x; } return T { x: 1 }; }
+fn mk() { type T { pub x; } return T { x: 1 }; }
 fn probe() { type T { pub y; } say v = mk(); say b = v is T; say c = v ~ T; }
 ";
 

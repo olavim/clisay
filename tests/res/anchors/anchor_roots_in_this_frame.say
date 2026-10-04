@@ -1,0 +1,25 @@
+fn use(&var m) { m = 7; }
+
+say var a = [0];
+use(&a[0]);
+print(a[0]); // expect: 7
+
+// @split
+fn use(&var m) { m = 7; }
+fn g(&var a) { use(&a[0]); }
+
+say var a = [0];
+g(&a);
+print(a[0]); // expect: 7
+
+// @split
+fn use(&var m) { m = 7; }
+
+say var a = [0];
+fn g() { use(&a[0]); } // error: Cannot take an anchor into `a`; it is captured
+g();
+
+// @split
+say var a = [0];
+fn g() { say var p = &a[0]; } // error: Cannot take an anchor into `a`; it is captured
+g();

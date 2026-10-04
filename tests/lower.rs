@@ -1,4 +1,4 @@
-use clisay::internals::{lower, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt, ReturnShape};
+use clisay::internals::{lower, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt};
 
 /// The top-level statements of a lowered program (unwraps the root block).
 /// The statements the program wrote. The compiler declares its own built-ins in the same block.
@@ -22,21 +22,23 @@ fn nth_fn<'a>(hir: &'a Hir, stmts: &[HirId<HirStmt>], i: usize) -> &'a HirFnDecl
 
 #[test]
 fn say_flags_survive_lowering() {
-    let hir = lower("say var x? = 1;");
+    let hir = lower("say var x: opt = 1;");
     let stmts = top_stmts(&hir);
     let HirStmt::Say(field) = hir.get(&stmts[0]) else { panic!("not a say") };
-    assert!(field.nullable);
+    let opt = hir.symbol_of("opt").expect("opt not interned");
+    assert!(field.clause.owes(opt));
     assert!(field.reassignable);
 }
 
 #[test]
 fn fn_param_and_return_flags_survive_lowering() {
-    let hir = lower("fn f(a?)! { return a; }");
+    let hir = lower("fn f(a: opt): fails { return a; }");
     let stmts = top_stmts(&hir);
     let decl = nth_fn(&hir, &stmts, 0);
-    assert_eq!(decl.ret, ReturnShape::NonNull);
+    assert_eq!(decl.clause.names.iter().map(|s| hir.text(*s)).collect::<Vec<_>>(), vec!["fails"]);
     assert_eq!(decl.params.len(), 1);
-    assert!(decl.params[0].nullable);
+    let opt = hir.symbol_of("opt").expect("opt not interned");
+    assert!(decl.params[0].clause.owes(opt));
 }
 
 #[test]
@@ -49,12 +51,21 @@ fn coalesce_lowers_to_dedicated_node() {
 }
 
 #[test]
-fn safe_access_lowers_to_dedicated_node() {
+fn safe_access_lowers_to_a_guarded_index() {
     let hir = lower("say a = 1; say b = a?.x;");
     let stmts = top_stmts(&hir);
     let HirStmt::Say(field) = hir.get(&stmts[1]) else { panic!("not a say") };
     let value = field.value.expect("say has no value");
-    assert!(matches!(hir.get(&value), HirExpr::SafeAccess(_, _, true)));
+    assert!(matches!(hir.get(&value), HirExpr::Index { is_dot: true, safe: true, .. }));
+}
+
+#[test]
+fn a_plain_access_lowers_to_an_unguarded_index() {
+    let hir = lower("say a = 1; say b = a.x;");
+    let stmts = top_stmts(&hir);
+    let HirStmt::Say(field) = hir.get(&stmts[1]) else { panic!("not a say") };
+    let value = field.value.expect("say has no value");
+    assert!(matches!(hir.get(&value), HirExpr::Index { is_dot: true, safe: false, .. }));
 }
 
 #[test]
@@ -70,19 +81,22 @@ fn assert_lowers_to_dedicated_node() {
 
 #[test]
 fn type_field_flags_survive_lowering() {
-    let hir = lower("type T { next?; var count; }");
+    let hir = lower("type T { next: opt; var count; }");
     let stmts = top_stmts(&hir);
     let HirStmt::Type(decl) = hir.get(&stmts[0]) else { panic!("not a type") };
     let next = hir.symbol_of("next").expect("next not interned");
     let count = hir.symbol_of("count").expect("count not interned");
-    assert!(decl.nullable_fields.contains(&next));
+    let opt = hir.symbol_of("opt").expect("opt not interned");
+    assert!(decl.field_owes(next, opt));
     assert!(decl.var_fields.contains(&count));
 }
 
 #[test]
 fn shorthand_field_lowers_to_binder() {
     let hir = lower("match v { { x } => 0 }");
-    let HirMatcher::Shape(fields) = first_arm_matcher(&hir) else { panic!("not a shape matcher") };
+    // A bare `{ .. }` is a dict test wrapping the shape.
+    let HirMatcher::Dict(shape) = first_arm_matcher(&hir) else { panic!("not a dict matcher") };
+    let HirMatcher::Shape { fields: fields, .. } = hir.get(shape) else { panic!("not a shape matcher") };
     assert_eq!(fields.len(), 1);
     assert!(matches!(fields[0].key, HirLiteral::String(ref s) if s == "x"));
     let x = hir.symbol_of("x").expect("x not interned");
@@ -97,7 +111,7 @@ fn array_rest_lowers() {
     let HirMatchElem::Elem(first) = elements[0] else { panic!("not an element") };
     assert!(matches!(hir.get(&first), HirMatcher::Binder(_)));
     let rest = hir.symbol_of("rest").expect("rest not interned");
-    assert!(matches!(elements[1], HirMatchElem::Rest(Some(r)) if r == rest));
+    assert!(matches!(&elements[1], HirMatchElem::Rest(r) if r.binder == Some(rest)));
 }
 
 #[test]
@@ -154,7 +168,7 @@ fn a_mixed_trait_keeps_one_id_in_either_declaration_order() {
 /// Sibling scopes are where a name can reach two declarations, since neither shadows the other.
 #[test]
 fn same_named_declarations_get_distinct_ids() {
-    let hir = lower("fn mk()! { type T { pub x; } return T { x: 1 }; }\nfn probe() { type T { pub y; } }");
+    let hir = lower("fn mk() { type T { pub x; } return T { x: 1 }; }\nfn probe() { type T { pub y; } }");
     let stmts = top_stmts(&hir);
     let nested_type = |index: usize| {
         let HirStmt::Fn(decl) = hir.get(&stmts[index]) else { panic!("statement is not a function") };

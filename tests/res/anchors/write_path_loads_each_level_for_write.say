@@ -1,0 +1,29 @@
+say var a = [[0]];
+a[0][0] = 9;
+print(a[0][0]); // expect: 9
+
+// @split
+type H { pub var arr; init(this, arr) { this.arr = arr; } }
+say var h = H([]);
+&h.arr.push(1);
+print(h.arr.length()); // expect: 1
+
+// @split
+say var a = [[0]];
+a[0][0] = 9;
+
+// expect asm:
+// 0: PUSH_CONSTANT 0
+// 2: ARRAY <1>
+// 4: ARRAY <1>
+// 6: STORE_LOCAL_FRESH L0
+// 8: PUSH_CONSTANT 0
+// 10: PUSH_CONSTANT 9
+// 12: LOAD_LOCAL_FOR_WRITE L0
+// 14: PUSH_CONSTANT 0
+// 16: LOAD_STEP_FOR_WRITE <0>
+// 18: SET_INDEX
+// 19: POP
+// 20: POP_SCOPE <1> <1>
+// 23: PUSH_NULL
+// 24: HALT

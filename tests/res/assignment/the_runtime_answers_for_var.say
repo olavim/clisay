@@ -1,0 +1,33 @@
+type P { pub value; init(this, value) { this.value = value; } }
+type V { pub var value; init(this, value) { this.value = value; } }
+
+fn poke(var h) {
+    h.value = 5; // error: Cannot reassign field `P.value`
+    print(h.value);
+}
+poke(V(1)); // expect: 5
+poke(P(1));
+
+// @split
+type P { pub value; init(this, value) { this.value = value; } }
+fn poke(var h) { h["value"] = 5; } // error: Cannot reassign field `P.value`
+poke(P(1));
+
+// @split
+type P { pub value; init(this, value) { this.value = value; } }
+type V { pub var value; init(this, value) { this.value = value; } }
+
+fn writeThrough(&var slot) { slot = 5; }
+fn poke(var h) {
+    writeThrough(&h.value); // error: Cannot anchor non-var field `P.value`
+    print(h.value);
+}
+poke(V(1)); // expect: 5
+poke(P(1));
+
+// @split
+type P { pub a; pub var b; init(this, a) { this.a = a; this.b = 0; } }
+print(P(1).a); // expect: 1
+say q = P { a: 2, b: 3 };
+print(q.a); // expect: 2
+print(q.b); // expect: 3

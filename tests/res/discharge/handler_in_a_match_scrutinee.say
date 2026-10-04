@@ -1,0 +1,13 @@
+say a = 10;
+match (Err("boom") ?? e => e.value) { n => print(n), } // expect: boom
+
+// @split
+say a = 1;
+say b = 2;
+match (Err("s") ?? e => e.value) {
+    n => {
+        say q = 9;
+        print(n); // expect: s
+        print(q); // expect: 9
+    },
+}

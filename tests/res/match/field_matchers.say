@@ -1,4 +1,4 @@
-fn classify(v?) {
+fn classify(v: opt) {
     match v {
         { k: 1 | 2 | 3 } => print("small"),
         { k: _ } => print("big"),
@@ -10,7 +10,7 @@ classify({ k: 9 }); // expect: big
 classify({ j: 0 }); // expect: no-k
 classify(5); // expect: no-k
 
-fn deep(v?) {
+fn deep(v: opt) {
     if v ~ { a: { b: [first, ..rest] } } { print(first); print(rest.length()); } else { print("no"); }
 }
 deep({ a: { b: [10, 20, 30] } }); // expect: 10

@@ -1,0 +1,12 @@
+type T {
+    pub var pos;
+    init(this, pos) { this.pos = pos; }
+    pub fn seek(&var this, p) { this.pos = p; }
+}
+
+say var plain = T(0);
+&plain.seek(100);
+print(plain.pos); // expect: 100
+
+say t = Ref(T(0));
+@t.seek(100); // error: `T.seek` wants an anchor receiver

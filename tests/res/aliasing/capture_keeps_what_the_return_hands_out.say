@@ -1,0 +1,11 @@
+say box = Ref([null]);
+fn g() { say var a = [1]; @box[0] = () => a[0]; return a; }
+say var got = g();
+got[0] = 9;
+print(@box[0]()); // expect: 1
+
+// @split
+fn h() { say var a = [1]; return a; }
+say var got = h();
+got[0] = 9;
+print(got[0]); // expect: 9

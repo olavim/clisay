@@ -1,0 +1,23 @@
+fn a() { return; }
+fn b(x) { if (x) { return; } return a(); }
+b(true);
+b(false);
+print("ok"); // expect: ok
+
+// @split
+fn loop(n) {
+    if (n == 0) { return; }
+    return loop(n - 1);
+}
+loop(200000);
+print("done"); // expect: done
+
+// @split
+fn a() { return; }
+fn b() { return a(); }
+print(b()); // error: Argument 1 is a void result; the call returns no value
+
+// @split
+fn a() { return; }
+fn b(): opt { return a(); } // error: Cannot return a void result
+b();

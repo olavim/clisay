@@ -1,4 +1,3 @@
-// A binding one-liner in an if head: bound names are in scope in the then branch only.
 say d = { kind: "move", dx: 3, dy: 4 };
 if d ~ { kind, dx, dy } {
     print(kind); // expect: move

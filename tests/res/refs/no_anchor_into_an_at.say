@@ -1,0 +1,3 @@
+say r = Ref(1);
+say f = (&var s) => { s = 2; };
+f(&@r); // error: An anchor names a binding or a path into one

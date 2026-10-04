@@ -1,0 +1,31 @@
+type T { pub var items; init(this, items) { this.items = items; } pub fn go(var this) { this.items[0] = 9; } }
+say var src = [1];
+say var t = T(src);
+t.go();
+print(src[0]); // expect: 1
+print(t.items[0]); // expect: 1
+
+// @split
+type T { pub var items; init(this, items) { this.items = items; } pub fn go(var this) { this.items[0] = 9; } }
+say var src = [1];
+say var t = T(src);
+t.go();
+print(src[0]); // expect: 1
+
+// @split
+type Box { pub var v = 0; pub fn bump(var this) { this.v = this.v + 1; return this.v; } }
+say var a = Box { v: 0 };
+print(a.bump()); // expect: 1
+print(a.v); // expect: 0
+
+// @split
+type Box { pub var v = 0; pub fn bump(var this) { this.v = this.v + 1; return this.v; } }
+say var a = Box { v: 0 };
+print(a.bump()); // expect: 1
+print(a.v); // expect: 0
+
+// @split
+type Box { pub var v = 0; pub fn bump(&var this) { this.v = this.v + 1; } }
+say var a = Box { v: 0 };
+&a.bump();
+print(a.v); // expect: 1

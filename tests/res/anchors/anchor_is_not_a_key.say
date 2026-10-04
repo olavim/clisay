@@ -1,0 +1,14 @@
+say var d = {};
+say var a = [1, 2];
+d[a] = 1;
+print(d[a]); // expect: 1
+
+// @split
+say var d = {};
+say var a = [1, 2];
+d[&a] = 2; // error: An anchor is not a value
+
+// @split
+say var d = {};
+say var a = [1, 2];
+d["k"] = &a; // error: An anchor is not a value

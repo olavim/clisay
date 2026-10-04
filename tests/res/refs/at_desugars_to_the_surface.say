@@ -1,0 +1,26 @@
+say t = Ref(1);
+print(@t); // expect: 1
+
+@t = 5;
+print(@t); // expect: 5
+
+@t += 3;
+print(@t); // expect: 8
+
+type W { pub tick; init(this, tick) { this.tick = tick; } }
+say w = W(Ref(10));
+w.@tick += 1;
+print(w.@tick); // expect: 11
+
+type P { pub var pos; init(this, pos) { this.pos = pos; } }
+say u = Ref(P(0));
+@u.pos = 100;
+print(@u.pos); // expect: 100
+
+say held = [Ref(P(0))];
+@(held[0]).pos = 7;
+print(@(held[0]).pos); // expect: 7
+
+say d = { "k": Ref(1) };
+@(d["k"]) = 9;
+print(@(d["k"])); // expect: 9

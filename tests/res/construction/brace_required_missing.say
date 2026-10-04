@@ -1,4 +1,3 @@
-// A non-null public field that the init does not assign must be brace-provided.
 type Point {
     pub x;
     pub y;

@@ -1,5 +1,4 @@
-// Passing the raw `this` to a function would expose a half-built object.
-fn keep(t?) {
+fn keep(t: opt) {
 }
 type T {
     pub x;

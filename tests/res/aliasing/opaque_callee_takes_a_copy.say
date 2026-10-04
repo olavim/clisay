@@ -1,0 +1,27 @@
+fn keep(var bin, x) { &bin.push(x); }
+fn f(g) {
+    say var bin = [];
+    say var m = [1];
+    g(bin, m);
+    return bin.length();
+}
+print(f(keep)); // expect: 0
+
+// @split
+fn keep(var bin, x) { &bin.push(x); }
+say var bin = [];
+say m = [1];
+keep(bin, m);
+print(bin.length()); // expect: 0
+
+// @split
+fn take(x) { print(x[0]); } // expect: 1
+fn outer(g, y) { g(y); }
+say m = [1];
+outer(take, m);
+
+// @split
+obligation keeps { no persist; }
+fn take(x) { print(x); } // expect: 1
+fn outer(g, v: keeps) { g(v); }
+outer(take, 1);

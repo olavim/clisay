@@ -1,0 +1,27 @@
+// Flags a value and shares it on every iteration, deep in a recursion.
+type Counter {
+    pub var n = 0;
+    pub fn bump(&var this) { this.n += 1; }
+}
+type Log {
+    pub var c = Counter{n: 0};
+    pub fn add(&var this) { &this.c.bump(); }
+}
+
+fn at_depth(depth) {
+    if depth > 0 {
+        say r = at_depth(depth - 1);
+        return r;
+    }
+    say var log = Log{c: Counter{n: 0}};
+    say var kept = [];
+    say var i = 0;
+    while i < 20000 {
+        &log.add();
+        kept = [log];
+        i = i + 1;
+    }
+    return kept[0].c.n;
+}
+
+print(at_depth(200));

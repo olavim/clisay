@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use anyhow::anyhow;
 
-use crate::ast::{MatchArm, Ast, AstId, BuiltinType, Capability, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchField, MatchScalar, Matcher, ObligationRules, Receiver, ReqFn, ReqMember, SlotClause, Operator, Param, ReturnShape, Stmt, Symbol};
+use crate::ast::{MatchArm, Ast, AstId, SYNTHETIC_BINDING, BuiltinType, CatchClause, TypeDecl, TraitClause, TraitRef, Expr, SayDecl, FnDecl, Literal, MatchArrayElem, MatchShapeField, MatchScalar, Matcher, ObligationRules, MatchRest, Receiver, ReqFn, ReqMember, SlotClause, Operator, Param, Stmt, Symbol};
 use crate::frontend::lex::{ContextualKeyword, Diagnostic, SourcePosition, TokenStream, TokenType};
 
 macro_rules! parse_error {
@@ -20,10 +20,6 @@ enum SlotKind { Local, Param, Receiver, Field, Member, Return }
 impl SlotKind {
     fn allows_void_clause(self) -> bool {
         self == SlotKind::Return
-    }
-
-    fn allows_container(self) -> bool {
-        self != SlotKind::Receiver
     }
 
     fn label(self) -> &'static str {
@@ -56,7 +52,7 @@ pub(super) enum NameKind {
     Field,
     Member,
     Obligation,
-    Binder,
+    Binding,
 }
 
 impl NameKind {
@@ -71,7 +67,7 @@ impl NameKind {
             NameKind::Field => "a field",
             NameKind::Member => "a member",
             NameKind::Obligation => "an obligation",
-            NameKind::Binder => "a binder",
+            NameKind::Binding => "a binding",
         }
     }
 
@@ -137,27 +133,34 @@ mod expressions;
 mod matchers;
 mod slot_clause;
 
+fn statements<'a, 'v>(tokens: &'v mut TokenStream<'v>, ast: &'a mut Ast) -> Result<Vec<AstId<Stmt>>, anyhow::Error> {
+    let mut parser: Parser<'a, 'v> = Parser { tokens, ast, current_type: None, ctx: ExprCtx::default() };
+    let mut stmts: Vec<AstId<Stmt>> = Vec::new();
+    while parser.tokens.has_next() {
+        stmts.push(parser.parse_stmt()?);
+    }
+    Ok(stmts)
+}
+
 impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub fn parse(tokens: &'vm mut TokenStream<'vm>) -> Result<Ast, anyhow::Error> {
         let mut ast = Ast::new();
+        let pos = tokens.peek(0).pos.clone();
+        let stmts = statements(tokens, &mut ast)?;
+        Self::rooted(ast, stmts, pos)
+    }
 
-        let mut parser = Parser {
-            tokens,
-            ast: &mut ast,
-            current_type: None,
-            ctx: ExprCtx::default(),
-        };
+    pub fn parse_with_prelude(tokens: &'vm mut TokenStream<'vm>, prelude: &'vm mut TokenStream<'vm>) -> Result<Ast, anyhow::Error> {
+        let mut ast = Ast::new();
+        let pos = tokens.peek(0).pos.clone();
+        let mut stmts = statements(tokens, &mut ast)?;
+        stmts.extend(statements(prelude, &mut ast)?);
+        Self::rooted(ast, stmts, pos)
+    }
 
-        let pos = parser.tokens.peek(0).pos.clone();
-
-        // A built-in is declared like any other type, ahead of the program.
-        let mut stmts: Vec<AstId<Stmt>> = vec![parser.declare_err(&pos)];
-        while parser.tokens.has_next() {
-            stmts.push(parser.parse_stmt()?);
-        }
-        let block = parser.ast.add_expr(Expr::Block(stmts), pos.clone());
+    fn rooted(mut ast: Ast, stmts: Vec<AstId<Stmt>>, pos: SourcePosition) -> Result<Ast, anyhow::Error> {
+        let block = ast.add_expr(Expr::Block(stmts), pos.clone());
         ast.add_stmt(Stmt::Expression(block), pos);
-
         Ok(ast)
     }
 
@@ -190,23 +193,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             return true;
         }
         false
-    }
-
-    /// Consumes an optional trailing `?` nullability marker.
-    fn parse_nullable(&mut self) -> bool {
-        self.tokens.next_if(TokenType::Question).is_some()
-    }
-
-    /// Parses a return shape marker after a parameter list: `!` non-null, `?` nullable,
-    /// or nothing for void.
-    fn parse_return_shape(&mut self) -> ReturnShape {
-        if self.tokens.next_if(TokenType::Exclamation).is_some() {
-            ReturnShape::NonNull
-        } else if self.tokens.next_if(TokenType::Question).is_some() {
-            ReturnShape::Nullable
-        } else {
-            ReturnShape::Void
-        }
     }
 
     fn parse_identifier(&mut self) -> Result<String, anyhow::Error> {

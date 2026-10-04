@@ -1,3 +1,3 @@
 type T { pub f; init(this) { this.f = 1; } }
 say x = T();
-x has T { f: y }; // error: unexpected binder in a `has` test
+x has T { f: y }; // error: unexpected binding in a `has` test

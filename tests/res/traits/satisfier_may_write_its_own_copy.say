@@ -1,0 +1,43 @@
+trait Sink {
+    req fn take(this, x);
+    pub fn give(this, x) { return this.take(x); }
+}
+type Bin with Sink {
+    pub fn take(this, var x) { &x.push(1); return x.length(); }
+}
+say m = [0];
+print(Bin().give(m)); // expect: 2
+print(Bin().take(m)); // expect: 2
+print(m.length()); // expect: 1
+
+// @split
+trait Sink { req fn take(this, x); }
+type Bin with Sink {
+    pub fn take(this, &var x) { &x.push(1); } // error: parameter takes an anchor where the trait declares a value
+}
+
+// @split
+trait Reader {
+    req fn read(this);
+    pub fn go(this) { return this.read(); }
+}
+type Db with Reader {
+    pub var n = 1;
+    pub fn read(var this) { this.n = this.n + 1; return this.n; }
+}
+type Fixed with Reader {
+    pub fn read(this) { return 0; }
+}
+fn use(r) { return r.read(); }
+say d = Db();
+print(d.go()); // expect: 2
+print(use(d)); // expect: 2
+print(use(Fixed())); // expect: 0
+print(d.n); // expect: 1
+
+// @split
+trait Reader { req fn read(this); }
+type Db with Reader {
+    pub var n = 1;
+    pub fn read(&var this) { this.n = this.n + 1; return this.n; } // error: method wants an anchor receiver where the trait passes a value receiver
+}

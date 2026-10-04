@@ -1,0 +1,28 @@
+say d = { a: 1, b: 2, c: 3 };
+if (d ~ { a: 1, ..rest }) { print(rest.size()); print(rest["b"]); } // expect: 2
+// expect: 2
+
+// @split
+type Node { pub n; }
+say d = { a: 1, b: Node { n: 2 } };
+if (d ~ { a: 1, ..rest @ Node }) { print("all nodes"); } else { print("no"); } // expect: all nodes
+
+// @split
+type Node { pub n; }
+say d = { a: 1, b: 5 };
+if (d ~ { a: 1, ..rest @ Node }) { print("all nodes"); } else { print("no"); } // expect: no
+
+// @split
+type Node { pub n; }
+fn f(v) { match (v) { { a: 1, ..x @ Node } => { return "yes"; }, _ => { return "no"; } } }
+print(f({ a: 1, b: Node { n: 2 } })); // expect: yes
+print(f({ a: 1, b: 5 })); // expect: no
+
+// @split
+fn f({ a: _, ..x @ _ | null }) { say y = x["b"]; print(y); } // error: Cannot assign a nullable value to non-null binding 'y'
+f({ a: 1, b: null });
+
+// @split
+type T { pub a; init(this) { this.a = 1; } }
+say t = T();
+print(t has { a: _, ..r }); // error: a `has` shape cannot take a rest

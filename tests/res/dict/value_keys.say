@@ -1,4 +1,4 @@
-say d = mut {};
+say var d = {};
 d[5] = "num";
 d["5"] = "str";
 d[true] = "bool";

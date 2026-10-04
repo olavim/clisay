@@ -1,4 +1,3 @@
-// Array rest in leading, middle (named slice), and trailing positions.
 say a = [1, 2, 3, 4, 5];
 if a ~ [first, ..mid, last] {
     print(first); // expect: 1

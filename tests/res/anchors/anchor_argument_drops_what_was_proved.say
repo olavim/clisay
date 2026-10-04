@@ -1,0 +1,43 @@
+fn wipe(&var d: opt) { d = null; }
+fn f(var x: opt, var k: opt) {
+    if (x != null && k != null) {
+        wipe(&x);
+        print(k); // expect: 7
+    }
+}
+f(5, 7);
+
+// @split
+fn wipe(&var d: opt) { d = null; }
+fn f(var x: opt) {
+    if (x != null) {
+        wipe(&x);
+        say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
+        print(y);
+    }
+}
+f(5);
+
+// @split
+fn wipe(&var d: opt) { d = null; }
+fn f(var x: opt) {
+    if (x != null) {
+        wipe(&x);
+        if (x != null) { print(x); }
+        else { print("gone"); } // expect: gone
+    }
+}
+f(5);
+
+// @split
+fn wipe(&var d) { d["v"] = null; }
+fn f(var x) {
+    if (x ~ { v: _ | null }) {
+        if (x["v"] != null) {
+            wipe(&x);
+            say y = x["v"]; // error: unexpected null
+            print(y);
+        }
+    }
+}
+f({ v: 5 });

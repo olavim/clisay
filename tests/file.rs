@@ -39,6 +39,11 @@ fn temp(file: &str) -> Result<(), Failed> {
     common::test_file(file)
 }
 
+#[test_resources("tests/res/destructuring")]
+fn destructuring(file: &str) -> Result<(), Failed> {
+    common::test_file(file)
+}
+
 #[test_resources("tests/res/exceptions")]
 fn exceptions(file: &str) -> Result<(), Failed> {
     common::test_file(file)
@@ -124,6 +129,11 @@ fn construction(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
+#[test_resources("tests/res/anchors")]
+fn anchors(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
 #[test_resources("tests/res/receiver")]
 fn receiver(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
@@ -146,6 +156,11 @@ fn closures(resource: &str) -> Result<(), Failed> {
 
 #[test_resources("tests/res/arrays")]
 fn arrays(resource: &str) -> Result<(), Failed> {
+    common::test_file(resource)
+}
+
+#[test_resources("tests/res/defer")]
+fn defers(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
@@ -199,33 +214,13 @@ fn obligations_traits(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
-#[test_resources("tests/res/mutability")]
-fn mutability(resource: &str) -> Result<(), Failed> {
+#[test_resources("tests/res/aliasing")]
+fn aliasing(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 
-#[test_resources("tests/res/mutability_passing")]
-fn mutability_passing(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/mutability_move")]
-fn mutability_move(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/mutability_traits")]
-fn mutability_traits(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/mutability_borrow")]
-fn mutability_borrow(resource: &str) -> Result<(), Failed> {
-    common::test_file(resource)
-}
-
-#[test_resources("tests/res/mutability_capability")]
-fn mutability_capability(resource: &str) -> Result<(), Failed> {
+#[test_resources("tests/res/refs")]
+fn refs(resource: &str) -> Result<(), Failed> {
     common::test_file(resource)
 }
 

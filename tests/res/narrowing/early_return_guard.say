@@ -1,5 +1,4 @@
-// An early return on the null branch narrows the value non-null on the path that falls through.
-fn first(x: opt)! {
+fn first(x: opt) {
   if x == null { return 0; }
   return x;
 }

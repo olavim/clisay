@@ -1,0 +1,13 @@
+type Inner { pub var c = 0; }
+type Outer { pub var b; init(this) { this.b = Inner(); } }
+
+say var o = Outer();
+o.b.c = 1;
+print(o.b.c); // expect: 1
+
+// @split
+type Inner { pub var c = 0; }
+type Outer { pub b; init(this) { this.b = Inner(); } }
+
+say var o = Outer();
+o.b.c = 1; // error: Cannot reassign field `Outer.b`

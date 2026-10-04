@@ -1,3 +1,27 @@
 print((() => "hello")());           // expect: hello
 print((() => { return "hi"; })());  // expect: hi
-print((() => { "x"; })());          // expect: null
+(() => { print("x"); })();          // expect: x
+
+// @split
+print((() => { "x"; })()); // error: Unexpected void return
+
+// @split
+type T { init(this) {} pub fn quiet(this) { print("q"); } }
+say t = T();
+say g = () => t.quiet();
+g(); // expect: q
+print("ran"); // expect: ran
+
+// @split
+type T { init(this) {} pub fn quiet(this) { print("q"); } }
+say t = T();
+say g = () => t.quiet();
+print(g()); // error: Unexpected void return
+
+// @split
+type T { init(this) {} pub fn quiet(this) { print("q"); } }
+say t = T();
+say arrow = () => t.quiet();
+say block = () => { return t.quiet(); };
+arrow(); // expect: q
+block(); // expect: q

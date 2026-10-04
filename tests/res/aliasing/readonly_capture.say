@@ -1,0 +1,12 @@
+say var registry = [];
+fn show() { print(registry.length()); }
+show(); // expect: 0
+&registry.push(1);
+show(); // expect: 0
+
+// @split
+say registry = Ref([]);
+fn show() { print(@registry.length()); }
+show(); // expect: 0
+registry.mutate((&var list) => { &list.push(1); });
+show(); // expect: 1

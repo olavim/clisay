@@ -1,0 +1,71 @@
+trait Powered { pub fn peek(this): opt { return null; } }
+type Engine with Powered { init(this) {} }
+type Car { pub engine gives Powered; init(this) { this.engine = Engine(); } }
+say c = Car();
+print(c.peek() ?? "none"); // expect: none
+
+// @split
+trait Powered { pub fn peek(this): opt { return null; } }
+type Engine with Powered { init(this) {} }
+type Car { pub engine gives Powered; init(this) { this.engine = Engine(); } }
+say c = Car();
+say z = c.peek(); // error: Cannot assign a nullable value to non-null binding 'z'
+
+// @split
+trait Powered { pub fn peek(this): opt { return null; } }
+type Engine with Powered { pub var e = 7; init(this) {} }
+type Car {
+    pub engine gives Powered;
+    init(this) { this.engine = Engine(); }
+    pub fn look(this) { return this.engine.peek() ?? 0; }
+}
+say c = Car();
+print(c.look()); // expect: 0
+print(c.engine.e); // expect: 7
+
+// @split
+trait Powered { pub fn peek(this): opt { return null; } }
+type Engine with Powered { init(this) {} }
+type Car {
+    pub engine gives Powered;
+    init(this) { this.engine = Engine(); }
+    pub fn look(this) { say z = this.engine.peek(); return z; } // error: Cannot assign a nullable value to non-null binding 'z'
+}
+Car().look();
+
+// @split
+trait Powered { pub fn bump(this, &var n) { n = n + 1; } }
+type Engine with Powered { init(this) {} }
+type Car { pub engine gives Powered; init(this) { this.engine = Engine(); } }
+say c = Car();
+say var x = 1;
+print(c.bump(&x)); // error: Argument 1 is a void result; the call returns no value
+
+// @split
+trait Powered { pub fn me(this) { return this; } }
+type Engine with Powered { pub var e = 7; init(this) {} }
+type Car {
+    pub engine gives Powered;
+    init(this) { this.engine = Engine(); }
+    pub fn grab(this) { return this.engine.me(); }
+}
+print(Car().grab().e); // expect: 7
+
+// @split
+type Car {
+    init(this) {}
+    pub fn helper(this): opt { return null; }
+    pub fn look(this) { return this.helper(); }
+}
+say z = Car().look(); // error: Cannot assign a nullable value to non-null binding 'z'
+
+// @split
+trait Powered { pub fn inner(this): opt { return null; } pub fn peek(this) { return this.inner(); } }
+type Engine with Powered { init(this) {} }
+say z = Engine().peek(); // error: Cannot assign a nullable value to non-null binding 'z'
+
+// @split
+trait Powered { pub fn inner(this): opt { return null; } pub fn peek(this) { return this.inner(); } }
+type Engine with Powered { init(this) {} }
+type Car { pub engine gives Powered; init(this) { this.engine = Engine(); } }
+say z = Car().peek(); // error: Cannot assign a nullable value to non-null binding 'z'

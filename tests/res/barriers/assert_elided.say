@@ -1,4 +1,3 @@
-// `!` on a proven non-null value is zero-cost: no barrier is emitted.
 say n = 5;
 say w = n!;
 // expect asm:

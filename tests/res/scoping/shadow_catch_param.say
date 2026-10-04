@@ -1,4 +1,3 @@
-// A `say` may shadow a catch parameter, which shares the handler's scope.
 try {
   throw "boom";
 } catch (e) {

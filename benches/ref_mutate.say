@@ -1,0 +1,7 @@
+// A Ref holding a container: mutate must write in place, so the cost stays off the element count.
+say r = Ref([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+say var i = 0;
+while i < 100000 {
+    r.mutate((&var v) => { v[0] = i; });
+    i = i + 1;
+}

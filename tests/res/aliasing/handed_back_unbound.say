@@ -1,0 +1,34 @@
+type C {
+    pub var v;
+    init(this) { this.v = 0; }
+    pub fn set(var this, n) { this.v = n; return this; }
+}
+
+say var a = C();
+a.set(1);
+print(a.v); // expect: 0
+
+say b = a.set(2).set(3);
+print(b.v); // expect: 3
+print(a.v); // expect: 0
+
+// @split
+type C {
+    pub var v;
+    init(this) { this.v = 0; }
+    pub fn set(&var this, n) { this.v = n; return this; }
+}
+
+say var a = C();
+&a.set(1);
+print(a.v); // expect: 1
+
+// @split
+type C {
+    pub var v;
+    init(this) { this.v = 0; }
+    pub fn set(&var this, n) { this.v = n; return this; }
+}
+
+say var a = C();
+&a.set(2).set(3); // error: `set` wants an anchor receiver

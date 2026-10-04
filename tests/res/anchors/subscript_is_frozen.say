@@ -1,0 +1,29 @@
+type S { pub var status = "-"; }
+
+say var a = [S(), S()];
+say i = Ref(0);
+say var t = &a[@i];
+@i = 1;
+t.status = "x";
+a[@i].status = "y";
+print(a[0].status); // expect: x
+print(a[1].status); // expect: y
+
+// @split
+say var a = [1, 2, 3];
+say i = Ref(0);
+fn bump(&var n) { @i = 2; n = n + 9; }
+
+bump(&a[@i]);
+print(a[0]); // expect: 10
+print(a[2]); // expect: 3
+
+// @split
+say var a = [[1, 2], [3, 4]];
+say i = Ref(0);
+say j = Ref(0);
+fn bump(&var n) { @i = 1; @j = 1; n = n + 9; }
+
+bump(&a[@i][@j]);
+print(a[0][0]); // expect: 10
+print(a[1][1]); // expect: 4

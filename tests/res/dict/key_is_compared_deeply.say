@@ -1,0 +1,35 @@
+say var d = {};
+d[[1, 2]] = "pair";
+print(d[[1, 2]]); // expect: pair
+print(d.containsKey([1, 2])); // expect: true
+print(d.containsKey([2, 1])); // expect: false
+
+// @split
+say var d = {};
+say var k = [1];
+d[k] = "one";
+&k.push(2);
+print(d[[1]]); // expect: one
+print(d.containsKey(k)); // expect: false
+
+// @split
+type P { pub x; }
+type Q { pub x; }
+say var d = {};
+d[P { x: 1 }] = "p";
+print(d[P { x: 1 }]); // expect: p
+print(d.containsKey(Q { x: 1 })); // expect: false
+
+// @split
+fn build(depth) {
+    say var v = [0];
+    say var i = 0;
+    while i < depth {
+        v = [v, v];
+        i = i + 1;
+    }
+    return v;
+}
+say var d = {};
+d[build(60)] = 1;
+print(d[build(60)]); // expect: 1

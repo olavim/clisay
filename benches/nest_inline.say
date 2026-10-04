@@ -1,0 +1,8 @@
+// The write done where it sits: no call, no place.
+type Box { pub var inner = [0, 0, 0, 0]; }
+say var x = Box();
+say var i = 0;
+while i < 800000 {
+    x.inner[0] = i;
+    i = i + 1;
+}

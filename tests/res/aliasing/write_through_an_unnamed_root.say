@@ -1,0 +1,48 @@
+say var sink = [];
+fn get() { return sink; }
+say var a = [[0]];
+say var got = get();
+&got.push(a[0]);
+print(sink.length()); // expect: 0
+
+// @split
+say var sink = [];
+say var a = [[0]];
+fn get() { return sink; }
+fn geta() { return a; }
+say var got = get();
+&got.push(a[0]);
+say var b = geta();
+b[0][0] = 1;
+print(a[0][0]); // expect: 0
+
+// @split
+say var sink = [];
+say var a = [[0]];
+&sink.push(a[0]);
+a[0][0] = 1;
+print(a[0][0]); // expect: 1
+print(sink[0][0]); // expect: 0
+
+// @split
+say sink = [[0]];
+fn get() { return sink; }
+get()[0][0] = 5; // error: Cannot assign to an expression result
+
+// @split
+say sink = [[0]];
+fn get() { return sink; }
+say var got = get();
+got[0][0] = 5;
+print(got[0][0]); // expect: 5
+print(sink[0][0]); // expect: 0
+
+// @split
+say var sink = [[[0]]];
+(sink[0] = [[0]])[0][0] = 9; // error: Cannot assign to an expression result
+
+// @split
+say var sink = [[[0]]];
+sink[0] = [[0]];
+sink[0][0][0] = 9;
+print(sink[0][0][0]); // expect: 9

@@ -1,0 +1,19 @@
+obligation taint { witness Raw; discharge to use; }
+fn touch(&var x: taint) { }
+type Raw { pub fn poke(&var this) { touch(&this); } }
+say var r: taint = Raw();
+&r.poke();
+print("ok"); // expect: ok
+
+// @split
+obligation taint { witness Raw; discharge to use; }
+fn clear(&var x) { x = 0; }
+type Raw { pub fn wipe(&var this) { clear(&this); } } // error: cannot pass a value owing 'taint'
+
+// @split
+obligation taint { witness Raw; discharge to use; }
+fn clear(&var x) { x = 0; } // error: an anchor and the parameter it fills do not admit the same values
+fn pick() { return clear; }
+type Raw { pub fn wipe(&var this) { pick()(&this); } }
+say var r: taint = Raw();
+&r.wipe();

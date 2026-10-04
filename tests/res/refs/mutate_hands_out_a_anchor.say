@@ -1,0 +1,9 @@
+say r = Ref(1);
+r.mutate((&var v) => { v = 9; });
+print(@r); // expect: 9
+
+say a = Ref([1, 2]);
+a.mutate((&var v) => { v = [7, 8]; });
+print(@a[0]); // expect: 7
+a.mutate((&var v) => { v[1] = 5; });
+print(@a[1]); // expect: 5

@@ -1,9 +1,0 @@
-type Taint { } obligation taint { witness Taint; discharge to use; }
-trait Source {
-    req fn read(this): taint;
-}
-type File with Source {
-    pub fn read(this): [taint] { return [1]; } // error: return shape does not match the trait
-    init(this) {}
-}
-print("unreachable");

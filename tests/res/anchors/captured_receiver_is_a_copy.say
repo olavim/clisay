@@ -1,0 +1,18 @@
+fn set(&var n) { n = 5; }
+type T { pub var a = 0; pub fn go(var this) { set(&this.a); return this.a; } }
+
+say var t = T();
+print(t.go()); // expect: 5
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+type T {
+    pub var a = 0;
+    pub fn go(var this) {
+        fn inner() { f(&this.a, &this.a); } // error: Cannot take an anchor into `this`; it is captured
+        inner();
+    }
+}
+
+say var t = T();
+t.go();

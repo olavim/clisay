@@ -1,0 +1,14 @@
+say var a = 1;
+print(a = 5); // expect: 5
+
+say t = Ref(1);
+print(@t = 7); // expect: 7
+print(@t += 3); // expect: 10
+print(@t = 2); // expect: 2
+print(t.update(n => n + 1)); // expect: 3
+
+// @split
+type P { pub var pos; init(this, pos) { this.pos = pos; } }
+say t = Ref(P(0));
+print(@t.pos = 7); // expect: 7
+print(@t.pos); // expect: 7

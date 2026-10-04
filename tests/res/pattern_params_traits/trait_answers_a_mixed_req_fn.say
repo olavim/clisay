@@ -1,0 +1,49 @@
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
+trait Mover { req fn onMove(this, x @ P); }
+trait Sub with Mover { req fn onMove(this, x @ Q); } // error: parameter accepts less than the trait declares
+
+// @split
+type P { pub v; init(this, v) { this.v = v; } }
+trait Mover { req fn onMove(this, x @ P); }
+trait Sub with Mover { req fn onMove(this, x); }
+type N with Sub { init(this) {} pub fn onMove(this, x) { } }
+print(1); // expect: 1
+
+// @split
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
+trait Mover { req fn onMove(this, x @ P); }
+trait Sub with Mover { pub fn onMove(this, x @ Q) { } } // error: parameter accepts less than the trait declares
+
+// @split
+type P { pub v; init(this, v) { this.v = v; } }
+trait Mover { req fn onMove(this, x @ P); }
+trait Sub with Mover { pub fn onMove(this, x) { } }
+type N with Sub { init(this) {} }
+print(1); // expect: 1
+
+// @split
+obligation taint { witness P; discharge to use; }
+type P { pub v; init(this, v) { this.v = v; } }
+trait Tr { req fn take(this, x: taint); }
+trait Sub with Tr { pub fn take(this, x) { } } // error: parameter rejects an obligation the trait passes
+
+// @split
+obligation taint { witness P; discharge to use; }
+type P { pub v; init(this, v) { this.v = v; } }
+trait Tr { req fn take(this, x: taint); }
+trait Sub with Tr { pub fn take(this, x: taint) { } }
+type N with Sub { init(this) {} }
+print(1); // expect: 1
+
+// @split
+trait Base { req fn read(this): opt; }
+trait Sub with Base { req fn read(this): opt fails; } // error: return owes an obligation the trait forbids
+
+// @split
+trait Base { req fn read(this): opt fails; }
+trait Sub with Base { req fn read(this): opt; }
+type F with Sub { init(this) {} pub fn read(this): opt { return 1; } }
+print(1); // expect: 1
+

@@ -1,0 +1,54 @@
+say a = 10;
+try {
+    try { throw "e"; } finally { say z = 1; print(a + z); } // expect: 11
+} catch (e) {
+    print(e); // expect: e
+}
+
+// @split
+fn f() {
+    try { throw "boom"; } catch (e) { say r = "caught"; return r; } finally { say z = 1; print(z); } // expect: 1
+}
+print(f()); // expect: caught
+
+// @split
+fn f() {
+    try { say t = "t"; return t; } finally { say z = 2; print(z); } // expect: 2
+}
+print(f()); // expect: t
+
+// @split
+fn f() {
+    try { throw "a"; } catch (e) { say m = "b"; throw m; } finally { say z = "fin"; print(z); } // expect: fin
+}
+try { f(); } catch (e) { print(e); } // expect: b
+
+// @split
+fn log(s) { print(s); return s; }
+fn f() {
+    try { return log("value"); } finally { print("finally"); }
+}
+f();
+// expect: value
+// expect: finally
+
+// @split
+fn f() {
+    try { throw "outer"; } finally {
+        try {
+            try { throw "inner"; } finally { print("inner finally"); } // expect: inner finally
+        } catch (e) { print(e); } // expect: inner
+    }
+}
+try { f(); } catch (e) { print(e); } // expect: outer
+
+// @split
+fn f() {
+    try { say a = "first"; print(a); } finally { print("one"); }
+    try { return "second"; } finally { print("two"); }
+}
+print(f());
+// expect: first
+// expect: one
+// expect: two
+// expect: second

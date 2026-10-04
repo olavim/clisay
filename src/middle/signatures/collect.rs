@@ -2,7 +2,7 @@
 //! and infers each function's declared return shape.
 
 use super::Resolved;
-use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt, ReturnShape};
+use crate::middle::hir::{HirExpr, HirFnDecl, HirId, HirLiteral, HirStmt};
 use crate::middle::obligations::Obligations;
 
 use super::{Collector, FnSig, RetSig, Witness};
@@ -20,24 +20,21 @@ impl<'a> Collector<'a> {
             HirStmt::Fn(decl) => {
                 let sig = self.fn_sig(decl);
                 self.sigs.fns.insert((*stmt).into(), sig);
-                self.sigs.fns_by_name.insert(decl.name, *stmt);
                 self.expr(&decl.body);
             },
             HirStmt::Type(decl) => {
                 self.sigs.types_by_name.entry(decl.name).or_default().push(*stmt);
+                if let Some(builtin) = decl.builtin {
+                    self.sigs.builtin_decls[builtin.index()] = Some(*stmt);
+                }
                 self.sigs.decls_by_id.insert(decl.id, *stmt);
                 self.collect_sig(&decl.init);
-                for method in &decl.methods {
-                    if let HirStmt::Fn(m) = self.hir.get(method) {
-                        self.sigs.methods_by_type.insert((*stmt, m.name), *method);
-                    }
-                    self.sigs.method_owner.insert(*method, *stmt);
-                    self.collect_sig(method);
-                }
+                self.collect_methods(stmt, &decl.methods);
             },
             HirStmt::Trait(decl) => {
                 self.sigs.traits_by_name.entry(decl.name).or_default().push(*stmt);
                 self.sigs.decls_by_id.insert(decl.id, *stmt);
+                self.collect_methods(stmt, &decl.methods);
             },
             HirStmt::Nop => {},
             // A non-declaration statement holds no signatures of its own. Recurse into its children.
@@ -68,7 +65,7 @@ impl<'a> Collector<'a> {
     /// Registers each user obligation's witness and rule.
     pub(super) fn register_obligations(&mut self) {
         for (name, decl) in self.hir.obligations() {
-            self.sigs.rules.insert(name, decl.rules);
+            self.sigs.obligation_rules.insert(name, decl.rules);
             if let Some(witness) = &decl.witness {
                 let w = match self.hir.is_trait(witness.id) {
                     true => Witness::Trait(witness.id),
@@ -120,9 +117,9 @@ impl<'a> Collector<'a> {
             ret.obligations.insert(self.fails);
         }
         FnSig {
-            receiver_marker: decl.receiver.as_ref().map(|r| r.capability),
-            param_clauses: decl.params.iter().map(|p| p.clause.names.iter().copied().collect()).collect(),
-            param_markers: decl.params.iter().map(|p| p.clause.capability).collect(),
+            param_clauses: decl.params.iter().map(|p| p.clause.owed()).collect(),
+            param_anchors: decl.params.iter().map(|p| p.anchor).collect(),
+            wants_anchor_receiver: decl.receiver.as_ref().is_some_and(|r| r.anchor),
             ret,
         }
     }
@@ -138,24 +135,26 @@ impl<'a> Collector<'a> {
         matches!(self.hir.get(callee), HirExpr::Identifier(name) if Some(*name) == self.err)
     }
 
-    /// Maps a function's declared return onto its obligation set and value presence. A marked return
-    /// owes exactly its clause obligations. An unmarked return infers its presence from the body, and
-    /// its obligations are filled by the propagation pass.
+    fn collect_methods(&mut self, owner: &HirId<HirStmt>, methods: &[HirId<HirStmt>]) {
+        for method in methods {
+            if let HirStmt::Fn(m) = self.hir.get(method) {
+                self.sigs.methods_by_type.insert((*owner, m.name), *method);
+            }
+            self.sigs.method_owner.insert(*method, *owner);
+            self.collect_sig(method);
+        }
+    }
+
     fn ret_sig(&self, decl: &HirFnDecl) -> RetSig {
-        if decl.is_unmarked() {
+        if decl.has_no_return_clause() {
             return RetSig { obligations: Obligations::new(), void: self.has_void_path(&decl.body) };
         }
-        // A synthesized forwarder carries a `?` marker with no clause, so honor the marker too.
-        let mut obligations: Obligations = decl.clause.names.iter().copied().collect();
-        if decl.ret == ReturnShape::Nullable {
-            obligations.insert(self.opt);
-        }
-        RetSig { obligations, void: decl.ret == ReturnShape::Void }
+        RetSig { obligations: decl.clause.owed(), void: decl.clause.void }
     }
 
     /// Whether a function body can finish without returning a value.
     fn has_void_path(&self, body: &HirId<HirExpr>) -> bool {
-        !self.hir.body_returns_a_value(body) || self.has_bare_return(body)
+        !self.hir.definitely_returns(body) || self.has_bare_return(body)
     }
 
     /// Whether a body contains a bare `return;` outside any nested function.

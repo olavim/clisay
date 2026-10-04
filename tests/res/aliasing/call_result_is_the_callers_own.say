@@ -1,0 +1,94 @@
+say var g = [0];
+fn one() { return g; }
+say var a = one();
+say var b = one();
+a[0] = 9;
+b[0] = 1;
+print(g[0]); // expect: 0
+print(a[0]); // expect: 9
+print(b[0]); // expect: 1
+
+// @split
+say g = [0];
+fn one() { return g; }
+say var a = one();
+say b = one();
+a[0] = 9;
+print(b[0]); // expect: 0
+
+// @split
+type C { pub var v; init(this) { this.v = 0; } }
+say var a = C();
+say var b = C();
+a.v = 1;
+b.v = 2;
+print(a.v); // expect: 1
+print(b.v); // expect: 2
+
+// @split
+fn make() { return [0]; }
+say var a = make();
+say var b = make();
+a[0] = 1;
+b[0] = 2;
+print(a[0]); // expect: 1
+print(b[0]); // expect: 2
+
+// @split
+say g = [0];
+fn one() { return g; }
+say var a = one();
+a[0] = 1;
+a[0] = 2;
+a[0] = 3;
+print(a[0]); // expect: 3
+
+// @split
+say g = [0];
+fn one() { return g; }
+{ say var a = one(); a[0] = 1; }
+{ say var b = one(); b[0] = 2; }
+print(g[0]); // expect: 0
+
+// @split
+say var g = [0];
+fn one() { return g; }
+say f = one;
+say var a = f();
+say var b = f();
+a[0] = 1;
+b[0] = 2;
+print(g[0]); // expect: 0
+
+// @split
+type H { pub var item; init(this) { this.item = [0]; } pub fn get(var this) { return this.item; } }
+say h = H();
+say var a = h.get();
+say var b = h.get();
+a[0] = 1;
+b[0] = 2;
+print(h.item[0]); // expect: 0
+
+// @split
+say var g = [0];
+fn one() { return g; }
+say var a = one();
+a[0] = 9;
+g[0] = 5;
+print(g[0]); // expect: 5
+print(a[0]); // expect: 9
+
+// @split
+fn id(x) { return x; }
+say m = [0];
+say var a = id(m);
+a[0] = 1;
+print(a[0]); // expect: 1
+
+// @split
+fn make() { return [0]; }
+say var g = [0];
+say var a = make();
+a[0] = 1;
+g[0] = 2;
+print(g[0]); // expect: 2

@@ -1,7 +1,6 @@
-// A nested type resolves `this` against its own layout, and a narrowing inside it stays inside.
 type T {
     x: opt;
-    init(this, *a: opt) { this.x = a; }
+    init(this, a: opt) { this.x = a; }
     pub fn run(this) {
         type K {
             x;

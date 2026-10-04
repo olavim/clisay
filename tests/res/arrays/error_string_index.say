@@ -1,1 +1,2 @@
-print([1]["0"]); // error: Invalid array index: "0"
+fn at(xs) { return xs["0"]; } // error: Invalid array index: "0"
+print(at([1]));

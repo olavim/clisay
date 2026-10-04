@@ -1,0 +1,49 @@
+fn id(x) { return x; }
+say var a = [1];
+say var b = id(a);
+b[0] = 9;
+print(a[0]); // expect: 1
+print(b[0]); // expect: 9
+
+// @split
+fn touch(var x) { x[0] = 5; }
+say var a = [1];
+touch(a);
+print(a[0]); // expect: 1
+
+// @split
+say kept = Ref([]);
+fn hold(x) { @kept = () => x[0]; }
+say var a = [1];
+hold(a);
+a[0] = 9;
+print(@kept!()); // expect: 1
+
+// @split
+type Box { pub var v; init(this) { this.v = 0; } pub fn bump(var this) { this.v = 1; } }
+say var b = Box();
+b.bump();
+print(b.v); // expect: 0
+
+// @split
+fn writes(var x) { x[0] = 7; }
+fn relay(g, v) { g(v); }
+say var a = [1];
+relay(writes, a);
+print(a[0]); // expect: 1
+
+// @split
+fn read(x) { return x[0]; }
+say var a = [1];
+print(read(a)); // expect: 1
+a[0] = 9;
+print(a[0]); // expect: 9
+
+// @split
+say sink = Ref([]);
+fn keep(x) { sink.mutate((&var list) => { &list.push(x); }); }
+say var a = [1];
+keep(a);
+a[0] = 9;
+print(@sink[0][0]); // expect: 1
+print(a[0]); // expect: 9

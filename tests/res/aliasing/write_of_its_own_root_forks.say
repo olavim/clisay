@@ -1,0 +1,147 @@
+type Node { pub var next: opt; init(this) {} }
+say var n = Node();
+n.next = n;
+print(n.next!.next == null); // expect: true
+
+// @split
+type Node { pub var next: opt; init(this) {} }
+say var n = Node();
+n.next ||= n;
+print(n.next!.next == null); // expect: true
+
+// @split
+type Node { pub var next: opt; init(this) {} }
+say var n = Node();
+n.next = [n];
+print(n.next![0].next == null); // expect: true
+
+// @split
+type Node {
+    pub var next: opt;
+    init(this) {}
+    pub fn tie(var this) {
+        this.next = this;
+        print(this.next!.next == null);
+        this.next = this;
+        print(this.next!.next!.next == null);
+    }
+}
+Node().tie(); // expect: true
+// expect: true
+
+// @split
+say var a = [[0]];
+a[0][0] = a;
+print(a[0][0][0][0]); // expect: 0
+
+// @split
+fn wrap(x) { return [x]; }
+say var a = [0];
+a[0] = wrap(a);
+print(a[0][0][0]); // expect: 0
+
+// @split
+say var a = [[0, 0], [0, 0]];
+say var i = 1;
+print((a[i][i] = a)[1][1]); // expect: 0
+print(a[1][1][0][0]); // expect: 0
+
+// @split
+say var a = [false];
+say var i = 0;
+print(a[i] ||= a); // expect: <array 1>
+print(a[0][0]); // expect: false
+
+// @split
+say var a = [0];
+&a.push(a);
+print(a[1].length()); // expect: 1
+
+// @split
+say var d = {};
+d[d] = 1;
+print(d[{}]); // expect: 1
+
+// @split
+say var d = {};
+d[[d]] = 1;
+print(d[[{}]]); // expect: 1
+
+// @split
+say var a = [0];
+a[0] = {"k": a};
+print(a[0]["k"][0]); // expect: 0
+
+// @split
+say var a = [[0]];
+a[0][0] = a[0];
+print(a[0][0][0]); // expect: 0
+
+// @split
+say var a = [0];
+say var b = &a;
+b[0] = a;
+print(a[0][0]); // expect: 0
+
+// @split
+say var a = [0, 1];
+say var b = &a[0];
+b = a;
+print(a[0][1]); // expect: 1
+
+// @split
+say r = Ref([0]);
+say s = r;
+@r[0] = @s;
+print(@r[0][0]); // expect: 0
+
+// @split
+type A { pub b; init(this, b) { this.b = b; } }
+type C { pub var c; init(this, c) { this.c = c; } }
+say a = A(Ref(C(0)));
+a.@b.c = a;
+print(a.@b.c.@b.c == a); // expect: true
+
+// @split
+type A { pub b; init(this, b) { this.b = b; } }
+type C { pub var c; init(this, c) { this.c = c; } }
+say a = A(Ref(C(0)));
+a.@b.c = a.@b;
+print(a.@b.c.c); // expect: 0
+
+// @split
+type A { pub b; init(this, b) { this.b = b; } }
+type C { pub var c; init(this, c) { this.c = c; } }
+say a = A(Ref(C(0)));
+a.@b.c = [a.@b];
+print(a.@b.c[0].c); // expect: 0
+
+// @split
+type A { pub b; init(this, b) { this.b = b; } }
+type C { pub var c; init(this, c) { this.c = c; } }
+fn contents(x) { return x.@b; }
+say a = A(Ref(C(0)));
+a.@b.c = contents(a);
+print(a.@b.c.c); // expect: 0
+
+// @split
+say r = Ref([[0]]);
+fn first() { return @r[0]; }
+@r[0][0] = first();
+print(@r[0][0][0]); // expect: 0
+
+// @split
+type T { pub var x; }
+say var a = [[0]];
+a[0][0] = T { x: a[0] };
+print(a[0][0].x[0]); // expect: 0
+
+// @split
+say var a = [[0]];
+a[0][0] = null ?? a[0];
+print(a[0][0][0]); // expect: 0
+
+// @split
+say var a = [[0]];
+a[0][0] = Err("x") ?? e => a[0];
+print(a[0][0][0]); // expect: 0

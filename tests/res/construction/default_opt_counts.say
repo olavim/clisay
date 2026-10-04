@@ -1,8 +1,6 @@
-// A nullable field counts as defaulted for the synthesized init. `field?` and `field: opt` spell
-// the same nullability.
 type T {
     pub x = 5;
-    pub y?;
+    pub y: opt;
     pub z: opt;
 }
 say t = T();

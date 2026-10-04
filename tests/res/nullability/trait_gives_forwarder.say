@@ -1,7 +1,5 @@
-// A `gives` forwarder is trusted at its trait's declared nullability on a known receiver, so a
-// nullable forwarded result into a non-null slot is caught statically with no runtime barrier.
 trait Powered {
-    pub fn start(this)? {
+    pub fn start(this): opt {
         return null;
     }
 }

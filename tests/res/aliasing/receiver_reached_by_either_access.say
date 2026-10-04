@@ -1,0 +1,23 @@
+say var sink = [];
+say var a = [[0]];
+&sink.push(a[0]);
+&a[0]["push"](9);
+print(a[0].length()); // expect: 2
+print(sink[0].length()); // expect: 1
+
+// @split
+say var sink = [];
+say var a = [[0]];
+&sink.push(a[0]);
+&a[0].push(9);
+print(a[0].length()); // expect: 2
+print(sink[0].length()); // expect: 1
+
+// @split
+say var d = { a: 1 };
+print(d.size()); // expect: 1
+d["size"] = () => "data";
+print(d["size"]()); // expect: data
+print(d.size()); // expect: 2
+print(d.containsKey("containsKey")); // expect: false
+print(d.containsKey("a")); // expect: true

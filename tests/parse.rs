@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Capability, Expr, FieldInit, FnDecl, Literal, MatchElem, MatchScalar, Matcher, Operator, ReturnShape, Stmt, Symbol};
+use clisay::internals::{parse, parse_matcher, try_parse, Ast, AstId, Expr, SayDecl, FnDecl, Literal, MatchArrayElem, MatchScalar, Matcher, Operator, Stmt, Symbol};
 
 /// The top-level statements of a parsed program (unwraps the root block).
 /// The statements the program wrote. The compiler declares its own built-ins in the same block.
@@ -25,31 +25,43 @@ fn say_value(ast: &Ast) -> AstId<Expr> {
 
 #[test]
 fn say_nullability_and_mutability() {
-    let ast = parse("say a = 1; say b? = 2; say var c = 3; say var d? = 4;");
+    let ast = parse("say a = 1; say b: opt = 2; say var c = 3; say var d: opt = 4;");
+    let opt = ast.symbol("opt").expect("`opt` was named in the source");
     // The root block also carries the built-in declarations, so only the `say`s are read.
     let flags: Vec<(bool, bool)> = top_stmts(&ast).iter().filter_map(|s| match ast.get(s) {
-        Stmt::Say(f) => Some((f.nullable, f.reassignable)),
+        Stmt::Say(f) => Some((f.clause.owes(opt), f.reassignable)),
         _ => None,
     }).collect();
     assert_eq!(flags, vec![(false, false), (true, false), (false, true), (true, true)]);
 }
 
 #[test]
-fn fn_return_shapes() {
-    let ast = parse("fn a() {} fn b()! { return 1; } fn c()? {}");
+fn fn_return_clauses() {
+    let ast = parse("fn a() {} fn b(): opt {} fn c(): void {}");
     let stmts = top_stmts(&ast);
-    assert_eq!(nth_fn(&ast, &stmts, 0).ret, ReturnShape::Void);
-    assert_eq!(nth_fn(&ast, &stmts, 1).ret, ReturnShape::NonNull);
-    assert_eq!(nth_fn(&ast, &stmts, 2).ret, ReturnShape::Nullable);
+    let clause = |i: usize| {
+        let c = &nth_fn(&ast, &stmts, i).clause;
+        (c.names.iter().map(|s| ast.text(*s).to_string()).collect::<Vec<_>>(), c.void)
+    };
+    assert_eq!(clause(0), (vec![], false));
+    assert_eq!(clause(1), (vec!["opt".to_string()], false));
+    assert_eq!(clause(2), (vec![], true));
 }
 
 #[test]
-fn param_markers() {
-    let ast = parse("fn f(x, y?) {}");
+fn a_return_marker_is_not_a_return_clause() {
+    assert!(try_parse("fn f()! { return 1; }").is_err());
+    assert!(try_parse("fn f()? { return 1; }").is_err());
+}
+
+#[test]
+fn param_nullability_comes_from_the_clause() {
+    let ast = parse("fn f(x, y: opt, z: fails) {}");
     let stmts = top_stmts(&ast);
     let params = &nth_fn(&ast, &stmts, 0).params;
-    let flags: Vec<bool> = params.iter().map(|p| p.nullable).collect();
-    assert_eq!(flags, vec![false, true]);
+    let opt = ast.symbol("opt").expect("`opt` was named in the source");
+    let flags: Vec<bool> = params.iter().map(|p| p.clause.owes(opt)).collect();
+    assert_eq!(flags, vec![false, true, false]);
 }
 
 /// A parameter is one matcher, so every parameter form is a pattern and `binder` derives the name.
@@ -70,55 +82,14 @@ fn param_forms_are_all_patterns() {
 
 #[test]
 fn param_pattern_carries_a_clause() {
-    let ast = parse("fn f(mut (x @ Node { next } | null)) {}");
+    let ast = parse("fn f((x @ Node { next } | null)) {}");
     let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
     assert_eq!(ast.text(param.binder(&ast).expect("no whole-value binder")), "x");
-    assert_eq!(param.clause.capability, Capability::Mut);
 
     let Matcher::As(_, inner) = ast.get(&param.pattern) else { panic!("the pattern is not an as-binding") };
     let Matcher::Or(alternatives) = ast.get(inner) else { panic!("the pattern is not an or") };
     assert!(matches!(ast.get(&alternatives[0]), Matcher::Type { nominal: true, .. }));
     assert!(matches!(ast.get(&alternatives[1]), Matcher::Literal(MatchScalar::Null)));
-}
-
-/// The marker describes the slot, so it does not need the pattern to name the value.
-#[test]
-fn unnamed_param_still_carries_a_capability() {
-    let ast = parse("fn f(*mut _, mut Node : opt) {}");
-    let params = &nth_fn(&ast, &top_stmts(&ast), 0).params;
-    assert!(params[0].binder(&ast).is_none());
-    assert_eq!(params[0].clause.capability, Capability::MoveMut);
-    assert!(params[1].binder(&ast).is_none());
-    assert_eq!(params[1].clause.capability, Capability::Mut);
-    assert_eq!(ast.text(params[1].clause.names[0]), "opt");
-}
-
-/// The marker lands in the clause the rest of the pipeline reads, whichever form wrote it.
-#[test]
-fn capability_prefix_fills_the_clause() {
-    let ast = parse("fn f(a, mut b, *c, *mut d) {} fn h(*mut e) {}");
-    let stmts = top_stmts(&ast);
-    let caps: Vec<Capability> = nth_fn(&ast, &stmts, 0).params.iter().map(|p| p.clause.capability).collect();
-    assert_eq!(caps, vec![Capability::None, Capability::Mut, Capability::Move, Capability::MoveMut]);
-
-    assert_eq!(nth_fn(&ast, &stmts, 1).params[0].clause.capability, Capability::MoveMut);
-
-    // A parameter and a receiver take the marker ahead of the name, and nowhere else.
-    for src in ["fn f(x: mut) {}", "fn f(x: *mut) {}", "type T { pub fn m(this: mut) {} }"] {
-        assert!(try_parse(src).is_err(), "{src}");
-    }
-}
-
-/// A receiver has no pattern, so the prefix is the only place its capability can sit.
-#[test]
-fn receiver_carries_a_capability_prefix() {
-    let ast = parse("type T { pub fn a(this) {} pub fn b(mut this) {} pub fn c(*this) {} pub fn d(*mut this) {} }");
-    let Stmt::Type(decl) = ast.get(&top_stmts(&ast)[0]) else { panic!("expected a type") };
-    let caps: Vec<Capability> = decl.methods.iter().map(|m| match ast.get(m) {
-        Stmt::Fn(f) => f.receiver.as_ref().expect("a receiver").clause.capability,
-        _ => panic!("expected a method"),
-    }).collect();
-    assert_eq!(caps, vec![Capability::None, Capability::Mut, Capability::Move, Capability::MoveMut]);
 }
 
 #[test]
@@ -129,44 +100,9 @@ fn param_pattern_rejections() {
 }
 
 #[test]
-fn param_capability_marker() {
-    // `mut` / `*mut` lead the clause, ahead of the obligation atoms.
-    let ast = parse("fn f(mut a, *mut b, mut c: opt) {}");
-    let stmts = top_stmts(&ast);
-    let params = &nth_fn(&ast, &stmts, 0).params;
-    assert_eq!(params[0].clause.capability, Capability::Mut);
-    assert!(params[0].clause.names.is_empty());
-    assert_eq!(params[1].clause.capability, Capability::MoveMut);
-    assert_eq!(params[2].clause.capability, Capability::Mut);
-    assert_eq!(ast.text(params[2].clause.names[0]), "opt");
-}
-
-#[test]
-fn fn_return_capability_marker() {
-    let ast = parse("fn f(): mut opt {}");
-    let decl = nth_fn(&ast, &top_stmts(&ast), 0);
-    assert_eq!(decl.clause.capability, Capability::Mut);
-    assert_eq!(ast.text(decl.clause.names[0]), "opt");
-}
-
-#[test]
-fn capability_marker_must_lead_the_clause() {
-    // The capability leads, so `mut opt fails` is the only spelling of that clause.
-    let ast = parse("fn f(): mut opt fails {}");
-    let decl = nth_fn(&ast, &top_stmts(&ast), 0);
-    assert_eq!(decl.clause.capability, Capability::Mut);
-    let names: Vec<&str> = decl.clause.names.iter().map(|n| ast.text(*n)).collect();
-    assert_eq!(names, vec!["opt", "fails"]);
-
-    for src in ["fn f(): opt mut {}", "fn f(): opt *mut fails {}", "fn f(): [taint] mut {}"] {
-        assert!(try_parse(src).is_err(), "{src}");
-    }
-}
-
-#[test]
 fn obligation_atoms_stay_unordered() {
-    // Only the capability's position is pinned. The obligations among themselves are a set.
-    for src in ["fn f(mut x: opt fails) {}", "fn f(mut x: fails opt) {}"] {
+    // The obligations in a clause are a set, so their order carries nothing.
+    for src in ["fn f(x: opt fails) {}", "fn f(x: fails opt) {}"] {
         let ast = parse(src);
         let param = &nth_fn(&ast, &top_stmts(&ast), 0).params[0];
         let mut names: Vec<&str> = param.clause.names.iter().map(|n| ast.text(*n)).collect();
@@ -176,105 +112,72 @@ fn obligation_atoms_stay_unordered() {
 }
 
 #[test]
-fn value_mut_construction() {
-    // `mut` before a literal or constructor wraps the construction in a value-mut marker.
-    let dict = parse("say d = mut {x: 1};");
-    let Expr::Mut(inner) = dict.get(&say_value(&dict)) else { panic!("dict not value-mut") };
-    assert!(matches!(dict.get(inner), Expr::Literal(Literal::Dict(_))));
-
-    let array = parse("say a = mut [1, 2];");
-    let Expr::Mut(inner) = array.get(&say_value(&array)) else { panic!("array not value-mut") };
-    assert!(matches!(array.get(inner), Expr::Literal(Literal::Array(_))));
-
-    let ctor = parse("say u = mut User();");
-    let Expr::Mut(inner) = ctor.get(&say_value(&ctor)) else { panic!("ctor not value-mut") };
-    assert!(matches!(ctor.get(inner), Expr::Call(_, _)));
-}
-
-#[test]
-fn value_mut_wraps_any_operand_optimistically() {
-    // A non-construction operand still parses into the marker, so lowering can name the mistake.
-    let ast = parse("say x = mut (1 + 2);");
-    let Expr::Mut(inner) = ast.get(&say_value(&ast)) else { panic!("not value-mut") };
-    assert!(matches!(ast.get(inner), Expr::Binary(Operator::Add, _, _)));
-}
-
-#[test]
-fn capability_marker_rejections() {
-    // `*mut` is one token, so a space between `*` and `mut` is not the move marker.
-    assert!(try_parse("fn f(): * mut {}").is_err());
-    assert!(try_parse("say x: mut;").is_err());
-    assert!(try_parse("type T { a: mut; }").is_err());
-    assert!(try_parse("fn f(): mut mut {}").is_err());
-    assert!(try_parse("fn f(): mut *mut {}").is_err());
-}
-
-#[test]
 fn lambda_return_is_inferred() {
     let ast = parse("say f = (x) => x;");
     let Expr::Literal(Literal::Lambda(decl)) = ast.get(&say_value(&ast)) else { panic!("not a lambda") };
-    assert_eq!(decl.ret, ReturnShape::Inferred);
+    assert!(decl.clause.names.is_empty() && !decl.clause.void);
 }
 
 #[test]
-fn type_field_markers() {
-    let ast = parse("type T { a; b?; var c; var d?; init(this, a, c) { this.a = a; this.c = c; } }");
+fn type_field_clauses() {
+    let ast = parse("type T { a; b: opt; var c; var d: opt; e: fails; init(this, a, c, e) { this.a = a; this.c = c; this.e = e; } }");
     let stmts = top_stmts(&ast);
     let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a type") };
+    let opt = ast.symbol("opt").expect("opt not interned");
+    let nullable: HashSet<String> = decl.fields.iter()
+        .filter(|f| decl.field_owes(**f, opt))
+        .map(|f| ast.text(*f).to_string())
+        .collect();
+    assert_eq!(nullable, HashSet::from(["b".to_string(), "d".to_string()]));
     let names = |set: &HashSet<Symbol>| -> HashSet<String> {
         set.iter().map(|s| ast.text(*s).to_string()).collect()
     };
-    assert_eq!(names(&decl.nullable_fields), HashSet::from(["b".to_string(), "d".to_string()]));
     assert_eq!(names(&decl.var_fields), HashSet::from(["c".to_string(), "d".to_string()]));
 }
 
 #[test]
-fn req_fn_return_shape() {
-    let ast = parse("trait T { req fn find(this)?; req fn count(this)!; req fn onClick(this); }");
+fn req_fn_return_clause() {
+    let ast = parse("trait T { req fn find(this): opt; req fn count(this); req fn onClick(this): void; }");
     let stmts = top_stmts(&ast);
     let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a trait") };
-    let shapes: Vec<ReturnShape> = decl.req_fns.iter().map(|rf| rf.ret).collect();
-    assert_eq!(shapes, vec![ReturnShape::Nullable, ReturnShape::NonNull, ReturnShape::Void]);
+    let clauses: Vec<(Vec<String>, bool)> = decl.req_fns.iter()
+        .map(|rf| (rf.clause.names.iter().map(|s| ast.text(*s).to_string()).collect(), rf.clause.void))
+        .collect();
+    assert_eq!(clauses, vec![
+        (vec!["opt".to_string()], false),
+        (vec![], false),
+        (vec![], true),
+    ]);
 }
 
 #[test]
 fn req_member_marker_and_clause() {
-    let ast = parse("trait T { req plain; req var count; req data : opt; req var items : [taint]; }");
+    let ast = parse("trait T { req plain; req var count; req data : opt; req var items : opt fails; }");
     let stmts = top_stmts(&ast);
     let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a trait") };
-    let read = |i: usize| -> (String, bool, Vec<String>, bool) {
+    let read = |i: usize| -> (String, bool, Vec<String>) {
         let rm = &decl.req_members[i];
         (ast.text(rm.name).to_string(), rm.reassignable,
-            rm.clause.names.iter().map(|n| ast.text(*n).to_string()).collect(), rm.clause.container)
+            rm.clause.names.iter().map(|n| ast.text(*n).to_string()).collect())
     };
-    assert_eq!(read(0), ("plain".to_string(), false, vec![], false));
-    assert_eq!(read(1), ("count".to_string(), true, vec![], false));
-    assert_eq!(read(2), ("data".to_string(), false, vec!["opt".to_string()], false));
-    assert_eq!(read(3), ("items".to_string(), true, vec!["taint".to_string()], true));
+    assert_eq!(read(0), ("plain".to_string(), false, vec![]));
+    assert_eq!(read(1), ("count".to_string(), true, vec![]));
+    assert_eq!(read(2), ("data".to_string(), false, vec!["opt".to_string()]));
+    assert_eq!(read(3), ("items".to_string(), true, vec!["opt".to_string(), "fails".to_string()]));
 }
 
 #[test]
 fn say_slot_clause() {
     let ast = parse("say v: opt; say w: opt fails;");
     let stmts = top_stmts(&ast);
-    let names = |init: &FieldInit| -> Vec<String> {
+    let names = |init: &SayDecl| -> Vec<String> {
         init.clause.names.iter().map(|n| ast.text(*n).to_string()).collect()
     };
     let Stmt::Say(v) = ast.get(&stmts[0]) else { panic!("not a say") };
     assert_eq!(names(v), vec!["opt"]);
-    assert!(!v.clause.container && !v.clause.void);
+    assert!(!v.clause.void);
     let Stmt::Say(w) = ast.get(&stmts[1]) else { panic!("not a say") };
     assert_eq!(names(w), vec!["opt", "fails"]);
-}
-
-#[test]
-fn field_slot_clause_container() {
-    let ast = parse("type T { x: [taint]; }");
-    let stmts = top_stmts(&ast);
-    let Stmt::Type(decl) = ast.get(&stmts[0]) else { panic!("not a type") };
-    let (_, clause) = &decl.field_clauses[0];
-    assert!(clause.container);
-    assert_eq!(ast.text(clause.names[0]), "taint");
 }
 
 #[test]
@@ -287,14 +190,9 @@ fn fn_return_slot_clause_void() {
 }
 
 #[test]
-fn slot_clause_void_position_is_free() {
-    // `void` is an atom, so it composes with obligations in any order.
+fn a_void_return_owes_nothing() {
     for src in ["fn f(): opt void {}", "fn f(): void opt {}", "fn f(): fails opt void {}"] {
-        let ast = parse(src);
-        let stmts = top_stmts(&ast);
-        let decl = nth_fn(&ast, &stmts, 0);
-        assert!(decl.clause.void, "{src}");
-        assert!(!decl.clause.names.is_empty(), "{src}");
+        assert!(try_parse(src).is_err(), "{src}");
     }
 }
 
@@ -312,18 +210,6 @@ fn slot_clause_rejections() {
 }
 
 #[test]
-fn container_malformed_insides_get_targeted_errors() {
-    let void = try_parse("say a: [taint void];").err().expect("expected a parse error");
-    assert!(void.contains("'void' is not a valid container obligation"), "{void}");
-
-    let nested = try_parse("say b: [opt [fails]];").err().expect("expected a parse error");
-    assert!(nested.contains("cannot nest"), "{nested}");
-
-    let comma = try_parse("say c: [opt, [fails]];").err().expect("expected a parse error");
-    assert!(comma.contains("separated by spaces"), "{comma}");
-}
-
-#[test]
 fn obligation_declaration() {
     let ast = parse("obligation tainted { discharge to use; } obligation parsed { witness Unparsed; discharge to use; } obligation borrowed { no persist; } obligation held { no drop; }");
     let stmts = top_stmts(&ast);
@@ -331,7 +217,7 @@ fn obligation_declaration() {
     let Stmt::Obligation { name, witness, rules } = ast.get(&stmts[0]) else { panic!("not an obligation") };
     assert_eq!(ast.text(*name), "tainted");
     assert!(witness.is_none());
-    assert!(rules.to_use && !rules.no_persist && !rules.before_drop);
+    assert!(rules.to_use && !rules.no_persist && !rules.must_use);
 
     let Stmt::Obligation { witness, rules, .. } = ast.get(&stmts[1]) else { panic!("not an obligation") };
     let Some(w) = *witness else { panic!("witness form has no witness") };
@@ -348,12 +234,12 @@ fn obligation_declaration() {
 
 #[test]
 fn obligation_rules_compose() {
-    let ast = parse("obligation fails { witness Err; discharge to use; no persist; no return; discharge before drop; }");
+    let ast = parse("obligation fails { witness Err; discharge to use; no persist; no return; must use; }");
     let stmts = top_stmts(&ast);
     let Stmt::Obligation { witness, rules, .. } = ast.get(&stmts[0]) else { panic!("not an obligation") };
     let Some(w) = *witness else { panic!("no witness") };
     assert_eq!(ast.text(w), "Err");
-    assert!(rules.to_use && rules.no_persist && rules.no_return && rules.before_drop && !rules.no_drop);
+    assert!(rules.to_use && rules.no_persist && rules.no_return && rules.must_use && !rules.no_drop);
 }
 
 #[test]
@@ -484,7 +370,7 @@ fn color_is_off_by_default_and_toggles_on() {
 #[test]
 fn unclosed_block_points_at_opener() {
     // Running off the end of a block reports the missing `}` and its opening brace.
-    let err = try_parse("fn f()! {\n    return 1;").err().expect("expected a parse error");
+    let err = try_parse("fn f() {\n    return 1;").err().expect("expected a parse error");
     assert!(err.contains("expected '}'"), "{err}");
     assert!(err.contains("unclosed '{'"), "{err}");
 }
@@ -556,7 +442,8 @@ fn matcher_bare_name_test_vs_bind() {
 
     // A bare name standing alone as a shape field value still binds.
     let (ast, m) = matcher("{ k: v }");
-    let Matcher::Shape(fields) = ast.get(&m) else { panic!("not a shape") };
+    let Matcher::Dict(shape) = ast.get(&m) else { panic!("not a dict") };
+    let Matcher::Shape { fields, .. } = ast.get(shape) else { panic!("not a shape") };
     assert!(matches!(ast.get(&fields[0].value), Matcher::Binder(_)));
 
     // `is` as a whole matcher is redundant and rejected.
@@ -578,13 +465,14 @@ fn matcher_type_tests() {
     assert!(!*nominal);
 
     let (ast, m) = matcher("has { x: 1 }");
-    assert!(matches!(ast.get(&m), Matcher::Shape(_)));
+    assert!(matches!(ast.get(&m), Matcher::Shape { .. }));
 }
 
 #[test]
 fn matcher_shape_shorthand_binds() {
     let (ast, m) = matcher("{ kind: \"line\", from, to }");
-    let Matcher::Shape(fields) = ast.get(&m) else { panic!("not a shape") };
+    let Matcher::Dict(shape) = ast.get(&m) else { panic!("not a dict") };
+    let Matcher::Shape { fields, .. } = ast.get(shape) else { panic!("not a shape") };
     assert_eq!(fields.len(), 3);
     assert_eq!(fields[0].key, MatchScalar::String("kind".into()));
     // `from` shorthand desugars to a binder value.
@@ -594,7 +482,8 @@ fn matcher_shape_shorthand_binds() {
 #[test]
 fn matcher_empty_shape_and_array() {
     let (ast, m) = matcher("{}");
-    let Matcher::Shape(fields) = ast.get(&m) else { panic!("not a shape") };
+    let Matcher::Dict(shape) = ast.get(&m) else { panic!("not a dict") };
+    let Matcher::Shape { fields, .. } = ast.get(shape) else { panic!("not a shape") };
     assert!(fields.is_empty());
 
     let (ast, m) = matcher("[]");
@@ -605,7 +494,8 @@ fn matcher_empty_shape_and_array() {
 #[test]
 fn matcher_allows_null_key() {
     let (ast, m) = matcher("{ null: _ }");
-    let Matcher::Shape(fields) = ast.get(&m) else { panic!("not a shape") };
+    let Matcher::Dict(shape) = ast.get(&m) else { panic!("not a dict") };
+    let Matcher::Shape { fields, .. } = ast.get(shape) else { panic!("not a shape") };
     assert_eq!(fields[0].key, MatchScalar::Null);
 }
 
@@ -614,11 +504,17 @@ fn matcher_array_rest() {
     let (ast, m) = matcher("[start, .., end]");
     let Matcher::Array(elems) = ast.get(&m) else { panic!("not an array") };
     assert_eq!(elems.len(), 3);
-    assert!(matches!(elems[1], MatchElem::Rest(None)));
+    assert!(matches!(&elems[1], MatchArrayElem::Rest(r) if r.binder.is_none() && r.matcher.is_none()));
 
     let (ast, m) = matcher("[..rest]");
     let Matcher::Array(elems) = ast.get(&m) else { panic!("not an array") };
-    assert!(matches!(elems[0], MatchElem::Rest(Some(_))));
+    assert!(matches!(&elems[0], MatchArrayElem::Rest(r) if r.binder.is_some() && r.matcher.is_none()));
+
+    let (ast, m) = matcher("[..rest @ _ | null]");
+    let Matcher::Array(elems) = ast.get(&m) else { panic!("not an array") };
+    let MatchArrayElem::Rest(rest) = &elems[0] else { panic!("not a rest") };
+    assert!(rest.binder.is_some());
+    assert!(matches!(ast.get(&rest.matcher.expect("no quantified matcher")), Matcher::Or(_)));
 }
 
 #[test]
@@ -746,7 +642,7 @@ fn tilde_one_liner_in_if_head() {
     let stmts = top_stmts(&ast);
     let Stmt::If(cond, _, _) = ast.get(&stmts[0]) else { panic!("not an if") };
     let Expr::Match(_, matcher) = ast.get(cond) else { panic!("condition is not a `~` one-liner") };
-    assert!(matches!(ast.get(matcher), Matcher::Shape(_)));
+    assert!(matches!(ast.get(matcher), Matcher::Dict(_)));
 }
 
 #[test]

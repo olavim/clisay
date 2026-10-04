@@ -1,13 +1,9 @@
-type P { pub x; pub y; init(this, *a, *b) { this.x = a; this.y = b; } }
+type P { pub x; pub y; init(this, a, b) { this.x = a; this.y = b; } }
 say p = P(1, 2);
-
 if p ~ P { print("body"); } // expect: body
-
 if p ~ P { x, y } { print(x); print(y); } // expect: 1
 // expect: 2
-
 if p ~ P { x: 1 } { print("shape-body"); } // expect: shape-body
-
 say var n = 0;
 while n < 1 && p ~ P { n = n + 1; }
 print(n); // expect: 1

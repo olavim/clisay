@@ -1,0 +1,54 @@
+say sink = Ref([]);
+fn keeper(v) { sink.mutate((&var list) => { &list.push(v); }); }
+say var a = [[0]];
+keeper(a[0]);
+a[0][0] = 99;
+print(@sink[0][0]); // expect: 0
+print(a[0][0]); // expect: 99
+
+// @split
+say sink = Ref([]);
+fn keeper(v) { sink.mutate((&var list) => { &list.push(v); }); }
+say a = [[0]];
+keeper(a[0]);
+print(@sink[0][0]); // expect: 0
+
+// @split
+fn peek(v) { return v; }
+say var a = [[0]];
+print(peek(a[0])[0]); // expect: 0
+a[0][0] = 5;
+print(a[0][0]); // expect: 5
+
+// @split
+fn keep(var c, v) { &c.push(v); }
+say var s1 = [];
+say var a = [[0]];
+keep(s1, a[0]);
+a[0][0] = 99;
+print(s1.length()); // expect: 0
+
+// @split
+fn wrap(v) { say var box = []; &box.push(v); return box; }
+say var a = [[0]];
+say b = wrap(a[0]);
+a[0][0] = 99;
+print(b[0][0]); // expect: 0
+
+// @split
+fn wrap(v) { say var box = []; &box.push(v); return box; }
+say a = [[0]];
+say var b = wrap(a[0]);
+b[0][0] = 9;
+print(b[0][0]); // expect: 9
+
+// @split
+fn run() {
+    say sink = Ref([]);
+    fn keeper(v) { sink.mutate((&var list) => { &list.push(v); }); }
+    say var a = [[0]];
+    keeper(a[0]);
+    a[0][0] = 99;
+    print(@sink[0][0]); // expect: 0
+}
+run();

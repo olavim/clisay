@@ -3,11 +3,11 @@
 use anyhow::bail;
 
 use crate::ast::BuiltinType;
-use crate::backend::bytecode::chunk::BytecodeChunk;
+use crate::backend::bytecode::chunk::{BytecodeChunk, HandlerRange};
 use crate::backend::bytecode::opcode;
 use crate::core::objects::TypeMember;
 use crate::frontend::lex::SourcePosition;
-use crate::middle::ir::{TO_FRAME_END, SlotAccepts, Inst, Ir, Label};
+use crate::middle::ir::{TO_FRAME_END, SlotWitnessSet, Inst, Ir, Label};
 
 pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
     let mut offsets = Vec::with_capacity(ir.code().len());
@@ -21,9 +21,12 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
         bail!("Bytecode too large");
     }
 
+    // A label may sit one past the last instruction.
+    offsets.push(size);
+
     // Finalise function entry points now that byte offsets are known.
     for &(func, body_label) in ir.fn_entries() {
-        unsafe { (*func).ip_start = offsets[ir.label_target(body_label)]; }
+        unsafe { (*func).ip_start = landing_offset(&ir, &offsets, body_label); }
     }
 
     let mut chunk = BytecodeChunk::new();
@@ -32,52 +35,72 @@ pub fn assemble(ir: Ir) -> Result<BytecodeChunk, anyhow::Error> {
         bail!("a built-in type reached assembly with no layout");
     }
 
-    // `Err`'s native factory writes field 0 and nothing else, so its declaration has to match.
-    let err = ir.builtin_layouts()[BuiltinType::Err.index()].as_ref().expect("every built-in layout is present");
-    if err.field_count != 1 || !err.members.iter().any(|(name, m)| name == "value" && matches!(m, TypeMember::Field(0))) {
-        bail!("Err's native factory writes one field, so its declaration must have exactly `value` at id 0");
+    let err_layout = ir.builtin_layouts()[BuiltinType::Err.index()].as_ref().expect("every built-in layout is present");
+    if err_layout.field_count != 1 || !err_layout.members.iter().any(|(name, m)| name == "value" && matches!(m, TypeMember::Field(0))) {
+        bail!("Err's native factory has one field");
     }
 
-    chunk.witness_allows = ir.witness_allows().to_vec();
-    chunk.param_accepts = ir.param_accepts().to_vec();
-    chunk.slot_accepts = ir.slot_accepts().iter()
-        .map(|body| body.iter().map(|e| SlotAccepts { from: offsets[e.from], to: if e.to == TO_FRAME_END { TO_FRAME_END } else { offsets[e.to] }, ..*e }).collect())
+    let ref_layout = ir.builtin_layouts()[BuiltinType::Ref.index()].as_ref().expect("every built-in layout is present");
+    if ref_layout.field_count != 2 {
+        bail!("Ref's native factory sets a value and a lock");
+    }
+
+    chunk.witness_set_pool = ir.witness_set_pool().to_vec();
+    chunk.param_list_pool = ir.param_list_pool().to_vec();
+    chunk.slot_witness_set_pool = ir.slot_witness_set_pool().iter()
+        .map(|body| body.iter().map(|e| SlotWitnessSet { from: offsets[e.from], to: if e.to == TO_FRAME_END { TO_FRAME_END } else { offsets[e.to] }, ..*e }).collect())
         .collect();
-    chunk.owed_names = ir.owed_names().to_vec();
+    chunk.anchor_params = ir.anchor_params().to_vec();
+
+    let at = |label: Label| offsets[ir.label_position(label)] as u16;
+    let targets = ir.throw_targets();
+    chunk.handlers = targets.iter().zip(targets.iter().skip(1).map(|next| at(next.from)).chain([size as u16]))
+        .filter_map(|(target, end)| target.handler.map(|(handler, height)| HandlerRange { start: at(target.from), end, handler: at(handler), frame_stack_height: height }))
+        .filter(|range| range.start < range.end)
+        .collect();
+    debug_assert!(chunk.handlers.windows(2).all(|pair| pair[0].end <= pair[1].start), "handler ranges should be in order");
+
     chunk.constants = ir.constants().to_vec();
-    chunk.elisions = ir.elisions().iter().map(|&idx| offsets[idx]).collect();
+
+    chunk.forced_check_ends = ir.forced_checks().iter().map(|&idx| offsets[idx + 1] - 1).collect();
+
     for (&(idx, role), pos) in ir.source_map() {
-        let end = offsets.get(idx + 1).copied().unwrap_or(size);
+        let end = offsets[idx + 1];
         for offset in offsets[idx]..end {
             chunk.source_map.insert((offset, role), pos.clone());
         }
     }
+
     for (i, inst) in ir.code().iter().enumerate() {
         encode(inst, &offsets, &ir, &mut chunk, &ir.positions()[i]);
     }
+
     chunk.builtin_layouts = ir.into_builtin_layouts();
 
     Ok(chunk)
 }
 
-/// Writes a barrier's guarded positions as a count byte followed by one byte each.
-fn write_positions(ir: &Ir, chunk: &mut BytecodeChunk, idx: u16, pos: &SourcePosition) {
-    let positions = ir.survive_positions(idx);
-    chunk.write(positions.len() as u8, pos);
-    for (p, arg_pos) in positions {
-        chunk.write(*p, arg_pos);
-    }
+/// The byte offset a jump to `label`, or a call into it, lands on.
+fn landing_offset(ir: &Ir, offsets: &[usize], label: Label) -> usize {
+    let at = ir.label_position(label);
+    debug_assert!(at < ir.code().len(), "a jump lands on an instruction");
+    offsets[at]
 }
 
-/// Writes a declaration id as two little-endian bytes.
 fn write_u16(chunk: &mut BytecodeChunk, value: u16, pos: &SourcePosition) {
     for byte in value.to_le_bytes() {
         chunk.write(byte, pos);
     }
 }
 
-/// The encoded byte length of an instruction: its opcode plus operand bytes. A
-/// variable-length `List` operand is sized from the instruction's own data.
+fn write_byte_list(chunk: &mut BytecodeChunk, list: &[u8], pos: &SourcePosition) {
+    chunk.write(list.len() as u8, pos);
+    for &byte in list {
+        chunk.write(byte, pos);
+    }
+}
+
+/// The encoded byte length of an instruction: its opcode plus operand bytes.
 fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
     let op = opcode::opcode_of(inst);
     let mut len = 1;
@@ -85,9 +108,8 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
         match operand.size() {
             Some(sz) => len += sz,
             None => match *inst {
-                Inst::Construct(fields_idx, _) => len += 1 + ir.construct_fields(fields_idx).len(), // count byte + ids
-                Inst::AssertNoRetain(_, _, idx) => len += 1 + ir.survive_positions(idx).len(), // count byte + positions
-                _ => unreachable!("only Construct and AssertNoRetain have a List operand"),
+                Inst::Construct(list) | Inst::FormAnchorPath(_, list) => len += 1 + ir.byte_list(list).len(),
+                _ => unreachable!("only Construct and FormAnchorPath have a List operand"),
             },
         }
     }
@@ -96,42 +118,51 @@ fn encoded_len(inst: &Inst, ir: &Ir) -> usize {
 
 fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, pos: &SourcePosition) {
     use Inst::*;
+    // No poison value in release builds.
+    #[cfg(not(debug_assertions))]
+    let inst = &match *inst {
+        PushUnassigned => PushNull,
+        other => other,
+    };
 
     chunk.write(opcode::opcode_of(inst), pos);
 
-    let target_of = |label: Label| offsets[ir.label_target(label)] as u16;
+    let target_of = |label: Label| landing_offset(ir, offsets, label) as u16;
     let write_jump = |chunk: &mut BytecodeChunk, target: u16| write_u16(chunk, target, pos);
 
     match *inst {
-        Return | ReturnFac
+        Return | ReturnShared | ReturnFac
         | Halt
         | Throw
-        | PopTry
         | AssertNonNull
-        | AssertImmutable
-        | StashRoot
-        | Pop | Dup
-        | PushNull | PushTrue | PushFalse
+        | Pop | Dup | Dup2
+        | PushNull | PushTrue | PushFalse | PushUnassigned
         | GetIndex
         | GetProperty
+        | CopyObject
         | Add | Subtract | Multiply | Divide | Negate | Not
         | LeftShift | RightShift | BitAnd | BitOr | BitXor | BitNot
         | Equal | NotEqual | LessThan | LessThanEqual | GreaterThan | GreaterThanEqual
-        | IsShaped | ArrayLen
-        | Mut | SealCheck => {}
+        | IsShaped | IsDict | ArrayLen
+        | LoadRef | LoadRefForWrite | StoreRef | StoreRefPop
+        | SetIndex | SetProperty => {}
 
-        Call(b) | CallMut(b)
-        | PushConstant(b) | PushClosure(b) | PushType(b) | BuildType(b)
-        | LoadGlobal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b)
-        | CloseUpvalue(b) | CloseSlotUpvalue(b) | LoadUpvalue(b) | StoreUpvalue(b) | StoreUpvaluePop(b)
-        | GetField(b)
-        | TransferWriteOwnership(b) | TransferWriteOwnershipUp(b) | TransferWriteOwnershipAt(b)
-        | ReleaseWriteOwnership(b)
-        | HasMember(b) | GetIndexOrNull(b) => chunk.write(b, pos),
+        Call(flags, arity) | TailCall(flags, arity) => { chunk.write(flags, pos); chunk.write(arity, pos); }
 
-        PopScope(count, depth) => {
-            chunk.write(count, pos);
-            chunk.write(depth, pos);
+        BindClosureCaptures(slot, idx) | BindTypeCaptures(slot, idx) => { chunk.write(slot, pos); chunk.write(idx, pos); }
+
+        PushConstant(b) | BuildClosure(b) | PushType(b) | BuildType(b) | BuildClosureUnbound(b) | BuildTypeUnbound(b)
+        | LoadGlobal(b)
+        | LoadAnchor(b) | StoreAnchor(b) | StoreTempPop(b)
+        | LoadCapture(b)
+        | LoadLocalForWrite(b) | LoadAnchorForWrite(b) | LoadStepForWrite(b)
+        | GetMember(b) | SetMember(b) | RecordAnchorRoot(b)
+        | ShareLocal(b) | LoadLocal(b) | StoreLocal(b) | StoreLocalPop(b) | StoreLocalFresh(b) | StoreLocalFreshPop(b)
+        | GetField(b) | GetIndexOrNull(b) | HasMember(b) => chunk.write(b, pos),
+
+        PopScope(a, b) => {
+            chunk.write(a, pos);
+            chunk.write(b, pos);
         }
 
         Is(id) => write_u16(chunk, id, pos),
@@ -139,11 +170,10 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         Jump(l)
         | JumpIfFalse(l)
         | JumpIfFalseOrPop(l) | JumpIfTrueOrPop(l)
-        | JumpIfNotNullOrPop(l) | JumpIfNull(l) | JumpIfClean(l) | JumpIfBad(l)
+        | JumpIfCleanOrPop(l) | JumpIfClean(l) | JumpIfBad(l)
         | JumpIfGe(l) | JumpIfGt(l)
         | JumpIfLe(l) | JumpIfLt(l)
-        | JumpIfEq(l) | JumpIfNeq(l)
-        | PushTry(l) => write_jump(chunk, target_of(l)),
+        | JumpIfEq(l) | JumpIfNeq(l) => write_jump(chunk, target_of(l)),
 
         JumpIfGeLocalConst(l, local, c)
         | JumpIfGtLocalConst(l, local, c)
@@ -160,9 +190,20 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         }
 
         AddLocalConst(local, c) | SubLocalConst(local, c)
-        | IncLocal(local, c) | DecLocal(local, c) => {
+        | IncLocal(local, c) | DecLocal(local, c) | CopyAnchorOut(local, c) => {
             chunk.write(local, pos);
             chunk.write(c, pos);
+        }
+
+        PushSlotAnchor(local, witness_set_pool_id) => {
+            chunk.write(local, pos);
+            write_u16(chunk, witness_set_pool_id, pos);
+        }
+
+        CopyAnchorIn(local, flags, witness_set_pool_id) => {
+            chunk.write(local, pos);
+            chunk.write(flags, pos);
+            write_u16(chunk, witness_set_pool_id, pos);
         }
 
         ArrayMiddle(a, b) | ArrayElem(a, b) => {
@@ -170,34 +211,30 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             chunk.write(b, pos);
         }
 
-        AssertNoRetain(arg_count, owed_idx, idx) => {
+        InvokeThis(member, flags, arg_count) => {
+            chunk.write(member, pos);
+            chunk.write(flags, pos);
             chunk.write(arg_count, pos);
-            write_u16(chunk, owed_idx, pos);
-            write_positions(ir, chunk, idx, pos);
         }
 
-        InvokeThis(member, arg_count, kind, operand) => {
+        Invoke(member, flags, arg_count, is_dot) => {
             chunk.write(member, pos);
+            chunk.write(flags, pos);
             chunk.write(arg_count, pos);
-            chunk.write(kind, pos);
-            chunk.write(operand, pos);
-        }
-
-        Invoke(member, arg_count, kind, operand, is_dot) => {
-            chunk.write(member, pos);
-            chunk.write(arg_count, pos);
-            chunk.write(kind, pos);
-            chunk.write(operand, pos);
             chunk.write(is_dot, pos);
         }
 
-        Construct(fields_idx, seal) => {
-            let fields = ir.construct_fields(fields_idx);
-            chunk.write(fields.len() as u8, pos);
-            for &id in fields {
-                chunk.write(id, pos);
-            }
-            chunk.write(seal, pos);
+        Construct(fields_idx) => write_byte_list(chunk, ir.byte_list(fields_idx), pos),
+
+        CheckAnchorRoot(root, root_is_anchor, formed_on) => {
+            chunk.write(root, pos);
+            chunk.write(root_is_anchor, pos);
+            chunk.write(formed_on, pos);
+        }
+
+        FormAnchorPath(target, dots) => {
+            chunk.write(target, pos);
+            write_byte_list(chunk, ir.byte_list(dots), pos);
         }
 
         BarrierGuard(idx) => {
@@ -209,21 +246,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
             write_u16(chunk, idx, pos);
         }
 
-        Array(a, b) | Dict(a, b) => {
-            chunk.write(a, pos);
-            chunk.write(b, pos);
-        }
-
-        SetIndex(kind, operand) | SetProperty(kind, operand) => {
-            chunk.write(kind, pos);
-            chunk.write(operand, pos);
-        }
-
-        SetField(member, kind, operand) | SetFieldPop(member, kind, operand) => {
-            chunk.write(member, pos);
-            chunk.write(kind, pos);
-            chunk.write(operand, pos);
-        }
+        Array(n) | Dict(n) | DictRest(n) | DictRestValues(n) | SetField(n) | SetFieldPop(n) => chunk.write(n, pos),
 
         SubConstLocal(c, local) | AddConstLocal(c, local) => {
             chunk.write(c, pos);

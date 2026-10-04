@@ -1,4 +1,4 @@
-fn firstOver(limit)! {
+fn firstOver(limit) {
     say var n = 0;
     while (n < 1000) {
         if (n > limit) {

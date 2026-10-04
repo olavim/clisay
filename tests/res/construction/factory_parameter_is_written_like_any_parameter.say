@@ -1,0 +1,35 @@
+type Box { init(this, x) { x[0] = 1; } } // error: Cannot write through `x`
+say f = [1];
+say b = Box(f);
+
+// @split
+type Box { pub v; init(this, var x) { x[0] = 1; this.v = x; } }
+say f = [5];
+say b = Box(f);
+print(f[0]); // expect: 5
+print(b.v[0]); // expect: 1
+
+// @split
+type Box { pub v; init(this, &var x) { x[0] = 1; this.v = x; } }
+say var f = [5];
+say b = Box(&f);
+print(f[0]); // expect: 1
+print(b.v[0]); // expect: 1
+
+// @split
+type Box { init(this, &var x) { x[0] = 1; } }
+say f = [5];
+say b = Box(&f); // error: Cannot anchor non-var binding `f`
+
+// @split
+type Box { init(this, &var x) { x[0] = 1; } }
+say var f = [5];
+say b = Box(f); // error: This parameter takes an anchor
+
+// @split
+type Box { init(this, &var x) { x[0] = 1; } }
+say var f = [5];
+say make = Box;
+make(&f);
+print(f[0]); // expect: 1
+make(f); // error: a `&var` parameter takes an anchor

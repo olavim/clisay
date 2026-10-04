@@ -1,0 +1,12 @@
+say var r = Ref(1);
+fn bump() { @r = 99; }
+fn f(&var e) { bump(); print(@e); print(@e); } // expect: 99
+// expect: 99
+f(&r);
+
+// @split
+say var arr = [1, 2];
+fn f(&var x) { x = 99; print(x); x = x + 1; } // expect: 99
+
+f(&arr[0]);
+print(arr[0]); // expect: 100

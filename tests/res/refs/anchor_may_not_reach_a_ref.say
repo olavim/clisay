@@ -1,0 +1,33 @@
+type Plain { pub var value; init(this, value) { this.value = value; } }
+
+fn poke(var holder) {
+    say write = (&var slot) => { slot = 5; };
+    write(&holder.value); // error: Cannot anchor into a `Ref`
+    print(holder.value);
+}
+
+poke(Plain(1)); // expect: 5
+poke(Ref(1));
+
+// @split
+type Inner { pub var a; init(this, a) { this.a = a; } }
+type Outer { pub var inner; init(this, inner) { this.inner = inner; } }
+type Plain { pub var value; init(this, value) { this.value = value; } }
+
+fn poke(var t) {
+    say write = (&var slot) => { slot = 5; };
+    write(&t.inner.value.a); // error: Cannot anchor into a `Ref`
+    print(t.inner.value.a);
+}
+
+poke(Outer(Plain(Inner(1))));   // expect: 5
+poke(Outer(Ref(Inner(1))));
+
+// @split
+fn poke(var holder) {
+    say write = (&var slot) => { slot = 5; };
+    write(&holder.value); // error: Cannot anchor into a `Ref`
+}
+
+say r = Ref(1);
+r.mutate((&var v) => { poke(r); });

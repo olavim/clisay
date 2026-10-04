@@ -1,0 +1,38 @@
+fn nothing() { print("ran"); }
+fn one() { return 1; }
+fn f(g) { return g(); }
+nothing(); // expect: ran
+print(f(one)); // expect: 1
+
+// @split
+fn nothing() {}
+fn f(g) { return g(); } // error: Unexpected void return
+print(f(nothing));
+
+// @split
+type T { init(this) {} pub fn quiet(this) { print("q"); } pub fn loud(this) { return 2; } }
+say t = T();
+t.quiet(); // expect: q
+print(t.loud()); // expect: 2
+
+// @split
+type T { init(this) {} pub fn quiet(this) {} }
+fn f(x) { return x.quiet(); } // error: Unexpected void return
+print(f(T()));
+
+// @split
+fn nothing(n) {}
+fn one(n) { return 0; }
+say var g = one;
+fn count(n) { if (n == 0) { return 0; } return g(n - 1); }
+print(count(3)); // expect: 0
+
+// @split
+fn nothing(n) {}
+fn count(g, n) { if (n == 0) { return 0; } return g(n - 1); } // error: Unexpected void return
+print(count(nothing, 1));
+
+// @split
+fn nothing() {}
+fn probe(g) { g() ?? print("fell back"); } // error: Unexpected void return
+probe(nothing);

@@ -1,0 +1,80 @@
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn good(this) { return 1; } }
+fn f(v) { say xs = [v.good()]; print(xs[0]); }
+f(A()); // expect: 1
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } }
+fn f(v) { say xs = [v.bad()]; } // error: Uncaught exception: <instance <type Err>>
+f(A());
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn good(this) { return 1; } }
+fn f(v) { say d = {"a": v.good()}; print(d["a"]); }
+f(A()); // expect: 1
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } }
+fn f(v) { say d = {"a": v.bad()}; } // error: Uncaught exception: <instance <type Err>>
+f(A());
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn good(this) { return 1; } }
+fn f(v) { say var xs = [0]; xs[0] = v.good(); say var d = {"a": 0}; d["a"] = v.good(); print(xs[0] + d["a"]); }
+f(A()); // expect: 2
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } }
+fn f(v) { say var xs = [0]; xs[0] = v.bad(); } // error: Uncaught exception: <instance <type Err>>
+f(A());
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } }
+fn f(v) { say var d = {"a": 0}; d["a"] = v.bad(); } // error: Uncaught exception: <instance <type Err>>
+f(A());
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } pub fn good(this) { return 1; } }
+fn f(v) { say var xs = []; &xs.push(v.good()); print(xs[0]); }
+f(A()); // expect: 1
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } }
+fn f(v) { say var xs = []; &xs.push(v.bad()); } // error: Uncaught exception: <instance <type Err>>
+f(A());
+
+// @split
+fn good() { return 1; }
+fn g(&var v) { &v.push(good()); }
+say var xs = [];
+g(&xs);
+print(xs[0]); // expect: 1
+
+// @split
+fn boom(): fails { return Err("x"); }
+fn g(&var v) { &v.push(boom()); } // error: Uncaught exception: <instance <type Err>>
+say var xs = [];
+g(&xs);
+
+// @split
+type Held { } obligation held { witness Held; no persist; }
+type Tag { } obligation tagged { witness Tag; must use; }
+type A { pub fn held(this): held { return Held(); } pub fn tagged(this): tagged { return Tag(); } }
+fn f(v) { say xs = [v.tagged()]; print(xs.length()); }
+f(A()); // expect: 1
+
+// @split
+type Held { } obligation held { witness Held; no persist; }
+type A { pub fn held(this): held { return Held(); } }
+fn f(v) { say xs = [v.held()]; } // error: Uncaught exception: <instance <type Held>>
+f(A());
+
+// @split
+type A { pub fn bad(this): fails { return Err("boom"); } }
+fn f(v) { say var xs = [0]; try { &xs.push(v.bad()); } catch (e) { print("caught"); } print(xs.length()); }
+f(A());
+// expect: caught
+// expect: 1
+
+// @split
+fn boom(): fails { return Err("x"); }
+fn f() { say var xs = []; &xs.push(boom()); } // error: cannot store value owing 'fails' in a container

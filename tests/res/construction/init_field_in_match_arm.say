@@ -1,4 +1,3 @@
-// A field assigned inside an init match arm is recognized, so construction does not demand it again.
 type Box {
     pub var x;
     init(this, n) {

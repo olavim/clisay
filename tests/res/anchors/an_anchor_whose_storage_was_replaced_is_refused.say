@@ -1,0 +1,186 @@
+type T { pub var y = 1; }
+say var x = T();
+say var r = &x.y;
+x = T();
+r = 5; // error: The storage this anchor names was replaced
+
+// @split
+type T { pub var y = 1; }
+say var x = T();
+say var r = &x.y;
+r = 5;
+x = T();
+print(x.y); // expect: 1
+
+// @split
+type U { pub var z = 1; }
+type T { pub var y = U(); }
+say var x = T();
+say var r = &x.y.z;
+x.y = U();
+print(r); // error: The storage this anchor names was replaced
+
+// @split
+type U { pub var z = 1; }
+type T { pub var y = U(); }
+say var x = T();
+say var r = &x.y.z;
+r = 5;
+x.y = U();
+print(x.y.z); // expect: 1
+
+// @split
+type T { pub var y = 1; }
+fn replace(&var v) { v = T(); }
+say var x = T();
+say var r = &x.y;
+replace(&x);
+r = 5; // error: The storage this anchor names was replaced
+
+// @split
+say var xs = [1, 2];
+say var r = &xs[1];
+xs = [9];
+r = 5; // error: The storage this anchor names was replaced
+
+// @split
+say var d = {"k": 1};
+say var r = &d["k"];
+&d.remove("k");
+r = 5;
+print(d["k"]); // expect: 5
+
+// @split
+type T { pub var y = 1; }
+say var x = T();
+say var r = &x.y;
+say z = x;
+r = 5;
+print(x.y); // expect: 5
+print(z.y); // expect: 1
+
+// @split
+say var x = 1;
+say var r = &x;
+x = 2;
+r = 5;
+print(x); // expect: 5
+
+// @split
+type U { pub var z = 1; }
+say var d = {"k": U()};
+say var r = &d["k"].z;
+say var u = (&d.remove("k"))!;
+u.z = 7;
+print(u.z); // expect: 7
+say var q = &u.z;
+q = 6;
+print(u.z); // expect: 6
+
+// @split
+type U { pub var z = 1; }
+say var d = {"k": U()};
+{ say var r = &d["k"].z; r = 3; }
+say var u = (&d.remove("k"))!;
+say var q = &u.z;
+q = 6;
+print(u.z); // expect: 6
+
+// @split
+type U { pub var z = 1; }
+say var d = {"k": U()};
+say var r = &d["k"].z;
+say var u = (&d.remove("k"))!;
+r = 5; // error: The storage this anchor names was replaced
+
+// @split
+type U { pub var z = 1; }
+say var xs = [U()];
+say var r = &xs[0].z;
+xs[0] = U();
+r = 5; // error: The storage this anchor names was replaced
+
+// @split
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type U { pub var z = 1; }
+type T { pub var y = U(); }
+fn make() { return [Token(1)]; }
+say bag = make();
+say var x = T();
+say var r = &x.y.z;
+try { x.y = bag[0]; } catch (e) { print("refused"); } // expect: refused
+r = 5;
+print(x.y.z); // expect: 5
+
+// @split
+type U { pub var z = 1; pub var w = 1; }
+type T { pub var y = U(); }
+say var x = T();
+say var r = &x.y.z;
+say k = x;
+x.y.w = 2;
+r = 5;
+print(x.y.z); // expect: 5
+print(k.y.z); // expect: 1
+say var s = &x.y.w;
+s = 3;
+r = 6;
+print(x.y.w); // expect: 3
+print(x.y.z); // expect: 6
+
+// @split
+type T { pub var y = 1; }
+fn f(&var a, b) { a = 5; }
+say var x = T();
+f(&x.y, x = T()); // error: The storage this anchor names was replaced
+
+// @split
+type T { pub var y = 1; }
+fn f(&var a, b) { a = 5; }
+say var x = T();
+f(&x.y, 0);
+print(x.y); // expect: 5
+
+// @split
+type U { pub var z = 1; }
+type T { pub var y = U(); }
+say var x = T();
+say var r = &x.y;
+say var q = &r.z;
+x = T();
+q = 5; // error: The storage this anchor names was replaced
+
+// @split
+type U { pub var z = 1; }
+type T { pub var y = U(); }
+say var x = T();
+say var r = &x.y;
+say var q = &r.z;
+q = 5;
+print(x.y.z); // expect: 5
+
+// @split
+type U { pub var z = 1; }
+type T { pub var y = U(); }
+say var x = T();
+say var r = &x.y;
+say var q = &r.z;
+r = U();
+q = 5; // error: The storage this anchor names was replaced
+
+// @split
+type T { pub var y = 1; }
+say var x = T();
+say var b = &x;
+say var r = &x.y;
+b = T();
+r = 5; // error: The storage this anchor names was replaced
+
+// @split
+type T { pub var y = 1; }
+say var x = T();
+say var b = &x;
+say var r = &x.y;
+r = 5;
+print(x.y); // expect: 5

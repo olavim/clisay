@@ -1,0 +1,4 @@
+say var d = {};
+d["a"] = 1;
+d["a"] = 2;
+print(d["a"]); // expect: 2

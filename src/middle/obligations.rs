@@ -1,15 +1,13 @@
-//! The obligation vocabulary: the debt a value or a slot carries, the rules an obligation may
-//! declare, and how a refusal of each is worded.
+//! The obligation vocabulary.
 
 use crate::ast::Symbol;
 use crate::middle::hir::{Hir, ObligationRules};
 
-/// A set of obligation names.
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct Obligations(Vec<Symbol>);
 
 impl Obligations {
-    pub fn new() -> Obligations {
+    pub const fn new() -> Obligations {
         Obligations(Vec::new())
     }
 
@@ -25,7 +23,6 @@ impl Obligations {
         self.0.binary_search(name).is_ok()
     }
 
-    /// Adds a name. Answers whether the set grew.
     pub fn insert(&mut self, name: Symbol) -> bool {
         match self.0.binary_search(&name) {
             Ok(_) => false,
@@ -41,14 +38,12 @@ impl Obligations {
         self.0.iter()
     }
 
-    /// The names this set and `other` share.
-    pub fn intersection<'a>(&'a self, other: &'a Obligations) -> impl Iterator<Item = &'a Symbol> {
-        self.0.iter().filter(|n| other.contains(n))
-    }
-
-    /// The names in this set that `other` does not have.
     pub fn difference<'a>(&'a self, other: &'a Obligations) -> impl Iterator<Item = &'a Symbol> {
         self.0.iter().filter(|n| !other.contains(n))
+    }
+
+    pub fn union(&self, other: &Obligations) -> Obligations {
+        self.iter().chain(other.iter()).copied().collect()
     }
 }
 
@@ -100,70 +95,70 @@ impl<'a> IntoIterator for &'a Obligations {
     }
 }
 
-/// A rule an obligation may declare, paired with how a refusal spells it.
 #[derive(Clone, Copy)]
-pub enum ObligationRule { NoPersist, NoReturn, BeforeDrop }
+pub enum ObligationRule { NoPersist, NoReturn, MustUse }
 
 impl ObligationRule {
-    /// Whether these rules declare it.
     pub fn holds(self, rules: &ObligationRules) -> bool {
         match self {
             ObligationRule::NoPersist => rules.no_persist,
             ObligationRule::NoReturn => rules.no_return,
-            ObligationRule::BeforeDrop => rules.before_drop,
+            ObligationRule::MustUse => rules.must_use,
         }
     }
 
-    /// The rule as written in a declaration, for the citation in a help line.
     pub fn spelling(self) -> &'static str {
         match self {
             ObligationRule::NoPersist => "no persist",
             ObligationRule::NoReturn => "no return",
-            ObligationRule::BeforeDrop => "discharge before drop",
+            ObligationRule::MustUse => "must use",
         }
     }
 }
 
-/// The operation a rule refuses. Each site refuses in its own words and offers the way around it
-/// that fits. A `Drop` is the value reaching the end of its scope without being discharged.
 #[derive(Clone, Copy)]
-pub enum Site { Field, Container, Capture, Return, Drop, ScopeEnd }
+pub enum Site {
+    Field,
+    Container,
+    Slot,
+    Capture,
+    Return,
+    Drop,
+    ScopeEnd,
+}
 
 impl Site {
-    /// The header completing "cannot ...", around the obligation list. `Drop` names no operation, so
-    /// it reports what happened to the value instead.
     pub fn refusal(self, owed: &str) -> String {
         match self {
             Site::Field => format!("cannot store value owing {owed} in a field"),
             Site::Container => format!("cannot store value owing {owed} in a container"),
+            Site::Slot => format!("cannot store value owing {owed}"),
             Site::Capture => format!("cannot capture value owing {owed}"),
             Site::Return => format!("cannot return value owing {owed}"),
-            Site::Drop => format!("this result owes {owed} and is never discharged"),
-            Site::ScopeEnd => format!("value owing {owed} is never discharged"),
+            Site::Drop => format!("this result owes {owed} and is never used"),
+            Site::ScopeEnd => format!("value owing {owed} is never used"),
         }
     }
 
-    /// The gerund completing "which prevents ...".
     pub fn prevents(self) -> &'static str {
         match self {
             Site::Field => "storing it in a field",
             Site::Container => "storing it in a container",
+            Site::Slot => "storing it",
             Site::Capture => "capturing it in a closure",
             Site::Return => "returning it",
             Site::Drop | Site::ScopeEnd => "leaving it undischarged",
         }
     }
 
-    /// What to do instead, for a built-in obligation with no declaration to cite. `opt` and `fails`
-    /// name their own witness, since a `null` carries nothing and an `Err` carries a payload to keep.
     pub fn guidance(self, obligation: &str) -> &'static str {
         match (obligation, self) {
-            ("opt", Site::Field | Site::Container) => "narrow it first, and store what that leaves behind",
+            ("opt", Site::Field | Site::Container | Site::Slot) => "narrow it first, and store what that leaves behind",
             ("opt", Site::Capture) => "narrow it in this frame, and capture what that leaves behind",
             ("opt", Site::Return) => "narrow it here, or declare `opt` on the return",
             ("opt", Site::Drop) => "narrow it here, or bind it and narrow it later",
             ("opt", Site::ScopeEnd) => "narrow it with `??`, `!` or a test, or hand it to a slot that declares `opt`",
-            ("fails", Site::Field | Site::Container) => "store what the `Err` carries, not the `Err` itself",
+            ("fails", Site::Field | Site::Container | Site::Slot) => "store what the `Err` carries, not the `Err` itself",
             ("fails", Site::Capture) => "handle the `Err` in this frame, and capture what it leaves behind",
             ("fails", Site::Return) => "handle the `Err` here, or declare `fails` on the return",
             ("fails", Site::Drop) => "handle the `Err` here, or bind it and handle it later",
@@ -173,19 +168,16 @@ impl Site {
     }
 }
 
-/// The obligation names in a stable order, so a diagnostic does not follow the hash order.
 pub fn sorted_obligation_names<'a>(hir: &'a Hir, obligations: &Obligations) -> Vec<&'a str> {
     let mut names: Vec<&str> = obligations.iter().map(|o| hir.text(*o)).collect();
     names.sort();
     names
 }
 
-/// The obligations spelled as clause atoms, like `fails taint`, for a suggested annotation.
 pub fn obligation_atoms(hir: &Hir, obligations: &Obligations) -> String {
     sorted_obligation_names(hir, obligations).join(" ")
 }
 
-/// The obligations sorted and quoted for a diagnostic, like `'fails', 'opt'`.
 pub fn quoted_obligation_list(hir: &Hir, obligations: &Obligations) -> String {
     sorted_obligation_names(hir, obligations).iter().map(|o| format!("'{o}'")).collect::<Vec<_>>().join(", ")
 }

@@ -1,0 +1,4 @@
+// No path at all, so subtracting this from the other three leaves the path machinery alone.
+say var arr = [];
+say var i = 0;
+while i < 100000 { &arr.push(i); i = i + 1; }

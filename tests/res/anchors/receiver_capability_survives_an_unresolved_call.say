@@ -1,0 +1,38 @@
+type Box { pub var v = 0; pub fn bump(&var this) { this.v = this.v + 1; } }
+
+fn viaVar(var b) { &b.bump(); return b.v; }
+say var a = Box { v: 0 };
+print(viaVar(a)); // expect: 1
+print(a.v); // expect: 0
+
+say var direct = Box { v: 0 };
+&direct.bump();
+print(direct.v); // expect: 1
+
+// @split
+type Box { pub var v = 0; pub fn bump(&var this) { this.v = this.v + 1; } }
+fn f(b) { b.bump(); } // error: `Box.bump` wants an anchor receiver
+say var a = Box { v: 0 };
+f(a);
+
+// @split
+type Box { pub var v = 0; pub fn read(this) { return this.v; } }
+fn f(b) { return b.read(); }
+say var a = Box { v: 7 };
+print(f(a)); // expect: 7
+
+// @split
+type Box { pub var v = 0; pub fn bump(&var this) { this.v = this.v + 1; } }
+say a = Box { v: 0 };
+&a.bump(); // error: Cannot anchor non-var binding `a`
+
+// @split
+type Box { init(this) {} pub fn push(this, v) { return v + 1; } }
+fn f(x) { return x.push(2); }
+print(f(Box())); // expect: 3
+
+// @split
+say var a = [1];
+fn f(var x) { &x.push(2); return x.length(); }
+print(f(a)); // expect: 2
+print(a.length()); // expect: 1

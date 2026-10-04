@@ -1,0 +1,37 @@
+fn mk(): fails { return Err("x"); }
+fn c(f) { return f(); }
+try { print(c(mk)); print("unreachable"); }
+catch (e) { print("refused"); } // expect: refused
+
+// @split
+fn givesNull() { return null; }
+fn c(f) { return f(); } // error: unexpected null
+print(c(givesNull));
+
+// @split
+fn givesNull() { return null; }
+fn c(f): opt { return f(); }
+print(c(givesNull) ?? "none"); // expect: none
+
+// @split
+fn mk(): fails { return Err("x"); }
+fn c(f): opt { return f(); }
+try { print(c(mk)); print("unreachable"); }
+catch (e) { print("witness refused"); } // expect: witness refused
+
+// @split
+fn mk(): fails { return Err("x"); }
+fn c(f) { say r = f(); return r; }
+try { print(c(mk)); print("unreachable"); }
+catch (e) { print("not a tail call"); } // expect: not a tail call
+
+// @split
+fn a() { return b(); }
+fn b() { return null; }
+fn outer() { fn b() { return 1; } return b(); }
+print(a()); // expect: null
+
+// @split
+fn b() { return null; }
+fn outer() { fn b() { return 1; } say z = b(); print(z + 1); }
+outer(); // expect: 2

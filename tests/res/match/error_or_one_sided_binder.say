@@ -1,4 +1,3 @@
-// An `||` whose sides bind different names contributes no binders to the true branch.
 say a = { x: 1 };
 say b = { y: 2 };
 if a ~ { x } || b ~ { y } {

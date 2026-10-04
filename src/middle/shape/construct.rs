@@ -24,7 +24,7 @@ impl<'a> Shape<'a> {
 
     /// Iterates a type's fields with the facts the construction check needs.
     fn fields(&self, decl: &HirId<HirStmt>) -> impl Iterator<Item = FieldInfo> + 'a {
-        let layout = self.layout_of(decl);
+        let (layout, opt) = (self.layout_of(decl), self.sigs.opt);
         layout.into_iter().flat_map(move |layout| {
             layout.members.iter().filter_map(move |(name, member)| {
                 if !matches!(member, TypeMember::Field(_)) {
@@ -32,7 +32,7 @@ impl<'a> Shape<'a> {
                 }
                 Some(FieldInfo {
                     name: *name,
-                    non_null: !layout.is_nullable(*name),
+                    non_null: !layout.member_owes(*name, opt),
                     public: layout.is_public(*name),
                 })
             })

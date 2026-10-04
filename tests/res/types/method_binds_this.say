@@ -1,14 +1,14 @@
 type A {
     pub var a = "a";
-    pub fn get(this)! {
+    pub fn get(this) {
         return this.a;
     }
 }
 
-say obj = mut A();
+say var obj = A();
 print(obj.a); // expect: a
 print(obj.get()); // expect: a
 say get = obj.get;
 print(get()); // expect: a
 obj.a = "b";
-print(get()); // expect: b
+print(get()); // expect: a

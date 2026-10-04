@@ -1,0 +1,9 @@
+fn work(var arr, key, rounds) {
+    say var i = 0;
+    while i < rounds {
+        arr[key] = arr[key] + 1;
+        i = i + 1;
+    }
+}
+say var a = [0, 0, 0, 0];
+work(a, 0, 800000);

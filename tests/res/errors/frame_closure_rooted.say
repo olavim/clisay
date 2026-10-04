@@ -1,10 +1,8 @@
-// A running frame's closure is on the stack for nothing to find, so the collector has to mark the
-// frames. Freed, its block is recycled and the trace names whichever closure landed there.
 type T {
     pub n;
     init(this) { this.n = 1; }
-    pub fn inner(this)! { return 1; }
-    pub fn outer(this)! { this.inner(); throw "x"; }
+    pub fn inner(this) { return 1; }
+    pub fn outer(this) { this.inner(); throw "x"; }
 }
 say t = T();
 gcStress(true);
@@ -12,10 +10,10 @@ t.outer();
 
 // error(full):
 // error: Uncaught exception: "x"
-//  --> frame_closure_rooted.say:7:41
+//  --> frame_closure_rooted.say:5:40
 //   |
-// 6 |     pub fn inner(this)! { return 1; }
-// 7 |     pub fn outer(this)! { this.inner(); throw "x"; }
-//   |                                         ^^^^^^^^^^
-// 	at T.outer (frame_closure_rooted.say:7)
-// 	at script (frame_closure_rooted.say:11)
+// 4 |     pub fn inner(this) { return 1; }
+// 5 |     pub fn outer(this) { this.inner(); throw "x"; }
+//   |                                        ^^^^^^^^^^
+// 	at T.outer (frame_closure_rooted.say:5)
+// 	at script (frame_closure_rooted.say:9)

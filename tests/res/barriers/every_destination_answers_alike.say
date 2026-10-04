@@ -1,30 +1,38 @@
-say d = { a: null };
+fn make() { return { a: null }; }
+say d = make();
 say z = d["a"]; // error: unexpected null
 
 // @split
-say d = { a: null };
+fn make() { return { a: null }; }
+say d = make();
 say var z = 1;
 z = d["a"]; // error: unexpected null
+print(z);
 
 // @split
-say d = { a: null };
-say var z = 1;
-say w = () => { z = d["a"]; }; // error: unexpected null
+fn make() { return { a: null }; }
+say d = make();
+say z = Ref(1);
+say w = () => { @z = d["a"]; }; // error: unexpected null
+w();
 w();
 
 // @split
 type T { pub var v; init(this) { this.v = 1; } }
-say d = { a: null };
-say t = mut T();
+fn make() { return { a: null }; }
+say d = make();
+say var t = T();
 t.v = d["a"]; // error: unexpected null
 
 // @split
-say d = { a: null };
+fn make() { return { a: null }; }
+say d = make();
 fn takes(x) { print(x); }
 takes(d["a"]); // error: unexpected null
 
 // @split
-type T { pub var v; init(this) { this.v = 1; } pub fn set(mut this, *x) { this.v = x; } }
-say d = { a: null };
-say t = mut T();
+type T { pub var v; init(this) { this.v = 1; } pub fn set(var this, x) { this.v = x; } }
+fn make() { return { a: null }; }
+say d = make();
+say t = T();
 t.set(d["a"]); // error: unexpected null

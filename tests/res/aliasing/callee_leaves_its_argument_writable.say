@@ -1,0 +1,57 @@
+fn eats(var x) { x[0] = 7; }
+say var a = [0];
+eats(a);
+a[0] = 1;
+print(a[0]); // expect: 1
+
+// @split
+fn eats(x) { }
+fn run(consume) {
+    say var a = [0];
+    consume(a);
+    a[0] = 1;
+    return a[0];
+}
+print(run(eats)); // expect: 1
+
+// @split
+type Box { pub var v; init(this) { this.v = 0; } }
+fn eats(x) { }
+fn run(consume) {
+    say var a = Box();
+    consume(a);
+    a.v = 1;
+    return a.v;
+}
+print(run(eats)); // expect: 1
+
+// @split
+type Box { pub var v; init(this) { this.v = 0; } }
+fn eats(x) { }
+fn run(consume, k) {
+    say var a = Box();
+    if (k > 0) { consume(a); }
+    a.v = 1;
+    return a.v;
+}
+print(run(eats, 1)); // expect: 1
+print(run(eats, 0)); // expect: 1
+
+// @split
+fn consume(x) {}
+say var a = [1];
+say var n = 0;
+while n < 3 {
+    consume(a);
+    a[0] = a[0] + 1;
+    n = n + 1;
+}
+print(a[0]); // expect: 4
+
+// @split
+type Box { pub fn eat(this, x) { } }
+say b = Box();
+say var v = [0];
+b.eat(v);
+v[0] = 1;
+print(v[0]); // expect: 1

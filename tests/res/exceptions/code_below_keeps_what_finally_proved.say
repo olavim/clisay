@@ -1,0 +1,31 @@
+fn maybe(n): opt { if (n > 0) { return n; } return null; }
+say h: opt = maybe(1);
+try {
+    print("body"); // expect: body
+} finally {
+    if (h == null) { throw "null"; }
+}
+print(h + 1); // expect: 2
+// @split
+fn maybe(n): opt { if (n > 0) { return n; } return null; }
+say h: opt = maybe(1);
+try {
+    print("body");
+} finally {
+    if (h == null) { print("null"); }
+}
+print(h + 1); // error: unchecked value owes 'opt'
+// @split
+type Box {
+    pub f: opt;
+    init(this, f: opt) { this.f = f; }
+    pub fn m(this) {
+        try {
+            if (this.f == null) { throw "null"; }
+        } catch (e) {
+            return 0;
+        } finally {}
+        return this.f + 1;
+    }
+}
+print(Box(1).m()); // expect: 2

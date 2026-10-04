@@ -1,0 +1,28 @@
+say var a = [[0]];
+say var kept: opt = null;
+try { say var c = []; &c.push(a[0]); throw c; } catch (e) { kept = e; }
+a[0][0] = 1;
+print(kept![0][0]); // expect: 0
+print(a[0][0]); // expect: 1
+
+// @split
+fn boom(c) { throw c; }
+say var a = [[0]];
+say var kept: opt = null;
+try { say var c = []; &c.push(a[0]); boom(c); } catch (e) { kept = e; }
+a[0][0] = 1;
+print(kept![0][0]); // expect: 0
+
+// @split
+fn boom(c) { throw c; }
+say var a = [[0]];
+say var kept: opt = null;
+try { say var c = []; &c.push(a[0]); boom(c); } catch (e) { kept = e; } finally { print("out"); } // expect: out
+a[0][0] = 1;
+print(kept![0][0]); // expect: 0
+
+// @split
+say var a = [[0]];
+try { say var c = []; &c.push(a[0]); throw c; } catch (e) { }
+a[0][0] = 1;
+print(a[0][0]); // expect: 1

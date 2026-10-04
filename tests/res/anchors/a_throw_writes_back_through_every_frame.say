@@ -1,0 +1,34 @@
+fn inner(&var x) { x = x + 10; throw "boom"; }
+fn outer(&var y) { y = y + 1; inner(&y); }
+
+say var a = 0;
+try { outer(&a); } catch (e) { print(e); } // expect: boom
+print(a); // expect: 11
+
+// @split
+fn inner(&var x) { x[0] = 7; throw "boom"; }
+fn outer(&var list) { &list.push(3); inner(&list); }
+
+say var arr = [1];
+try { outer(&arr); } catch (e) {}
+print(arr[0]); // expect: 7
+print(arr[1]); // expect: 3
+
+// @split
+fn parse([a, b], &var n) { n = a + b; return 0; }
+
+say var n = 0;
+try { parse([1], &n); } catch (e) {}
+print(n); // expect: 0
+
+// @split
+type Counter {
+    pub var n = 0;
+    pub fn bump(&var this) { this.n = this.n + 1; throw "boom"; }
+}
+
+say var c = Counter();
+say kept = c;
+try { &c.bump(); } catch (e) {}
+print(c.n); // expect: 1
+print(kept.n); // expect: 0

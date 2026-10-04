@@ -1,0 +1,109 @@
+fn touch(&var a, k) { say var e = &a[k]; e[0] = e[0] + 1; return; }
+say var arr = [[0]];
+say kept = arr;
+say var i = 0;
+touch(&arr, i);
+touch(&arr, i);
+print(arr[0][0]); // expect: 2
+print(kept[0][0]); // expect: 0
+
+// @split
+fn touch(&var a, k) { say var e = &a[k]; e[0] = e[0] + 1; }
+say var arr = [[0]];
+say kept = arr;
+say var i = 0;
+touch(&arr, i);
+touch(&arr, i);
+print(arr[0][0]); // expect: 2
+print(kept[0][0]); // expect: 0
+
+// @split
+fn touch(&var a, k) { say var n = 0; while (n < 3) { say var e = &a[k]; e[0] = e[0] + 1; return; } }
+say var arr = [[0]];
+say kept = arr;
+say var i = 0;
+touch(&arr, i);
+touch(&arr, i);
+print(arr[0][0]); // expect: 2
+print(kept[0][0]); // expect: 0
+
+// @split
+fn touch(&var a, k) { say var e = &a[k]; e[0] = e[0] + 1; throw "up"; }
+say var arr = [[0]];
+say kept = arr;
+say var i = 0;
+try { touch(&arr, i); } catch (e) { }
+try { touch(&arr, i); } catch (e) { }
+print(arr[0][0]); // expect: 2
+print(kept[0][0]); // expect: 0
+
+// @split
+fn inner() { throw "up"; }
+fn touch(&var a, k) { say var e = &a[k]; e[0] = e[0] + 1; inner(); }
+say var arr = [[0]];
+say kept = arr;
+say var i = 0;
+try { touch(&arr, i); } catch (e) { }
+try { touch(&arr, i); } catch (e) { }
+print(arr[0][0]); // expect: 2
+print(kept[0][0]); // expect: 0
+
+// @split
+fn touch(&var a, k) { try { say var e = &a[k]; e[0] = e[0] + 1; return; } finally { a[k][0] = a[k][0] + 10; } }
+say var arr = [[0]];
+say kept = arr;
+say var i = 0;
+touch(&arr, i);
+touch(&arr, i);
+print(arr[0][0]); // expect: 22
+print(kept[0][0]); // expect: 0
+
+// @split
+fn touch(&var a, k) { defer { a[k][0] = a[k][0] + 10; } say var e = &a[k]; e[0] = e[0] + 1; return; }
+say var arr = [[0]];
+say kept = arr;
+say var i = 0;
+touch(&arr, i);
+touch(&arr, i);
+print(arr[0][0]); // expect: 22
+print(kept[0][0]); // expect: 0
+
+// @split
+type H { pub var v; init(this, &var a, k) { say var e = &a[k]; e[0] = e[0] + 1; this.v = 0; } }
+say var arr = [[0]];
+say kept = arr;
+say var i = 0;
+say h1 = H(&arr, i);
+say h2 = H(&arr, i);
+print(arr[0][0]); // expect: 2
+print(kept[0][0]); // expect: 0
+
+// @split
+type H { init(this) { } pub fn touch(this, &var a, k) { say var e = &a[k]; e[0] = e[0] + 1; } }
+say var arr = [[0]];
+say kept = arr;
+say h = H();
+say var i = 0;
+h.touch(&arr, i);
+h.touch(&arr, i);
+print(arr[0][0]); // expect: 2
+print(kept[0][0]); // expect: 0
+
+// @split
+fn touch(&var a, k) { say var e = &a[k]; e[0] = e[0] + 1; }
+say f = touch;
+say var arr = [[0]];
+say kept = arr;
+say var i = 0;
+f(&arr, i);
+f(&arr, i);
+print(arr[0][0]); // expect: 2
+print(kept[0][0]); // expect: 0
+
+// @split
+fn down(&var a, n) { say var e = &a[0]; e[0] = e[0] + 1; if (n > 0) { down(&a, n - 1); } e[0] = e[0] + 1; }
+say var arr = [[0]];
+say kept = arr;
+down(&arr, 2);
+print(arr[0][0]); // expect: 6
+print(kept[0][0]); // expect: 0

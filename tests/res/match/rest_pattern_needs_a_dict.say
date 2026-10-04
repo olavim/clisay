@@ -1,0 +1,7 @@
+say d = { a: 1, b: 2 };
+if (d ~ { a: _, ..r }) { print(r["b"]); } // expect: 2
+
+// @split
+type T { pub a; init(this) { this.a = 1; } }
+say t = T();
+if (t ~ T { a: _, ..r }) { print("y"); } // error: A rest pattern needs a dict, but got <instance <type T>>

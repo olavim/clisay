@@ -1,6 +1,4 @@
-// A guarded arm rules out nothing, since a false guard falls through with the witness still live.
-// Guard truthiness is not analyzed: only the literal `true` counts as provably true.
-fn get(flag)? {
+fn get(flag): opt {
     if (flag == 1) { return null; }
     if (flag == 2) { return Err("boom"); }
     return 10;

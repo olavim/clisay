@@ -1,0 +1,39 @@
+say a = [0, null];
+say z = a[0];
+print(z); // expect: 0
+
+// @split
+say a = [0, null];
+say z = a[1]; // error: Cannot assign a nullable value to non-null binding 'z'
+
+// @split
+type Raw { } obligation taint { witness Raw; discharge to use; }
+say d = { "k": Raw() };
+say v = d["k"]; // error: cannot assign a value owing 'taint' to 'v'
+
+// @split
+type Raw { } obligation taint { witness Raw; discharge to use; }
+fn make() { return [Raw()]; }
+say a = make();
+try { say z = a[0]; print("unreachable"); }
+catch (e) { print("thrown"); } // expect: thrown
+
+// @split
+say var a = [null];
+a[0] = 1;
+print(a[0]); // expect: 1
+
+// @split
+say a = [null];
+print(a[0] ?? "none"); // expect: none
+
+// @split
+say a = [null, null];
+say n = a.length;
+print(n()); // expect: 2
+
+// @split
+type Raw { } obligation taint { witness Raw; discharge to use; }
+say d = { "a": Raw(), "b": null };
+say z: opt = d["b"];
+print(z ?? "absent"); // expect: absent

@@ -1,0 +1,46 @@
+fn loud() { print("ran"); return 1; }
+say var xs: opt = null;
+print(&xs?.push(loud())); // expect: null
+say var ys: opt = [1];
+&ys?.push(loud()); // expect: ran
+print(ys?.length()); // expect: 2
+
+// @split
+fn loud() { print("ran"); return 1; }
+fn maybe(ok) { if ok { return [1]; } return Err("x"); }
+say var xs: fails = maybe(false);
+print(&xs?.push(loud()) ?? "skipped"); // expect: skipped
+
+// @split
+fn key() { print("key ran"); return 0; }
+fn maybe(ok) { if ok { return [[1]]; } return Err("x"); }
+say var xs: fails = maybe(false);
+print(&xs?[key()].push(0) ?? "skipped"); // expect: skipped
+
+// @split
+fn key() { print("key ran"); return 0; }
+say var xs: opt = [[5]];
+&xs?[key()].push(0); // expect: key ran
+print(xs?[0].length()); // expect: 2
+
+// @split
+type Box { pub var items: opt = null; }
+say var b = Box{};
+print(&b.items?.push(1)); // expect: null
+b.items = [0];
+&b.items?.push(1);
+print(b.items?.length()); // expect: 2
+
+// @split
+say xs: opt = null;
+print(xs?.length()); // expect: null
+
+// @split
+type C {
+    pub var n = 0;
+    pub fn bump(&var this) { this.n += 1; }
+    pub fn twice(&var this) { &this?.bump(); &this.bump(); }
+}
+say var c = C{n: 0};
+&c.twice();
+print(c.n); // expect: 2

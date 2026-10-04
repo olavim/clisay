@@ -1,4 +1,3 @@
-// A non-null private field with no default and no factory assignment is never initialized.
 type T {
     pub x;
     y;

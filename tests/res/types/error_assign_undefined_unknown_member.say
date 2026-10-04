@@ -1,10 +1,8 @@
-
 type A {
-    pub x?;
+    pub x: opt;
 }
-
-say obj = mut A();
-fn setY(mut o, *v) {
+say obj = A();
+fn setY(var o, v) {
     o.y = v; // error: Invalid index: A doesn't have member "y"
 }
 setY(obj, true);

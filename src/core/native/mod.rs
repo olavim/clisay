@@ -4,17 +4,45 @@ use super::objects::{TypeMember, ObjType, ObjNativeFn, ObjString};
 pub mod array;
 pub mod dict;
 
-pub trait NativeType {
-    fn get_name(&self) -> &'static str;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NativeType {
+    Array,
+    Dict,
+    String,
+}
+
+impl NativeType {
+    pub fn name(self) -> &'static str {
+        match self {
+            NativeType::Array => "Array",
+            NativeType::Dict => "Dict",
+            NativeType::String => "String",
+        }
+    }
+
+    pub fn keys_can_shadow_members(self) -> bool {
+        self == NativeType::Dict
+    }
+
+    pub fn method_wants_anchor_receiver(self, method_name: &str) -> bool {
+        matches!((self, method_name), (NativeType::Array, "push") | (NativeType::Dict, "remove"))
+    }
+}
+
+pub trait NativeTypeBuilder {
+    fn kind(&self) -> NativeType;
+
     fn methods(&self, gc: &mut Gc) -> Vec<(*mut ObjString, ObjNativeFn)>;
     fn getter(&self, _gc: &mut Gc) -> Option<ObjNativeFn> { None }
     fn setter(&self, _gc: &mut Gc) -> Option<ObjNativeFn> { None }
 
     fn build_type(&self, gc: &mut Gc) -> ObjType {
-        let mut ty = ObjType::new(gc.intern(self.get_name()));
+        let kind = self.kind();
+        let mut ty = ObjType::new(gc.intern(kind.name()));
 
         let mut member_id = 0;
         for (name, method) in self.methods(gc) {
+            let method = ObjNativeFn { wants_anchor_receiver: kind.method_wants_anchor_receiver(unsafe { &(*name).value }), ..method };
             ty.members.insert(name, TypeMember::Method(member_id));
             ty.methods.insert(member_id, gc.alloc(method).into());
             member_id += 1;

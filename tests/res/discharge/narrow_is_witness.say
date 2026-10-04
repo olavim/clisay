@@ -1,5 +1,4 @@
-// `v is Err` discharges `fails` on its false branch and confirms the type on its true branch.
-fn get(flag)! {
+fn get(flag) {
     if (flag) { return Err("boom"); }
     return 42;
 }

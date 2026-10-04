@@ -1,4 +1,3 @@
-// A bare function whose every path returns null infers `: opt`.
 fn maybe() { return null; }
 say x: opt = maybe();
 if (x == null) { print("null"); } // expect: null

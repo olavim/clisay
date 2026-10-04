@@ -1,11 +1,11 @@
-trait Greet { pub fn hi(this)! { return "hi"; } }
-trait Loud with Greet { pub fn yell(this)! { return "YO"; } }
-trait Other { pub fn ping(this)! { return 0; } }
+trait Greet { pub fn hi(this) { return "hi"; } }
+trait Loud with Greet { pub fn yell(this) { return "YO"; } }
+trait Other { pub fn ping(this) { return 0; } }
 
 type Service with Loud { init(this) {} }
 
 type Lookalike {
-    pub fn hi(this)! { return "hi"; }
+    pub fn hi(this) { return "hi"; }
     init(this) {}
 }
 

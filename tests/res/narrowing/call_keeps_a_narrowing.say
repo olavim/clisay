@@ -1,0 +1,42 @@
+type Box { pub value: opt; }
+fn other() { return 1; }
+fn run() {
+    say var b = Box { value: "v" };
+    if (b.value == null) { return; }
+    other();
+    say y = b.value;
+    print(y); // expect: v
+}
+run();
+
+// @split
+fn maybe(k): opt { if (k == 1) { return null; } return "v"; }
+fn helper() { return 1; }
+fn run(p: opt) {
+    if (p == null) { return; }
+    helper();
+    say y = p;
+    print(y); // expect: v
+}
+run(maybe(2));
+
+// @split
+type Box { pub value: opt; }
+fn run() {
+    say var b = Box { value: "v" };
+    say f = () => { b = Box { value: null }; return 1; }; // error: Cannot assign to `b`; a closure captures its value, not its binding
+    f();
+}
+run();
+
+// @split
+type Box { pub value: opt; }
+fn run() {
+    say r = Ref(Box { value: "v" });
+    say f = () => { @r = Box { value: null }; return 1; };
+    if (@r.value == null) { return; }
+    f();
+    say y = @r.value; // error: unexpected null
+    print(y);
+}
+run();

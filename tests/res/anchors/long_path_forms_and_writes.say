@@ -1,0 +1,11 @@
+fn bump(&var n) { n = n + 1; }
+say var a = [[[[[[[[[[[0]]]]]]]]]]];
+bump(&a[0][0][0][0][0][0][0][0][0][0][0]);
+print(a[0][0][0][0][0][0][0][0][0][0][0]); // expect: 1
+
+// @split
+fn bump(&var n) { n = n + 1; }
+type Node { pub var next; }
+say var n = Node{next: Node{next: Node{next: [[[[[[[[0]]]]]]]]}}};
+bump(&n.next.next.next[0][0][0][0][0][0][0][0]);
+print(n.next.next.next[0][0][0][0][0][0][0][0]); // expect: 1

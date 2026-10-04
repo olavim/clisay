@@ -1,0 +1,11 @@
+type Node { pub var next; pub var value; }
+
+fn fill(&var n, d) {
+  if d == 0 { return 0; }
+  n.next = Node { next: 0, value: d };
+  return fill(&n.next, d - 1);
+}
+
+say var head = Node { next: 0, value: 0 };
+fill(&head, 100);
+print(head.next.next.value); // expect: 99

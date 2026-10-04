@@ -1,9 +1,8 @@
-// A nullable field on an immutable receiver narrows after a guard.
 type Node {
-    pub next?;
+    pub next: opt;
     pub value;
-    init(this, *v) {
-        value = v;
+    init(this, v) {
+        this.value = v;
     }
 }
 say n = Node(5);

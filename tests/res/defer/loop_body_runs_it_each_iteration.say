@@ -1,0 +1,12 @@
+say var i = 0;
+while i < 3 {
+    defer { print("exit"); }
+    print(i);
+    i = i + 1;
+}
+// expect: 0
+// expect: exit
+// expect: 1
+// expect: exit
+// expect: 2
+// expect: exit

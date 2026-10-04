@@ -1,4 +1,3 @@
-// An `||` whose sides bind the same name set publishes that name in the true branch.
 say a = { ok: 7 };
 if a ~ { ok: value } || a ~ { cached: value } {
     print(value); // expect: 7

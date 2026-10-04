@@ -1,0 +1,61 @@
+say field = 0;
+type T {
+    var field = 1;
+    pub fn outer(this) { return field; }
+    pub fn member(this) { return this.field; }
+}
+say t = T();
+print(t.outer()); // expect: 0
+print(t.member()); // expect: 1
+
+// @split
+type P {
+    pub n = 10;
+    pub fn withParam(this, n) { return n; }
+}
+say p = P();
+print(p.withParam(99)); // expect: 99
+print(p.n); // expect: 10
+
+// @split
+type T { pub var n = 1; pub fn read(this) { return this.n; } }
+print(T().read()); // expect: 1
+
+// @split
+type T { pub var n = 1; pub fn read(this) { return n; } } // error: `n` is a member of `this`, not a name in scope
+
+// @split
+type T { pub var n = 1; pub fn write(var this) { this.n = 2; return this.n; } }
+print(T().write()); // expect: 2
+
+// @split
+type T { pub var n = 1; pub fn write(var this) { n = 2; } } // error: `n` is a member of `this`, not a name in scope
+
+// @split
+type T { pub var n = 1; pub fn one(this) { return 1; } pub fn two(this) { return this.one() + 1; } }
+print(T().two()); // expect: 2
+
+// @split
+type T { pub var n = 1; pub fn one(this) { return 1; } pub fn two(this) { return one() + 1; } } // error: `one` is a member of `this`, not a name in scope
+
+// @split
+type T { pub var a; pub var b; init(this, x) { this.a = x; this.b = this.a + 1; } }
+print(T(1).b); // expect: 2
+
+// @split
+type T { pub var a; pub var b; init(this, x) { this.a = x; this.b = a + 1; } } // error: `a` is a member of `this`, not a name in scope
+
+// @split
+type T { pub var a = 1; pub var b = this.a + 1; }
+print(T().b); // expect: 2
+
+// @split
+type T { pub var a = 1; pub var b = a + 1; } // error: `a` is a member of `this`, not a name in scope
+
+// @split
+trait T { fn helper(this) { return 1; } pub fn use(this) { return this.helper() + 1; } }
+type C with T { init(this) {} }
+print(C().use()); // expect: 2
+
+// @split
+trait T { fn helper(this) { return 1; } pub fn use(this) { return helper() + 1; } } // error: `helper` is a member of `this`, not a name in scope

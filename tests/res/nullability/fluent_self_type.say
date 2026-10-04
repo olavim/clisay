@@ -1,9 +1,8 @@
-// A self-typed method keeps the receiver's tag, so a fluent chain stays tracked.
 type Builder {
-    pub fn withX(this, n)! {
+    pub fn withX(this, n) {
         return this;
     }
-    pub fn maybe(this)? {
+    pub fn maybe(this): opt {
         return null;
     }
 }

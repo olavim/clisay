@@ -1,5 +1,4 @@
-// A `return Err` inside a match arm makes the function fail, so `!` on its result aborts and catches.
-fn load(n)! {
+fn load(n) {
     match n {
         0 => { return Err("boom"); },
         _ => { return 1; },

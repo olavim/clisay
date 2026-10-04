@@ -1,7 +1,7 @@
 
 type A {
-    pub x?;
+    pub x: opt;
 }
 
-say obj = mut A();
+say var obj = A();
 obj.y = true; // error: Invalid index: A doesn't have member "y"

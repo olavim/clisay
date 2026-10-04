@@ -1,0 +1,14 @@
+fn work(&var n) {
+    n = 1;
+    n = 2;
+    n = 3;
+    n = 4;
+    n = 5;
+    n = n + n;
+}
+say var a = [0];
+say var i = 0;
+while i < 400000 {
+    work(&a[0]);
+    i = i + 1;
+}

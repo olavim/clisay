@@ -1,0 +1,51 @@
+fn f() { return 1; }
+print(f()); // expect: 1
+type T { pub v; }
+say t = T{ v: 2 };
+print(t.v); // expect: 2
+
+// @split
+print(f()); // error: 'f' is used before its declaration
+fn f() { return 1; }
+
+// @split
+say t = T{ v: 2 }; // error: 'T' is used before its declaration
+type T { pub v; }
+
+// @split
+say t = T(); // error: 'T' is used before its declaration
+type T { pub v = 2; }
+
+// @split
+{
+    fn f() { return 3; }
+    print(f()); // expect: 3
+}
+
+// @split
+{
+    print(f()); // error: 'f' is used before its declaration
+    fn f() { return 3; }
+}
+
+// @split
+fn a(n) { if (n <= 0) { return 0; } return b(n - 1); }
+fn b(n) { return a(n) + 1; }
+print(b(3)); // expect: 4
+type P { pub fn mk(this) { return Q{ w: 5 }; } }
+type Q { pub w; }
+print(P{}.mk().w); // expect: 5
+
+// @split
+say x = 6;
+fn f() { return x; }
+print(f()); // expect: 6
+say outer = 7;
+type C { pub fn grab(this) { return outer; } }
+say c = C();
+print(c.grab()); // expect: 7
+
+// @split
+fn f() { return x; } // error: Undefined variable 'x'
+say x = 1;
+f();

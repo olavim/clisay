@@ -1,4 +1,3 @@
-// An init may leave a defaulted field to its default and override a mutable defaulted field.
 type T {
     pub x = 1;
     pub var y = 2;

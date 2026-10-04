@@ -1,0 +1,30 @@
+say r = Ref([0]);
+r.mutate((&var list) => { list[0] = @r; }); // error: A `Ref` cannot be read while its `mutate` runs
+
+// @split
+say r = Ref([0]);
+r.mutate((&var list) => { @r[0] = list; }); // error: A `Ref` cannot be written while its `mutate` runs
+
+// @split
+type B { pub var x; init(this) { this.x = 0; } pub fn grab(&var this, src) { this.x = @src; } }
+say r = Ref(B());
+say other = Ref(1);
+r.mutate((&var b) => { &b.grab(other); });
+print(@r.x); // expect: 1
+
+// @split
+type B { pub var x; init(this) { this.x = 0; } pub fn grab(&var this, src) { this.x = @src; } } // error: A `Ref` cannot be read while its `mutate` runs
+say r = Ref(B());
+r.mutate((&var b) => { &b.grab(r); });
+
+// @split
+fn put(&var inner, src) { inner[0] = @src[0]; }
+say r = Ref([[0]]);
+say other = Ref([7]);
+r.mutate((&var outer) => { put(&outer[0], other); });
+print(@r[0][0]); // expect: 7
+
+// @split
+fn put(&var inner, src) { inner[0] = @src[0]; } // error: A `Ref` cannot be read while its `mutate` runs
+say r = Ref([[0]]);
+r.mutate((&var outer) => { put(&outer[0], r); });

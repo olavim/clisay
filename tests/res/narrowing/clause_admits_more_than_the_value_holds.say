@@ -1,0 +1,30 @@
+fn mk(): opt { return null; }
+say x: opt = mk() ?? true;
+say z = x;
+print(z); // expect: true
+
+// @split
+fn mk(): opt { return null; }
+say x: opt = mk();
+say z = x; // error: Cannot assign a nullable value to non-null binding 'z'
+
+// @split
+say var x: opt = 5;
+x = null;
+print(x ?? "gone"); // expect: gone
+
+// @split
+say var r: fails = [1, 2];
+print(r.length()); // expect: 2
+
+// @split
+fn mayFail(n) { if n < 0 { return Err("x"); } return [1, 2]; }
+say var r: fails = [1, 2];
+r = mayFail(1);
+say n = r.length(); // error: unchecked value owes 'fails'
+
+// @split
+fn wipe(&var d: opt) { d = null; }
+say var x: opt = 5;
+wipe(&x);
+say z = x; // error: Cannot assign a nullable value to non-null binding 'z'

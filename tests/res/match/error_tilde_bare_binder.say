@@ -1,3 +1,2 @@
-// A `~` whose matcher always matches is an assignment, not a test.
 say x = 1;
 if x ~ y @ _ { print(y); } // error: `~` binding must be fallible; `y @ _` always matches.

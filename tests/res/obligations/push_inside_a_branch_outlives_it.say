@@ -1,0 +1,27 @@
+fn mk(): opt { return null; }
+fn f(c) {
+    say var a = [];
+    if (c) { &a.push(mk()); }
+    say y = a[0]; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(y);
+}
+f(true);
+
+// @split
+fn mk(): opt { return null; }
+fn f(c) {
+    say var a = [];
+    say ok = c && &a.push(mk()) == null;
+    say y = a[0]; // error: Cannot assign a nullable value to non-null binding 'y'
+    print(ok);
+}
+f(true);
+
+// @split
+fn mk(): opt { return null; }
+fn f(c) {
+    say var a = [];
+    if (c) { &a.push(1); }
+    print(a.length()); // expect: 1
+}
+f(true);

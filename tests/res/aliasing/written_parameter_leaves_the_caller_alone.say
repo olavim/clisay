@@ -1,0 +1,29 @@
+fn touch(var x) { x[0] = 5; }
+say var a = [1];
+a[0] = 6;
+touch(a);
+print(a[0]); // expect: 6
+
+// @split
+fn touch(var x) { x[0] = 5; }
+say var a = [1];
+touch(a);
+a[0] = 6;
+print(a[0]); // expect: 6
+
+// @split
+fn hand(x) { deeper(x); }
+fn deeper(var y) { y[0] = 5; }
+say var a = [1];
+a[0] = 6;
+hand(a);
+print(a[0]); // expect: 6
+
+// @split
+fn touch(var x) { x[0] = 9; }
+say var sink = [];
+say var a = [[0]];
+&sink.push(a[0]);
+touch(a[0]);
+print(sink[0][0]); // expect: 0
+print(a[0][0]); // expect: 0

@@ -1,0 +1,13 @@
+say r = Ref([1, 2, 3]);
+say also = r;
+r.mutate((&var v) => { v[0] = 99; });
+print(@also[0]); // expect: 99
+
+say big = Ref([0, 0, 0, 0, 0, 0, 0, 0]);
+say var i = 0;
+while (i < 8) {
+    big.mutate((&var v) => { v[i] = i; });
+    i = i + 1;
+}
+print(@big[7]); // expect: 7
+print(@big[3]); // expect: 3

@@ -1,0 +1,37 @@
+type Box { pub var v = 0; }
+fn keep(x, &var sink, n) {
+    if (n > 0) { keep(x, &sink, n - 1); print(sink.v[0]); } else { sink.v = x; }
+}
+say var b = Box();
+say var m = [1];
+keep(m, &b, 2);
+m[0] = 9;
+print(b.v[0]);
+print(m[0]);
+// expect: 1
+// expect: 1
+// expect: 1
+// expect: 9
+
+// @split
+type Box { pub var v = 0; }
+fn ping(x, &var sink, n) {
+    if (n > 0) { pong(x, &sink, n - 1); }
+}
+fn pong(x, &var sink, n) {
+    if (n > 0) { ping(x, &sink, n - 1); } else { sink.v = x; }
+}
+say var b = Box();
+say var m = [1];
+ping(m, &b, 3);
+m[0] = 9;
+print(b.v[0]); // expect: 1
+
+// @split
+type Box { pub var v = 0; }
+fn keep(x, var sink, n) {
+    if (n > 0) { keep(x, sink, n - 1); } else { sink.v = x; }
+}
+say b = Box();
+keep([1], b, 2);
+print(b.v); // expect: 0

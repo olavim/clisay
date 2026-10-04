@@ -1,0 +1,9 @@
+say var x = 1;
+say var y = &x;
+y = 2;
+print(x); // expect: 2
+
+// @split
+say var x = 1;
+say y = &x; // error: Anchor binding `y` must be `var`
+print(y);

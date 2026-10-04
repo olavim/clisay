@@ -1,0 +1,19 @@
+try {
+    throw "boom";
+} catch (e) {
+    print(e); // expect: boom
+}
+
+// @split
+try {
+    throw "boom";
+} catch (var e) { // error: A catch parameter cannot be `var`
+    print(e);
+}
+
+// @split
+try {
+    throw "boom";
+} catch (var e) { // error: A catch parameter cannot be `var`
+    print(e);
+}

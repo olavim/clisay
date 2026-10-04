@@ -1,4 +1,3 @@
-// A type test must name an in-scope type or trait.
 say x = 1;
 say b = x ~ Foo; // error: 'Foo' is not a type or trait
 print(b);

@@ -1,0 +1,30 @@
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type Box { pub var item: parsed; }
+say b: parsed = Token(1);
+say var h = Box { item: b };
+try {
+    print(h.item!.v);
+    print("unreachable");
+} catch (e) {
+    print("caught"); // expect: caught
+}
+
+// @split
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type Box { pub var item; }
+say b: parsed = Token(1);
+say var h = Box { item: 0 };
+h.item = b; // error: cannot assign a value owing 'parsed' to 'item'
+
+// @split
+type Box { pub var item; }
+fn opaque(f) { return f(); }
+say var h = Box { item: 0 };
+try {
+    h.item = opaque(() => Err("boom"));
+    print("unreachable");
+} catch (e) {
+    print("refused"); // expect: refused
+}

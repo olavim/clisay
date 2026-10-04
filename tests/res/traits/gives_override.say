@@ -1,12 +1,12 @@
 trait Powered {
-    pub fn start(this)! { return "vroom"; }
-    pub fn stop(this)! { return "stop"; }
+    pub fn start(this) { return "vroom"; }
+    pub fn stop(this) { return "stop"; }
 }
 type Engine with Powered { init(this) {} }
 
 type Car {
     engine gives Powered;
-    pub fn start(this)! { return "custom"; }
+    pub fn start(this) { return "custom"; }
     init(this) { this.engine = Engine(); }
 }
 

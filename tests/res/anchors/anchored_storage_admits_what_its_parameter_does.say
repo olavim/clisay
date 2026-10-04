@@ -1,0 +1,21 @@
+type Box { pub var v = 0; init(this) {} }
+fn put(&var slot: opt) { slot = null; } // error: an anchor and the parameter it fills do not admit the same values
+fn poke(var h) { put(&h.v); }
+poke(Box());
+
+// @split
+type Box { pub var v: opt = 0; init(this) {} }
+fn put(&var slot: opt) { slot = null; }
+fn poke(var h) { put(&h.v); print(h.v ?? "none"); } // expect: none
+poke(Box());
+
+// @split
+fn bump(&var n) { n = n + 1; }
+say var a = [null];
+bump(&a[0]); // error: expected non-null argument
+
+// @split
+fn bump(&var n) { n = n + 1; }
+say var a = [1];
+bump(&a[0]);
+print(a[0]); // expect: 2

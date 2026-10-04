@@ -1,0 +1,45 @@
+fn find(): opt { return null; }
+fn clear(&var a: opt) { a = null; }
+say var h: opt = find();
+h = 1;
+if (h != null) {
+    try {
+        clear(&h);
+        if (h == null) { throw "cleared"; }
+    } finally {
+        h.x; // error: unchecked value owes 'opt'
+    }
+}
+// @split
+fn find(): opt { return null; }
+fn clear(&var a: opt) { a = null; }
+say var h: opt = find();
+h = 1;
+if (h != null) {
+    try {
+        clear(&h);
+        if (h == null) { throw "cleared"; }
+    } catch (e) {
+        print(e); // expect: cleared
+    } finally {
+        if (h == null) { print("null"); } // expect: null
+    }
+}
+// @split
+type Box {
+    pub f: opt;
+    init(this, f: opt) { this.f = f; }
+    fn touch(&var this) {}
+    fn m(&var this) {
+        if (this.f != null) {
+            try {
+                &this.touch();
+                if (this.f == null) { throw "cleared"; }
+            } finally {
+                this.f.x; // error: unchecked value owes 'opt'
+            }
+        }
+    }
+}
+say var b = Box(1);
+&b.m();

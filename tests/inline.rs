@@ -40,8 +40,9 @@ fn discard_params_take_their_slot_without_a_name() {
 
 #[test]
 fn runtime_error_shows_call_stack_trace() {
-    // A runtime error lists each active call frame beneath the source frame.
-    let src = "fn b()! { return 1 + true; }\nfn a()! { return b(); }\na();";
+    // A runtime error lists each active call frame beneath the source frame. `a` calls `b` in a
+    // statement rather than returning it, so it keeps its frame and appears.
+    let src = "fn b() { return 1 + true; }\nfn a() { b(); return 0; }\na();";
     let err = clisay::run("trace", src).err().expect("expected a runtime error").to_string();
     assert!(err.contains("\tat b ("), "{err}");
     assert!(err.contains("\tat a ("), "{err}");
@@ -50,14 +51,14 @@ fn runtime_error_shows_call_stack_trace() {
 #[test]
 fn type_body_captures_its_declaring_frame() {
     // Each execution of the declaration builds its own type, so the methods capture separately.
-    let src = "fn mk(v)! { type T { pub fn get(this)! { return v; } } return T { }; }\
+    let src = "fn mk(v) { type T { pub fn get(this) { return v; } } return T { }; }\
                say a = mk(1); say b = mk(2); print(a.get()); print(b.get());";
     assert_inline(src, Ok(["1", "2"]));
 }
 
 #[test]
 fn a_capturing_factory_survives_leaving_its_function() {
-    let src = "fn mk(v)! { type T { pub n; init(this) { this.n = v; } } return T; }\
+    let src = "fn mk(v) { type T { pub n; init(this) { this.n = v; } } return T; }\
                say maker = mk(7); say other = mk(9); print(maker().n); print(other().n);";
     assert_inline(src, Ok(["7", "9"]));
 }
@@ -74,6 +75,26 @@ fn member_ids_are_capped_at_one_byte() {
 #[test]
 fn forced_checks_leave_a_correct_program_alone() {
     assert_eq!(common::run_forced("say n = 5; print(n!);"), Ok(vec!["5".to_string()]));
-    assert_eq!(common::run_forced("fn get(f)? { if (f) { return null; } return \"v\"; } say x? = get(false); if (x != null) { print(x!); }"),
+    assert_eq!(common::run_forced("fn get(f): opt { if (f) { return null; } return \"v\"; } say x: opt = get(false); if (x != null) { print(x!); }"),
         Ok(vec!["v".to_string()]));
+}
+
+#[test]
+fn caught_refusal_leaves_slot_unwritten() {
+    let prelude = "type A { pub fn m(this): fails { return Err(\"boom\"); } } type B { pub var x = 0; } ";
+    let caught = |body: &str| common::run_unguarded(&format!("{prelude}{body}"));
+    let lines = |ls: &[&str]| Ok(ls.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+
+    assert_eq!(caught("fn f(v) { say var b = B(); try { b.x = v.m(); } catch (e) { print(\"caught\"); } print(b.x); } f(A());"),
+        lines(&["caught", "0"]));
+    assert_eq!(caught("fn f(v) { say var b = B(); try { b = B{x: v.m()}; } catch (e) { print(\"caught\"); } print(b.x); } f(A());"),
+        lines(&["caught", "0"]));
+    assert_eq!(caught("fn f(v) { say var n = 0; try { n = v.m(); } catch (e) { print(\"caught\"); } print(n); } f(A());"),
+        lines(&["caught", "0"]));
+    assert_eq!(caught("fn set(&var s, v) { s = v; } fn f(v) { say var n = 0; try { set(&n, v.m()); } catch (e) { print(\"caught\"); } print(n); } f(A());"),
+        lines(&["caught", "0"]));
+    assert_eq!(caught("fn g(x) { print(\"entered\"); } fn f(v) { try { g(v.m()); } catch (e) { print(\"caught\"); } print(\"after\"); } f(A());"),
+        lines(&["caught", "after"]));
+    assert_eq!(caught("fn f(v) { say var xs = [0]; try { xs[0] = v.m(); } catch (e) { print(\"caught\"); } print(xs[0]); } f(A());"),
+        lines(&["caught", "0"]));
 }

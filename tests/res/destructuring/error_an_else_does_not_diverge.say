@@ -1,0 +1,5 @@
+fn head(xs) {
+  say [a] = xs else { print("empty"); }; // error: the `else` branch of a `say` pattern statement must diverge
+  return a;
+}
+print(head([1]));

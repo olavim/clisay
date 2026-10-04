@@ -1,0 +1,8 @@
+{
+    defer { print("last"); }
+    print("first");
+}
+print("after");
+// expect: first
+// expect: last
+// expect: after

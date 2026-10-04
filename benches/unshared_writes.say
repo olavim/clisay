@@ -1,0 +1,11 @@
+fn read(a) { return a[0]; }
+
+say var a = [0, 0, 0, 0, 0, 0, 0, 0];
+say var other = [0, 0, 0, 0, 0, 0, 0, 0];
+say var sum = 0;
+say var i = 0;
+while i < 50000 {
+    sum = sum + read(other);
+    a[0] = i;
+    i = i + 1;
+}

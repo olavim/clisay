@@ -1,0 +1,24 @@
+fn borrows(var x) { x["k"] = 1; }
+fn apply(cb, val) { cb(val); }
+say v = {};
+apply(borrows, v);
+print(v.containsKey("k")); // expect: false
+
+// @split
+fn consumes(x) { }
+fn apply(cb, val) { cb(val); }
+say var v = {};
+apply(consumes, v);
+v["k"] = 2;
+print(v["k"]); // expect: 2
+
+// @split
+fn borrows(x) { }
+fn consumes(x) { }
+fn useIt(cb) {
+  say v = {};
+  cb(v);
+}
+useIt(borrows);
+useIt(consumes);
+print("ok"); // expect: ok

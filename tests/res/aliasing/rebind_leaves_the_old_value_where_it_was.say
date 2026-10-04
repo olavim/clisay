@@ -1,0 +1,33 @@
+say var a = [1];
+say var b = a;
+b = [2];
+say var c = a;
+c[0] = 9;
+print(c[0]); // expect: 9
+print(a[0]); // expect: 1
+
+// @split
+say var a = [1];
+say var b = a;
+say var c = a;
+b[0] = 7;
+c[0] = 8;
+print(a[0]); // expect: 1
+print(b[0]); // expect: 7
+print(c[0]); // expect: 8
+
+// @split
+say head = { next: 0 };
+say var curr = head;
+curr = { next: 0 };
+curr["next"] = head;
+print("linked"); // expect: linked
+
+// @split
+say var a = [1];
+say var b = a;
+say var d = b;
+b = [2];
+d[0] = 7;
+print(d[0]); // expect: 7
+print(a[0]); // expect: 1

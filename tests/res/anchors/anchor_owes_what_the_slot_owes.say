@@ -1,0 +1,41 @@
+fn boom() { return Err("x"); }
+fn f(&var v: fails) { v = boom(); print(v ?? 0); } // expect: 0
+
+say var x: fails = 1;
+f(&x);
+print(x ?? 0); // expect: 0
+
+// @split
+fn f(&var v) { v = 2; }
+
+say var x = 1;
+f(&x);
+print(x); // expect: 2
+
+// @split
+fn boom() { return Err("x"); }
+fn f(&var v: fails) { v = boom(); print(v ?? 0); }
+
+say var x = 1;
+f(&x); // error: `x` owes nothing, but the parameter it fills owes 'fails'
+
+// @split
+fn boom() { return Err("x"); }
+fn f(&var v) { print(v); }
+
+say var a: fails = boom();
+f(&a); // error: cannot pass a value owing 'fails'
+
+// @split
+fn boom() { return Err("x"); }
+
+say var a: fails = boom();
+say var b: fails = &a;
+print(b ?? 0); // expect: 0
+
+// @split
+fn boom() { return Err("x"); }
+
+say var a: fails = boom();
+say var b = &a; // error: cannot assign a value owing 'fails' to 'b'
+print(b ?? 0);

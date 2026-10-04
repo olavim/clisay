@@ -1,0 +1,15 @@
+say r = Ref(1);
+say s = Ref(1);
+print(r == r); // expect: true
+print(r == s); // expect: false
+print([r] == [r]); // expect: true
+print([r] == [s]); // expect: false
+
+// @split
+say r = Ref(0);
+@r = [r];
+print(@r == @r); // expect: true
+print([r] == [r]); // expect: true
+say var d = {};
+d[@r] = 1;
+print(d[[r]]); // expect: 1

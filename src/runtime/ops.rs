@@ -1,20 +1,13 @@
 use super::*;
+use crate::backend::bytecode::chunk::HandlerRange;
+use crate::core::equality;
 
 macro_rules! num_binop_methods {
     ( $( $name:ident => |$a:ident, $b:ident| $body:expr, $token:literal );+ $(;)? ) => {
         $(
+            #[inline]
             pub(super) fn $name(&mut self) -> Result<(), anyhow::Error> {
                 self.binary_op_number(|$a, $b| Value::from($body), $token)
-            }
-        )+
-    };
-}
-
-macro_rules! value_binop_methods {
-    ( $( $name:ident => |$a:ident, $b:ident| $body:expr );+ $(;)? ) => {
-        $(
-            pub(super) fn $name(&mut self) -> Result<(), anyhow::Error> {
-                self.binary_op(|$a, $b| Value::from($body))
             }
         )+
     };
@@ -36,153 +29,72 @@ macro_rules! unary_op_methods {
 }
 
 impl Vm {
-    fn unwind_to(&mut self, stack_start: *mut Value, write_depth: usize, leaving: Value) -> Result<(), anyhow::Error> {
-        self.close_upvalues(stack_start);
-        self.release_write_ownership_above(write_depth, stack_start, leaving);
+    pub(super) fn op_dup2(&mut self) {
+        let under = self.stack.peek(1);
+        let over = self.stack.peek(0);
+        self.stack.push(under);
+        self.stack.push(over);
+    }
+
+    fn unwind_to(&mut self, stack_start: *mut Value) {
         self.stack.set_top(stack_start);
-        if self.forced {
-            self.settle_borrow_watches(leaving)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn restore_borrows(&mut self, depth: usize) {
-        while self.borrows.len() > depth {
-            let (value, prev) = self.borrows.pop().unwrap();
-            if value.is_object() { value.as_object().set_borrowed(prev); }
-        }
-    }
-
-    pub(super) fn ensure_not_holding_borrow(&self, value: Value) -> Result<(), anyhow::Error> {
-        if value.is_object() && value.as_object().holds_borrow() {
-            let label = format!("`{}` holds a value borrowed from the caller", self.get_source_position().snippet());
-            return self.error_labeled(objects::PERSISTED_BORROW, label);
-        }
-        Ok(())
-    }
-
-    pub(super) fn op_return(&mut self) -> Result<bool, anyhow::Error> {
-        if self.frames.len() == 1 {
-            return Ok(false);
-        }
-        self.ensure_not_holding_borrow(self.stack.peek(0))?;
-
-        let frame = self.frames.pop();
-        self.ip = frame.return_ip;
-
-        // Handing a borrowed value back does not end the borrow.
-        let handed_back_from = self.stack.offset(0);
-        let handed_back_borrow = !self.stack.peek(0).is_object()
-            && self.stack.borrow_outlives(handed_back_from, frame.stack_start);
-        let value = self.stack.pop();
-        // The value outlives this frame, so the scope releases below must not let go of it.
-        objects::record_escape(value);
-        self.restore_borrows(frame.borrow_depth);
-        self.unwind_to(frame.stack_start, frame.write_depth, value)?;
-        self.stack.push(value);
-        if handed_back_borrow {
-            let into = self.stack.offset(0);
-            self.stack.mark_borrowed(into, self.stack.borrow_origin(handed_back_from));
-            if self.forced {
-                self.carry_watched_mark(handed_back_from, into);
-            }
-        }
-        Ok(true)
-    }
-
-    /// A return whose frame only needs to end borrows.
-    pub(super) fn return_ending_borrows(&mut self) -> Result<(), anyhow::Error> {
-        let value = self.stack.peek(0);
-        self.ensure_not_holding_borrow(value)?;
-
-        let frame = self.frames.pop();
-        self.ip = frame.return_ip;
-
-        let handed_back_from = self.stack.offset(0);
-        let handed_back_borrow = !value.is_object()
-            && self.stack.borrow_outlives(handed_back_from, frame.stack_start);
-
-        // The value outlives this frame, so a later scope release must not let go of it.
-        objects::record_escape(value);
-        self.restore_borrows(frame.borrow_depth);
-        self.stack.set_top(frame.stack_start);
-
-        if self.forced {
-            self.settle_borrow_watches(value)?;
-        }
-
-        self.stack.push(value);
-
-        if handed_back_borrow {
-            let into = self.stack.offset(0);
-            self.stack.mark_borrowed(into, self.stack.borrow_origin(handed_back_from));
-            if self.forced {
-                self.carry_watched_mark(handed_back_from, into);
-            }
-        }
-
-        Ok(())
     }
 
     pub(super) fn op_return_factory(&mut self) -> Result<(), anyhow::Error> {
-        self.ensure_not_holding_borrow(self.stack.peek(0))?;
         let frame = self.frames.pop();
         self.ip = frame.return_ip;
 
         let value = self.stack.pop();
-        objects::record_escape(value);
-        self.restore_borrows(frame.borrow_depth);
-        self.unwind_to(frame.stack_start, frame.write_depth, value)?;
-        if frame.seal {
-            crate::core::objects::freeze_value(value, self.current_pos_index());
-        }
+        self.unwind_to(frame.stack_start);
         self.stack.push(value);
         Ok(())
     }
 
     pub(super) fn op_throw(&mut self) -> Result<(), anyhow::Error> {
-        let value = self.stack.pop();
-        self.throw_value(value)
+        throw_value(self.stack.pop())
     }
 
-    pub(super) fn throw_value(&mut self, value: Value) -> Result<(), anyhow::Error> {
-        // A handler further out than this frame means the throw carries the value out of it, which
-        // is the return route under another name.
-        if !self.try_frames.last().is_some_and(|f| f.origin == self.frames.top_ptr()) {
-            self.ensure_not_holding_borrow(value)?;
-        }
-        // A thrown value passes every scope between here and the handler, so none of them may
-        // let go of it.
-        objects::record_escape(value);
-        if self.try_frames.len() == 0 {
+    /// Unwinds to the innermost handler and hands it the value.
+    pub(super) fn catch_thrown(&mut self, value: Value) -> Result<(), anyhow::Error> {
+        let Some((frame, handler)) = self.innermost_handler() else {
             return self.error(format!("Uncaught exception: {}", value.fmt()));
-        }
+        };
 
-        let frame = self.try_frames.pop().unwrap();
-        // Restore borrows marked since the `try` began, whose frame exits the unwind skips.
-        self.restore_borrows(frame.borrow_depth);
-        self.root_stash.truncate(frame.stash_depth);
-        self.frames.set_top(frame.origin);
-        self.unwind_to(frame.stack_start, frame.write_depth, value)?;
-        self.ip = frame.handler_ip;
+        let origin = unsafe { frame.add(1) };
+        self.copy_out_unwound_frames(origin);
+        self.frames.set_top(origin);
+        if !self.tail_breadcrumbs.is_empty() {
+            self.release_tail_breadcrumbs();
+        }
+        self.unwind_to(unsafe { (*frame).stack_start.add(handler.frame_stack_height as usize) });
+        self.ip = unsafe { self.chunk.code.as_ptr().add(handler.handler as usize) };
         self.stack.push(value);
         Ok(())
     }
 
-    pub(super) fn op_push_try(&mut self) {
-        let handler_pos = as_short!(self.read_next(), self.read_next()) as usize;
-        self.try_frames.push(TryFrame {
-            origin: self.frames.top_ptr(),
-            handler_ip: unsafe { self.chunk.code.as_ptr().add(handler_pos) },
-            stack_start: self.stack.top(),
-            borrow_depth: self.borrows.len(),
-            write_depth: self.write_ownerships.len(),
-            stash_depth: self.root_stash.len()
-        });
+    fn innermost_handler(&self) -> Option<(*mut CallFrame, HandlerRange)> {
+        self.frames_at_ips().find_map(|(frame, ip)| self.chunk.handler_at(self.code_index_at(ip)).map(|handler| (frame, handler)))
     }
 
-    pub(super) fn op_pop_try(&mut self) {
-        self.try_frames.pop();
+    /// Copies out the anchor parameters of every frame a throw leaves, innermost first.
+    fn copy_out_unwound_frames(&mut self, origin: *mut CallFrame) {
+        let mut frame_top = self.stack.top();
+        let mut at = self.frames.top_ptr();
+        while at > origin {
+            at = unsafe { at.sub(1) };
+            let frame = unsafe { *at };
+            if !frame.closure.is_null() {
+                let table = unsafe { (*frame.closure).slot_witness_set_pool_id } as usize;
+                for i in 0..self.chunk.anchor_params[table].len() {
+                    let (anchor_slot, value_slot) = self.chunk.anchor_params[table][i];
+                    if unsafe { frame.stack_start.add(value_slot as usize + 1) } >= frame_top {
+                        continue;
+                    }
+                    self.copy_anchor_out(frame.stack_start, anchor_slot, value_slot);
+                }
+            }
+            frame_top = frame.stack_start;
+        }
     }
 
     pub(super) fn op_jump_if_false_or_pop(&mut self) {
@@ -203,33 +115,29 @@ impl Vm {
         }
     }
 
-    pub(super) fn op_jump_if_not_null_or_pop(&mut self) {
+    pub(super) fn op_jump_if_clean_or_pop(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
-        if !self.stack.peek(0).is_null() {
+        let value = self.stack.peek(0);
+        if !self.is_witness(value) {
             self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
         } else {
             self.stack.truncate(1);
         }
     }
 
-    pub(super) fn op_jump_if_null(&mut self) {
-        let offset = as_short!(self.read_next(), self.read_next()) as usize;
-        if self.stack.peek(0).is_null() {
-            self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
-        }
+    pub(super) fn is_witness(&self, value: Value) -> bool {
+        value.is_null() || self.is_object_witness(value)
     }
 
-    fn is_err(&self, value: Value) -> bool {
+    fn is_object_witness(&self, value: Value) -> bool {
         let ValueKind::Object(ObjectKind::Instance) = value.kind() else { return false };
-        let err_id = unsafe { &*self.native_types.err }.id;
-        let ty = unsafe { &*(*value.as_object().as_instance_ptr()).ty };
-        ty.provided.contains(&err_id)
+        !unsafe { &*(*value.as_object().as_instance_ptr()).ty }.witness_ids.is_empty()
     }
 
     pub(super) fn op_jump_if_clean(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
         let value = self.stack.peek(0);
-        if !value.is_null() && !self.is_err(value) {
+        if !self.is_witness(value) {
             self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
         }
     }
@@ -248,84 +156,71 @@ impl Vm {
     pub(super) fn op_jump_if_bad(&mut self) {
         let offset = as_short!(self.read_next(), self.read_next()) as usize;
         let value = self.stack.peek(0);
-        if value.is_null() || self.is_err(value) {
+        if self.is_witness(value) {
             self.ip = unsafe { self.chunk.code.as_ptr().add(offset) };
         }
     }
 
+    #[inline]
     pub(super) fn op_barrier_guard(&mut self) -> Result<(), anyhow::Error> {
-        let allowed = self.read_allowed_witnesses();
-        let value = self.stack.peek(0);
+        let witness_set_pool_id = self.read_witness_set_pool_id();
+        let forced = self.at_forced_check();
+        let value = self.anchor_value(self.stack.peek(0))?;
+        match self.barrier_guard(value, witness_set_pool_id) {
+            Err(_) if forced => self.refuted_elision_error("a value proven accepted is refused"),
+            checked => checked,
+        }
+    }
+
+    #[inline]
+    fn barrier_guard(&mut self, value: Value, witness_set_pool_id: u16) -> Result<(), anyhow::Error> {
         if value.is_null() {
-            return match self.accepts_null(allowed) {
+            return match self.accepts_null(witness_set_pool_id) {
                 true => Ok(()),
                 false => self.error("unexpected null"),
             };
         }
-        if self.carries_disallowed_witness(value, allowed) {
-            let bad = self.stack.pop();
-            return self.throw_value(bad);
+        if self.carries_disallowed_witness(value, witness_set_pool_id) {
+            self.stack.pop();
+            return throw_value(value);
         }
         Ok(())
     }
 
     pub(super) fn op_assert_non_null(&mut self) -> Result<(), anyhow::Error> {
-        let forced = self.at_elided_site();
+        let forced = self.at_forced_check();
         if self.stack.peek(0).is_null() {
             return match forced {
                 true => self.refuted_elision_error("a value proven non-null is null"),
-                false => self.error("unexpected null"),
+                false => throw_value(self.stack.pop()),
             };
         }
         Ok(())
     }
 
+    /// Writes an unnamed slot. A temp is not a binding, so nothing takes the value over and it is
+    /// stored as it is, where a write to a binding copies.
+    pub(super) fn op_store_temp_pop(&mut self) {
+        let slot = self.read_next() as usize;
+        let value = self.stack.pop();
+        unsafe { *self.slot_addr(slot) = value };
+    }
+
+    #[inline]
     pub(super) fn op_array(&mut self) -> Result<(), anyhow::Error> {
         let len = self.read_next() as usize;
-        let seal = self.read_next() != 0;
         // Copy the elements without popping them first. They must stay on the stack
         // because the allocation below can trigger gc.
-        let values = unsafe {
-            let start = self.stack.top().sub(len);
-            std::slice::from_raw_parts(start, len).to_vec()
-        };
-        let array = self.alloc(ObjArray::new(values));
-        let container = Value::from(array);
-        self.take_elements(container, len, 1, seal)?;
+        let start = unsafe { self.stack.top().sub(len) };
+        for i in 0..len {
+            let at = unsafe { start.add(i) };
+            refuse_no_persist(unsafe { *at })?;
+            self.share_in_place(at);
+        }
+        let array = self.alloc_array(unsafe { std::slice::from_raw_parts(start, len) });
         self.stack.truncate(len);
-        self.push_built_container(container, seal);
+        self.stack.push(Value::from(array));
         Ok(())
-    }
-
-    /// Hands a container the elements still on the stack, `step` apart.
-    fn take_elements(&mut self, container: Value, count: usize, step: usize, seal: bool) -> Result<(), anyhow::Error> {
-        for i in (0..count).step_by(step) {
-            let slot = self.stack.offset(i);
-            let value = unsafe { *slot };
-            match seal {
-                // A sealed literal takes no writer slot, but it still carries what its elements hold.
-                true => {
-                    if objects::is_mutable_container(value) {
-                        return self.mutable_in_immutable_error();
-                    }
-                    self.record_held_borrow_from(container, slot);
-                },
-                false => self.container_took_from(container, slot)?,
-            }
-        }
-        Ok(())
-    }
-
-    fn push_immutable(&mut self, value: Value) {
-        value.as_object().set_immutable(self.current_pos_index());
-        self.stack.push(value);
-    }
-
-    fn push_built_container(&mut self, value: Value, seal: bool) {
-        match seal {
-            true => self.push_immutable(value),
-            false => self.stack.push(value),
-        }
     }
 
     /// Replaces the array on top with a fresh copy of `array[prefix .. len - suffix]`.
@@ -337,73 +232,90 @@ impl Vm {
         // A match may take the middle before it has tested the length, so anything the slice does
         // not reach reads as null rather than faulting.
         let source = match target.kind() {
-            ValueKind::Object(ObjectKind::Array) => unsafe { &(*target.as_object().as_array_ptr()).values },
+            ValueKind::Object(ObjectKind::Array) => unsafe { ObjArray::elements(target.as_object().as_array_ptr()) },
             _ => { self.stack.set(0, Value::NULL); return; },
         };
         let Some(end) = source.len().checked_sub(suffix).filter(|end| *end >= prefix) else {
             self.stack.set(0, Value::NULL);
             return;
         };
-        let values = source[prefix..end].to_vec();
-        // A slice holds only what it copied, so the elements answer rather than the source.
-        let copied_borrow = values.iter().any(|&v| objects::carries_borrow(v));
-        let array = self.alloc(ObjArray::new(values));
+        let array = self.alloc_array(&source[prefix..end]);
         self.stack.truncate(1);
-        let slice = Value::from(array);
-        if copied_borrow {
-            objects::mark_holds_borrow(slice);
+        self.stack.push(Value::from(array));
+
+        for element in unsafe { ObjArray::elements_mut(array) } {
+            self.share_in_place(element);
         }
-        self.push_immutable(slice);
     }
 
     pub(super) fn op_dict(&mut self) -> Result<(), anyhow::Error> {
         let count = self.read_next() as usize;
-        let seal = self.read_next() != 0;
         let n = count * 2;
         let mut entries = fnv::FnvHashMap::with_capacity_and_hasher(count, Default::default());
+        let start = unsafe { self.stack.top().sub(n) };
+
+        for i in 0..n {
+            let at = unsafe { start.add(i) };
+            if i % 2 == 1 || objects::is_container(unsafe { *at }) {
+                refuse_no_persist(unsafe { *at })?;
+                self.share_in_place(at);
+            }
+        }
+
+        for i in (0..n).step_by(2) {
+            self.assert_key_is_acyclic(unsafe { *start.add(i) });
+        }
+
         unsafe {
-            let start = self.stack.top().sub(n);
             let pairs = std::slice::from_raw_parts(start, n);
             for pair in pairs.chunks_exact(2) {
                 entries.insert(DictKey(pair[0]), pair[1]);
             }
         }
         let dict = self.alloc(ObjDict::new(entries));
-        let container = Value::from(dict);
-        // Every second slot is a value, counting from the top where the last pair's value sits.
-        self.take_elements(container, n, 2, seal)?;
         self.stack.truncate(n);
-        self.push_built_container(container, seal);
+        self.stack.push(Value::from(dict));
         Ok(())
     }
 
-    /// Clears the immutable bit on the value on top of the stack.
-    pub(super) fn op_mut(&mut self) {
-        let value = self.stack.peek(0);
-        if value.is_object() {
-            value.as_object().set_mutable();
-        }
+    pub(super) fn assert_key_is_acyclic(&self, key: Value) {
+        debug_assert!(!equality::contains_itself(key), "a key that contains itself entered a dict");
     }
 
-    pub(super) fn op_seal_check(&mut self) -> Result<(), anyhow::Error> {
-        let container = self.stack.peek(0);
-        let mutable = match container.kind() {
-            ValueKind::Object(ObjectKind::Array) =>
-                unsafe { &(*container.as_object().as_array_ptr()).values }.iter().any(|v| crate::core::objects::is_mutable_container(*v)),
-            ValueKind::Object(ObjectKind::Dict) =>
-                unsafe { (*container.as_object().as_dict_ptr()).entries.values() }.any(|v| crate::core::objects::is_mutable_container(*v)),
-            _ => false,
+    pub(super) fn op_dict_rest(&mut self, values_only: bool) -> Result<(), anyhow::Error> {
+        let named = self.read_next() as usize;
+        let start = unsafe { self.stack.top().sub(named) };
+        let keys: Vec<DictKey> = unsafe { std::slice::from_raw_parts(start, named) }.iter().map(|k| DictKey(*k)).collect();
+        let target = self.stack.peek(named);
+
+        if !matches!(target.kind(), ValueKind::Object(ObjectKind::Dict)) {
+            return self.error(format!("A rest pattern needs a dict, but got {}", target.fmt()));
+        }
+
+        let entries: Vec<(DictKey, Value)> = unsafe { &*target.as_object().as_dict_ptr() }.entries.iter()
+            .filter(|(key, _)| !keys.contains(key))
+            .map(|(key, value)| (*key, *value))
+            .collect();
+
+        let built = match values_only {
+            true => {
+                let elements: Vec<Value> = entries.into_iter().map(|(_, value)| value).collect();
+                Value::from(self.alloc_array(&elements))
+            },
+            false => {
+                let map: fnv::FnvHashMap<DictKey, Value> = entries.into_iter().collect();
+                Value::from(self.alloc(ObjDict::new(map)))
+            },
         };
-        if mutable {
-            return self.mutable_in_immutable_error();
-        }
+        self.stack.truncate(named + 1);
+        self.stack.push(built);
         Ok(())
     }
 
-    pub(super) fn op_push_type(&mut self) {
+    pub(super) fn op_push_type(&mut self) -> Result<(), anyhow::Error> {
         let const_idx = self.read_next() as usize;
         let value = self.chunk.constants[const_idx];
-        self.stack.push(value);
+        self.push_checked(value)
     }
 
     pub(super) fn op_load_global(&mut self) -> Result<(), anyhow::Error> {
@@ -465,9 +377,25 @@ impl Vm {
         op_bit_xor            => |a, b| ((a as i64) ^ (b as i64)) as f64, "^";
     }
 
-    value_binop_methods! {
-        op_equal     => |a, b| a.value_eq(b);
-        op_not_equal => |a, b| !a.value_eq(b);
+    pub(super) fn op_equal(&mut self) -> Result<(), anyhow::Error> {
+        self.push_equality(true)
+    }
+
+    pub(super) fn op_not_equal(&mut self) -> Result<(), anyhow::Error> {
+        self.push_equality(false)
+    }
+
+    fn push_equality(&mut self, equal: bool) -> Result<(), anyhow::Error> {
+        let b = self.stack.pop();
+        let a = self.stack.pop();
+        let answer = self.values_equal(a, b) == equal;
+        self.stack.push(Value::from(answer));
+        Ok(())
+    }
+
+    /// What `a == b` answers. No value nests deeper than the number of objects that exist.
+    pub(super) fn values_equal(&self, a: Value, b: Value) -> bool {
+        a.value_eq(b, self.gc.object_count())
     }
 
     unary_op_methods! {
@@ -475,22 +403,21 @@ impl Vm {
         op_bit_not => |v| is_number => !(v.as_number() as i64) as f64;
     }
 
-    fn binary_op_number<F: Fn(f64, f64) -> Value>(&mut self, func: F, token: impl Into<String>) -> Result<(), anyhow::Error> {
+    fn binary_op_number<F: Fn(f64, f64) -> Value>(&mut self, func: F, token: &str) -> Result<(), anyhow::Error> {
         let b = self.stack.pop();
         let a = self.stack.pop();
 
         if !a.is_number() || !b.is_number() {
-            return self.error(format!("Operator '{}' cannot be applied to operands {} and {}", token.into(), a, b));
+            return self.operands_refused(token, a, b);
         }
 
         self.stack.push(func(a.as_number(), b.as_number()));
         Ok(())
     }
 
-    fn binary_op<F: Fn(Value, Value) -> Value>(&mut self, func: F) -> Result<(), anyhow::Error> {
-        let b = self.stack.pop();
-        let a = self.stack.pop();
-        self.stack.push(func(a, b));
-        Ok(())
+    #[cold]
+    #[inline(never)]
+    pub(super) fn operands_refused(&self, token: &str, a: Value, b: Value) -> Result<(), anyhow::Error> {
+        self.error(format!("Operator '{}' cannot be applied to operands {} and {}", token, a, b))
     }
 }

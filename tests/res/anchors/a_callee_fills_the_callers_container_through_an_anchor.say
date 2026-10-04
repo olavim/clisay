@@ -1,0 +1,37 @@
+fn addDefaults(&var config) { config["timeout"] = 30; }
+say var cfg = {};
+say kept = cfg;
+addDefaults(&cfg);
+print(cfg["timeout"]); // expect: 30
+print(kept.containsKey("timeout")); // expect: false
+
+// @split
+fn bump(&var x) { x["n"] = x["n"] + 1; }
+say var a = { n: 0 };
+bump(&a);
+bump(&a);
+print(a["n"]); // expect: 2
+
+// @split
+fn keep(&var bin, x) { &bin.push(x); }
+say var b = [];
+say kept = b;
+keep(&b, [1]);
+print(b.length()); // expect: 1
+print(kept.length()); // expect: 0
+
+// @split
+fn f(&var x) { say var a = [x]; a[0][0] = 5; x[0] = x[0] + 1; }
+say var m = [1];
+f(&m);
+print(m[0]); // expect: 2
+
+// @split
+type Box { pub var v; init(this) { this.v = 0; } }
+fn bump(&var x) { x.v = x.v + 5; }
+say through = bump;
+say var c = Box();
+say kept = c;
+through(&c);
+print(c.v); // expect: 5
+print(kept.v); // expect: 0

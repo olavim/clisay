@@ -5,7 +5,7 @@ use fnv::FnvHashMap;
 #[cfg(debug_assertions)]
 use fnv::FnvHashSet;
 
-use super::objects::{ObjClosure, ObjString, ObjUpvalue, ObjectHeader, ObjectKind, Object, FLAG_MARKED};
+use super::objects::{ObjArray, ObjClosure, ObjInstance, ObjString, ObjType, ObjectHeader, ObjectKind, Object, FLAG_MARKED};
 use super::value::Value;
 
 /// Every heap object is `repr(align(8))`, so a freed block can be reused for any later
@@ -59,13 +59,16 @@ pub struct Gc {
     /// again, so traversing one means `mark` missed the pointer that should have kept it alive.
     #[cfg(debug_assertions)]
     freed_blocks: FnvHashSet<usize>,
-    /// Set by a trace and cleared by the sweep that consumes it. Only in that window do the marks
-    /// say what survived, which is the only window a weak reference may be pruned in.
+    /// Set by a trace and cleared by the sweep that consumes it.
     #[cfg(debug_assertions)]
     traced: bool
 }
 
 impl Gc {
+    pub fn object_count(&self) -> usize {
+        self.refs.len()
+    }
+
     pub fn new() -> Gc {
         Gc {
             refs: Vec::new(),
@@ -110,45 +113,62 @@ impl Gc {
         name: *mut ObjString,
         arity: u8,
         ip_start: usize,
-        upvalues: &[*mut ObjUpvalue],
-        escape_mask: u64,
-        retain_mask: u64,
-        needs_borrow_mark: u64,
-        mut_receiver: bool,
-        retain_receiver: bool,
-        receiver_needs_borrow: bool,
-        param_accepts: u16,
-        slot_accepts: u16
+        count: usize,
+        param_list_pool_id: u16,
+        slot_witness_set_pool_id: u16
     ) -> *mut ObjClosure {
-        let count = upvalues.len();
-        let size = ObjClosure::alloc_size(count);
-        self.bytes_allocated += size;
-
-        let closure_ptr = self.take_block(size) as *mut ObjClosure;
-        unsafe {
-            std::ptr::write(closure_ptr, ObjClosure {
-                header: ObjectHeader::new(ObjectKind::Closure),
-                name,
-                arity,
-                upvalue_count: count as u8,
-                mut_receiver,
-                retain_receiver,
-                ip_start,
-                escape_mask,
-                retain_mask,
-                needs_borrow_mark,
-                receiver_needs_borrow,
-                param_accepts,
-                slot_accepts
-            });
-            std::ptr::copy_nonoverlapping(
-                upvalues.as_ptr(),
-                ObjClosure::upvalues_ptr(closure_ptr),
-                count
-            );
-        }
-        self.refs.push(closure_ptr.into());
+        let closure_ptr = self.alloc_block(ObjClosure {
+            header: ObjectHeader::new(ObjectKind::Closure),
+            name,
+            arity,
+            capture_count: count as u8,
+            ip_start,
+            param_list_pool_id,
+            slot_witness_set_pool_id
+        }, ObjClosure::alloc_size(count));
+        unsafe { std::slice::from_raw_parts_mut(ObjClosure::captures_ptr(closure_ptr), count).fill(Value::unassigned()) };
         closure_ptr
+    }
+
+    /// Allocates an instance of `ty` with its member values stored inline, copied from `members`.
+    pub fn alloc_instance(&mut self, ty: *mut ObjType, members: &[Value]) -> *mut ObjInstance {
+        let instance_ptr = self.alloc_block(ObjInstance {
+            header: ObjectHeader::new(ObjectKind::Instance),
+            member_count: members.len() as u8,
+            hash: 0,
+            ty,
+        }, ObjInstance::alloc_size(members.len()));
+        unsafe { ObjInstance::values_mut(instance_ptr).copy_from_slice(members) };
+        instance_ptr
+    }
+
+    /// Allocates an array holding a copy of `elements`.
+    pub fn alloc_array(&mut self, elements: &[Value], capacity: usize) -> *mut ObjArray {
+        debug_assert!(capacity >= elements.len(), "tried to allocate array with less capacity than elements");
+        let array_ptr = self.alloc_block(ObjArray {
+            header: ObjectHeader::new(ObjectKind::Array),
+            hash: 0,
+            data: std::ptr::null_mut(),
+            len: elements.len() as u32,
+            capacity: capacity as u32,
+            inline_capacity: capacity as u32,
+        }, ObjArray::alloc_size(capacity));
+        unsafe {
+            (*array_ptr).data = ObjArray::inline_ptr(array_ptr);
+            ObjArray::elements_mut(array_ptr).copy_from_slice(elements);
+        }
+        array_ptr
+    }
+
+    /// Writes `head` at the start of a `size`-byte block and registers it.
+    fn alloc_block<T>(&mut self, head: T, size: usize) -> *mut T
+        where *mut T: Into<Object>
+    {
+        self.bytes_allocated += size;
+        let ptr = self.take_block(size) as *mut T;
+        unsafe { std::ptr::write(ptr, head) };
+        self.refs.push(ptr.into());
+        ptr
     }
 
     /// Returns a block of `size` bytes, reusing a recycled one if available.
@@ -183,7 +203,7 @@ impl Gc {
         self.assert_not_freed(obj);
         unsafe {
             if !(*obj.as_header_ptr()).has(FLAG_MARKED) {
-                (*obj.as_header_ptr()).set(FLAG_MARKED, true);
+                (*obj.as_header_ptr()).set(FLAG_MARKED);
                 self.reachable_refs.push(obj);
             }
         }
@@ -204,34 +224,16 @@ impl Gc {
         { self.traced = true; }
     }
 
-    #[cfg(debug_assertions)]
-    pub fn marks_valid(&self) -> bool {
-        self.traced
-    }
-
     /// Frees whatever the trace did not reach.
     pub fn sweep(&mut self) {
         #[cfg(debug_assertions)]
         assert!(self.traced, "a sweep with no trace before it reads marks from the last cycle");
-        self.prune_container_write_owners();
         self.sweep_strings();
         self.sweep_objects();
         // Scale the next threshold to the surviving live set, so collection frequency tracks live size.
         self.next_gc = self.bytes_allocated.saturating_mul(GC_GROW_FACTOR).max(INITIAL_GC_THRESHOLD);
         #[cfg(debug_assertions)]
         { self.traced = false; }
-    }
-
-    /// Drops the owner links this collection invalidates. An owner is weak, so an element that
-    /// outlives the container it was stored into is nobody's element again. Runs before the sweep,
-    /// while the marks still say what survived.
-    fn prune_container_write_owners(&mut self) {
-        for obj in &self.refs {
-            let owner = obj.container_write_owner();
-            if owner.is_object() && !owner.as_object().is_marked() {
-                obj.set_container_write_owner(Value::NULL);
-            }
-        }
     }
 
     fn sweep_strings(&mut self) {
@@ -245,7 +247,7 @@ impl Gc {
             let obj = self.refs[i];
             unsafe {
                 if (*obj.as_header_ptr()).has(FLAG_MARKED) {
-                    (*obj.as_header_ptr()).set(FLAG_MARKED, false);
+                    (*obj.as_header_ptr()).clear(FLAG_MARKED);
                     live += obj.size();
                 } else {
                     self.free(i);

@@ -1,0 +1,15 @@
+type C { pub var n = 0; pub fn bump(&var this) { this.n += 1; } }
+say var c: opt = C{n: 0};
+&c?.bump();
+print(c?.n); // expect: 1
+
+// @split
+type C { pub var n = 0; }
+fn bump(&var n) { n += 1; }
+say var c: opt = C{n: 0};
+bump(&c?.n); // error: An anchor cannot be formed through `?`
+
+// @split
+type C { pub var n = 0; }
+say var c: opt = C{n: 0};
+say var n = &c?.n; // error: An anchor cannot be formed through `?`

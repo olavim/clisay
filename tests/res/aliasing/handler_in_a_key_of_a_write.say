@@ -1,0 +1,21 @@
+say var s = [[0, 0]];
+say v = (s[Err("k") ?? e => 0][0] = 5);
+print(v); // expect: 5
+print(s[0][0]); // expect: 5
+
+say sink = Ref([[0, 0]]);
+@sink[Err("n") ?? e => 0][1] = 6;
+print(@sink[0][1]); // expect: 6
+
+// @split
+say log = Ref("");
+say var s = [[0, 0, 0, 0, 0]];
+say var other = [[0]];
+fn first() { @log = @log + "first "; return 0; }
+fn second() { @log = @log + "second "; return 3; }
+
+say v = (s[first()][(other[0][0] = second()) + (Err("z") ?? e => 1)] = 8);
+print(v); // expect: 8
+print(@log); // expect: first second 
+print(s[0][4]); // expect: 8
+print(other[0][0]); // expect: 3

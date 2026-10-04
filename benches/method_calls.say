@@ -3,14 +3,14 @@ type Counter {
     init(this) {
         this.n = 0;
     }
-    pub fn inc(mut this) {
+    pub fn inc(&var this) {
         this.n = this.n + 1;
     }
 }
 
-say c = mut Counter();
+say var c = Counter();
 say var i = 0;
 while i < 500000 {
-    c.inc();
+    &c.inc();
     i = i + 1;
 }

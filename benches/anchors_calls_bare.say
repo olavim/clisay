@@ -1,0 +1,13 @@
+fn bump(&var n) { n = n + 1; }
+say var w = 0;
+say var x = 0;
+say var y = 0;
+say var z = 0;
+say var i = 0;
+while i < 200000 {
+    bump(&w);
+    bump(&x);
+    bump(&y);
+    bump(&z);
+    i = i + 1;
+}

@@ -1,0 +1,4 @@
+say var xs = [1];
+say var s = 0;
+say var i = 0;
+while i < 500000 { s = xs[0]; i = i + 1; }

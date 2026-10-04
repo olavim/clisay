@@ -23,7 +23,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     pub(super) fn parse_fn_decl(&mut self, name: Symbol, name_pos: SourcePosition) -> Result<FnDecl, anyhow::Error> {
         self.tokens.expect(TokenType::LeftParen)?;
         let (receiver, params) = self.parse_params(TokenType::RightParen)?;
-        let ret = self.parse_return_shape();
         let clause = self.parse_slot_clause(SlotKind::Return)?;
         let sig_pos = name_pos.to(&self.tokens.previous().pos);
         let body = self.parse_block()?;
@@ -33,7 +32,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             receiver,
             params,
             body,
-            ret,
             clause,
         })
     }
@@ -62,97 +60,65 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             receiver,
             params,
             body,
-            ret: ReturnShape::Void,
             clause: SlotClause::default()
         };
         Ok(self.node_stmt(Stmt::Fn(fn_decl), pos))
     }
 
+    /// params := (receiver | param) ("," (receiver | param))* ","?
     pub(super) fn parse_params(&mut self, end_token: TokenType) -> Result<(Option<Receiver>, Vec<Param>), anyhow::Error> {
-        if self.tokens.next_if(end_token).is_some() {
-            return Ok((None, Vec::new()));
-        }
-
-        let receiver = self.parse_receiver()?;
-        if receiver.is_some() && !self.tokens.matches(end_token) {
-            self.tokens.expect(TokenType::Comma)?;
-        }
-
+        let mut receiver = None;
         let mut params = Vec::new();
         while !self.tokens.matches(end_token) {
-            // A `this` further along still spells the receiver, so point at where it belongs.
-            if self.at_receiver() {
-                let pos = self.tokens.peek(0).pos.clone();
-                let msg = if receiver.is_some() { "Repeated 'this' parameter" } else { "'this' must be the first parameter" };
-                return Err(self.error_help(msg, &pos, "a method declares its receiver once, ahead of the other parameters"));
+            let start = self.tokens.peek(0).pos.clone();
+            let anchor = self.tokens.next_if(TokenType::Amp).is_some();
+            let reassignable = self.take_modifier(ContextualKeyword::Var);
+            match self.tokens.next_if(TokenType::This) {
+                Some(_) => {
+                    if receiver.is_some() || !params.is_empty() {
+                        let msg = if receiver.is_some() { "Repeated 'this' parameter" } else { "'this' must be the first parameter" };
+                        return Err(self.error_help(msg, &start, "a method declares its receiver once, ahead of the other parameters"));
+                    }
+                    let clause = self.parse_slot_clause(SlotKind::Receiver)?;
+                    let pos = start.to(&self.tokens.previous().pos);
+                    if anchor && !reassignable {
+                        return Err(self.error_help("Invalid read-only anchor parameter", &pos,
+                            "A parameter cannot be declared as a read-only anchor. Declare it `&var this` to mutate the original value, or `this` to take a read-only copy."));
+                    }
+                    receiver = Some(Receiver { pos, clause, reassignable, anchor });
+                },
+                None => params.push(self.finish_param(start, anchor, reassignable)?),
             }
-            params.push(self.parse_param()?);
-            if self.tokens.next_if(TokenType::Comma).is_none() {
-                break;
+
+            if !self.tokens.matches(end_token) {
+                self.tokens.expect(TokenType::Comma)?;
             }
         }
         self.tokens.expect(end_token)?;
         Ok((receiver, params))
     }
 
-    /// receiver := "this" (":" clause)?
-    fn parse_receiver(&mut self) -> Result<Option<Receiver>, anyhow::Error> {
-        let start = self.tokens.peek(0).pos.clone();
-        if !self.at_receiver() {
-            return Ok(None);
-        }
-        let prefix = self.parse_capability_prefix();
-        self.tokens.expect(TokenType::This)?;
-        let mut clause = self.parse_slot_clause(SlotKind::Receiver)?;
-        clause.capability = prefix;
-        let pos = start.to(&self.tokens.previous().pos);
-        Ok(Some(Receiver { pos, clause }))
-    }
-
-    fn at_receiver(&self) -> bool {
-        let mut ahead = 0;
-        if matches!(self.tokens.peek(ahead).kind, TokenType::StarMut | TokenType::Multiply) {
-            ahead += 1;
-        }
-        if self.tokens.peek(ahead).contextual() == Some(ContextualKeyword::Mut) {
-            ahead += 1;
-        }
-        self.tokens.peek(ahead).kind == TokenType::This
-    }
-
-    fn parse_capability_prefix(&mut self) -> Capability {
-        if self.tokens.next_if(TokenType::StarMut).is_some() {
-            return Capability::MoveMut;
-        }
-        let takes = self.tokens.next_if(TokenType::Multiply).is_some();
-        let writes = self.take_modifier(ContextualKeyword::Mut);
-        match (takes, writes) {
-            (true, true) => Capability::MoveMut,
-            (true, false) => Capability::Move,
-            (false, true) => Capability::Mut,
-            (false, false) => Capability::None,
-        }
-    }
-
-    fn pattern_takes_prefix(&self, pattern: &AstId<Matcher>) -> bool {
-        !matches!(self.ast.get(pattern), Matcher::As(..) | Matcher::Or(_) | Matcher::And(_))
-    }
-
-    /// param := pattern (":" clause)?
+    /// param := "var"? pattern (":" clause)?
     pub(super) fn parse_param(&mut self) -> Result<Param, anyhow::Error> {
         let start = self.tokens.peek(0).pos.clone();
-        let prefix = self.parse_capability_prefix();
-        // A group settles what the marker covers, so its contents need no further judging.
-        let grouped = self.tokens.matches(TokenType::LeftParen);
+        let anchor = self.tokens.next_if(TokenType::Amp).is_some();
+        let reassignable = self.take_modifier(ContextualKeyword::Var);
+        self.finish_param(start, anchor, reassignable)
+    }
+
+    fn finish_param(&mut self, start: SourcePosition, anchor: bool, reassignable: bool) -> Result<Param, anyhow::Error> {
         let pattern = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
-        if prefix != Capability::None && !grouped && !self.pattern_takes_prefix(&pattern) {
-            return Err(self.error_help("A capability ahead of a combinator needs the pattern grouped", &start,
-                "group it so the marker cannot read as part of the pattern, as in `*(p @ Node | null)`"));
-        }
-        let nullable = self.parse_nullable();
-        let mut clause = self.parse_slot_clause(SlotKind::Param)?;
-        clause.capability = prefix;
+        let clause = self.parse_slot_clause(SlotKind::Param)?;
         let pos = start.to(&self.tokens.previous().pos);
-        Ok(Param { pattern, pos, nullable, reassignable: false, clause })
+        if anchor && !matches!(self.ast.get(&pattern), Matcher::Binder(_)) {
+            return Err(self.error("An anchor parameter names one binding, so it takes no pattern", &pos));
+        }
+        if anchor && !reassignable {
+            let Matcher::Binder(name) = self.ast.get(&pattern) else { unreachable!("an anchor parameter is a binder") };
+            let name = self.ast.text(*name).to_string();
+            return Err(self.error_help("Invalid read-only anchor parameter", &pos,
+                format!("A parameter cannot be declared as a read-only anchor. Declare it `&var {name}` to mutate the original value, or `{name}` to take a read-only copy.")));
+        }
+        Ok(Param { anchor, pattern, pos, reassignable, clause })
     }
 }

@@ -1,0 +1,23 @@
+type Log {
+    pub var items = [];
+    pub fn add(&var this, x) { &this.items.push(x); }
+}
+say var log = Log{items: []};
+&log.add(1);
+gcCollect();
+say before = gcHeapSize();
+say kept = [log];
+gcCollect();
+print(gcHeapSize() - before); // expect: 40
+
+// @split
+type Log {
+    pub var items = [];
+}
+say var log = Log{items: []};
+say var p = &log.items;
+gcCollect();
+say before = gcHeapSize();
+say kept = [log];
+gcCollect();
+print(gcHeapSize() - before); // expect: 72

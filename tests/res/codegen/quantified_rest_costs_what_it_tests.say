@@ -1,0 +1,81 @@
+say d = [1];
+if (d ~ [..x @ _ | null]) { }
+// expect asm:
+// 0: PUSH_CONSTANT 1
+// 2: ARRAY <1>
+// 4: STORE_LOCAL_FRESH L0
+// 6: PUSH_NULL
+// 7: LOAD_LOCAL L0
+// 9: DUP
+// 10: ARRAY_LEN
+// 11: PUSH_CONSTANT 0
+// 13: JUMP_IF_LT <25>
+// 16: ARRAY_MIDDLE <0> <0>
+// 19: STORE_LOCAL_POP L1
+// 21: PUSH_TRUE
+// 22: JUMP <27>
+// 25: POP
+// 26: PUSH_FALSE
+// 27: JUMP_IF_FALSE <30>
+// 30: POP_SCOPE <1> <2>
+// 33: POP_SCOPE <1> <1>
+// 36: PUSH_NULL
+// 37: HALT
+
+// @split
+type N { }
+say d = [1];
+if (d ~ [..x @ N]) { }
+// expect asm:
+// 0: PUSH_UNASSIGNED
+// 1: JUMP <7>
+// 4: LOAD_LOCAL L0
+// 6: RETURN_FAC
+// 7: PUSH_TYPE <type N>
+// 9: STORE_LOCAL L0
+// 11: POP
+// 12: PUSH_CONSTANT 1
+// 14: ARRAY <1>
+// 16: STORE_LOCAL_FRESH L1
+// 18: PUSH_NULL
+// 19: LOAD_LOCAL L1
+// 21: DUP
+// 22: ARRAY_LEN
+// 23: PUSH_CONSTANT 0
+// 25: JUMP_IF_LT <78>
+// 28: DUP
+// 29: ARRAY_MIDDLE <0> <0>
+// 32: STORE_LOCAL_POP L2
+// 34: PUSH_TRUE
+// 35: JUMP_IF_FALSE <78>
+// 38: ARRAY_MIDDLE <0> <0>
+// 41: PUSH_CONSTANT 0
+// 43: DUP2
+// 44: POP
+// 45: ARRAY_LEN
+// 46: DUP2
+// 47: JUMP_IF_GE <65>
+// 50: POP
+// 51: DUP2
+// 52: GET_INDEX
+// 53: IS <type 0>
+// 56: JUMP_IF_FALSE <72>
+// 59: PUSH_CONSTANT 1
+// 61: ADD
+// 62: JUMP <43>
+// 65: POP
+// 66: POP
+// 67: POP
+// 68: PUSH_TRUE
+// 69: JUMP <75>
+// 72: POP
+// 73: POP
+// 74: PUSH_FALSE
+// 75: JUMP <80>
+// 78: POP
+// 79: PUSH_FALSE
+// 80: JUMP_IF_FALSE <83>
+// 83: POP_SCOPE <1> <3>
+// 86: POP_SCOPE <2> <2>
+// 89: PUSH_NULL
+// 90: HALT

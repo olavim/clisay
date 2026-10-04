@@ -1,4 +1,3 @@
-// A binding `~` in a guard publishes its binders to the arm body; a non-matching guard falls through.
 fn classify(v) {
     match v {
         { payload } if payload ~ { dx, dy } => { print(dx); print(dy); },

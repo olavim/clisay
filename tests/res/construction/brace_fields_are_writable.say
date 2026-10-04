@@ -1,0 +1,4 @@
+type Box { pub var items; }
+say var b = Box{items: [0]};
+b.items[0] = 5;
+print(b.items[0]); // expect: 5

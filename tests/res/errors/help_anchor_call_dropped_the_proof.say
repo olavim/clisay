@@ -1,0 +1,14 @@
+fn wipe(&var d: opt) { d = null; }
+say var x: opt = 5;
+if (x != null) {
+    wipe(&x);
+    say y = x;
+}
+// error(full):
+// error: Cannot assign a nullable value to non-null binding 'y'
+//  --> help_anchor_call_dropped_the_proof.say:5:13
+//   |
+// 4 |     wipe(&x);
+// 5 |     say y = x;
+//   |             ^
+//   = help: `wipe(&x)` dropped what was proved about `x`; check it again after the call

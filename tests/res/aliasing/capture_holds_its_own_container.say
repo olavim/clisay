@@ -1,0 +1,30 @@
+fn wrap(c) { return () => c[0][0]; }
+say var a = [[0]];
+say var f: opt = null;
+{ say var c = []; &c.push(a[0]); f = wrap(c); }
+a[0][0] = 1;
+print(f!()); // expect: 0
+print(a[0][0]); // expect: 1
+
+// @split
+fn wrap(c) { return () => () => c[0][0]; }
+say var a = [[0]];
+say var f: opt = null;
+{ say var c = []; &c.push(a[0]); f = wrap(c); }
+a[0][0] = 1;
+print(f!()()); // expect: 0
+
+// @split
+say sink = Ref([]);
+fn wrap(c) { sink.mutate((&var list) => { &list.push(() => c[0][0]); }); }
+say var a = [[0]];
+{ say var c = []; &c.push(a[0]); wrap(c); }
+a[0][0] = 1;
+print(@sink[0]()); // expect: 0
+
+// @split
+fn wrap(c) { return () => c.length(); }
+say var a = [[0]];
+{ say var c = []; &c.push(a[0]); wrap(c); }
+a[0][0] = 1;
+print(a[0][0]); // expect: 1

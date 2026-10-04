@@ -1,0 +1,86 @@
+say var g = [[0]];
+fn one() { return g; }
+say var a = one()[0];
+say var b = one()[0];
+a[0] = 1;
+b[0] = 2;
+print(a[0]); // expect: 1
+print(b[0]); // expect: 2
+print(g[0][0]); // expect: 0
+
+// @split
+say var g = [[[0]]];
+say var a = g[0][0];
+say var b = g[0][0];
+a[0] = 1;
+b[0] = 2;
+print(g[0][0][0]); // expect: 0
+
+// @split
+say var g = [[0]];
+fn one() { return g; }
+say var a = (one() ?? e => [[0]])[0];
+say var b = (one() ?? e => [[0]])[0];
+a[0] = 1;
+b[0] = 2;
+print(g[0][0]); // expect: 0
+
+// @split
+type C {
+    pub var v;
+    init(this) { this.v = 0; }
+    pub fn go(var this) {
+        say var p = this;
+        p.v = 1;
+        this.v = 2;
+        return p.v;
+    }
+}
+say c = C();
+print(c.go()); // expect: 1
+print(c.v); // expect: 0
+
+// @split
+say var a = [0];
+say var b = [0];
+a[0] = 1;
+b[0] = 2;
+print(a[0]); // expect: 1
+print(b[0]); // expect: 2
+
+// @split
+type C { pub var v; init(this) { this.v = 0; } }
+say var a = C();
+say var b = C();
+a.v = 1;
+b.v = 2;
+print(a.v); // expect: 1
+print(b.v); // expect: 2
+
+// @split
+say a = [[0], [0]];
+say var p = a[0];
+say var q = a[1];
+p[0] = 1;
+q[0] = 2;
+print(a[0][0]); // expect: 0
+print(a[1][0]); // expect: 0
+
+// @split
+say a = [[0]];
+say var p = a[0];
+p[0] = 1;
+p[0] = 2;
+p[0] = 3;
+print(p[0]); // expect: 3
+print(a[0][0]); // expect: 0
+
+// @split
+type C {
+    pub var v;
+    init(this) { this.v = 0; }
+    pub fn go(var this) { this.v = 1; this.v = 2; }
+}
+say c = C();
+c.go();
+print(c.v); // expect: 0

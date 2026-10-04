@@ -1,0 +1,26 @@
+say kept = Ref([]);
+fn stash(c) { @kept = c; }
+fn run(g, c) { g(c); }
+say var a = [[0]];
+{ say var c = []; &c.push(a[0]); run(stash, c); }
+a[0][0] = 1;
+print(@kept[0][0]); // expect: 0
+print(a[0][0]); // expect: 1
+
+// @split
+fn id(c) { return c; }
+fn run(g, c) { return g(c); }
+say var a = [[0]];
+say var kept: opt = null;
+{ say var c = []; &c.push(a[0]); kept = run(id, c); }
+a[0][0] = 1;
+print(kept![0][0]); // expect: 0
+print(a[0][0]); // expect: 1
+
+// @split
+fn ignore(c) { }
+fn run(g, c) { g(c); }
+say var a = [[0]];
+{ say var c = []; &c.push(a[0]); run(ignore, c); }
+a[0][0] = 1;
+print(a[0][0]); // expect: 1

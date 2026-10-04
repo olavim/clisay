@@ -1,6 +1,3 @@
-// A type declared inside a block becomes unreachable once the block exits.
-// After collection the heap must return to the pre-block baseline, proving
-// ObjType (and its method/field graph) is actually freed.
 
 say bytesStart = gcHeapSize();
 
@@ -12,10 +9,10 @@ say bytesStart = gcHeapSize();
             this.a = "a";
             this.b = "b";
         }
-        pub fn first(this)! {
+        pub fn first(this) {
             return this.a;
         }
-        pub fn second(this)! {
+        pub fn second(this) {
             return this.b;
         }
     }

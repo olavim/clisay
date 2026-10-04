@@ -1,4 +1,4 @@
-say d = mut { k: 0 };
+say var d = { k: 0 };
 say s = "x";
 say var i = 0;
 say var sum = 0;

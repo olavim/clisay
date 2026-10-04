@@ -1,0 +1,36 @@
+fn f(x) { throw { "k": x }; }
+say m = [1];
+try { f(m); } catch (e) { print("caught"); } // expect: caught
+
+// @split
+fn f(x) { say var a = []; &a.push(x); throw a; }
+say m = [1];
+try { f(m); } catch (e) { print("caught"); } // expect: caught
+
+// @split
+fn f(x) { throw [[[x]]]; }
+say m = [1];
+try { f(m); } catch (e) { print("caught"); } // expect: caught
+
+// @split
+fn f(x) { say a = [x]; throw () => a[0][0]; }
+say m = [1];
+try { f(m); } catch (e) { print("caught"); } // expect: caught
+
+// @split
+fn f(x) { say a = [1, x, 3]; if (a ~ [first, ..mid, last]) { throw mid; } }
+say m = [9];
+try { f(m); } catch (e) { print("caught"); } // expect: caught
+
+// @split
+fn f(x) { say a = [x, 2, 3]; if (a ~ [first, ..mid, last]) { throw mid; } }
+say m = [9];
+try { f(m); } catch (e) { print("caught"); } // expect: caught
+
+// @split
+fn keep(x) { return [x]; }
+say m = [1];
+say var held = keep(m);
+held[0][0] = 9;
+print(held[0][0]); // expect: 9
+print(m[0]); // expect: 1

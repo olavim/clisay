@@ -1,18 +1,14 @@
-// A shape key is any scalar literal, matching dict literals. Non-string keys match dicts only.
 say n = { 1: 10, 2: 20, true: 99 };
 
-// number and bool keys, as a presence test
 print(n has { 1: _ });      // expect: true
 print(n has { 3: _ });      // expect: false
 print(n has { true: _ });   // expect: true
 
-// number keys in a value match and a multi-key shape
 print(n has { 1: 10 });     // expect: true
 print(n has { 1: 99 });     // expect: false
 print(n has { 1: _, 2: _ });// expect: true
 
-// an instance has only string-named members, so a non-string key is always absent
-type T { pub var x?; }
+type T { pub var x: opt; }
 say t = T();
 print(t has { 1: _ });      // expect: false
 print(t has { 1: 2 });      // expect: false

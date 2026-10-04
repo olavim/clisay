@@ -1,0 +1,51 @@
+fn clear(&var x: opt) { x = null; }
+say var s: opt = 1;
+clear(&s);
+print(s); // expect: null
+
+// @split
+obligation pinned { no persist; }
+fn keep(&var x: pinned) { } // error: An anchor parameter cannot owe 'pinned'
+
+// @split
+obligation pinned { no persist; }
+type T {
+    pub var n = 0;
+    pub fn keep(&var this: pinned) { } // error: An anchor receiver cannot owe 'pinned'
+}
+
+// @split
+obligation pinned { no persist; }
+type T {
+    pub var n = 0;
+    pub fn read(this: pinned) { return this.n; }
+}
+print(T().read()); // expect: 0
+
+// @split
+obligation tag { no return; }
+fn f(&var x) { }
+say var s: tag = 0;
+f(&s); // error: Cannot anchor `s`; it owes 'tag', which has no witness
+
+// @split
+obligation tag { no return; }
+type T { pub var n = 0; pub fn m(var this: tag) { g(&this); } } // error: Cannot anchor `this`; it owes 'tag', which has no witness
+fn g(&var x) { }
+
+// @split
+obligation tag { no return; }
+type B { pub var v: tag = 0; }
+fn f(&var x) { }
+fn pick() { return f; }
+say var b = B();
+pick()(&b.v); // error: Cannot anchor field `B.v`; it owes an obligation without a witness
+
+// @split
+obligation tag { no return; }
+type B { pub var v: tag = 0; pub var w = 0; }
+fn f(&var x) { x = 1; }
+fn pick() { return f; }
+say var b = B();
+pick()(&b.w);
+print(b.w); // expect: 1

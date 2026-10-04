@@ -1,0 +1,24 @@
+fn keep(c) { return c; }
+fn run(g, c) { return g(c); }
+say a = [[0]];
+say var w = run(keep, a[0]);
+w[0] = 3;
+print(w[0]); // expect: 3
+
+// @split
+fn keep(c) { return c; }
+fn run(g, c) { return g(c); }
+say var a = [[0]];
+say var w = run(keep, a[0]);
+w[0] = 3;
+a[0][0] = 9;
+print(w[0]); // expect: 3
+print(a[0][0]); // expect: 9
+
+// @split
+fn drop(c) { }
+fn run(g, c) { g(c); }
+say var a = [[0]];
+run(drop, a[0]);
+a[0][0] = 9;
+print(a[0][0]); // expect: 9

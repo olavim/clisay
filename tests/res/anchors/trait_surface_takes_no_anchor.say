@@ -1,0 +1,18 @@
+trait B {
+    req fn bump(this, n);
+    pub fn go(this) { return this.bump(1); }
+}
+type C with B {
+    pub fn bump(this, n) { return n + 1; }
+}
+
+print(C{}.go()); // expect: 2
+
+// @split
+trait B { req fn bump(this, &var n); } // error: A `req fn` cannot require an anchor parameter
+
+// @split
+trait B { req fn bump(this, n); }
+type C with B {
+    pub fn bump(this, &var n) { n = n + 1; } // error: parameter takes an anchor where the trait declares a value
+}

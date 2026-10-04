@@ -1,0 +1,18 @@
+type Box { pub data; init(this, data) { this.data = data; } }
+fn peek(Box { data }) { data[0] = 2; }
+peek(Box([1]));
+// error(full):
+// error: Cannot write through pattern binding `data`
+//  --> help_pattern_parameter_takes_var.say:2:25
+//   |
+// 1 | type Box { pub data; init(this, data) { this.data = data; } }
+// 2 | fn peek(Box { data }) { data[0] = 2; }
+//   |                         ^^^^^^^
+//   = help: declare the parameter with `var`, which reaches every name its pattern binds
+
+// @split
+type Box { pub data; init(this, data) { this.data = data; } }
+fn peek(var Box { data }) { data[0] = 2; print(data[0]); }
+say b = Box([1]);
+peek(b); // expect: 2
+print(b.data[0]); // expect: 1

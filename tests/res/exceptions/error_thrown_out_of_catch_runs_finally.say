@@ -1,0 +1,15 @@
+fn boom() { throw "boom"; }
+fn f() {
+    try { throw "a"; } catch (e) { boom(); } finally { print("finally"); } // expect: finally
+}
+try { f(); } catch (e) { print(e); } // expect: boom
+
+// @split
+fn f() {
+    try { throw "a"; } catch (e) { print(e); } finally { print("finally"); }
+    print("after");
+}
+f();
+// expect: a
+// expect: finally
+// expect: after

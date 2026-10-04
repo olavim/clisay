@@ -1,0 +1,9 @@
+fn f() {
+// error(full):
+// error: Unexpected token: Expected '}' but found '<EOF>'
+//  --> unclosed_program_blames_the_program.say:10:1
+//    |
+//  1 | fn f() {
+//    |        ^ unclosed '{'
+// 10 | 
+//    | ^ expected '}'

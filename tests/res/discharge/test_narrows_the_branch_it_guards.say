@@ -1,0 +1,21 @@
+type T { }
+fn f(): fails { return Err("e"); }
+say x: fails = f();
+say y = T { };
+if (x == y) { say z = x; print("clean"); }
+else { print(x ?? "handled"); } // expect: handled
+print("end"); // expect: end
+
+// @split
+fn f(): fails { return Err("e"); }
+say x: fails = f();
+if (x == 5) { say z = x; print("five"); }
+else { print(x ?? "handled"); } // expect: handled
+print("end"); // expect: end
+
+// @split
+fn f(): fails { return Err("e"); }
+say x: fails = f();
+if (x ~ Err) { print(x ?? "a"); } // expect: a
+else { print(x ?? "b"); }
+print("end"); // expect: end

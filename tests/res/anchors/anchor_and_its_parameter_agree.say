@@ -1,0 +1,41 @@
+fn f(&var x) { x = 1; }
+
+say var a = 0;
+f(&a);
+print(a); // expect: 1
+
+// @split
+fn f(&var x) { x = 1; }
+
+say var a = 0;
+f(a); // error: This parameter takes an anchor
+
+// @split
+fn leak(x) { return x; }
+
+say var a = 0;
+leak(&a); // error: This parameter does not take an anchor
+
+// @split
+trait Powered { pub fn bump(this, &var n) { n = n + 1; } }
+type Engine with Powered { pub var e = 0; init(this) {} }
+type Car { pub engine gives Powered; init(this) { this.engine = Engine(); } }
+
+say var c = Car();
+say var x = 1;
+c.bump(&x);
+print(x); // expect: 2
+
+// @split
+fn keep(x) { return x; }
+fn apply(g, &var n) { return g(&n); } // error: this parameter does not take an anchor
+
+say var a = 1;
+apply(keep, &a);
+
+// @split
+fn needsAnchor(&var x) { x = 9; }
+fn apply(g, v) { return g(v); } // error: a `&var` parameter takes an anchor
+
+say var a = 1;
+apply(needsAnchor, a);

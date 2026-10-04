@@ -1,0 +1,32 @@
+say d = {"a": 1};
+print(d.size()); // expect: 1
+say xs = [1, 2];
+print(xs.length()); // expect: 2
+
+// @split
+say xs = [1, 2];
+print(xs.size()); // error: Array doesn't have member "size"
+
+// @split
+say d = {"a": 1};
+print(d.length()); // error: Dict doesn't have member "length"
+
+// @split
+say s = "abc";
+print(s.length()); // error: String doesn't have member "length"
+
+// @split
+say d = {"f": () => "called"};
+print(d["f"]()); // expect: called
+
+// @split
+say s = "abc";
+print(s["x"]); // error: String doesn't have member "x"
+
+// @split
+say xs = [1, 2];
+print(xs["length"]()); // expect: 2
+
+// @split
+say xs = [1, 2];
+print(xs["size"]()); // error: Array doesn't have member "size"

@@ -1,142 +1,224 @@
-//! Trait-contract shape: override return conformance and `req fn` variance.
+//! Trait-contract shape: what a type or trait owes the traits it mixes.
 
 use anyhow::anyhow;
 
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 use crate::middle::diagnose::Diagnose;
-use crate::middle::hir::{HirId, HirLiteral, HirMatchElem, HirMatchField, HirMatcher, HirParam, HirReqMember, HirStmt, HirTypeDecl, Symbol, SYNTHETIC_PARAM};
-use crate::middle::signatures::{Mutability, RetSig};
-use crate::middle::obligations::Obligations;
+use crate::middle::hir::{same_scalar, HirId, HirMatchElem, HirMatchField, HirMatcher, HirParam, HirReqFn, HirReqMember, HirReqParam, HirStmt, HirTypeDecl, Symbol, SYNTHETIC_PARAM};
+use crate::middle::signatures::RetSig;
+use crate::middle::obligations::{quoted_obligation_list, Obligations};
 
 use super::Shape;
 
-/// What a parameter pattern lets through, as far as this pass can name it.
+#[derive(Clone, Copy)]
+enum SatisfierKind { Member, Requirement }
+
+impl SatisfierKind {
+    fn returns_owing(self) -> &'static str {
+        match self {
+            SatisfierKind::Member => "returns a value owing",
+            SatisfierKind::Requirement => "requires a return owing",
+        }
+    }
+}
+
+/// A method or `req fn` judged against a `req fn`.
+struct SatisfyingFn<'p> {
+    kind: SatisfierKind,
+    pos: &'p SourcePosition,
+    anchor_receiver_pos: Option<&'p SourcePosition>,
+    ret_owed: Obligations,
+    /// `Owner.member`.
+    owner: String,
+    params: Vec<SatisfyingParam<'p>>,
+}
+
+/// A parameter judged against a `req fn` parameter.
+struct SatisfyingParam<'p> {
+    pos: &'p SourcePosition,
+    name_pos: &'p SourcePosition,
+    anchor: bool,
+    pattern: Option<&'p HirId<HirMatcher>>,
+    /// Absent where no clause was collected for the parameter, which asks nothing of it.
+    owed: Option<Obligations>,
+    /// `Owner.member`.
+    owner: String,
+    /// How a label names the parameter itself.
+    subject: String,
+}
+
 impl<'a> Shape<'a> {
-    /// A member overriding a trait method may return non-null where the trait method is nullable,
-    /// but not the reverse.
-    pub(super) fn check_method_overrides(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+    pub(super) fn check_type_override_returns(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         for method in &decl.methods {
             let HirStmt::Fn(folded) = self.hir.get(method) else { continue };
-            // A trait method the host overrides is folded under a `"Trait.method"` alias.
             let Some((trait_name, base)) = split_trait_alias(self.hir.text(folded.name)) else { continue };
             let Some(base_sym) = self.hir.symbol_of(base) else { continue };
-            // A renamed private slot is also dotted. Only an exposed override is a contract.
+
             if !decl.pub_members.contains(&base_sym) {
                 continue;
             }
+
             let host = decl.methods.iter().copied().find(|s| matches!(self.hir.get(s), HirStmt::Fn(h) if h.name == base_sym));
             let (Some(host), Some(trait_ret)) = (host, self.sigs.fn_sig_of(method).map(|f| &f.ret)) else { continue };
             let Some(host_ret) = self.sigs.fn_sig_of(&host).map(|f| &f.ret) else { continue };
+
             if !self.ret_conforms(host_ret, trait_ret) {
                 return Err(self.error_labeled("override is more nullable than the trait allows".to_string(),
                     &host, format!("`{base}` may return null where trait '{trait_name}' declares non-null")));
+            }
+
+            let extra: Obligations = host_ret.obligations.iter().copied()
+                .filter(|o| *o != self.sigs.opt && !trait_ret.obligations.contains(o))
+                .collect();
+            if !extra.is_empty() {
+                let owed = quoted_obligation_list(self.hir, &extra);
+                return Err(self.error_labeled(format!("override owes {owed} where the trait does not"),
+                    &host, format!("a caller holding trait '{trait_name}' expects `{base}` not to owe {owed}")));
             }
         }
         Ok(())
     }
 
-    /// Checks obligation variance where a `req fn` hole is satisfied. A satisfier's return may
-    /// promise fewer obligations than the hole. Its parameters must accept at least what the hole
-    /// passes.
-    pub(super) fn check_req_conformance(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+    pub(super) fn check_type_satisfies_req_fns(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         for req in &decl.req_fns {
-            let Some(method) = self.satisfying_method(decl, req.name) else { continue };
-            let (Some(sig), HirStmt::Fn(sat)) = (self.sigs.fn_sig_of(&method), self.hir.get(&method)) else { continue };
-            let name = self.hir.text(req.name);
-            let type_name = self.hir.text(decl.name);
-            let trait_name = self.hir.text(req.trait_name);
-
-            if req.ret.container != sat.clause.container {
-                let (mine, theirs) = shape_words(req.ret.container);
-                return Err(self.error_ctx("return shape does not match the trait",
-                    self.hir.pos(&method), format!("`{type_name}.{name}` returns {mine}"),
-                    &req.pos, format!("`{trait_name}.{name}` declares {theirs} return")));
+            if let Some(sat @ SatisfyingFn { kind: SatisfierKind::Member, .. }) = self.satisfying_fn_of(decl, req) {
+                self.check_req_fn_met(req, &sat)?;
             }
+        }
+        Ok(())
+    }
 
-            // The capability axis is invariant: the satisfier's inferred return capability must
-            // match the hole's declared one.
-            let sat_mut = self.sigs.ret_mut_of_callable(&method) == Mutability::Mutable;
-            if req.ret.capability.is_mut() && !sat_mut {
-                return Err(self.error_ctx_help("return is immutable but trait requires mutable",
-                    &sat.sig_pos, format!("`{type_name}.{name}` returns an immutable value"),
-                    &req.pos, format!("`{trait_name}.{name}` requires a mutable return"),
-                    format!("return a mutable value from `{type_name}.{name}`")));
+    fn satisfying_fn_of(&self, decl: &'a HirTypeDecl, hole: &HirReqFn) -> Option<SatisfyingFn<'a>> {
+        if let Some(method) = self.satisfying_method(decl, hole.name) {
+            let (Some(sig), HirStmt::Fn(sat)) = (self.sigs.fn_sig_of(&method), self.hir.get(&method)) else { return None };
+            let owner = format!("{}.{}", self.hir.text(decl.name), self.hir.text(hole.name));
+            return Some(SatisfyingFn {
+                kind: SatisfierKind::Member,
+                pos: self.hir.pos(&method),
+                ret_owed: sig.ret.obligations.clone(),
+                owner: owner.clone(),
+                anchor_receiver_pos: sat.receiver.as_ref().filter(|r| r.anchor).map(|r| &r.pos),
+                params: sat.params.iter().enumerate().map(|(i, param)| SatisfyingParam {
+                    pos: &param.pos,
+                    name_pos: self.hir.pos(&param.name),
+                    anchor: param.anchor,
+                    pattern: param.pattern.as_ref(),
+                    owed: sig.param_clauses.get(i).cloned(),
+                    owner: owner.clone(),
+                    subject: self.param_subject(param, i),
+                }).collect(),
+            });
+        }
+
+        let own = decl.req_fns.iter().find(|own| own.name == hole.name)?;
+        let owner = format!("{}.{}", self.hir.text(own.trait_name), self.hir.text(own.name));
+        Some(SatisfyingFn {
+            kind: SatisfierKind::Requirement,
+            pos: &own.pos,
+            ret_owed: own.ret.owed(),
+            owner: owner.clone(),
+            anchor_receiver_pos: None,
+            params: own.params.iter().enumerate().map(|(i, param)| SatisfyingParam {
+                pos: &param.pos,
+                name_pos: &param.pos,
+                anchor: false,
+                pattern: param.pattern.as_ref(),
+                owed: Some(param.clause.owed()),
+                owner: owner.clone(),
+                subject: format!("argument {}", i + 1),
+            }).collect(),
+        })
+    }
+
+    fn check_req_fn_met(&self, hole: &HirReqFn, sat: &SatisfyingFn) -> Result<(), anyhow::Error> {
+        let name = self.hir.text(hole.name);
+        let trait_name = self.hir.text(hole.trait_name);
+        let (sat_owner, hole_owner) = (&sat.owner, format!("{trait_name}.{name}"));
+
+        // A satisfier may not owe a return obligation the requirement does not permit.
+        let forbidden = self.sorted_difference(&sat.ret_owed, &hole.ret.owed());
+        if !forbidden.is_empty() {
+            return Err(self.error_ctx("return owes an obligation the trait forbids",
+                sat.pos, format!("`{sat_owner}` {} {}", sat.kind.returns_owing(), quote_list(&forbidden)),
+                &hole.pos, format!("`{hole_owner}` forbids {}", quote_list(&forbidden))));
+        }
+
+        if let Some(receiver) = sat.anchor_receiver_pos {
+            return Err(self.error_ctx_help("method wants an anchor receiver where the trait passes a value receiver",
+                receiver, format!("`{sat_owner}` wants an anchor receiver"),
+                &hole.pos, format!("`{hole_owner}` passes a value receiver"),
+                "a call through the trait passes a value receiver, so drop the `&`"));
+        }
+
+        for (hole_param, sat_param) in hole.params.iter().zip(&sat.params) {
+            self.check_req_fn_param_met(hole_param, &hole_owner, &hole.pos, sat_param)?;
+        }
+        Ok(())
+    }
+
+    fn mixed_in_traits<'d>(&'d self, decl: &'d HirTypeDecl) -> impl Iterator<Item = &'a HirTypeDecl> + 'd {
+        decl.provides.iter().filter(|(_, id)| *id != decl.id).filter_map(|(_, id)| {
+            match self.hir.get(&self.sigs.type_decl_of_id(*id)?) {
+                HirStmt::Trait(mixed) => Some(&**mixed),
+                _ => None,
             }
-            if !req.ret.capability.is_mut() && sat_mut {
-                return Err(self.error_ctx_help("return is mutable but trait requires immutable",
-                    &sat.sig_pos, format!("`{type_name}.{name}` returns a mutable value"),
-                    &req.pos, format!("`{trait_name}.{name}` requires an immutable return"),
-                    format!("return an immutable value from `{type_name}.{name}`")));
-            }
+        })
+    }
 
-            let diff = self.sorted_difference(&sig.ret.obligations, &req.ret.owed());
-            if !diff.is_empty() {
-                return Err(self.error_ctx("return owes an obligation the trait forbids",
-                    self.hir.pos(&method), format!("`{type_name}.{name}` returns a value owing {}", quote_list(&diff)),
-                    &req.pos, format!("`{trait_name}.{name}` forbids {}", quote_list(&diff))));
-            }
-
-            if let (Some(hole), Some(recv)) = (&req.receiver, &sat.receiver) {
-                if recv.capability.is_mut() && !hole.capability.is_mut() {
-                    return Err(self.error_ctx_help("receiver asks more than the trait declares",
-                        &sat.sig_pos, format!("`{type_name}.{name}` writes `this` (`mut`)"),
-                        &req.pos, format!("`{trait_name}.{name}` declares a read-only `this`"),
-                        format!("drop `mut` from `this` in `{type_name}.{name}`")));
-                }
-                if recv.capability.is_retain() && !hole.capability.is_retain() {
-                    return Err(self.error_ctx_help("receiver asks more than the trait declares",
-                        &sat.sig_pos, format!("`{type_name}.{name}` takes `this` (`*`)"),
-                        &req.pos, format!("`{trait_name}.{name}` only borrows `this`"),
-                        format!("drop `*` from `this` in `{type_name}.{name}`")));
+    pub(super) fn check_mixed_in_req_fns(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+        for mixed in self.mixed_in_traits(decl) {
+            for hole in &mixed.req_fns {
+                if let Some(sat) = self.satisfying_fn_of(decl, hole) {
+                    self.check_req_fn_met(hole, &sat)?;
                 }
             }
+        }
+        Ok(())
+    }
 
-            for (i, hole) in req.params.iter().enumerate() {
-                let Some(sat_param) = sat.params.get(i) else { continue };
-                let param = self.param_subject(sat_param, i);
-                if hole.clause.container != sat_param.clause.container {
-                    let (mine, theirs) = shape_words(hole.clause.container);
-                    return Err(self.error_ctx("parameter shape does not match the trait",
-                        self.hir.pos(&sat_param.name), format!("`{type_name}.{name}` takes {mine}"),
-                        &req.pos, format!("`{trait_name}.{name}` declares {theirs} parameter")));
-                }
+    fn check_req_fn_param_met(&self, hole: &HirReqParam, hole_owner: &str, hole_fn_pos: &SourcePosition, sat: &SatisfyingParam) -> Result<(), anyhow::Error> {
+        let (sat_owner, subject) = (&sat.owner, &sat.subject);
 
-                if hole.clause.capability.is_retain() && !sat_param.clause.capability.is_retain() {
-                    return Err(self.error_ctx_help("parameter is less permissive than the trait requires",
-                        &sat_param.pos, format!("`{type_name}.{name}` only borrows {param} here (`mut`)"),
-                        &hole.pos, format!("`{trait_name}.{name}` requires ownership of {param} (`*mut`)"),
-                        format!("take ownership of {param} to match the trait, by declaring it `*mut`")));
-                }
+        if sat.anchor {
+            return Err(self.error_ctx_help("parameter takes an anchor where the trait declares a value",
+                sat.name_pos, format!("`{sat_owner}` takes an anchor for {subject}"),
+                hole_fn_pos, format!("`{hole_owner}` passes a value"),
+                "a caller reaching this through the trait passes a value, so drop the `&`"));
+        }
 
-                if sat_param.clause.capability.is_mut() && !hole.clause.capability.is_mut() {
-                    return Err(self.error_ctx_help("parameter asks more than the trait declares",
-                        &sat_param.pos, format!("`{type_name}.{name}` needs {param} mutable"),
-                        &hole.pos, format!("`{trait_name}.{name}` only lends {param}"),
-                        format!("drop `mut` from {param}, or declare the hole `mut {param}`")));
-                }
+        if !self.accepts_at_least(hole.pattern.as_ref(), sat.pattern) {
+            return Err(self.error_ctx_help("parameter accepts less than the trait declares",
+                sat.pos, format!("`{sat_owner}` accepts {} for {subject}", self.describe_pattern(sat.pattern)),
+                &hole.pos, format!("`{hole_owner}` passes {}", self.describe_pattern(hole.pattern.as_ref())),
+                format!("accept at least what the trait passes, or drop the pattern on {subject}")));
+        }
 
-                // A satisfier may widen a pattern but not narrow it.
-                if !self.accepts_at_least(hole.pattern.as_ref(), sat_param.pattern.as_ref()) {
-                    return Err(self.error_ctx_help("parameter accepts less than the trait declares",
-                        &sat_param.pos, format!("`{type_name}.{name}` accepts {} for {param}", self.describe_pattern(sat_param.pattern.as_ref())),
-                        &hole.pos, format!("`{trait_name}.{name}` passes {}", self.describe_pattern(hole.pattern.as_ref())),
-                        format!("accept at least what the trait passes, or drop the pattern on {param}")));
-                }
+        let Some(accepted) = &sat.owed else { return Ok(()) };
+        let unaccepted = self.sorted_difference(&hole.clause.owed(), accepted);
+        if !unaccepted.is_empty() {
+            return Err(self.error_ctx("parameter rejects an obligation the trait passes",
+                sat.name_pos, format!("`{sat_owner}` does not accept {} for {subject}", quote_list(&unaccepted)),
+                hole_fn_pos, format!("`{hole_owner}` passes {}", quote_list(&unaccepted))));
+        }
+        Ok(())
+    }
 
-                let Some(accepted) = sig.param_clauses.get(i) else { continue };
-                let missing = self.sorted_difference(&hole.clause.owed(), accepted);
-                if !missing.is_empty() {
-                    return Err(self.error_ctx("parameter rejects an obligation the trait passes",
-                        self.hir.pos(&sat_param.name), format!("`{type_name}.{name}` does not accept {} for {param}", quote_list(&missing)),
-                        &req.pos, format!("`{trait_name}.{name}` passes {}", quote_list(&missing))));
-                }
+    pub(super) fn check_mixed_req_var(&self, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+        for mixed in self.mixed_in_traits(decl) {
+            for inherited in mixed.req_members.iter().filter(|r| r.reassignable) {
+                let Some(own) = decl.req_members.iter().find(|o| o.name == inherited.name && !o.reassignable) else { continue };
+                let (name, owner) = (self.hir.text(own.name), self.hir.text(mixed.name));
+                return Err(self.error_ctx_help(format!("`req {name}` loosens the `req var {name}` required by trait '{owner}'"),
+                    &own.pos, format!("`{name}` is required here without `var`"),
+                    &inherited.pos, format!("`{owner}` requires a reassignable `{name}`"),
+                    format!("declare it as `req var {name};`, or drop it and inherit the requirement")));
             }
         }
         Ok(())
     }
 
     /// Checks each required member against the member filling it.
-    pub(super) fn check_req_members(&self, node: &HirId<HirStmt>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
+    pub(super) fn check_type_satisfies_req_members(&self, node: &HirId<HirStmt>, decl: &HirTypeDecl) -> Result<(), anyhow::Error> {
         let Some(layout) = self.layout_of(node) else { return Ok(()) };
         let type_name = self.hir.text(decl.name);
         for req in &decl.req_members {
@@ -166,7 +248,7 @@ impl<'a> Shape<'a> {
                     .with_help(format!("declare it `pub var {name}` on `{type_name}`"))));
             }
 
-            let owed = layout.owed(req.name, self.sigs.opt);
+            let owed = layout.owed(req.name);
             let extra = self.sorted_difference(&owed, &required);
             if !extra.is_empty() {
                 return Err(anyhow!("{}", self.member_error_frame(error_header, at,
@@ -247,16 +329,20 @@ impl<'a> Shape<'a> {
             (HirMatcher::Type { nominal: true, name: hole_name, shape: hole_shape },
              HirMatcher::Type { nominal: true, name: sat_name, shape: sat_shape }) =>
                 hole_name == sat_name && self.type_shape_accepts_at_least(hole_shape.as_ref(), sat_shape.as_ref()),
-            (HirMatcher::Shape(hole), HirMatcher::Shape(sat)) => self.fields_accept_at_least(hole, sat),
+            (HirMatcher::Shape { fields: hole, .. }, HirMatcher::Shape { fields: sat, .. }) => self.fields_accept_at_least(hole, sat),
+            (HirMatcher::Dict(hole), HirMatcher::Dict(sat)) => self.matcher_accepts_at_least(hole, sat),
+            (HirMatcher::Dict(_), _) => false,
+            (HirMatcher::Shape { .. }, HirMatcher::Dict(_)) => true,
+            (HirMatcher::Literal(_) | HirMatcher::Array(_) | HirMatcher::Type { nominal: true, .. }, HirMatcher::Dict(_)) => false,
             (HirMatcher::Array(hole), HirMatcher::Array(sat)) => self.elements_accept_at_least(hole, sat),
             (HirMatcher::Type { nominal: true, .. }, HirMatcher::Literal(_) | HirMatcher::Array(_)) => false,
             (HirMatcher::Literal(_), _) => false,
-            (HirMatcher::Shape(_), HirMatcher::Literal(_) | HirMatcher::Array(_)) => false,
-            (HirMatcher::Shape(_), HirMatcher::Type { nominal: true, .. }) => false,
+            (HirMatcher::Shape { .. }, HirMatcher::Literal(_) | HirMatcher::Array(_)) => false,
+            (HirMatcher::Shape { .. }, HirMatcher::Type { nominal: true, .. }) => false,
             (HirMatcher::Array(_), HirMatcher::Literal(_)) => false,
             (HirMatcher::Array(_), HirMatcher::Type { nominal: true, .. }) => false,
-            (HirMatcher::Array(_), HirMatcher::Shape(_)) => true,
-            (HirMatcher::Type { nominal: true, .. }, HirMatcher::Shape(_)) => true,
+            (HirMatcher::Array(_), HirMatcher::Shape { .. }) => true,
+            (HirMatcher::Type { nominal: true, .. }, HirMatcher::Shape { .. }) => true,
             (HirMatcher::Type { nominal: false, .. }, _) => true,
             (_, HirMatcher::Type { nominal: false, .. }) => true,
             (HirMatcher::And(_), _) => true,
@@ -284,7 +370,7 @@ impl<'a> Shape<'a> {
     /// Whether a shape publishes names without testing anything.
     fn shape_only_binds(&self, shape: &HirId<HirMatcher>) -> bool {
         match self.hir.get(shape) {
-            HirMatcher::Shape(fields) => fields.iter().all(|f| self.hir.get(&f.value).is_irrefutable(self.hir)),
+            HirMatcher::Shape { fields, .. } => fields.iter().all(|f| self.hir.get(&f.value).is_irrefutable(self.hir)),
             _ => false,
         }
     }
@@ -335,23 +421,9 @@ impl<'a> Shape<'a> {
     }
 }
 
-fn same_scalar(a: &HirLiteral, b: &HirLiteral) -> bool {
-    match (a, b) {
-        (HirLiteral::Null, HirLiteral::Null) => true,
-        (HirLiteral::Boolean(a), HirLiteral::Boolean(b)) => a == b,
-        (HirLiteral::Number(a), HirLiteral::Number(b)) => a == b,
-        (HirLiteral::String(a), HirLiteral::String(b)) => a == b,
-        _ => false,
-    }
-}
-
 /// Splits a folded `"Trait.method"` alias into its trait and base method names.
 fn split_trait_alias(name: &str) -> Option<(&str, &str)> {
     name.split_once('.')
-}
-
-fn shape_words(container: bool) -> (&'static str, &'static str) {
-    if container { ("a bare value", "a container") } else { ("a container", "a bare") }
 }
 
 /// Quotes each name and joins them, like `'fails', 'opt'`.

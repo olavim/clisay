@@ -1,6 +1,4 @@
-// A match over an obligated scrutinee rules out each witness. A binder after the null and Err
-// arms is clean, so it can be used.
-fn get(flag)? {
+fn get(flag): opt {
     if (flag == 1) { return null; }
     if (flag == 2) { return Err("boom"); }
     return 10;

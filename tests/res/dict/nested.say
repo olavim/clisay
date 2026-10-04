@@ -1,4 +1,4 @@
-say d = mut { a: "a" };
+say var d = { a: "a" };
 d["c"] = { c: "c" };
 print(d["c"]["c"]); // expect: c
 

@@ -2,7 +2,7 @@ type A {
     pub var a = "a";
     init(this) {
         print("init");
-        a = "b";
+        this.a = "b";
     }
 }
 

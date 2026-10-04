@@ -1,0 +1,36 @@
+fn take(x) { }
+say fns = [take];
+say var arr = [0];
+fns[0](arr);
+arr[0] = 1;
+print(arr[0]); // expect: 1
+
+// @split
+type T { pub fn m(this, x) { } }
+say holder = [T()];
+say var arr = [0];
+holder[0].m(arr);
+arr[0] = 1;
+print(arr[0]); // expect: 1
+
+// @split
+fn take(x) { }
+say fns = [take];
+say arr = [7];
+fns[0](arr);
+print(arr[0]); // expect: 7
+
+// @split
+type T { pub var x; init(this, v) { this.x = v; } }
+say var t = T([0]);
+t.x[0] = 5;
+print(t.x[0]); // expect: 5
+
+// @split
+fn id(c) { return c; }
+say fns = [id];
+say var a = [0];
+say var b = fns[0](a);
+b[0] = 1;
+print(b[0]); // expect: 1
+print(a[0]); // expect: 0

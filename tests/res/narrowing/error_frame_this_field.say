@@ -1,7 +1,5 @@
-// A `this` field narrowing is keyed by name, not by slot, so it does not reach a nested body that
-// runs later. The lambda sees `x` owing what it was declared owing.
 type T {
-    x?;
+    x: opt;
     init(this) { this.x = null; }
     pub fn m(this) {
         if (this.x != null) {

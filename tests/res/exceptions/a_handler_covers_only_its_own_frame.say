@@ -1,0 +1,25 @@
+fn make() {
+    try { return () => { throw "inner"; }; } catch (e) { print("caught in make"); return () => {}; }
+}
+say g = make();
+try { g(); } catch (e) { print(e); } // expect: inner
+
+// @split
+fn make() {
+    defer { print("make is done"); }
+    return () => { throw "inner"; };
+}
+say g = make(); // expect: make is done
+try { g(); } catch (e) { print(e); } // expect: inner
+
+// @split
+fn run() {
+    say top = 0;
+    say take = (x) => top;
+    fn apply(g, v: fails) {
+        say marker = "apply";
+        try { g(v); } catch (e) { print(marker); } // expect: apply
+    }
+    apply(take, Err("boom"));
+}
+run();

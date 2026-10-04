@@ -1,0 +1,16 @@
+// One parameter the callee writes, three it only reads, and a caller that writes all four after.
+// A per-callee answer marks all four; a per-parameter one marks the first.
+fn mix(var acc, x, y, z) { acc[0] = acc[0] + 1; }
+
+say var acc = [0];
+say var a = [0, 0, 0, 0, 0, 0, 0, 0];
+say var b = [0, 0, 0, 0, 0, 0, 0, 0];
+say var c = [0, 0, 0, 0, 0, 0, 0, 0];
+say var i = 0;
+while i < 20000 {
+    mix(acc, a, b, c);
+    a[0] = i;
+    b[0] = i;
+    c[0] = i;
+    i = i + 1;
+}

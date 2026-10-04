@@ -1,0 +1,9 @@
+fn work(&var n) {
+    say var s = 0;
+    say var i = 0;
+    while i < 1000 { s = s + n; i = i + 1; }
+    return s;
+}
+say var x = 1;
+say var j = 0;
+while j < 500 { work(&x); j = j + 1; }

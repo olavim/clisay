@@ -1,0 +1,55 @@
+type B { pub var f = (v) => print(v); }
+say var b = B();
+b.f(2); // expect: 2
+
+// @split
+type B { pub var f = (v) => print(v); }
+say var b = B();
+&b.f(2); // error: `f` does not want an anchor receiver
+
+// @split
+type B { pub var n = 0; pub fn m(&var this, v) { this.n += v; } }
+type H { pub var y = B(); }
+say var x = H();
+&x.y.m?(2);
+print(x.y.n); // expect: 2
+
+// @split
+type B { pub var f = (v) => print(v); }
+type H { pub var y = B(); }
+say var x = H();
+&x.y.f?(2); // error: `f` does not want an anchor receiver
+
+// @split
+type B { pub var n = 0; pub fn m(&var this, v) { this.n += v; } }
+fn g(&var v) { &v.m(2); }
+say var b = B();
+g(&b);
+print(b.n); // expect: 2
+
+// @split
+type B { pub var n = 0; pub fn r(this) { return this.n; } }
+fn g(&var v) { &v.r(); } // error: `B.r` does not want an anchor receiver
+print("before"); // expect: before
+say var b = B();
+g(&b);
+
+// @split
+type B { pub var f = (v) => print(v); }
+fn g(&var v) { &v.f(2); } // error: `f` does not want an anchor receiver
+print("before"); // expect: before
+say var b = B();
+g(&b);
+
+// @split
+type B { pub var f: opt = null; pub var n = 0; pub fn m(&var this, v) { this.n += v; } }
+fn g(&var v) { print(&v.f?(2) ?? "short"); &v.m?(3); }
+say var b = B();
+g(&b); // expect: short
+print(b.n); // expect: 3
+
+// @split
+type B { pub var f = (v) => print(v); }
+fn g(&var v) { &v.f?(2); } // error: `f` does not want an anchor receiver
+say var b = B();
+g(&b);

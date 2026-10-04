@@ -8,7 +8,7 @@ print(e["name"]); // expect: 2
 
 say f = { 1: "one" };
 print(f[1]);   // expect: one
-print(f["1"]); // expect: null
+print(f.containsKey("1")); // expect: false
 
 say g = { true: "t", false: "f", null: "n" };
 print(g[true]);  // expect: t

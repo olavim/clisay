@@ -1,3 +1,8 @@
-// A marked return declaring no obligation admits none.
 type Taint { } obligation taint { witness Taint; discharge to use; }
-fn f(x: taint)! { return x; } // error: cannot return a value owing 'taint'
+fn keep(x: taint): taint { return x; }
+say t: taint = keep(Taint());
+print(t is Taint); // expect: true
+
+// @split
+type Taint { } obligation taint { witness Taint; discharge to use; }
+fn drop(x: taint): opt { return x; } // error: cannot return a value owing 'taint'

@@ -1,0 +1,24 @@
+fn m(c) { if (c) { return; } }
+m(false);
+m(true);
+print("after"); // expect: after
+
+// @split
+type T { init(this) {} pub fn m(this, c) { if (c) { return; } } }
+T().m(false);
+print("after"); // expect: after
+
+// @split
+fn m(c): void { if (c) { return; } }
+m(false);
+m(true);
+print("after"); // expect: after
+
+// @split
+fn m(c): opt { if (c) { return null; } return 1; }
+print(m(false) ?? "none"); // expect: 1
+print(m(true) ?? "none"); // expect: none
+
+// @split
+fn m(c) { if (c) { return 1; } else { return 2; } }
+print(m(false)); // expect: 2

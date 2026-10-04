@@ -1,0 +1,43 @@
+type Held { } obligation held { witness Held; no persist; }
+type Box { pub var v = 0; }
+fn put(&var x: held, v: held) { x = v; }
+fn bump(&var x) { x = x + 1; }
+
+say var y: held = 0;
+put(&y, Held());
+print(y ~ Held); // expect: true
+
+say var b = Box();
+bump(&b.v);
+print(b.v); // expect: 1
+
+// @split
+type Held { } obligation held { witness Held; no persist; }
+type Box { pub var v = 0; }
+fn put(&var x: held, v: held) { x = v; }
+
+say var b = Box();
+put(&b.v, Held()); // error: a path anchor cannot fill a parameter owing 'held'
+
+// @split
+type Held { } obligation held { witness Held; no persist; }
+fn put(&var x: held, v: held) { x = v; }
+
+say var arr = [0];
+put(&arr[0], Held()); // error: a path anchor cannot fill a parameter owing 'held'
+
+// @split
+type Held { } obligation held { witness Held; no persist; }
+fn put(&var x: held, v: held) { x = v; }
+
+say var d = {"k": 0};
+put(&d["k"], Held()); // error: a path anchor cannot fill a parameter owing 'held'
+
+// @split
+type Held { } obligation held { witness Held; no persist; }
+type Box { pub var v = 0; }
+fn put(&var x: held, v: held) { x = v; } // error: an anchor and the parameter it fills do not admit the same values
+fn pick() { return put; }
+
+say var b = Box();
+pick()(&b.v, Held());

@@ -1,0 +1,124 @@
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [[0], [0]];
+say var i = 0;
+say var j = 1;
+f(&a[i], &a[j][i]);
+print(a[0]); // expect: 1
+print(a[1][0]); // expect: 2
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [[0]];
+say var i = 0;
+say var j = 0;
+f(&a[i], &a[j][i]); // error: Uncaught exception: "two anchors in one call name the same storage"
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [0, 0];
+say var p = &a[0];
+say var q = &a[1];
+f(&p, &q);
+print(a[0]); // expect: 1
+print(a[1]); // expect: 2
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [0];
+say var i = 0;
+say var p = &a[i];
+say var q = &a[i];
+f(&p, &q); // error: Uncaught exception: "two anchors in one call name the same storage"
+
+// @split
+type G { pub var rows = []; }
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var g = G();
+g.rows = [[0], [0]];
+say var i = 0;
+say var j = 1;
+f(&g.rows[i], &g.rows[j]);
+print(g.rows[0]); // expect: 1
+print(g.rows[1]); // expect: 2
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [0, 0];
+say var i = 1;
+f(&a[0], &a[i]);
+print(a[0]); // expect: 1
+print(a[1]); // expect: 2
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [0, 0];
+say var i = 0;
+f(&a[0], &a[i]); // error: Uncaught exception: "two anchors in one call name the same storage"
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [[0], [0]];
+say var i = 1;
+f(&a[0], &a[i][0]);
+print(a[0]); // expect: 1
+print(a[1][0]); // expect: 2
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+
+say var a = [[0]];
+say var i = 0;
+f(&a[0], &a[i][0]); // error: Uncaught exception: "two anchors in one call name the same storage"
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+fn g(&var m, &var n) { f(&m, &n); }
+
+say var a = [0, 0];
+say var i = 0;
+say var j = 1;
+g(&a[i], &a[j]);
+print(a[0]); // expect: 1
+print(a[1]); // expect: 2
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+fn g(&var m, &var n) { f(&m, &n); }
+
+say var a = [0, 0];
+say var i = 1;
+say var j = 1;
+g(&a[i], &a[j]); // error: Uncaught exception: "two anchors in one call name the same storage"
+
+// @split
+fn f(&var x, &var y) { x = 1; y = 2; }
+fn g(&var m, &var n) { say var p = &m[0]; f(&p, &n); }
+
+say var a = [[0], [0]];
+g(&a[0], &a[1]);
+print(a[0][0]); // expect: 1
+print(a[1]); // expect: 2
+
+// @split
+type O { pub var f = 1; }
+fn g(&var a, &var b) { b = O(); a = 5; }
+say var o = O();
+say var p = O();
+say var r = &o.f;
+g(&r, &p);
+print(o.f); // expect: 5
+
+// @split
+type O { pub var f = 1; }
+fn g(&var a, &var b) { b = O(); a = 5; }
+say var o = O();
+say var r = &o.f;
+g(&r, &o); // error: Two anchors in one call name the same storage

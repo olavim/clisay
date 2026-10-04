@@ -1,0 +1,20 @@
+fn take(v) { return v; }
+fn hand(x) { return x; }
+fn give(a) { return take(hand(a)); }
+say var out = give([1]);
+out[0] = 5;
+print(out[0]); // expect: 5
+
+// @split
+fn take(v) { return v; }
+fn hand(x) { return x; }
+fn give(a) { return take(hand(a)); }
+print(give(7)); // expect: 7
+
+// @split
+fn hand(x) { return x; }
+say var a = [1];
+say var b = hand(a);
+b[0] = 5;
+print(b[0]); // expect: 5
+print(a[0]); // expect: 1

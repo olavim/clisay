@@ -1,4 +1,4 @@
-say d = mut {};
+say var d = {};
 d["has"] = "data-at-has";
 d["size"] = 99;
 

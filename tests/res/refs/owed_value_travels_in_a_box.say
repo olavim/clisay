@@ -1,0 +1,28 @@
+type OptBox { pub var value: opt; init(this, value: opt) { this.value = value; } }
+say r = Ref(OptBox(null));
+print(@r.value ?? 0); // expect: 0
+r.mutate((&var b) => { b.value = 5; });
+print(@r.value ?? 0); // expect: 5
+
+// @split
+type OptBox { pub var value: opt; init(this, value: opt) { this.value = value; } }
+fn takes(x) { return x; }
+
+say plain = OptBox(null);
+print(takes(plain.value ?? 0)); // expect: 0
+
+say r = Ref(OptBox(null));
+say n = takes(@r.value); // error: unexpected null
+
+// @split
+type Token { pub v; init(this, x) { this.v = x; } }
+obligation parsed { witness Token; discharge to use; }
+type PBox { pub var value: parsed; init(this, value: parsed) { this.value = value; } }
+
+say r = Ref(PBox(5));
+say back: parsed = @r.value;
+print(back ?? 0); // expect: 5
+
+r.mutate((&var b) => { b.value = 9; });
+say again: parsed = @r.value;
+print(again ?? 0); // expect: 9

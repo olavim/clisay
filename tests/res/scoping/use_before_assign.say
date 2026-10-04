@@ -1,3 +1,2 @@
-// A non-null binding used before assignment is rejected.
 say x;
 print(x); // error: 'x' is used before it is assigned

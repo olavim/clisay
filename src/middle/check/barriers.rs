@@ -1,139 +1,141 @@
-//! What codegen must check at runtime, and the record the pass hands it.
-
 use crate::middle::diagnose::Diagnose;
 use crate::middle::obligations::{obligation_atoms, quoted_obligation_list};
 use std::collections::{HashMap, HashSet};
 
-use crate::middle::hir::{HirExpr, HirId, Symbol, TypeId};
+use crate::middle::hir::{HirExpr, HirId, HirMatcher, HirStmt, Symbol, TypeId};
+use crate::middle::signatures::CallableId;
 use crate::middle::obligations::Obligations;
 
-use super::{Checker, Debt, Violation};
+use super::{Checker, Debt};
 
-/// The runtime witnesses a discharge node must test: `null` for `opt`, and one type/trait name
-/// per object witness.
-#[derive(Clone)]
-pub struct WitnessSet {
-    pub null: bool,
-    /// The witness declarations the set tests.
-    pub witnesses: Vec<TypeId>,
-    /// Whether the set names a witness other than the built-in `Err`, so codegen must use the
-    /// `is` test rather than the fast bad/clean ops.
-    pub contains_user_witnesses: bool,
-}
-
-/// The witnesses a destination allows (a slot or a `!`). Its boundary guard throws any registered
-/// witness it does not allow when an unknown value reaches it.
+/// The witnesses a slot allows.
 pub struct Barrier {
     pub null_allowed: bool,
     pub allow_witnesses: Vec<TypeId>,
 }
 
-/// A runtime check codegen emits for a node, once that node's value is on the stack. The order
-/// here is the order they are emitted, so a node carrying several asks them in a fixed sequence.
+/// A runtime check codegen emits.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Guard {
     /// An unknown value against the witnesses its destination refuses.
     Boundary,
-    /// A `!` operand owing only `opt`, where a null check alone suffices.
+    /// A `!` operand owing only `opt`.
     NonNull,
-    /// A store handing an element to a container, which takes its write-ownership.
-    StoreIntoContainer,
-    /// A value entering an immutable construction.
-    Immutable,
 }
 
-/// What a call does to its arguments.
-#[derive(Default)]
-pub struct ArgMarks {
-    /// Positions an opaque call must assert its callee borrows rather than keeps, each with the
-    /// obligation that demands it. A borrowed argument has none: the borrow is the reason itself.
-    survive: Vec<(u8, Option<Symbol>)>,
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CheckedSlot {
+    Say(HirId<HirStmt>),
+    Param(HirId<HirExpr>),
+    PatternBinding(HirId<HirMatcher>, Symbol),
+    Receiver(HirId<HirExpr>),
 }
 
-/// The runtime checks codegen emits. A barrier tests an unknown value against the witnesses its
-/// destination does not allow, whether the value enters a slot or is asserted clean by `!`.
 #[derive(Default)]
 pub struct Barriers {
+    /// Each assignment's target => how it orders its keys and value against the walk.
+    pub(super) assign_strategies: fnv::FnvHashMap<HirId<HirExpr>, super::AssignStrategy>,
     /// Every per-node runtime check, in the order codegen emits them.
     pub(super) guards: HashMap<HirId<HirExpr>, Vec<Guard>>,
     /// Checks the pass proved unnecessary, recorded only under check-forcing.
     pub(super) elided: HashMap<HirId<HirExpr>, Vec<Guard>>,
-    /// An unknown value guarded against the witnesses its destination does not allow: a value
-    /// entering a slot, or a `!` on an unknown operand.
+    /// An unknown value entering a slot, guarded against the witnesses the slot does not allow.
     pub(super) boundary_barriers: HashMap<HirId<HirExpr>, Barrier>,
-    /// Discharge nodes (`??`, `?`, `!`) whose operand owes an object witness.
-    pub(super) witness_tests: HashMap<HirId<HirExpr>, WitnessSet>,
-    /// What each call does to its arguments, keyed by callee node.
-    pub(super) arg_marks: HashMap<HirId<HirExpr>, ArgMarks>,
+    /// Each `!` whose operand may be an object witness.
+    pub(super) witness_asserts: HashSet<HirId<HirExpr>>,
     /// Every registered object witness declaration, the VM's registry for recognizing a crossing
     /// value as a witness at a boundary barrier.
     pub(super) witness_decls: Vec<TypeId>,
-    /// Immutable container literals with an unknown-capability element, whose elements are checked
-    /// for mutability at construction so a mutable value cannot land in an immutable container.
-    pub(super) seal_checks: HashSet<HirId<HirExpr>>,
-    /// Paren-construction `Call` nodes (`K(args)`).
-    pub(super) constructions: HashSet<HirId<HirExpr>>,
-    /// Scopes holding an element writer slot, by node index. A scope gives back whatever its own
-    /// locals still hold.
-    pub(super) write_scopes: HashSet<usize>,
-    /// Store targets one name is proven to reach. Their stores skip the one-writer arbitration
-    /// that every other store runs.
-    pub(super) unshared_stores: HashSet<HirId<HirExpr>>,
+    /// Each expression that builds its value rather than reading one.
+    pub(super) fresh_values: HashSet<HirId<HirExpr>>,
+    /// Each call this pass decided every argument of.
+    pub(super) settled_args: HashSet<HirId<HirExpr>>,
+    /// Each call whose arguments are places exactly where the callee expects them.
+    pub(super) proven_arg_kinds: HashSet<HirId<HirExpr>>,
+    /// Each callable with a return that handed back nothing.
+    pub(super) void_returns: HashSet<CallableId>,
+    /// Each callable that returns a value.
+    pub(super) value_returns: HashSet<CallableId>,
+    /// Each callable with a return that handed back a value. Only this pass reads it, to tell a
+    /// function that hands back nothing from one whose returns disagree.
+    pub(super) valued_returns: HashSet<CallableId>,
+    /// Each returned value this pass proved the function's return allows.
+    pub(super) proven_returns: HashSet<HirId<HirExpr>>,
+    pub(super) checked_slot_clauses: HashMap<CheckedSlot, Obligations>,
+    /// Each returned expression that hands back nothing, the way falling off the end does.
+    pub(super) void_return_sites: HashSet<HirId<HirExpr>>,
+    /// Whether check-forcing puts a test back on a return the pass proved.
+    pub(super) force_return_tests: bool,
+    /// Declarations used above their line, as `a` uses `b` in `fn a() { return b(); } fn b() {}`,
+    /// or `say k = T;` does above `type T`.
+    pub(super) forward_referenced: HashSet<usize>,
 }
 
 impl Barriers {
-    /// Whether one name is proven to reach this store's target, so the store needs no arbitration.
-    pub fn store_is_unshared(&self, target: &HirId<HirExpr>) -> bool {
-        self.unshared_stores.contains(target)
+    pub fn returns_void(&self, callable: CallableId) -> bool {
+        self.void_returns.contains(&callable)
     }
 
-    /// Every runtime check this node carries, in emission order.
+    pub fn returns_value(&self, callable: CallableId) -> bool {
+        self.value_returns.contains(&callable)
+    }
+
+    pub fn return_is_proven(&self, value: &HirId<HirExpr>) -> bool {
+        self.proven_returns.contains(value)
+    }
+
+    pub fn return_hands_back_nothing(&self, value: &HirId<HirExpr>) -> bool {
+        self.void_return_sites.contains(value)
+    }
+
+    pub fn forces_return_tests(&self) -> bool {
+        self.force_return_tests
+    }
+
     pub fn guards(&self, node: &HirId<HirExpr>) -> &[Guard] {
         self.guards.get(node).map_or(&[], Vec::as_slice)
     }
 
-    /// The runtime checks this node would carry if the pass hadn't proved them unnecessary.
-    /// Empty unless check-forcing is on.
     pub fn elided(&self, node: &HirId<HirExpr>) -> &[Guard] {
         self.elided.get(node).map_or(&[], Vec::as_slice)
     }
 
-    /// The boundary guard for an unknown value at this node, if one is needed.
     pub fn boundary(&self, node: &HirId<HirExpr>) -> Option<&Barrier> {
         self.boundary_barriers.get(node)
     }
 
-    /// Every registered object witness declaration, for the VM's boundary-barrier registry.
+    pub fn is_forward_referenced(&self, decl: &HirId<HirStmt>) -> bool {
+        self.forward_referenced.contains(&decl.index())
+    }
+
+    pub fn assign_strategy(&self, write: &HirId<HirExpr>) -> &super::AssignStrategy {
+        self.assign_strategies.get(write).expect("every assignment has a strategy")
+    }
+
+    pub fn builds_its_value(&self, expr: &HirId<HirExpr>) -> bool {
+        self.fresh_values.contains(expr)
+    }
+
+    pub fn args_settled(&self, callee: &HirId<HirExpr>) -> bool {
+        self.settled_args.contains(callee)
+    }
+
+    pub fn checked_slot_clause(&self, slot: CheckedSlot) -> Option<&Obligations> {
+        self.checked_slot_clauses.get(&slot)
+    }
+
+    pub fn arg_kinds_proven(&self, callee: &HirId<HirExpr>) -> bool {
+        self.proven_arg_kinds.contains(callee)
+    }
+
     pub fn witness_decls(&self) -> &[TypeId] {
         &self.witness_decls
     }
 
-    /// The witness set a discharge node tests, when its operand owes an object witness.
-    pub fn witness_set(&self, node: &HirId<HirExpr>) -> Option<&WitnessSet> {
-        self.witness_tests.get(node)
+    pub fn asserts_witnesses(&self, node: &HirId<HirExpr>) -> bool {
+        self.witness_asserts.contains(node)
     }
 
-    pub fn survive(&self, callee: &HirId<HirExpr>) -> Option<&[(u8, Option<Symbol>)]> {
-        self.arg_marks.get(callee).map(|m| m.survive.as_slice()).filter(|p| !p.is_empty())
-    }
-
-    /// Whether this container literal needs a runtime check that no element is mutable.
-    pub fn needs_seal_check(&self, node: &HirId<HirExpr>) -> bool {
-        self.seal_checks.contains(node)
-    }
-
-    /// Whether this `Call` node is a paren construction `K(args)`.
-    pub fn is_construction(&self, node: &HirId<HirExpr>) -> bool {
-        self.constructions.contains(node)
-    }
-
-    /// Whether this scope has to give back element writer slots on the way out.
-    pub fn releases_write_ownership<T>(&self, scope: &HirId<T>) -> bool {
-        self.write_scopes.contains(&scope.index())
-    }
-
-    /// How many nodes carry a runtime check. A boundary's payload rides its guard, so it is one
-    /// node here however many guards it asks for.
     pub fn len(&self) -> usize {
         self.guards.len()
     }
@@ -144,8 +146,6 @@ impl Barriers {
 }
 
 impl<'a> Checker<'a> {
-    /// Records a runtime check the pass proved unnecessary. A no-op unless check-forcing is on,
-    /// so neither the table nor the walk costs anything in an ordinary run.
     pub(super) fn record_elision(&mut self, node: &HirId<HirExpr>, guard: Guard) {
         if !self.ctx.force_checks {
             return;
@@ -156,8 +156,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Records a runtime check for a node. Guards are kept in emission order, and a node asks for
-    /// each at most once however many times the pass reaches it.
     pub(super) fn record_guard(&mut self, node: &HirId<HirExpr>, guard: Guard) {
         let guards = self.out.guards.entry(*node).or_default();
         if let Err(at) = guards.binary_search(&guard) {
@@ -165,28 +163,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Records that an opaque call must assert its callee borrows the given argument positions.
-    pub(super) fn record_survive_barrier(&mut self, callee: &HirId<HirExpr>, positions: Vec<(u8, Option<Symbol>)>) {
-        self.out.arg_marks.entry(*callee).or_default().survive = positions;
-    }
-
-    /// Marks an immutable container literal whose elements must be checked for mutability at runtime.
-    pub(super) fn record_seal_check(&mut self, node: &HirId<HirExpr>) {
-        self.out.seal_checks.insert(*node);
-    }
-
-    /// Marks a `Call` node as a paren construction `K(args)`.
-    pub(super) fn record_construction(&mut self, node: &HirId<HirExpr>) {
-        self.out.constructions.insert(*node);
-    }
-
-    /// Marks a scope that has to give back element writer slots.
-    pub(super) fn record_write_scope(&mut self, scope: &HirId<HirExpr>) {
-        self.out.write_scopes.insert(scope.index());
-    }
-
-    /// Records the guard for an unknown value reaching a destination accepting `accepted`. The
-    /// guard allows those obligations' witnesses.
     pub(super) fn record_boundary_barrier(&mut self, node: &HirId<HirExpr>, accepted: &Obligations) {
         let null_allowed = accepted.contains(&self.ctx.sigs.opt);
         let mut allow_witnesses = Vec::new();
@@ -199,52 +175,97 @@ impl<'a> Checker<'a> {
         self.record_guard(node, Guard::Boundary);
     }
 
-    /// Classifies a value entering a non-null target. A non-null slot forbids `opt`, so only a
-    /// value owing `opt` violates it. An unknown value records the non-null boundary guard.
-    pub(super) fn non_null_violation(&mut self, value: &Debt, target: &HirId<HirExpr>) -> Option<Violation> {
-        match value {
-            Debt::Clean => None,
-            Debt::Unknown => { self.record_boundary_barrier(target, &Obligations::new()); None },
-            Debt::Void => Some(Violation::Void),
-            Debt::Owed { obligations, definite, .. } if obligations.contains(&self.ctx.sigs.opt) => {
-                Some(if *definite { Violation::Null } else { Violation::Nullable })
-            },
-            Debt::Owed { .. } => None,
+    /// Checks a value entering a slot against the obligations the slot accepts.
+    pub(super) fn check_into_slot(&mut self, debt: &Debt, accepted: &Obligations, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let noun = if self.ctx.is_factory_field(name) { "field" } else { "binding" };
+        self.check_into_named_slot(debt, accepted, name, noun, node)
+    }
+
+    fn obligations_refused_by_slot(&mut self, debt: &Debt, accepted: &Obligations, node: &HirId<HirExpr>) -> Option<Obligations> {
+        if matches!(debt, Debt::Unknown) {
+            self.record_boundary_barrier(node, accepted);
+            return None;
+        }
+        let refused = self.ctx.unadmitted_obligations(debt, accepted);
+        (!refused.is_empty()).then_some(refused)
+    }
+
+    /// Check `this = v` against what the receiver owes.
+    pub(super) fn check_into_this(&mut self, debt: &Debt, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let owed = self.fn_ctx.receiver.clone();
+        let slot = Slot::Named { text: "this".to_string(), noun: "receiver".to_string() };
+        self.check_into(debt, &owed, &slot, node)
+    }
+
+    /// Check `@t = v`.
+    pub(super) fn check_into_ref(&mut self, debt: &Debt, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let admits = self.ctx.ref_admits();
+        self.check_into(debt, &admits, &Slot::Ref, node)
+    }
+
+    pub(super) fn check_into_named_slot(&mut self, debt: &Debt, accepted: &Obligations, name: Symbol, noun: &str, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        let slot = Slot::Named { text: self.ctx.binding_display_name(name), noun: noun.to_string() };
+        self.check_into(debt, accepted, &slot, node)
+    }
+
+    /// Whether the slot takes what it is handed, worded for the slot the caller named.
+    fn check_into(&mut self, debt: &Debt, accepted: &Obligations, slot: &Slot, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        if debt.is_void() {
+            return Err(self.error(slot.assign_void_error(), node));
+        }
+
+        let Some(refused) = self.obligations_refused_by_slot(debt, accepted, node) else {
+            return Ok(());
+        };
+
+        let nullable = self.ctx.only_nullable(&refused);
+        let msg = match (nullable, debt.is_definite()) {
+            (true, definite) => slot.assign_null_error(definite),
+            (false, _) => slot.assign_owing_error(&quoted_obligation_list(self.ctx.hir, &refused)),
+        };
+        match self.invalidated_narrowing_note(node, &refused) {
+            Some(help) => Err(self.error_help(msg, node, help)),
+            None if nullable => Err(self.error(msg, node)),
+            None => Err(self.error_help(msg, node, slot.discharge_error_help(obligation_atoms(self.ctx.hir, &refused)))),
+        }
+    }
+}
+
+/// The slot a value is stored into, for the refusal to name. A `Ref` has no member name a program
+/// can write, so it is described rather than quoted.
+enum Slot {
+    Named { text: String, noun: String },
+    Ref,
+}
+
+impl Slot {
+    fn assign_void_error(&self) -> String {
+        match self {
+            Slot::Named { text, .. } => format!("Cannot assign a void result to '{text}'; the call returns no value"),
+            Slot::Ref => "Cannot store a void result in a `Ref`; the call returns no value".to_string(),
         }
     }
 
-    /// Checks a value entering a slot against the obligations the slot accepts.
-    pub(super) fn check_into_slot(&mut self, debt: &Debt, accepted: &Obligations, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let text = self.ctx.binding_display_name(name);
-        let noun = if self.ctx.is_factory_field(name) { "field" } else { "binding" };
-        let void = || format!("Cannot assign a void result to '{text}'; the call returns no value");
-
-        if debt.is_void() {
-            return Err(self.error(void(), node));
+    fn assign_null_error(&self, definite: bool) -> String {
+        match (self, definite) {
+            (Slot::Named { text, noun }, true) => format!("Cannot assign null to non-null {noun} '{text}'"),
+            (Slot::Named { text, noun }, false) => format!("Cannot assign a nullable value to non-null {noun} '{text}'"),
+            (Slot::Ref, true) => "Cannot store null in a `Ref`".to_string(),
+            (Slot::Ref, false) => "Cannot store a nullable value in a `Ref`".to_string(),
         }
+    }
 
-        // An unknown value is guarded against every witness the slot does not accept.
-        if matches!(debt, Debt::Unknown) {
-            self.record_boundary_barrier(node, accepted);
-            return Ok(());
+    fn assign_owing_error(&self, owed: &str) -> String {
+        match self {
+            Slot::Named { text, .. } => format!("cannot assign a value owing {owed} to '{text}'"),
+            Slot::Ref => format!("cannot store a value owing {owed} in a `Ref`"),
         }
+    }
 
-        let undeclared = self.ctx.unadmitted_obligations(debt, accepted);
-        if !undeclared.is_empty() {
-            let owed = quoted_obligation_list(self.ctx.hir, &undeclared);
-            return Err(self.error_help(format!("cannot assign a value owing {owed} to '{text}'"), node,
-                format!("discharge it first, or declare it on the {noun} (`{text}: {}`)", obligation_atoms(self.ctx.hir, &undeclared))));
-        }
-
-        if accepted.contains(&self.ctx.sigs.opt) {
-            return Ok(());
-        }
-
-        match self.non_null_violation(debt, node) {
-            None => Ok(()),
-            Some(Violation::Void) => Err(self.error(void(), node)),
-            Some(Violation::Null) => Err(self.error(format!("Cannot assign null to non-null {noun} '{text}'"), node)),
-            Some(Violation::Nullable) => Err(self.error(format!("Cannot assign a nullable value to non-null {noun} '{text}'"), node)),
+    fn discharge_error_help(&self, atoms: String) -> String {
+        match self {
+            Slot::Named { text, noun } => format!("discharge it first, or declare it on the {noun} (`{text}: {atoms}`)"),
+            Slot::Ref => "discharge it before the write".to_string(),
         }
     }
 }

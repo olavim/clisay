@@ -1,0 +1,61 @@
+type C { pub var n = 0; pub fn bump(&var this) { this.n += 1; } pub fn read(this) { return this.n; } }
+type H { pub var c = C { n: 0 }; }
+say var h = H { c: C { n: 0 } };
+&h.c.bump();
+print(h.c.n); // expect: 1
+
+// @split
+type C { pub var n = 0; pub fn bump(&var this) { this.n += 1; } }
+say var c = C { n: 0 };
+c.bump(); // error: `bump` wants an anchor receiver
+
+// @split
+say var xs = [];
+&xs.push(1);
+print(xs.length()); // expect: 1
+
+// @split
+say var xs = [];
+xs.push(1); // error: `push` wants an anchor receiver
+
+// @split
+say var xs = [1];
+&xs.length(); // error: `length` does not want an anchor receiver
+
+// @split
+type C { pub var n = 0; pub fn read(this) { return this.n; } }
+say var c = C { n: 3 };
+&c.read(); // error: `read` does not want an anchor receiver
+
+// @split
+type C { pub var n = 0; pub fn bump(&var this) { this.n += 1; } }
+fn f(var b) { &b.bump(); return b.n; }
+print(f(C { n: 0 })); // expect: 1
+
+// @split
+type C { pub var n = 0; pub fn bump(&var this) { this.n += 1; } }
+fn f(var b) { b.bump(); } // error: `C.bump` wants an anchor receiver
+f(C { n: 0 });
+
+// @split
+type C {
+    pub var n = 0;
+    pub fn bump(&var this) { this.n += 1; }
+    pub fn twice(&var this) { &this.bump(); &this.bump(); }
+}
+say var c = C { n: 0 };
+&c.twice();
+print(c.n); // expect: 2
+
+// @split
+type C {
+    pub var n = 0;
+    pub fn bump(&var this) { this.n += 1; }
+    pub fn twice(&var this) { this.bump(); } // error: `bump` wants an anchor receiver
+}
+
+// @split
+say var xs = [1];
+&xs.push(2);
+print(xs?.length()); // expect: 2
+

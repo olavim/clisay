@@ -1,0 +1,39 @@
+say a = [1];
+a[0] = 2; // error: Cannot write through `a`
+
+// @split
+say var a = [1];
+a[0] = 2;
+print(a[0]); // expect: 2
+
+// @split
+say a = [1];
+&a.push(2); // error: Cannot anchor non-var binding `a`
+
+// @split
+say var a = [1];
+&a.push(2);
+print(a.length()); // expect: 2
+
+// @split
+say a = { "k": [1] };
+a["k"][0] = 2; // error: Cannot write through `a`
+
+// @split
+fn f(x) { x[0] = 9; } // error: Cannot write through `x`
+f([1]);
+
+// @split
+fn f(var x) { x[0] = 9; print(x[0]); }
+f([1]); // expect: 9
+
+// @split
+say var a = [1];
+say b = a;
+b[0] = 2; // error: Cannot write through `b`
+
+// @split
+say v = [1];
+match v {
+  b => { b[0] = 9; }, // error: Cannot write through pattern binding `b`
+}

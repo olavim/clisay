@@ -1,0 +1,49 @@
+type A { pub var count = 0; pub fn m(&var this) { this.count += 1; } pub fn r(this) { return this.count; } }
+say var a = A();
+&a.m();
+say r = a.r;
+print(r()); // expect: 1
+
+// @split
+type A { pub var count = 0; pub fn m(&var this) { this.count += 1; } }
+say var a = A();
+say m = a.m; // error: `m` wants an anchor receiver, so it cannot be bound as a value
+
+// @split
+type A { pub var count = 0; pub var bound: opt = null; pub fn m(&var this) { this.count += 1; } }
+say var a = A();
+a.bound = a.m; // error: `m` wants an anchor receiver, so it cannot be bound as a value
+
+// @split
+type A { pub var count = 0; pub fn m(&var this) { this.count += 1; } pub fn r(this) { return this.count; } }
+fn take(x) { return x.r; }
+say r = take(A());
+print(r()); // expect: 0
+
+// @split
+type A { pub var count = 0; pub fn m(&var this) { this.count += 1; } }
+fn take(x) { return x.m; } // error: `A.m` wants an anchor receiver, so it cannot be bound as a value
+print("before"); // expect: before
+take(A());
+
+// @split
+say var xs = [1, 2];
+say n = xs.length;
+print(n()); // expect: 2
+
+// @split
+say var xs = [1, 2];
+say p = xs.push; // error: `push` wants an anchor receiver, so it cannot be bound as a value
+
+// @split
+say var xs = [1, 2];
+say p = xs["push"]; // error: `push` wants an anchor receiver, so it cannot be bound as a value
+
+// @split
+fn take(v) { return v.push; } // error: `push` wants an anchor receiver, so it cannot be bound as a value
+print("before"); // expect: before
+take([1]);
+
+// @split
+fn take(d) { return d.remove; } // error: `remove` wants an anchor receiver, so it cannot be bound as a value
+take({"a": 1});

@@ -1,0 +1,8 @@
+type T {
+    var value: opt;
+    init(this) {
+        this.value = 1;
+    }
+}
+say t = T();
+print("ok"); // expect: ok

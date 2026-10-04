@@ -1,0 +1,36 @@
+fn bump(&var n) { n = n + 1; }
+
+say var a = 1;
+bump(&a);
+print(a); // expect: 2
+
+// @split
+fn set(&var n, v) { n = v; }
+fn forward(&var n) { set(&n, 9); }
+
+say var a = 0;
+forward(&a);
+print(a); // expect: 9
+
+// @split
+say var a = 1;
+say var b = &a;
+b = 5;
+print(a); // expect: 5
+print(b); // expect: 5
+
+// @split
+fn set(&var n, v) { n = v; }
+
+say var a = 1;
+say var b = &a;
+set(&b, 7);
+print(a); // expect: 7
+
+// @split
+fn take(x) { return x + 1; }
+
+say var a = 1;
+say var b = &a;
+print(take(b)); // expect: 2
+print(a); // expect: 1

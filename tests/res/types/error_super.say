@@ -1,4 +1,3 @@
-// `super` was removed; it is no longer a keyword, so it reads as an undefined name.
 type A {
     pub fn m(this) {
         return super.x; // error: Undefined variable 'super'

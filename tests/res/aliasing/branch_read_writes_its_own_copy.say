@@ -1,0 +1,12 @@
+fn run(k) {
+    say a = [[1]];
+    say b = [[2]];
+    say var x = [0];
+    if (k == 1) { x = a[0]; } else { x = b[0]; }
+    say var y = b[0];
+    x[0] = 9;
+    y[0] = 8;
+    return b[0][0];
+}
+print(run(1)); // expect: 2
+print(run(2)); // expect: 2

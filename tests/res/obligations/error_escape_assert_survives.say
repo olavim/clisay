@@ -1,5 +1,3 @@
-// `!` proves a value is not its witness. `borrowed` has none, so there is nothing to prove and no
-// discharge to launder the value out with.
 obligation borrowed { no persist; no return; }
 fn forward(x: borrowed) {
     return x!; // error: cannot discharge a value owing 'borrowed'

@@ -1,0 +1,17 @@
+type W { pub var items; init(this, items) { this.items = items; } }
+fn maybe(x): opt { if x { return W([1]); } return null; }
+
+say var plain = W([1]);
+say held = plain.items;
+&plain.items.push(2);
+print(held.length()); // expect: 1
+
+say var w: opt = maybe(true);
+say aliased: opt = w?.items;
+&w?.items.push(2);
+print(aliased?.length() ?? 0); // expect: 1
+print(w?.items.length() ?? 0); // expect: 2
+
+say var none: opt = maybe(false);
+&none?.items.push(2);
+print("null is a no-op"); // expect: null is a no-op

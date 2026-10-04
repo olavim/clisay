@@ -1,4 +1,3 @@
-// An all-defaulted type synthesizes a parameterless init that applies the defaults.
 type T {
     pub a = 1;
     pub b = 2;

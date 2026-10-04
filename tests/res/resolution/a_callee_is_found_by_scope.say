@@ -1,0 +1,27 @@
+fn keep() { return null; }
+fn wrap(keep) { return keep(); }
+say y = wrap(() => 1);
+print(y + 1); // expect: 2
+
+// @split
+fn keep() { return Err("x"); }
+fn wrap(keep) { return keep(); }
+say y = wrap(() => 1);
+print(y + 1); // expect: 2
+
+// @split
+fn keep() { return null; }
+fn wrap() { say keep = () => 1; return keep(); }
+say y = wrap();
+print(y + 1); // expect: 2
+
+// @split
+fn a() { fn keep() { return null; } return keep(); }
+fn b() { fn keep() { return 1; } return keep(); }
+say y = b();
+print(y + 1); // expect: 2
+
+// @split
+fn keep() { return null; }
+fn wrap() { return keep(); }
+say y = wrap(); // error: Cannot assign a nullable value to non-null binding 'y'

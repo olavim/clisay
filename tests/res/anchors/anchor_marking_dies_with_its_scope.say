@@ -1,0 +1,18 @@
+say var x = 1;
+if (true) { say var y = &x; y = 5; }
+if (true) { say var z = 9; print(z); } // expect: 9
+print(x); // expect: 5
+
+// @split
+say var a = [1, 2, 3];
+if (true) { say var t = &a[0]; t = 7; }
+if (true) { say var n = 4; print(n); } // expect: 4
+print(a[0]); // expect: 7
+
+// @split
+fn f(&var n) { n = 2; }
+
+say var x = 1;
+if (true) { f(&x); }
+if (true) { say var z = 8; print(z); } // expect: 8
+print(x); // expect: 2

@@ -1,0 +1,33 @@
+say sink = Ref([]);
+fn relay(x, cb) { cb(x); }
+say var m = [1, 2];
+relay(m, (v) => sink.mutate((&var list) => { &list.push(v); }));
+m[0] = 9;
+print(@sink[0][0]); // expect: 1
+print(m[0]); // expect: 9
+
+// @split
+say kept = Ref([]);
+fn relay(x, cb) { cb(x); }
+say var m = [1, 2];
+relay(m, (v) => @kept = v);
+m[0] = 9;
+print(@kept[0]); // expect: 1
+
+// @split
+type Box { pub var item: opt; init(this) { } }
+say bx = Ref(Box());
+fn relay(x, cb) { cb(x); }
+say var m = [1, 2];
+relay(m, (v) => @bx.item = v);
+m[0] = 9;
+print(@bx.item![0]); // expect: 1
+
+// @split
+type Wrap { pub w: opt; init(this) { } }
+say kept = Ref(Wrap { });
+fn relay(x, cb) { cb(x); }
+say var m = [1, 2];
+relay(m, (v) => @kept = Wrap { w: v });
+m[0] = 9;
+print(@kept.w![0]); // expect: 1

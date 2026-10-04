@@ -1,7 +1,5 @@
-// A private member is not on the surface a shape reads, so a shape naming one matches no value of
-// the type.
 type W { secret; pub a; init(this) { this.secret = 1; this.a = 2; } }
-obligation warned { witness W; discharge before drop; }
+obligation warned { witness W; must use; }
 fn f() {
     say v: warned = W();
     if (v ~ { secret: _ }) { say z = v; print("shape"); }
@@ -10,10 +8,10 @@ fn f() {
 f(); // expect: handled
 
 // @split
-// A destructure naming a private field is refutable, so failing it rules nothing out.
 type W { secret; pub a; init(this) { this.secret = 1; this.a = 2; } }
-obligation warned { witness W; discharge before drop; }
+obligation warned { witness W; must use; }
 fn f() {
-    say v: warned = W(); // error: 'v' owes 'warned' and is never discharged
-    if (v ~ W { secret: s }) { print(s); }
+    say v: warned = W();
+    if (v ~ W { secret: s }) { print(s); } else { print("no match"); }
 }
+f(); // expect: no match

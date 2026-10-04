@@ -1,4 +1,3 @@
-// `this` members are statically known: a computed `this[expr]` is rejected.
 type A {
     pub x = 1;
 

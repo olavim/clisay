@@ -1,4 +1,4 @@
-fn get(flag)? {
+fn get(flag): opt {
     if (flag == 1) { return null; }
     return Err("boom");
 }

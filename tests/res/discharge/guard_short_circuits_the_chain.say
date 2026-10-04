@@ -1,0 +1,11 @@
+type I { pub c; init(this, c) { this.c = c; } pub fn read(this) { return this.c; } }
+type W { pub b; init(this, b) { this.b = b; } }
+fn maybe(x): opt { if x { return W(I(7)); } return null; }
+
+say w: opt = maybe(true);
+print(w?.b.c ?? 0);         // expect: 7
+print(w?.b.read() ?? 0);    // expect: 7
+
+say none: opt = maybe(false);
+print(none?.b.c ?? 0);      // expect: 0
+print(none?.b.read() ?? 0); // expect: 0

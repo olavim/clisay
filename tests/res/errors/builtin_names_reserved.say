@@ -1,12 +1,11 @@
-// A built-in name is reserved in every scope, so a nested one cannot take it either.
 
 fn f() { type Err { x; } }
 
 // error(full):
 // error: 'Err' is a built-in and cannot be redeclared
-//  --> builtin_names_reserved.say:3:10
+//  --> builtin_names_reserved.say:2:10
 //   |
-// 3 | fn f() { type Err { x; } }
+// 2 | fn f() { type Err { x; } }
 //   |          ^^^^^^^^^^^^^^^
 
 // @split
@@ -20,14 +19,14 @@ fn f() { say print = 1; }
 //   |          ^^^^^^^^^^^^^^
 
 // @split
-fn f() { fn gcCollect()! { return 1; } }
+fn f() { fn gcCollect() { return 1; } }
 
 // error(full):
 // error: 'gcCollect' is a built-in and cannot be redeclared
 //  --> builtin_names_reserved.say:1:10
 //   |
-// 1 | fn f() { fn gcCollect()! { return 1; } }
-//   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+// 1 | fn f() { fn gcCollect() { return 1; } }
+//   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 // @split
 fn f(time) { }
@@ -40,11 +39,11 @@ fn f(time) { }
 //   |      ^^^^
 
 // @split
-fn g() { fn freeze(mut x) {} }
+fn g() { fn gcCollect(x) {} }
 
 // error(full):
-// error: 'freeze' is a built-in and cannot be redeclared
+// error: 'gcCollect' is a built-in and cannot be redeclared
 //  --> builtin_names_reserved.say:1:10
 //   |
-// 1 | fn g() { fn freeze(mut x) {} }
-//   |          ^^^^^^^^^^^^^^^^^^^
+// 1 | fn g() { fn gcCollect(x) {} }
+//   |          ^^^^^^^^^^^^^^^^^^

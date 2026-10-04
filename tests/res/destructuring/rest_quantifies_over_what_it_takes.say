@@ -1,0 +1,34 @@
+fn f([..x @ _ | null]) { print(x[0] ?? "none"); }
+f([null, 1]); // expect: none
+
+// @split
+fn f([..x @ _ | null]) { say y = x[0]; print(y); } // error: Cannot assign a nullable value to non-null binding 'y'
+f([1, null]);
+
+// @split
+fn f([first, ..rest]) { print(first); print(rest.length()); }
+f([1, 2, 3]); // expect: 1
+// expect: 2
+
+// @split
+type Node { pub n; }
+fn f(v) { match (v) { [..x @ Node] => { return "all"; }, _ => { return "some other"; } } }
+print(f([Node { n: 1 }, Node { n: 2 }])); // expect: all
+print(f([Node { n: 1 }, 5])); // expect: some other
+print(f([])); // expect: all
+
+// @split
+type Node { pub n; }
+say a = [Node { n: 1 }];
+if (a ~ [..x @ Node]) { print("all nodes"); } else { print("no"); } // expect: all nodes
+
+// @split
+type Node { pub n; }
+fn f(v) { match (v) { [first, ..x @ Node, last] => { return "ends and nodes"; }, _ => { return "no"; } } }
+print(f([0, Node { n: 1 }, 9])); // expect: ends and nodes
+print(f([0, 5, 9])); // expect: no
+
+// @split
+type Node { pub n; }
+fn f(v) { match (v) { [..x @ y @ Node] => { return y.n; }, _ => { return 0; } } } // error: a quantified matcher runs once per value, so it cannot bind a name
+print(f([Node { n: 1 }]));

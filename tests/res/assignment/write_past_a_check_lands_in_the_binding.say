@@ -1,0 +1,23 @@
+say var x = [1];
+say y = x;
+x![0] = 5;
+print(x[0]); // expect: 5
+print(y[0]); // expect: 1
+// @split
+fn g(var x: opt): opt {
+    x?![0] = 5;
+    return x?![0];
+}
+print(g([1])); // expect: 5
+// @split
+fn g(var x: opt): opt {
+    x![0] = 5;
+    return x![0];
+}
+print(g([1])); // expect: 5
+// @split
+fn g(var x: opt): opt {
+    x?![0] = 5;
+    return 1;
+}
+print(g(null)); // expect: null

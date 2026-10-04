@@ -1,0 +1,31 @@
+say kept = Ref([]);
+fn stash(c) { @kept = c; }
+say var a = [[0]];
+{ say var c = []; &c.push(a[0]); stash(c); }
+a[0][0] = 1;
+print(@kept[0][0]); // expect: 0
+print(a[0][0]); // expect: 1
+
+// @split
+say kept = Ref({});
+fn stash(c) { @kept = c; }
+say var a = [[0]];
+{ say var c = {}; c["k"] = a[0]; stash(c); }
+a[0][0] = 1;
+print(@kept["k"][0]); // expect: 0
+
+// @split
+type Box { pub var inner; }
+say kept = Ref(Box { inner: [] });
+fn stash(c) { @kept = c; }
+say var a = [[0]];
+{ say c = Box { inner: a[0] }; stash(c); }
+a[0][0] = 1;
+print(@kept.inner[0]); // expect: 0
+
+// @split
+fn take(c) { }
+say var a = [[0]];
+{ say var c = []; &c.push(a[0]); take(c); }
+a[0][0] = 1;
+print(a[0][0]); // expect: 1

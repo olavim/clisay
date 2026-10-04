@@ -1,4 +1,3 @@
-// A non-null value widens into a nullable slot.
 say a = 1;
-say e? = a;
+say e: opt = a;
 print(e); // expect: 1

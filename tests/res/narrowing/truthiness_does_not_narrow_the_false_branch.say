@@ -1,6 +1,4 @@
-// `if (x)` proves `x` is not null only where it holds. On the other branch it may still be null, so
-// the narrowing must not reach there.
-fn maybe(k)! : opt { if (k == 1) { return null; } return "v"; }
+fn maybe(k) : opt { if (k == 1) { return null; } return "v"; }
 fn run(k) {
     say x: opt = maybe(k);
     if (x) {

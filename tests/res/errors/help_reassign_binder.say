@@ -3,7 +3,7 @@ if d ~ { x } {
     x = 5;
 }
 // error(full):
-// error: Cannot reassign matcher binder `x`
+// error: Cannot reassign pattern binding `x`
 //  --> help_reassign_binder.say:3:5
 //   |
 // 2 | if d ~ { x } {

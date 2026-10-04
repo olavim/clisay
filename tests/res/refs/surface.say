@@ -1,0 +1,15 @@
+say r = Ref(1);
+print(@r); // expect: 1
+@r = 9;
+print(@r); // expect: 9
+r.update(n => n + 1);
+print(@r); // expect: 10
+
+say a = Ref([1, 2, 3]);
+a.mutate((&var v) => { v[0] = 99; });
+print(@a[0]); // expect: 99
+print(@a[2]); // expect: 3
+
+say bump = r.update;
+print(r ~ Ref); // expect: true
+print(@r == 10); // expect: true

@@ -1,0 +1,8 @@
+type C {
+    pub var v;
+    init(this) { this.v = 0; }
+    pub fn set(&var this, n) { this.v = n; return this; }
+}
+say var a = C();
+say var b = &a.set(1);
+print(a.v); // expect: 1

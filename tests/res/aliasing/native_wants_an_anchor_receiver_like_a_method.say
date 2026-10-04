@@ -1,0 +1,17 @@
+type Stack { pub var items; init(this) { this.items = []; } pub fn push(&var this, x) { &this.items.push(x); } }
+say var a = [0];
+&a.push(a);
+print(a[1].length()); // expect: 1
+
+// @split
+type Stack { pub var items; init(this) { this.items = []; } pub fn push(&var this, x) { &this.items.push(x); } }
+say var a = [0];
+say b = a;
+&a.push(1);
+print(a.length()); // expect: 2
+print(b.length()); // expect: 1
+
+// @split
+type Holder { pub var f; init(this, g) { this.f = g; } }
+say var a = [0];
+say var o = Holder(a.push); // error: `push` wants an anchor receiver, so it cannot be bound as a value

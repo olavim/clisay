@@ -1,0 +1,12 @@
+type T {
+    pub var value;
+    init(this) {
+        this.value = 1;
+    }
+    pub fn set(&var this) {
+        this.value = 2;
+    }
+}
+say var t = T();
+&t.set();
+print(t.value); // expect: 2

@@ -1,0 +1,62 @@
+say var g = [0];
+fn f() { return g; }
+say var a = f()!;
+say var b = f()!;
+a[0] = 1;
+b[0] = 2;
+print(g[0]); // expect: 0
+
+// @split
+say var a = [[0]];
+say var b = a![0];
+say var c = a![0];
+b[0] = 1;
+c[0] = 2;
+print(a[0][0]); // expect: 0
+
+// @split
+say var g = [0];
+fn f() { return g; }
+fn use2() {
+    say var a = f()?!;
+    say var b = f()?!;
+    a[0] = 1;
+    b[0] = 2;
+    return g[0];
+}
+print(use2()!); // expect: 0
+
+// @split
+say var g = [0];
+fn f() { return g; }
+say var a = f() ?? e => [9];
+say var b = f() ?? e => [9];
+a[0] = 1;
+b[0] = 2;
+print(g[0]); // expect: 0
+
+// @split
+say var a = [[0]];
+say var e = a[0];
+say var d = a[0];
+e[0] = 1;
+d![0] = 2;
+print(a[0][0]); // expect: 0
+
+// @split
+say a = [[0], [0]];
+say var b = a![0];
+say var c = a![1];
+b[0] = 1;
+c[0] = 2;
+print(a[0][0]); // expect: 0
+print(a[1][0]); // expect: 0
+
+// @split
+type C { pub var v; init(this) { this.v = 0; } }
+say var a = C();
+say var b = C();
+a.v = 1;
+b.v = 2;
+print(a.v); // expect: 1
+print(b.v); // expect: 2

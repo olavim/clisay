@@ -1,16 +1,16 @@
-fn getAdder(*a, *b, *c, *d, *e)! {
-    say var sum = 0;
-    fn addA()! {
-        sum = sum + a;
-        fn addB()! {
-            sum = sum + b;
-            fn addC()! {
-                sum = sum + c;
-                fn addD()! {
-                    sum = sum + d;
-                    fn addE()! {
-                        sum = sum + e;
-                        return sum;
+fn getAdder(a, b, c, d, e) {
+    say sum = Ref(0);
+    fn addA() {
+        @sum = @sum + a;
+        fn addB() {
+            @sum = @sum + b;
+            fn addC() {
+                @sum = @sum + c;
+                fn addD() {
+                    @sum = @sum + d;
+                    fn addE() {
+                        @sum = @sum + e;
+                        return @sum;
                     }
                     return addE;
                 }
@@ -22,9 +22,8 @@ fn getAdder(*a, *b, *c, *d, *e)! {
     }
     return addA;
 }
-
 say var i = 0;
-while i < 100000 {
+while (i < 100000) {
     getAdder(1, 2, 3, 4, 5)()()()()();
     i = i + 1;
 }

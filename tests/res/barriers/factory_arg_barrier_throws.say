@@ -1,3 +1,4 @@
-type T { pub v; init(this, *x) { this.v = x; } }
-say d = { a: null };
+type T { pub v; init(this, x) { this.v = x; } }
+fn make() { return { a: null }; }
+say d = make();
 T(d["a"]); // error: unexpected null

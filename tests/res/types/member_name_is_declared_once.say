@@ -1,0 +1,40 @@
+type T {
+    init(this) {}
+    pub fn f(this) { return 1; }
+    pub fn f(this) { return 2; } // error: 'f' is declared more than once
+}
+T();
+
+// @split
+type T {
+    init(this) {}
+    pub fn f(this) { return 1; }
+    pub fn g(this) { return 2; }
+}
+print(T().f() + T().g()); // expect: 3
+
+// @split
+type T { pub a; pub a; init(this) { this.a = 1; } } // error: 'a' is declared more than once
+
+// @split
+type T { pub a; pub b; init(this) { this.a = 1; this.b = 2; } }
+print(T().a + T().b); // expect: 3
+
+// @split
+type T { pub f; init(this) { this.f = 1; } pub fn f(this) { } } // error: 'f' is declared more than once
+
+// @split
+trait Tr { req fn f(this, x); pub fn f(this, x) { } } // error: 'f' is declared more than once
+
+// @split
+trait Tr { req fn f(this, x); pub fn go(this) { return this.f(1); } }
+type T with Tr { init(this) {} pub fn f(this, x) { return x; } }
+print(T().go()); // expect: 1
+
+// @split
+trait Tr { req f; req f; } // error: 'f' is declared more than once
+
+// @split
+trait Tr { req a; }
+type T with Tr { pub a; init(this) { this.a = 4; } }
+print(T().a); // expect: 4

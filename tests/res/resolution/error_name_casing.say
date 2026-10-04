@@ -1,4 +1,3 @@
-// Casing is grammatical: a type/trait is uppercase, a value is lowercase.
 type point { init(this) { } } // error: a type name must start with an uppercase letter
 // @split
 fn Render() { } // error: an fn name must start with a lowercase letter

@@ -1,4 +1,5 @@
 type T { pub fn m(this, x) { print(x); } }
 say t = T {};
-say d = { a: null };
+fn make() { return { a: null }; }
+say d = make();
 t.m(d["a"]); // error: unexpected null

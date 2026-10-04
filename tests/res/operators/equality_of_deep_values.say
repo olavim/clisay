@@ -1,0 +1,26 @@
+// Nesting thousands deep takes thousands of allocations, which turns quadratic under stress mode.
+gcStress(false);
+fn nest(n) {
+    say var v = [];
+    say var i = 0;
+    while (i < n) { v = [v]; i = i + 1; }
+    return v;
+}
+print(nest(5000) == nest(5000)); // expect: true
+print(nest(5000) == nest(4999)); // expect: false
+say var d = {};
+d[nest(5000)] = "deep";
+print(d[nest(5000)]); // expect: deep
+
+// @split
+fn build(depth, leaf) {
+    say var v = [leaf];
+    say var i = 0;
+    while i < depth {
+        v = [v, v];
+        i = i + 1;
+    }
+    return v;
+}
+print(build(60, 0) == build(60, 0)); // expect: true
+print(build(60, 0) == build(60, 1)); // expect: false

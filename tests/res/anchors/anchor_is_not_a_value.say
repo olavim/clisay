@@ -1,0 +1,27 @@
+fn take(x) { return x; }
+
+say var a = 1;
+say var b = &a;
+print(take(b)); // expect: 1
+
+// @split
+say var a = 1;
+print(&a + 1); // error: An anchor is not a value
+
+// @split
+fn f(&var n) { return n; }
+
+say var a = 3;
+print(f(&a)); // expect: 3
+
+// @split
+fn f(&var n) { return &n; } // error: An anchor is not a value
+
+say var a = 3;
+f(&a);
+
+// @split
+fn f(&var n) { say var arr = [&n]; } // error: An anchor is not a value
+
+say var a = 3;
+f(&a);

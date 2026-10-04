@@ -1,0 +1,8 @@
+type O { pub var f = 1; }
+fn work(&var n) {
+    say var i = 0;
+    while i < 1000 { n = i; i = i + 1; }
+}
+say var o = O();
+say var j = 0;
+while j < 500 { work(&o.f); j = j + 1; }

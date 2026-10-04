@@ -1,0 +1,63 @@
+fn f() {
+    try {
+        try { return "value"; } finally { print("inner"); }
+    } finally {
+        print("outer");
+    }
+}
+print(f());
+// expect: inner
+// expect: outer
+// expect: value
+
+// @split
+fn boom() { throw "boom"; }
+fn f() {
+    try { return boom(); } catch (e) { print(e); return "handled"; } finally { print("finally"); }
+}
+print(f());
+// expect: boom
+// expect: finally
+// expect: handled
+
+// @split
+fn f() {
+    try {
+        defer { print("defer"); }
+        return "value";
+    } finally {
+        print("finally");
+    }
+}
+print(f());
+// expect: defer
+// expect: finally
+// expect: value
+
+// @split
+fn f() {
+    defer { print("defer"); }
+    try { return "value"; } finally { print("finally"); }
+}
+print(f());
+// expect: finally
+// expect: defer
+// expect: value
+
+// @split
+fn g() { return Err("bad"); }
+fn f() {
+    try { say v = g()?!; return v; } finally { print("finally"); }
+}
+say r = f() ?? "handled"; // expect: finally
+print(r); // expect: handled
+
+// @split
+fn f() {
+    try { return "try"; } finally {
+        try { return "finally"; } finally { print("nested"); }
+    }
+}
+print(f());
+// expect: nested
+// expect: finally

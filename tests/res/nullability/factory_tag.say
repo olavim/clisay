@@ -1,10 +1,9 @@
-// A factory's inferred return type propagates its tag to the call site.
 type Cache {
-    pub fn find(this)? {
+    pub fn find(this): opt {
         return null;
     }
 }
-fn makeCache()! {
+fn makeCache() {
     return Cache();
 }
 say c = makeCache();

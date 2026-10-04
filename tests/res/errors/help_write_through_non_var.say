@@ -1,0 +1,15 @@
+say xs = [1];
+xs[0] = 2;
+// error(full):
+// error: Cannot write through `xs`
+//  --> help_write_through_non_var.say:2:1
+//   |
+// 1 | say xs = [1];
+// 2 | xs[0] = 2;
+//   | ^^^^^
+//   = help: declare `xs` with `var`
+
+// @split
+say var xs = [1];
+xs[0] = 2;
+print(xs[0]); // expect: 2

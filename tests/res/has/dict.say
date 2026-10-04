@@ -1,26 +1,21 @@
 say d = { x: 1, y: 2, nested: { a: 10 } };
 
-// key presence and absence
 print(d has { x: _ });        // expect: true
 print(d has { z: _ });        // expect: false
 
-// dict value match
 print(d has { x: 1 });        // expect: true
 print(d has { x: 2 });        // expect: false
 print(d has { x: 1, y: 2 });  // expect: true
 print(d has { x: 1, y: 1 });  // expect: false
 
-// a null value matches a present null member, not a non-null one
 say e = { a: null };
 print(e has { a: null });     // expect: true
 print(d has { x: null });     // expect: false
 
-// a multi-key presence test folds into one shape
 print(d has { x: _, y: _ });  // expect: true
 print(d has { x: _, z: _ });  // expect: false
 print(d has { x: 1, y: _ });  // expect: true
 print(d has { x: 2, y: _ });  // expect: false
 
-// nested specs recurse into member values
 print(d has { nested: { a: 10 } }); // expect: true
 print(d has { nested: { a: 99 } }); // expect: false

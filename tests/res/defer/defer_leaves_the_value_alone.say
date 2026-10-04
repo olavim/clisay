@@ -1,0 +1,12 @@
+say var g = [1];
+fn withDefer() { defer { } return g; }
+fn plain() { return g; }
+
+print(withDefer() == g); // expect: true
+print(plain() == g); // expect: true
+
+// @split
+say var a = [1];
+fn f() { defer { } throw a; }
+
+try { f(); } catch (e) { print(e! == a); } // expect: true

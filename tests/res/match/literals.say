@@ -1,4 +1,4 @@
-fn kind(v?) {
+fn kind(v: opt) {
     match v {
         0 => print("zero"),
         false => print("false"),

@@ -1,0 +1,129 @@
+type T {
+    pub var f;
+    init(this, f) { this.f = f; }
+    pub fn bump(var this) { this.f = this.f + 1; return this.f; }
+}
+
+say var t = T(1);
+print(t.bump()); // expect: 2
+print(t.f); // expect: 1
+
+// @split
+type T {
+    pub var f;
+    init(this, f) { this.f = f; }
+    pub fn bump(&var this) { this.f = this.f + 1; return this.f; }
+}
+
+say var t = T(1);
+print(&t.bump()); // expect: 2
+print(t.f); // expect: 2
+
+// @split
+type T {
+    pub var f;
+    init(this, f) { this.f = f; }
+    pub fn read(this) { return this.f; }
+}
+
+say var t = T(4);
+print(t.read()); // expect: 4
+print(t.f); // expect: 4
+
+// @split
+type T {
+    pub var f;
+    init(this, f) { this.f = f; }
+    pub fn bump(&var this) { this.f = this.f + 1; }
+    pub fn twice(var this) { &this.bump(); &this.bump(); return this.f; }
+}
+
+say var t = T(0);
+print(t.twice()); // expect: 2
+print(t.f); // expect: 0
+
+// @split
+type T {
+    pub var f;
+    init(this, f) { this.f = f; }
+    pub fn bump(&var this) { this.f = this.f + 1; }
+}
+
+say var t = T(1);
+&t.bump();
+print(t.f); // expect: 2
+
+// @split
+type T {
+    pub var f;
+    init(this, f) { this.f = f; }
+    pub fn bump(&var this) { this.f = this.f + 1; }
+}
+
+say t = T(1);
+&t.bump(); // error: Cannot anchor non-var binding `t`
+
+// @split
+type T { pub var f; init(this, f) { this.f = f; } pub fn take(&var this, o) { this = o; } }
+
+say var a = T(1);
+say b = T(9);
+&a.take(b);
+print(a.f); // expect: 9
+
+// @split
+type T { pub var f; init(this, f) { this.f = f; } pub fn take(&var this, o: opt) { this = o; } } // error: Cannot assign a nullable value to non-null receiver 'this'
+
+// @split
+fn reset(&var x) { x = 0; }
+type T { pub var f; init(this, f) { this.f = f; } pub fn zero(&var this) { reset(&this); } }
+
+say var a = T(1);
+&a.zero();
+print(a); // expect: 0
+
+// @split
+fn clear(&var x: opt) { x = null; }
+type T { pub var f; init(this, f) { this.f = f; } pub fn wipe(&var this) { clear(&this); } } // error: `this` owes nothing, but the parameter it fills owes 'opt'
+
+// @split
+type T {
+    pub var f;
+    init(this, f) { this.f = f; }
+    pub fn take(var this, o) { this = o; } // error: Invalid assignment
+}
+
+// @split
+type T {
+    pub var f;
+    init(this, f) { this.f = f; }
+    pub fn bump(&var this) { say g = () => { this.f = 1; }; g(); } // error: Cannot write through `this`; a closure captures its value, not its binding
+}
+
+// @split
+type T {
+    pub var f;
+    init(this, f) { this.f = f; }
+    pub fn bump(&var this) { say g = () => this.f; this.f = this.f + 1; return g(); }
+}
+
+say var t = T(1);
+print(&t.bump()); // expect: 1
+print(t.f); // expect: 2
+
+// @split
+fn reset(&var x) { x = 0; }
+fn pick() { return reset; }
+type T { pub var f; init(this, f) { this.f = f; } pub fn zero(&var this) { pick()(&this); } }
+
+say var a = T(1);
+&a.zero();
+print(a); // expect: 0
+
+// @split
+fn clear(&var x: opt) { x = null; } // error: an anchor and the parameter it fills do not admit the same values
+fn pick() { return clear; }
+type T { pub var f; init(this, f) { this.f = f; } pub fn wipe(&var this) { pick()(&this); } }
+
+say var a = T(1);
+&a.wipe();

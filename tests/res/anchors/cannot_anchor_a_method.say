@@ -1,0 +1,27 @@
+fn show(&var x) { print(x); }
+
+say var d = { "size": 1 };
+show(&d["size"]); // expect: 1
+
+// @split
+fn show(&var x) { print(x); }
+
+say var d = { "size": 1 };
+show(&d.size); // error: Cannot anchor a method
+
+// @split
+fn show(&var x) { print(x); }
+
+say var a = [1];
+show(&a.length); // error: Cannot anchor a method
+
+// @split
+type T { pub fn m(this) { return 1; } }
+fn show(&var x) { print(x); }
+
+say var t = T();
+show(&t.m); // error: Cannot anchor a method
+
+// @split
+say var a = [1];
+say var y = &a.length; // error: Cannot anchor a method

@@ -1,0 +1,29 @@
+fn reset(&var x) { x = 0; }
+fn pick() { return reset; }
+fn outer(var [a, b]) { pick()(&a); print(a + b); }
+outer([1, 2]); // expect: 2
+
+// @split
+fn reset(&var x) { x = 0; }
+fn pick() { return reset; }
+fn f() {
+    say var [a, b] = [1, 2] else { return; };
+    pick()(&a);
+    print(a + b);
+}
+f(); // expect: 2
+
+// @split
+fn clear(&var x: opt) { x = null; } // error: an anchor and the parameter it fills do not admit the same values
+fn pick() { return clear; }
+fn outer(var [a, b]) { pick()(&a); }
+outer([1, 2]);
+
+// @split
+fn clear(&var x: opt) { x = null; } // error: an anchor and the parameter it fills do not admit the same values
+fn pick() { return clear; }
+fn f() {
+    say var [a, b] = [1, 2] else { return; };
+    pick()(&a);
+}
+f();

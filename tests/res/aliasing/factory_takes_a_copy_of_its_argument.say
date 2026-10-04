@@ -1,0 +1,13 @@
+say var a = [1];
+say e: fails = Err(a);
+e ?? 0;
+a[0] = 2;
+print(a[0]); // expect: 2
+
+// @split
+type Box { pub v; init(this, v) { this.v = v; } }
+say var a = [1];
+say b = Box(a);
+a[0] = 2;
+print(a[0]); // expect: 2
+print(b.v[0]); // expect: 1

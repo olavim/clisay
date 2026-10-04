@@ -1,4 +1,0 @@
-// A borrowed mutable cannot be `!`-ed into escaping: `borrowed` names no witness, so there is
-// nothing for `!` to prove.
-obligation borrowed { no persist; no return; }
-fn leak(mut x: borrowed) { return x!; } // error: cannot discharge a value owing 'borrowed'

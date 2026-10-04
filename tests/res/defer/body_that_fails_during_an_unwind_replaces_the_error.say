@@ -1,0 +1,6 @@
+fn boom() { throw "first"; }
+fn f() {
+    defer { throw "from the defer"; }
+    boom();
+}
+try { f(); } catch (e) { print(e!); } // expect: from the defer

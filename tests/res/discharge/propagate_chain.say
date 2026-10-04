@@ -1,10 +1,9 @@
-// `?!` over a `?` chain propagates the chain's whole set.
 type Box { pub field; }
-fn readConfig(flag)! {
+fn readConfig(flag) {
     if (flag) { return Err("boom"); }
     return Box { field: "ok" };
 }
-fn loadField(flag)! {
+fn loadField(flag) {
     return readConfig(flag)?.field?!;
 }
 say clean = loadField(false) ?? "fallback";

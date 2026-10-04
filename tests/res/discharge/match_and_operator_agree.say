@@ -1,7 +1,5 @@
-// A match arm and the `~` spelling of the same test settle the same obligations. Naming a type that
-// witnesses through a mixed trait asks the question, even though matching it confirms the bad state.
 trait Wt { }
-obligation warned { witness Wt; discharge before drop; }
+obligation warned { witness Wt; must use; }
 type W2 with Wt { }
 fn f() {
     say b: warned = W2 { };
@@ -11,7 +9,7 @@ f();
 
 // @split
 trait Wt { }
-obligation warned { witness Wt; discharge before drop; }
+obligation warned { witness Wt; must use; }
 type W2 with Wt { }
 fn f() {
     say b: warned = W2 { };
@@ -20,11 +18,11 @@ fn f() {
 f();
 
 // @split
-// A guarded arm may not run, so it settles nothing either way.
 trait Wt { }
-obligation warned { witness Wt; discharge before drop; }
+obligation warned { witness Wt; must use; }
 type W2 with Wt { }
 fn f(flag) {
-    say b: warned = W2 { }; // error: 'b' owes 'warned' and is never discharged
+    say b: warned = W2 { };
     match (b) { W2 if flag => print("match"), _ => print("other"), }
 }
+f(false); // expect: other

@@ -1,0 +1,8 @@
+// A place on a name: the closest this language gets to handing over a slot.
+fn set(&var arr, v) { arr[0] = v; }
+say var inner = [0, 0, 0, 0];
+say var i = 0;
+while i < 800000 {
+    set(&inner, i);
+    i = i + 1;
+}

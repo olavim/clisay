@@ -1,0 +1,10 @@
+fn set(&var n) { n = 5; }
+
+fn outer(var x) { set(&x); print(x); } // expect: 5
+outer(1);
+
+// @split
+fn set(&var n) { n = 5; }
+
+fn outer(var [a, b]) { set(&a); print(a + b); } // expect: 7
+outer([1, 2]);

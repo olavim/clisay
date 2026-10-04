@@ -1,6 +1,5 @@
 use std::{fmt, mem};
 
-use anyhow::bail;
 use fnv::FnvHashMap;
 use nohash_hasher::{IntMap, IntSet};
 
@@ -8,184 +7,42 @@ use super::gc::{Gc, GcTraceable};
 use super::host::Host;
 use super::value::{DictKey, Value, ValueKind};
 
-/// The runtime diagnostic raised when a mutation hits an immutable value.
-pub const IMMUTABLE_MUTATION: &str = "cannot mutate an immutable value";
-
-/// The runtime diagnostic raised when a mutable value of unknown capability lands in an immutable
-/// container at construction.
-pub const MUTABLE_IN_IMMUTABLE: &str = "cannot store a mutable value in an immutable container";
-
-/// Sentinel for `ObjectHeader::immutable_origin`: the value is mutable, or no site was recorded.
-pub const NO_ORIGIN: u32 = u32::MAX;
-
-/// The runtime diagnostic raised when an opaque call would let a borrowed argument escape.
-pub const RETAINED_BORROW: &str = "cannot pass a borrowed argument to a callee that retains it";
-
-/// The runtime diagnostic raised when an opaque call would retain a value the caller still owes an
-/// obligation on. Named after the obligation, so it reads like the refusal a resolved call gets.
-pub fn retained_owed_value(owed: &str) -> String {
-    format!("cannot pass a value owing '{owed}' to a callee that retains it")
-}
-
-/// The runtime diagnostic raised when a borrowed value is persisted at a store site.
-pub const PERSISTED_BORROW: &str = "cannot persist a borrowed value";
-pub const SECOND_ELEMENT_WRITER: &str = "cannot write an element another name already writes";
-pub const WROTE_GIVEN_ELEMENT: &str = "cannot write an element whose write-ownership moved to another container";
-pub const WROTE_TRANSFERRED_ELEMENT: &str = "cannot write a value whose write-ownership was given away";
-pub const GAVE_TRANSFERRED_ELEMENT: &str = "cannot give away a value whose write-ownership was given away";
-/// A call that would retain a value an earlier retain already took the write-ownership of.
-pub const RETAINED_TWICE: &str = "cannot retain a value whose write-ownership was already taken";
-
 #[inline]
-pub fn mask_holds(mask: u64, position: usize) -> bool {
-    position < 64 && mask & (1u64 << position) != 0
-}
-
-pub fn is_mutable_container(value: Value) -> bool {
-    is_container(value) && !value.as_object().is_immutable()
-}
-
-pub fn is_container(value: Value) -> bool {
-    matches!(value.kind(), ValueKind::Object(ObjectKind::Array | ObjectKind::Dict | ObjectKind::Instance))
-}
-
-pub fn can_own_writes(value: Value) -> bool {
-    is_mutable_container(value)
-        || matches!(value.kind(), ValueKind::Object(ObjectKind::Closure))
-}
-
-pub fn record_escape(value: Value) {
-    if can_own_writes(value) {
-        unsafe { (*value.as_object().as_header_ptr()).set(FLAG_ESCAPED, true); }
-    }
-}
-
-pub fn carries_borrow(value: Value) -> bool {
-    value.is_object() && unsafe { (*value.as_object().as_header_ptr()).has(FLAG_BORROWED | FLAG_HOLDS_BORROW) }
-}
-
-pub fn mark_holds_borrow(container: Value) {
-    if container.is_object() {
-        unsafe { (*container.as_object().as_header_ptr()).set(FLAG_HOLDS_BORROW, true); }
-    }
-}
-
-/// Records that a borrow reached `container` if `value` carries a borrow.
-pub fn container_took<H: Host + ?Sized>(host: &mut H, container: Value, value: Value, borrowed: bool) -> Result<(), anyhow::Error> {
-    host.note_containment(container, value);
-    if borrowed {
-        mark_holds_borrow(container);
-    }
-    give_container_write_ownership(container, value)
-}
-
-/// A closure taking write-ownership of what it captured.
-pub fn closure_captured<H: Host + ?Sized>(host: &mut H, closure: Value, value: Value) {
-    let _ = container_took(host, closure, value, carries_borrow(value));
-}
-
-pub enum RecordedHolder {
-    Container,
-    Nobody,
-}
-
-pub fn recorded_holder(value: Value) -> RecordedHolder {
-    match value.as_object().container_write_owner() {
-        owner if owner.is_object() => RecordedHolder::Container,
-        _ => RecordedHolder::Nobody,
-    }
-}
-
-fn give_container_write_ownership(container: Value, value: Value) -> Result<(), anyhow::Error> {
-    if !is_mutable_container(value) || value == container {
-        return Ok(());
-    }
-    // A retired value has no write-ownership to give.
-    if value.as_object().is_write_retired() {
-        bail!("{GAVE_TRANSFERRED_ELEMENT}");
-    }
-    value.as_object().set_container_write_owner(container);
-    Ok(())
-}
-
-pub fn write_ownership_reaches(value: Value, root: Value) -> bool {
-    // The root is the target. No intermediate container exists to cause a conflict.
-    if value == root {
-        return true;
-    }
-    if !root.is_object() {
-        return false;
-    }
-    // Two walkers at different speeds. A container reachable from its own element is a cycle a
-    // single walker would follow forever.
-    let (mut slow, mut fast) = (value, value);
-    loop {
-        for _ in 0..2 {
-            if !fast.is_object() {
-                return false;
-            }
-            fast = fast.as_object().container_write_owner();
-            if fast == root {
-                return true;
-            }
-        }
-        slow = slow.as_object().container_write_owner();
-        if slow == fast {
-            return false;
-        }
-    }
-}
-
-pub fn freeze_value(value: Value, origin: u32) {
-    let ValueKind::Object(kind) = value.kind() else { return };
-    let object = value.as_object();
-    if object.is_immutable() {
-        return;
-    }
-    object.set_immutable(origin);
-    match kind {
-        ObjectKind::Array => for &v in unsafe { &(*object.as_array_ptr()).values } { freeze_value(v, origin); },
-        ObjectKind::Dict => for &v in unsafe { (*object.as_dict_ptr()).entries.values() } { freeze_value(v, origin); },
-        ObjectKind::Instance => {
-            let instance = unsafe { &*object.as_instance_ptr() };
-            let ty = unsafe { &*instance.ty };
-            for id in 0..ty.field_count { freeze_value(instance.get(id), origin); }
-        },
-        _ => {},
-    }
+pub fn arguments_need_accepts_check(stack_start: *mut Value, arity: usize) -> bool {
+    (0..arity).any(|i| needs_accepts_check(unsafe { *stack_start.add(i + 1) }))
 }
 
 /// A type or trait declaration's runtime identity.
 pub type TypeId = u16;
+pub const UNDECLARED: TypeId = TypeId::MAX;
 
-/// Reached by the collector this cycle.
+/// GC has reached this object.
 pub const FLAG_MARKED: u8 = 1 << 0;
-/// Frozen, so a store through it traps.
-pub const FLAG_IMMUTABLE: u8 = 1 << 1;
-/// Lent as a borrow to an active call, so a store of it traps.
-pub const FLAG_BORROWED: u8 = 1 << 2;
-/// Set while one name holds the writer slot for this value, so a second writer traps.
-pub const FLAG_WRITE_OWNED: u8 = 1 << 3;
-/// Set where a value left the frame that built it. A return, a throw, a store through an upvalue,
-/// and a capture all do that. Never cleared, so the bit only ever holds back a release a scope exit
-/// would have made.
-pub const FLAG_ESCAPED: u8 = 1 << 4;
-/// Set where the value's write-ownership went to a `*mut` parameter that never handed it on, so
-/// every write to it traps.
-pub const FLAG_WRITE_RETIRED: u8 = 1 << 5;
-/// Set where a borrowed value went into this aggregate.
-pub const FLAG_HOLDS_BORROW: u8 = 1 << 6;
+/// A second holder may have this value, so a write to it will fork.
+pub const FLAG_SHARED: u8 = 1 << 1;
+pub const FLAG_ELEMENTS_SHARED: u8 = 1 << 2;
+pub const FLAG_ON_ANCHOR_PATH: u8 = 1 << 3;
+pub const FLAG_IS_REF: u8 = 1 << 4;
+pub const FLAG_RETURNS_VALUE: u8 = 1 << 5;
+/// The container's `hash` field is its deep hash. Set only while it is shared, since only an
+/// unshared value is written in place.
+pub const FLAG_HASHED: u8 = 1 << 6;
+/// A store replaced this container while it was on an anchor's path, so an anchor to it no
+/// longer reaches the storage it was formed on.
+pub const FLAG_DETACHED: u8 = 1 << 7;
+
+pub const REF_VALUE_FIELD: MemberId = 0;
+pub const REF_LOCK_FIELD: MemberId = 1;
 
 #[repr(C)]
 pub struct ObjectHeader {
     pub kind: ObjectKind,
-    flags: u8,
-    pub immutable_origin: u32
+    pub flags: u8,
 }
 
 impl ObjectHeader {
     pub fn new(kind: ObjectKind) -> ObjectHeader {
-        ObjectHeader { kind, flags: 0, immutable_origin: NO_ORIGIN }
+        ObjectHeader { kind, flags: 0 }
     }
 
     #[inline]
@@ -194,11 +51,13 @@ impl ObjectHeader {
     }
 
     #[inline]
-    pub fn set(&mut self, flag: u8, on: bool) {
-        match on {
-            true => self.flags |= flag,
-            false => self.flags &= !flag,
-        }
+    pub fn set(&mut self, flag: u8) {
+        self.flags |= flag;
+    }
+
+    #[inline]
+    pub fn clear(&mut self, flag: u8) {
+        self.flags &= !flag;
     }
 }
 
@@ -314,7 +173,6 @@ macro_rules! objects {
 objects! {
     String         => ObjString,      string,          as_string_ptr,           TAG_HEADER,          "string";
     Instance       => ObjInstance,    instance,        as_instance_ptr,         TAG_HEADER,          "instance";
-    Upvalue        => ObjUpvalue,     upvalue,         as_upvalue_ptr,          TAG_HEADER,          "upvalue";
     Array          => ObjArray,       array,           as_array_ptr,            TAG_HEADER,          "array";
     Function       => ObjFn,          function,        as_function_ptr,         TAG_FUNCTION,        "function";
     NativeFunction => ObjNativeFn,    native_function, as_native_function_ptr,  TAG_NATIVE_FUNCTION, "function";
@@ -322,6 +180,266 @@ objects! {
     Closure        => ObjClosure,     closure,         as_closure_ptr,          TAG_CLOSURE,         "function";
     Type           => ObjType,        ty,              as_type_ptr,             TAG_TYPE,            "type";
     Dict           => ObjDict,        dict,            as_dict_ptr,             TAG_HEADER,          "dict";
+}
+
+#[inline]
+pub fn mark_shared(value: Value) {
+    if value.is_object() {
+        unsafe { (*value.as_object().as_header_ptr()).set(FLAG_SHARED) };
+    }
+}
+
+/// Marks a container on an anchor's path, and says whether it's a `Ref`.
+#[inline]
+pub fn mark_on_anchor_path(value: Value) -> bool {
+    if !value.is_object() {
+        return false;
+    }
+    let header = unsafe { &mut *value.as_object().as_header_ptr() };
+    header.set(FLAG_ON_ANCHOR_PATH);
+    header.has(FLAG_IS_REF)
+}
+
+#[inline]
+pub fn step_through(value: Value) {
+    if !value.is_object() {
+        return;
+    }
+    let header = value.as_object().as_header_ptr();
+    let flags = unsafe { (*header).flags };
+    if flags & FLAG_ELEMENTS_SHARED != 0 {
+        mark_every_element(value, header);
+    }
+}
+
+#[inline]
+fn has_flag(value: Value, flag: u8) -> bool {
+    value.is_object() && unsafe { (*value.as_object().as_header_ptr()).has(flag) }
+}
+
+#[inline]
+pub fn is_detached(value: Value) -> bool {
+    has_flag(value, FLAG_DETACHED)
+}
+
+#[inline]
+pub fn is_on_anchor_path(value: Value) -> bool {
+    has_flag(value, FLAG_ON_ANCHOR_PATH)
+}
+
+#[inline]
+pub fn is_ref(value: Value) -> bool {
+    has_flag(value, FLAG_IS_REF)
+}
+
+#[inline]
+fn detach_if_on_anchor_path(replaced: Value) {
+    if is_on_anchor_path(replaced) {
+        detach(replaced);
+    }
+}
+
+/// Detaches the value a store replaces inside `container`.
+#[inline]
+pub fn detach_replaced(container: &ObjectHeader, replaced: impl FnOnce() -> Value) {
+    if container.has(FLAG_ON_ANCHOR_PATH) {
+        detach_if_on_anchor_path(replaced());
+    }
+}
+
+#[cold]
+pub fn clear_anchor_path_flags(value: Value) {
+    for_each_element(value, |element| if is_on_anchor_path(element) { clear_anchor_path_flags(element) });
+    unsafe { (*value.as_object().as_header_ptr()).clear(FLAG_ON_ANCHOR_PATH | FLAG_DETACHED) };
+}
+
+#[cold]
+fn detach(value: Value) {
+    let header = unsafe { &mut *value.as_object().as_header_ptr() };
+    if header.has(FLAG_DETACHED) {
+        return;
+    }
+    header.set(FLAG_DETACHED);
+    for_each_element(value, |element| if is_on_anchor_path(element) { detach(element) });
+}
+
+/// Where a flagged element sits in its container
+pub enum ElementAt {
+    Index(usize),
+    Key(DictKey),
+}
+
+pub fn elements_on_anchor_path(value: Value) -> Vec<(ElementAt, Value)> {
+    let at_index = |(i, v): (usize, &Value)| (ElementAt::Index(i), *v);
+    match value.kind() {
+        ValueKind::Object(ObjectKind::Array) => unsafe { ObjArray::elements(value.as_object().as_array_ptr()).iter() }
+            .enumerate().filter(|(_, v)| is_on_anchor_path(**v)).map(at_index).collect(),
+        ValueKind::Object(ObjectKind::Instance) => unsafe { ObjInstance::values(value.as_object().as_instance_ptr()).iter() }
+            .enumerate().filter(|(_, v)| is_on_anchor_path(**v)).map(at_index).collect(),
+        ValueKind::Object(ObjectKind::Dict) => unsafe { (&*value.as_object().as_dict_ptr()).entries.iter() }
+            .filter(|(_, v)| is_on_anchor_path(**v)).map(|(k, v)| (ElementAt::Key(*k), *v)).collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub fn set_element(container: Value, at: &ElementAt, value: Value) {
+    match (container.kind(), at) {
+        (ValueKind::Object(ObjectKind::Array), ElementAt::Index(i)) => unsafe { ObjArray::elements_mut(container.as_object().as_array_ptr())[*i] = value },
+        (ValueKind::Object(ObjectKind::Instance), ElementAt::Index(i)) => unsafe { ObjInstance::values_mut(container.as_object().as_instance_ptr())[*i] = value },
+        (ValueKind::Object(ObjectKind::Dict), ElementAt::Key(k)) => { unsafe { (&mut *container.as_object().as_dict_ptr()).entries.insert(*k, value) }; },
+        _ => {},
+    }
+}
+
+#[inline]
+pub fn mark_as_ref(value: Value) {
+    if value.is_object() {
+        unsafe { (*value.as_object().as_header_ptr()).set(FLAG_IS_REF) };
+    }
+}
+
+#[cfg(debug_assertions)]
+pub fn debug_assert_store_is_acyclic(container: Value, value: Value, depth_limit: usize) {
+    // A `Ref` is allowed to contain itself.
+    if is_ref(container) {
+        return;
+    }
+    assert!(!super::equality::is_or_contains_unshared(value, container, depth_limit), "a store made a container contain itself");
+}
+
+#[inline]
+pub fn may_not_persist(value: Value) -> bool {
+    if !value.is_object() {
+        return false;
+    }
+    let object = value.as_object();
+    unsafe { (*object.as_header_ptr()).kind == ObjectKind::Instance && (*(*object.as_instance_ptr()).ty).no_persist }
+}
+
+#[inline]
+pub fn is_container(value: Value) -> bool {
+    matches!(value.kind(), ValueKind::Object(ObjectKind::Array | ObjectKind::Dict | ObjectKind::Instance))
+}
+
+#[inline]
+pub fn clear_shared(value: Value) {
+    if value.is_object() {
+        unsafe { (*value.as_object().as_header_ptr()).clear(FLAG_SHARED | FLAG_HASHED) };
+    }
+}
+
+/// A container's cached deep hash, if it has one.
+#[inline]
+pub fn cached_hash(value: Value) -> Option<u32> {
+    let header = unsafe { &*value.as_object().as_header_ptr() };
+    header.has(FLAG_HASHED).then(|| unsafe { *hash_slot_of(value) })
+}
+
+pub fn cache_hash(value: Value, hash: u32) {
+    let header = unsafe { &mut *value.as_object().as_header_ptr() };
+    // A write to a shared container lands in a copy, so the shared one keeps its contents and its
+    // hash. An unshared container is written in place, which would leave a cached hash stale.
+    if !header.has(FLAG_SHARED) {
+        return;
+    }
+    unsafe { *hash_slot_of(value) = hash };
+    header.set(FLAG_HASHED);
+}
+
+fn hash_slot_of(value: Value) -> *mut u32 {
+    let object = value.as_object();
+    unsafe {
+        match (*object.as_header_ptr()).kind {
+            ObjectKind::Array => &raw mut (*object.as_array_ptr()).hash,
+            ObjectKind::Dict => &raw mut (*object.as_dict_ptr()).hash,
+            _ => &raw mut (*object.as_instance_ptr()).hash,
+        }
+    }
+}
+
+#[inline]
+fn defer_element_marks(original: Value, copy: Value) {
+    unsafe { (*original.as_object().as_header_ptr()).set(FLAG_ELEMENTS_SHARED) };
+    unsafe { (*copy.as_object().as_header_ptr()).set(FLAG_ELEMENTS_SHARED) };
+}
+
+pub fn mark_elements_shared(value: Value) {
+    if !value.is_object() {
+        return;
+    }
+    let header = value.as_object().as_header_ptr();
+    if unsafe { !(*header).has(FLAG_ELEMENTS_SHARED) } {
+        return;
+    }
+    mark_every_element(value, header);
+}
+
+#[cold]
+pub fn mark_elements_shared_except_on_anchor_path(original: Value, copy: Value) {
+    unsafe { (*copy.as_object().as_header_ptr()).clear(FLAG_ELEMENTS_SHARED) };
+    unsafe { (*original.as_object().as_header_ptr()).clear(FLAG_ELEMENTS_SHARED) };
+    for_each_element(original, |element| if !is_on_anchor_path(element) { mark_shared(element) });
+}
+
+#[cold]
+fn mark_every_element(value: Value, header: *mut ObjectHeader) {
+    unsafe { (*header).clear(FLAG_ELEMENTS_SHARED) };
+    for_each_element(value, mark_shared);
+}
+
+fn for_each_element(value: Value, mut f: impl FnMut(Value)) {
+    match value.kind() {
+        ValueKind::Object(ObjectKind::Array) => unsafe { ObjArray::elements(value.as_object().as_array_ptr()).iter().for_each(|v| f(*v)) },
+        ValueKind::Object(ObjectKind::Dict) => unsafe { (*value.as_object().as_dict_ptr()).entries.values().for_each(|v| f(*v)) },
+        ValueKind::Object(ObjectKind::Instance) => unsafe { ObjInstance::values(value.as_object().as_instance_ptr()).iter().for_each(|v| f(*v)) },
+        _ => {},
+    }
+}
+
+#[inline]
+pub fn is_shared(value: Value) -> bool {
+    has_flag(value, FLAG_SHARED)
+}
+
+#[cfg(debug_assertions)]
+pub fn element_count(value: Value) -> usize {
+    match value.kind() {
+        ValueKind::Object(ObjectKind::Array) => unsafe { (*value.as_object().as_array_ptr()).len as usize },
+        ValueKind::Object(ObjectKind::Dict) => unsafe { (*value.as_object().as_dict_ptr()).entries.len() },
+        ValueKind::Object(ObjectKind::Instance) => unsafe { (*value.as_object().as_instance_ptr()).member_count as usize },
+        _ => 0,
+    }
+}
+
+/// Creates a shallow copy.
+#[cold]
+pub fn copy_object(gc: &mut Gc, value: Value) -> Value {
+    if is_ref(value) {
+        return value;
+    }
+    let ValueKind::Object(kind) = value.kind() else { return value };
+    let object = value.as_object();
+    match kind {
+        ObjectKind::Array => {
+            let source = object.as_array_ptr();
+            let copy = Value::from(gc.alloc_array(unsafe { ObjArray::elements(source) }, unsafe { (*source).capacity } as usize));
+            defer_element_marks(value, copy);
+            copy
+        },
+        ObjectKind::Dict => {
+            let entries = unsafe { (*object.as_dict_ptr()).entries.clone() };
+            let copy = Value::from(gc.alloc(ObjDict::new(entries)));
+            defer_element_marks(value, copy);
+            copy
+        },
+        ObjectKind::Instance => {
+            let source = object.as_instance_ptr();
+            let copy = Value::from(gc.alloc_instance(unsafe { (*source).ty }, unsafe { ObjInstance::values(source) }));
+            defer_element_marks(value, copy);
+            copy
+        },
+        _ => value,
+    }
 }
 
 impl Object {
@@ -333,107 +451,6 @@ impl Object {
     #[inline]
     pub fn as_header_ptr(&self) -> *mut ObjectHeader {
         unsafe { without_tag(self.header) }
-    }
-
-    #[inline]
-    pub fn is_immutable(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_IMMUTABLE) }
-    }
-
-    #[inline]
-    pub fn set_immutable(&self, origin: u32) {
-        let header = unsafe { &mut *self.as_header_ptr() };
-        header.set(FLAG_IMMUTABLE, true);
-        header.immutable_origin = origin;
-    }
-
-    #[inline]
-    pub fn set_mutable(&self) {
-        let header = unsafe { &mut *self.as_header_ptr() };
-        header.set(FLAG_IMMUTABLE, false);
-        header.immutable_origin = NO_ORIGIN;
-    }
-
-    /// The code index of the site that made this value immutable, if one was recorded.
-    #[inline]
-    pub fn immutable_origin(&self) -> Option<u32> {
-        match unsafe { (*self.as_header_ptr()).immutable_origin } {
-            NO_ORIGIN => None,
-            origin => Some(origin)
-        }
-    }
-
-    #[inline]
-    pub fn is_borrowed(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_BORROWED) }
-    }
-
-    #[inline]
-    pub fn set_borrowed(&self, value: bool) {
-        unsafe { (*self.as_header_ptr()).set(FLAG_BORROWED, value); }
-    }
-
-    /// Whether the last trace reached this object. Only meaningful between a trace and its sweep.
-    #[inline]
-    pub fn is_marked(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_MARKED) }
-    }
-
-    /// Whether this value left its frame by a route no container records.
-    #[inline]
-    pub fn is_escaped(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_ESCAPED) }
-    }
-
-    #[inline]
-    pub fn is_write_owned(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_WRITE_OWNED) }
-    }
-
-    #[inline]
-    pub fn set_write_owned(&self, value: bool) {
-        unsafe { (*self.as_header_ptr()).set(FLAG_WRITE_OWNED, value); }
-    }
-
-    #[inline]
-    pub fn is_write_retired(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_WRITE_RETIRED) }
-    }
-
-    #[inline]
-    pub fn set_write_retired(&self, value: bool) {
-        unsafe { (*self.as_header_ptr()).set(FLAG_WRITE_RETIRED, value); }
-    }
-
-    /// Whether a borrow was put into this aggregate at some point in its life.
-    #[inline]
-    pub fn holds_borrow(&self) -> bool {
-        unsafe { (*self.as_header_ptr()).has(FLAG_HOLDS_BORROW) }
-    }
-
-    /// The container this value was last stored into, or null.
-    #[inline]
-    pub fn container_write_owner(&self) -> Value {
-        unsafe {
-            match (*self.as_header_ptr()).kind {
-                ObjectKind::Array => (*self.as_array_ptr()).container_write_owner,
-                ObjectKind::Dict => (*self.as_dict_ptr()).container_write_owner,
-                ObjectKind::Instance => (*self.as_instance_ptr()).container_write_owner,
-                _ => Value::NULL,
-            }
-        }
-    }
-
-    #[inline]
-    pub fn set_container_write_owner(&self, owner: Value) {
-        unsafe {
-            match (*self.as_header_ptr()).kind {
-                ObjectKind::Array => (*self.as_array_ptr()).container_write_owner = owner,
-                ObjectKind::Dict => (*self.as_dict_ptr()).container_write_owner = owner,
-                ObjectKind::Instance => (*self.as_instance_ptr()).container_write_owner = owner,
-                kind => unreachable!("{kind} takes no writer slot, so it has no owner to set"),
-            }
-        }
     }
 
     #[inline]
@@ -486,7 +503,7 @@ impl GcTraceable for ObjString {
 }
 
 #[derive(Clone, Copy)]
-pub struct UpvalueLocation {
+pub struct CaptureLocation {
     pub is_local: bool,
     pub location: u8
 }
@@ -495,46 +512,24 @@ pub struct UpvalueLocation {
 #[repr(C)]
 pub struct ObjFn {
     pub header: ObjectHeader,
-    pub name: *mut ObjString,
     pub arity: u8,
-    pub mut_receiver: bool,
-    pub retain_receiver: bool,
+    pub param_list_pool_id: u16,
+    pub slot_witness_set_pool_id: u16,
+    pub name: *mut ObjString,
     pub ip_start: usize,
-    pub upvalues: Vec<UpvalueLocation>,
-    pub escape_mask: u64,
-    pub retain_mask: u64,
-    pub needs_borrow_mark: u64,
-    pub receiver_needs_borrow: bool,
-    pub param_accepts: u16,
-    pub slot_accepts: u16
+    pub capture_locations: Vec<CaptureLocation>,
 }
 
 impl ObjFn {
-    #[inline]
-    pub fn escapes(&self, position: usize) -> bool {
-        mask_holds(self.escape_mask, position)
-    }
-
-    pub fn call_masks(&self) -> CallMasks {
-        CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark, param_accepts: self.param_accepts }
-    }
-
-    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, upvalues: Vec<UpvalueLocation>, escape_mask: u64, retain_mask: u64, needs_borrow_mark: u64, mut_receiver: bool, retain_receiver: bool, receiver_needs_borrow: bool, param_accepts: u16, slot_accepts: u16) -> ObjFn {
-        debug_assert_eq!(needs_borrow_mark & retain_mask, 0, "a taken parameter asked for a borrow mark");
+    pub fn new(name: *mut ObjString, arity: u8, ip_start: usize, capture_locations: Vec<CaptureLocation>, param_list_pool_id: u16, slot_witness_set_pool_id: u16) -> ObjFn {
         ObjFn {
             header: ObjectHeader::new(ObjectKind::Function),
             name,
             arity,
-            mut_receiver,
-            retain_receiver,
             ip_start,
-            upvalues,
-            escape_mask,
-            retain_mask,
-            needs_borrow_mark,
-            receiver_needs_borrow,
-            param_accepts,
-            slot_accepts
+            capture_locations,
+            param_list_pool_id,
+            slot_witness_set_pool_id
         }
     }
 }
@@ -549,7 +544,7 @@ impl GcTraceable for ObjFn {
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<ObjFn>() + self.upvalues.capacity() * mem::size_of::<UpvalueLocation>()
+        mem::size_of::<ObjFn>() + self.capture_locations.capacity() * mem::size_of::<CaptureLocation>()
     }
 }
 
@@ -561,29 +556,22 @@ pub struct ObjNativeFn {
     pub header: ObjectHeader,
     pub name: *mut ObjString,
     pub arity: u8,
-    /// Whether the method writes its receiver.
-    pub mutates: bool,
+    /// Whether it wants an anchor receiver, as a method declaring `&var this` does.
+    pub wants_anchor_receiver: bool,
     pub function: NativeFn
 }
 
 impl ObjNativeFn {
     pub fn new(name: *mut ObjString, arity: u8, function: NativeFn) -> ObjNativeFn {
-        ObjNativeFn::of(name, arity, false, function)
-    }
-
-    pub fn mutating(name: *mut ObjString, arity: u8, function: NativeFn) -> ObjNativeFn {
-        ObjNativeFn::of(name, arity, true, function)
-    }
-
-    fn of(name: *mut ObjString, arity: u8, mutates: bool, function: NativeFn) -> ObjNativeFn {
         ObjNativeFn {
             header: ObjectHeader::new(ObjectKind::NativeFunction),
             name,
             arity,
-            mutates,
+            wants_anchor_receiver: false,
             function
         }
     }
+
 }
 
 impl GcTraceable for ObjNativeFn {
@@ -605,55 +593,37 @@ impl GcTraceable for ObjNativeFn {
 #[repr(C)]
 pub struct ObjClosure {
     pub header: ObjectHeader,
-    pub name: *mut ObjString,
     pub arity: u8,
-    pub upvalue_count: u8,
-    pub mut_receiver: bool,
-    pub retain_receiver: bool,
+    pub capture_count: u8,
+    pub param_list_pool_id: u16,
+    pub slot_witness_set_pool_id: u16,
+    pub name: *mut ObjString,
     pub ip_start: usize,
-    pub escape_mask: u64,
-    pub retain_mask: u64,
-    pub needs_borrow_mark: u64,
-    pub receiver_needs_borrow: bool,
-    pub param_accepts: u16,
-    pub slot_accepts: u16
-}
-
-#[derive(Clone, Copy)]
-pub struct CallMasks {
-    pub retain_mask: u64,
-    pub escape_mask: u64,
-    pub needs_borrow_mark: u64,
-    pub param_accepts: u16,
 }
 
 impl ObjClosure {
-    pub fn call_masks(&self) -> CallMasks {
-        CallMasks { retain_mask: self.retain_mask, escape_mask: self.escape_mask, needs_borrow_mark: self.needs_borrow_mark, param_accepts: self.param_accepts }
-    }
-
-    /// Byte offset of the trailing upvalue array.
-    const UPVALUES_OFFSET: usize = mem::size_of::<ObjClosure>();
-
-    #[inline]
-    pub fn escapes(&self, position: usize) -> bool {
-        mask_holds(self.escape_mask, position)
-    }
+    /// Byte offset of the trailing capture array.
+    const CAPTURES_OFFSET: usize = mem::size_of::<ObjClosure>();
 
     #[inline]
     pub fn alloc_size(count: usize) -> usize {
-        Self::UPVALUES_OFFSET + count * mem::size_of::<*mut ObjUpvalue>()
+        Self::CAPTURES_OFFSET + count * mem::size_of::<Value>()
     }
 
-    /// The trailing upvalue array.
+    /// The trailing capture array. A closure holds the values it captured, not the slots.
     #[inline]
-    pub unsafe fn upvalues_ptr(closure: *const ObjClosure) -> *mut *mut ObjUpvalue {
-        unsafe { (closure as *mut u8).add(Self::UPVALUES_OFFSET) as *mut *mut ObjUpvalue }
+    pub unsafe fn captures_ptr(closure: *const ObjClosure) -> *mut Value {
+        unsafe { (closure as *mut u8).add(Self::CAPTURES_OFFSET) as *mut Value }
     }
 
     #[inline]
-    pub unsafe fn upvalue_at(closure: *const ObjClosure, idx: usize) -> *mut ObjUpvalue {
-        unsafe { *Self::upvalues_ptr(closure).add(idx) }
+    pub unsafe fn capture_at(closure: *const ObjClosure, idx: usize) -> Value {
+        unsafe { *Self::captures_ptr(closure).add(idx) }
+    }
+
+    #[inline]
+    pub unsafe fn set_capture(closure: *mut ObjClosure, idx: usize, value: Value) {
+        unsafe { *Self::captures_ptr(closure).add(idx) = value };
     }
 }
 
@@ -667,18 +637,17 @@ impl GcTraceable for ObjClosure {
     }
 
     unsafe fn mark_trailing(ptr: *const ObjClosure, gc: &mut Gc) {
-        for i in 0..unsafe { (*ptr).upvalue_count } as usize {
-            gc.mark_object(unsafe { Self::upvalue_at(ptr, i) });
+        for i in 0..unsafe { (*ptr).capture_count } as usize {
+            unsafe { Self::capture_at(ptr, i) }.mark(gc);
         }
     }
 
     fn size(&self) -> usize {
-        // The trailing upvalue array shares the struct's allocation.
-        Self::alloc_size(self.upvalue_count as usize)
+        self.layout_size()
     }
 
     fn layout_size(&self) -> usize {
-        Self::alloc_size(self.upvalue_count as usize)
+        Self::alloc_size(self.capture_count as usize)
     }
 }
 
@@ -718,25 +687,12 @@ impl GcTraceable for ObjBoundMethod {
 type MemberId = u8;
 
 #[inline]
-pub fn arguments_may_carry_witness(stack_start: *mut Value, arity: usize) -> bool {
-    (0..arity).any(|i| may_carry_witness(unsafe { *stack_start.add(i + 1) }))
-}
-
-#[inline]
-pub fn any_argument_null_or_container(stack_start: *mut Value, arity: usize) -> bool {
-    (0..arity).any(|i| {
-        let value = unsafe { *stack_start.add(i + 1) };
-        value.is_null() || is_container(value)
-    })
-}
-
-#[inline]
-pub fn may_carry_witness(value: Value) -> bool {
+pub fn needs_accepts_check(value: Value) -> bool {
     if value.is_number() || value.is_bool() {
         return false;
     }
 
-    if value.is_null() {
+    if value.is_null() || value.is_anchor() {
         return true;
     }
 
@@ -769,6 +725,30 @@ pub struct BuiltinLayout {
     pub field_count: MemberId,
     pub factory_id: MemberId,
     pub member_count: MemberId,
+    pub methods: Vec<(MemberId, u8)>,
+    pub var_fields: VarFields,
+    pub anchorable_fields: VarFields,
+    pub field_witness_set_pool_ids: Box<[u16]>,
+    pub no_persist: bool,
+}
+
+/// A bit per field id, set where the field was declared `var`. A type declares at most 255 fields.
+#[derive(Clone, Copy, PartialEq)]
+pub struct VarFields([u64; 4]);
+
+impl VarFields {
+    pub fn none() -> VarFields {
+        VarFields([0; 4])
+    }
+
+    pub fn set(&mut self, field: MemberId) {
+        self.0[field as usize >> 6] |= 1 << (field & 63);
+    }
+
+    #[inline]
+    pub fn has(&self, field: MemberId) -> bool {
+        self.0[field as usize >> 6] & (1 << (field & 63)) != 0
+    }
 }
 
 #[repr(align(8))]
@@ -784,8 +764,12 @@ pub struct ObjType {
     pub provided: IntSet<TypeId>,
     /// The obligation witnesses this type provides, by id, sorted.
     pub witness_ids: Box<[u16]>,
-    /// What each field accepts, by field id, as a witness-pool index.
-    pub field_accepts: Box<[u16]>,
+    /// Whether its instances witness a `no persist` obligation.
+    pub no_persist: bool,
+    /// Each field's witness set, by field id.
+    pub field_witness_set_pool_ids: Box<[u16]>,
+    pub var_fields: VarFields,
+    pub anchorable_fields: VarFields,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
@@ -803,11 +787,14 @@ impl ObjType {
             name,
             members: FnvHashMap::default(),
             field_count: 0,
-            id: TypeId::MAX,
+            id: UNDECLARED,
             methods: IntMap::default(),
             provided: IntSet::default(),
             witness_ids: Box::new([]),
-            field_accepts: Box::new([]),
+            no_persist: false,
+            field_witness_set_pool_ids: Box::new([]),
+            var_fields: VarFields::none(),
+            anchorable_fields: VarFields::none(),
             member_count: 0,
             getter_id: None,
             setter_id: None,
@@ -827,7 +814,10 @@ impl ObjType {
             methods: self.methods.clone(),
             provided: self.provided.clone(),
             witness_ids: self.witness_ids.clone(),
-            field_accepts: self.field_accepts.clone(),
+            no_persist: self.no_persist,
+            field_witness_set_pool_ids: self.field_witness_set_pool_ids.clone(),
+            var_fields: self.var_fields,
+            anchorable_fields: self.anchorable_fields,
             member_count: self.member_count,
             getter_id: self.getter_id,
             setter_id: self.setter_id,
@@ -907,32 +897,50 @@ impl GcTraceable for ObjType {
 #[repr(C)]
 pub struct ObjInstance {
     pub header: ObjectHeader,
-    /// The container that write-owns this instance, or null.
-    pub container_write_owner: Value,
+    pub member_count: u8,
+    pub hash: u32,
     pub ty: *mut ObjType,
-    /// Member values indexed directly by member id.
-    pub values: Box<[Value]>
 }
 
 impl ObjInstance {
-    pub fn new(type_ptr: *mut ObjType) -> ObjInstance {
-        let ty = unsafe { &*type_ptr };
-        ObjInstance {
-            header: ObjectHeader::new(ObjectKind::Instance),
-            container_write_owner: Value::NULL,
-            ty: type_ptr,
-            values: ty.template.clone()
-        }
+    /// Byte offset of the trailing member array.
+    const VALUES_OFFSET: usize = mem::size_of::<ObjInstance>();
+
+    #[inline]
+    pub fn alloc_size(count: usize) -> usize {
+        Self::VALUES_OFFSET + count * mem::size_of::<Value>()
     }
 
     #[inline]
-    pub fn get(&self, id: MemberId) -> Value {
-        self.values[id as usize]
+    fn values_ptr(instance: *const ObjInstance) -> *mut Value {
+        (instance as *mut u8).wrapping_add(Self::VALUES_OFFSET) as *mut Value
+    }
+
+    /// The member values, indexed by member id.
+    #[inline]
+    pub unsafe fn values<'a>(instance: *const ObjInstance) -> &'a [Value] {
+        std::slice::from_raw_parts(Self::values_ptr(instance), (*instance).member_count as usize)
     }
 
     #[inline]
-    pub fn set(&mut self, id: MemberId, value: Value) {
-        self.values[id as usize] = value;
+    pub unsafe fn values_mut<'a>(instance: *mut ObjInstance) -> &'a mut [Value] {
+        std::slice::from_raw_parts_mut(Self::values_ptr(instance), (*instance).member_count as usize)
+    }
+
+    #[inline]
+    pub unsafe fn member_ptr(instance: *const ObjInstance, id: MemberId) -> *mut Value {
+        debug_assert!(id < unsafe { (*instance).member_count }, "member id higher than the number of members in the instance");
+        unsafe { Self::values_ptr(instance).add(id as usize) }
+    }
+
+    #[inline]
+    pub unsafe fn get(instance: *const ObjInstance, id: MemberId) -> Value {
+        unsafe { *Self::member_ptr(instance, id) }
+    }
+
+    #[inline]
+    pub unsafe fn set(instance: *mut ObjInstance, id: MemberId, value: Value) {
+        unsafe { *Self::member_ptr(instance, id) = value };
     }
 }
 
@@ -944,56 +952,20 @@ impl GcTraceable for ObjInstance {
 
     fn mark(&self, gc: &mut Gc) {
         gc.mark_object(self.ty);
-        for value in self.values.iter() {
+    }
+
+    unsafe fn mark_trailing(ptr: *const ObjInstance, gc: &mut Gc) {
+        for value in unsafe { Self::values(ptr) }.iter() {
             value.mark(gc);
         }
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<ObjInstance>() + self.values.len() * mem::size_of::<Value>()
-    }
-}
-
-#[repr(align(8))]
-#[repr(C)]
-pub struct ObjUpvalue {
-    pub header: ObjectHeader,
-    pub location: *mut Value,
-    pub closed: Value,
-    pub accepts: u16
-}
-
-impl ObjUpvalue {
-    pub fn is_closed(&self) -> bool {
-        std::ptr::eq(self.location as *const Value, &raw const self.closed)
+        self.layout_size()
     }
 
-    pub fn new(location: *mut Value, accepts: u16) -> ObjUpvalue {
-        ObjUpvalue {
-            header: ObjectHeader::new(ObjectKind::Upvalue),
-            location,
-            closed: Value::NULL,
-            accepts
-        }
-    }
-
-    pub fn close(&mut self) {
-        self.closed = unsafe { *self.location };
-        self.location = &raw mut self.closed;
-    }
-}
-
-impl GcTraceable for ObjUpvalue {
-    fn fmt(&self) -> String {
-        format!("<up {}>", unsafe { &*self.location })
-    }
-
-    fn mark(&self, gc: &mut Gc) {
-        unsafe { &*self.location }.mark(gc);
-    }
-
-    fn size(&self) -> usize {
-        mem::size_of::<ObjUpvalue>()
+    fn layout_size(&self) -> usize {
+        Self::alloc_size(self.member_count as usize)
     }
 }
 
@@ -1001,34 +973,128 @@ impl GcTraceable for ObjUpvalue {
 #[repr(C)]
 pub struct ObjArray {
     pub header: ObjectHeader,
-    /// The container that write-owns this array, or null.
-    pub container_write_owner: Value,
-    pub values: Vec<Value>
+    pub hash: u32,
+    /// The first element. It points into the array's own allocation until it grows,
+    /// and then at a heap buffer.
+    pub data: *mut Value,
+    pub len: u32,
+    /// How many elements fit where `data` points.
+    pub capacity: u32,
+    /// How many elements fit in the array's own allocation.
+    pub inline_capacity: u32,
 }
 
 impl ObjArray {
-    pub fn new(values: Vec<Value>) -> ObjArray {
-        ObjArray {
-            header: ObjectHeader::new(ObjectKind::Array),
-            container_write_owner: Value::NULL,
-            values
+    /// Byte offset of the trailing element array.
+    const ELEMENTS_OFFSET: usize = mem::size_of::<ObjArray>();
+
+    #[inline]
+    pub fn alloc_size(inline_capacity: usize) -> usize {
+        Self::ELEMENTS_OFFSET + inline_capacity * mem::size_of::<Value>()
+    }
+
+    #[inline]
+    pub fn inline_ptr(array: *const ObjArray) -> *mut Value {
+        (array as *mut u8).wrapping_add(Self::ELEMENTS_OFFSET) as *mut Value
+    }
+
+    #[inline]
+    pub unsafe fn elements<'a>(array: *const ObjArray) -> &'a [Value] {
+        std::slice::from_raw_parts((*array).data, (*array).len as usize)
+    }
+
+    #[inline]
+    pub unsafe fn elements_mut<'a>(array: *mut ObjArray) -> &'a mut [Value] {
+        std::slice::from_raw_parts_mut((*array).data, (*array).len as usize)
+    }
+
+    #[inline]
+    unsafe fn is_data_on_heap(array: *const ObjArray) -> bool {
+        (*array).data != Self::inline_ptr(array)
+    }
+
+    #[inline]
+    pub unsafe fn get_ptr(array: *const ObjArray, index: usize) -> *mut Value {
+        debug_assert!(index < (*array).len as usize, "element index past the array's length");
+        (*array).data.add(index)
+    }
+
+    #[inline]
+    pub unsafe fn get(array: *const ObjArray, index: usize) -> Value {
+        *Self::get_ptr(array, index)
+    }
+
+    #[inline]
+    pub unsafe fn set(array: *mut ObjArray, index: usize, value: Value) {
+        *Self::get_ptr(array, index) = value;
+    }
+
+    #[inline]
+    pub unsafe fn push(array: *mut ObjArray, value: Value) {
+        if (*array).len == (*array).capacity {
+            Self::grow(array);
         }
+        *(*array).data.add((*array).len as usize) = value;
+        (*array).len += 1;
+    }
+
+    #[cold]
+    unsafe fn grow(array: *mut ObjArray) {
+        let capacity = ((*array).capacity as usize * 2).max(4);
+        let len = (*array).len as usize;
+        let buffer = match Self::is_data_on_heap(array) {
+            true => {
+                let mut buffer = Vec::from_raw_parts((*array).data, len, (*array).capacity as usize);
+                buffer.reserve_exact(capacity - len);
+                buffer
+            },
+            false => {
+                let mut buffer = Vec::with_capacity(capacity);
+                buffer.extend_from_slice(Self::elements(array));
+                buffer
+            },
+        };
+        let mut buffer = mem::ManuallyDrop::new(buffer);
+        (*array).data = buffer.as_mut_ptr();
+        (*array).capacity = buffer.capacity() as u32;
+    }
+
+    unsafe fn free_buffer(array: *mut ObjArray) {
+        if Self::is_data_on_heap(array) {
+            drop(Vec::from_raw_parts((*array).data, 0, (*array).capacity as usize));
+        }
+    }
+}
+
+impl Drop for ObjArray {
+    fn drop(&mut self) {
+        unsafe { Self::free_buffer(self) };
     }
 }
 
 impl GcTraceable for ObjArray {
     fn fmt(&self) -> String {
-        format!("<array {}>", self.values.len())
+        format!("<array {}>", self.len)
     }
 
-    fn mark(&self, gc: &mut Gc) {
-        for value in &self.values {
+    fn mark(&self, _gc: &mut Gc) {}
+
+    unsafe fn mark_trailing(ptr: *const ObjArray, gc: &mut Gc) {
+        for value in unsafe { Self::elements(ptr) } {
             value.mark(gc);
         }
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<ObjArray>() + self.values.capacity() * mem::size_of::<Value>()
+        let buffer = match unsafe { Self::is_data_on_heap(self) } {
+            true => self.capacity as usize * mem::size_of::<Value>(),
+            false => 0,
+        };
+        self.layout_size() + buffer
+    }
+
+    fn layout_size(&self) -> usize {
+        Self::alloc_size(self.inline_capacity as usize)
     }
 }
 
@@ -1036,8 +1102,7 @@ impl GcTraceable for ObjArray {
 #[repr(C)]
 pub struct ObjDict {
     pub header: ObjectHeader,
-    /// The container that write-owns this dict, or null.
-    pub container_write_owner: Value,
+    pub hash: u32,
     pub entries: FnvHashMap<DictKey, Value>
 }
 
@@ -1045,7 +1110,7 @@ impl ObjDict {
     pub fn new(entries: FnvHashMap<DictKey, Value>) -> ObjDict {
         ObjDict {
             header: ObjectHeader::new(ObjectKind::Dict),
-            container_write_owner: Value::NULL,
+            hash: 0,
             entries
         }
     }
@@ -1066,5 +1131,25 @@ impl GcTraceable for ObjDict {
     fn size(&self) -> usize {
         mem::size_of::<ObjDict>()
             + self.entries.capacity() * (mem::size_of::<Value>() + mem::size_of::<Value>())
+    }
+}
+
+#[cfg(test)]
+mod layout {
+    use super::*;
+
+    #[test]
+    fn the_header_fits_before_the_first_pointer() {
+        assert_eq!(mem::size_of::<ObjectHeader>(), 2);
+        assert_eq!(mem::offset_of!(ObjClosure, name), 8);
+        assert_eq!(mem::offset_of!(ObjFn, name), 8);
+        assert_eq!(mem::offset_of!(ObjInstance, member_count), 2);
+    }
+
+    #[test]
+    fn the_hash_cache_fits_before_the_first_pointer() {
+        assert_eq!(mem::offset_of!(ObjArray, data), 8);
+        assert_eq!(mem::offset_of!(ObjDict, entries), 8);
+        assert_eq!(mem::offset_of!(ObjInstance, ty), 8);
     }
 }

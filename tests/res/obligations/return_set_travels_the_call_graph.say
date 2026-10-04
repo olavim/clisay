@@ -1,0 +1,20 @@
+fn leaf(): opt { return null; }
+fn mid() { return leaf(); }
+fn top() { return mid(); }
+say x = top(); // error: Cannot assign a nullable value to non-null binding 'x'
+
+// @split
+fn leaf(): opt { return null; }
+fn ping(n) { if (n == 0) { return leaf(); } return pong(n - 1); }
+fn pong(n) { return ping(n - 1); }
+say x = pong(3); // error: Cannot assign a nullable value to non-null binding 'x'
+
+// @split
+fn leaf(): opt { return null; }
+fn pong(n) { return ping(n - 1); }
+fn ping(n) { if (n == 0) { return leaf(); } return pong(n - 1); }
+say x = pong(3); // error: Cannot assign a nullable value to non-null binding 'x'
+
+// @split
+fn selfCall(n) { if (n == 0) { return null; } return selfCall(n - 1); }
+say x = selfCall(2); // error: Cannot assign a nullable value to non-null binding 'x'

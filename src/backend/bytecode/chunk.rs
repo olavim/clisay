@@ -3,7 +3,7 @@ use std::mem;
 use fnv::{FnvHashMap, FnvHashSet};
 
 use crate::frontend::lex::SourcePosition;
-use crate::middle::ir::{SlotAccepts, SourceRole};
+use crate::middle::ir::{self, SlotWitnessSet, SourceRole};
 use crate::core::gc::{Gc, GcTraceable};
 use crate::ast::BuiltinType;
 use crate::core::objects::TypeId;
@@ -20,43 +20,57 @@ pub struct BytecodeChunk {
     pub witness_ids: Vec<(TypeId, u16)>,
     /// Each built-in's member layout, by [`BuiltinType::index`].
     pub builtin_layouts: [Option<BuiltinLayout>; BuiltinType::COUNT],
-    /// The witness ids each barrier allows, by pool index.
-    pub witness_allows: Vec<Box<[u16]>>,
-    /// What each callable's parameters accept, by position, as witness-pool indices.
-    pub param_accepts: Vec<Box<[u16]>>,
-    pub slot_accepts: Vec<Box<[SlotAccepts]>>,
-    /// The obligation each survive barrier's guarded positions owe, by pool index.
-    pub owed_names: Vec<Box<[(u8, Box<str>)]>>,
+    /// Each witness set: the witness ids a slot or barrier allows.
+    pub witness_set_pool: Vec<Box<[u16]>>,
+    /// Each callable's parameter list: a `witness_set_pool` id per parameter, with the anchor flag
+    /// in the top bit.
+    pub param_list_pool: Vec<Box<[u16]>>,
+    /// Each frame's slot witness sets, the script's first.
+    pub slot_witness_set_pool: Vec<Box<[SlotWitnessSet]>>,
+    /// Each frame's anchor parameters as anchor slot and copy slot, by `slot_witness_set_pool` id.
+    pub anchor_params: Vec<Box<[(u8, u8)]>>,
+    pub handlers: Vec<HandlerRange>,
     pub code: Vec<OpCode>,
     pub constants: Vec<Value>,
     /// One source position per code byte.
     pub code_pos: Vec<SourcePosition>,
-    /// Byte offsets of the checks forcing put back.
-    pub elisions: FnvHashSet<usize>,
+    /// The last byte of each check that check-forcing put back.
+    pub forced_check_ends: FnvHashSet<usize>,
     /// Extra source positions, keyed by byte offset and role.
     pub source_map: FnvHashMap<(usize, SourceRole), SourcePosition>,
 }
 
+/// The bytes `start..end` throw to the handler at `handler`.
+#[derive(Clone, Copy)]
+pub struct HandlerRange {
+    pub start: u16,
+    pub end: u16,
+    pub handler: u16,
+    pub frame_stack_height: u16,
+}
+
 impl BytecodeChunk {
+    pub fn handler_at(&self, offset: usize) -> Option<HandlerRange> {
+        let after = self.handlers.partition_point(|range| range.start as usize <= offset);
+        let range = *self.handlers.get(after.checked_sub(1)?)?;
+        (offset < range.end as usize).then_some(range)
+    }
+
     pub fn new() -> BytecodeChunk {
         BytecodeChunk {
-            elisions: FnvHashSet::default(),
+            forced_check_ends: FnvHashSet::default(),
             witness_ids: Vec::new(),
             builtin_layouts: std::array::from_fn(|_| None),
-            witness_allows: Vec::new(),
-            param_accepts: Vec::new(),
-            slot_accepts: Vec::new(),
-            owed_names: Vec::new(),
+            witness_set_pool: Vec::new(),
+            param_list_pool: Vec::new(),
+            slot_witness_set_pool: Vec::new(),
+            anchor_params: Vec::new(),
+            handlers: Vec::new(),
             code: Vec::new(),
             constants: Vec::new(),
             code_pos: Vec::new(),
             source_map: FnvHashMap::default(),
         }
-    }
-
-    /// An extra position recorded for the instruction `offset` falls inside.
-    pub fn source_at(&self, offset: usize, role: SourceRole) -> Option<&SourcePosition> {
-        self.source_map.get(&(offset, role))
     }
 
     pub fn write(&mut self, op: OpCode, pos: &SourcePosition) {
@@ -69,6 +83,7 @@ impl GcTraceable for BytecodeChunk {
     fn fmt(&self) -> String {
         let mut string = String::new();
         let mut pos = 0;
+        let mut omitted = 0;
 
         macro_rules! byte {
             () => {{ pos += 1; self.code[pos - 1] }};
@@ -79,12 +94,26 @@ impl GcTraceable for BytecodeChunk {
 
         while pos < self.code.len() {
             let op_pos = pos;
+            let line_start = string.len();
             let op = byte!();
-            string.push_str(&format!("{op_pos}: {}", opcode::name(op)));
+            // The prelude is the same for every program, so a disassembly leaves it out.
+            let from_prelude = self.code_pos.get(op_pos)
+                .is_some_and(SourcePosition::is_vm_source);
+            string.push_str(&format!("{}: {}", op_pos - omitted, opcode::name(op)));
 
             for operand in opcode::operands(op) {
                 let rendered = match operand {
                     Operand::Byte => format!("<{}>", byte!()),
+                    Operand::CallFlags => {
+                        let flags = byte!();
+                        let mut marks: Vec<&str> = Vec::new();
+                        if flags & ir::CALL_ARGS_SETTLED != 0 { marks.push("settled"); }
+                        else if flags & ir::CALL_KINDS_PROVEN != 0 { marks.push("proven"); }
+                        if flags & ir::CALL_WANTS_VALUE == 0 { marks.push("discards"); }
+                        if flags & ir::CALL_PASSES_ANCHOR_RECEIVER != 0 { marks.push("anchor"); }
+                        if flags & ir::CALL_TESTS_CALLEE != 0 { marks.push("tested"); }
+                        format!("<{}>", marks.join(" "))
+                    },
                     Operand::Local => format!("L{}", byte!()),
                     Operand::Const => self.constants[byte!() as usize].fmt(),
                     Operand::Jump => format!("<{}>", short!()),
@@ -101,6 +130,11 @@ impl GcTraceable for BytecodeChunk {
                 string.push_str(&rendered);
             }
 
+            if from_prelude {
+                string.truncate(line_start);
+                omitted += pos - op_pos;
+                continue;
+            }
             if pos < self.code.len() {
                 string.push('\n');
             }

@@ -2,7 +2,7 @@ trait Source {
     req fn read(this): fails;
 }
 type File with Source {
-    pub fn read(this)! { return 1; }
+    pub fn read(this) { return 1; }
     init(this) {}
 }
 say f = File();

@@ -1,5 +1,4 @@
-// Array shapes across sizes.
-fn shape(v?) {
+fn shape(v: opt) {
     match v {
         [] => print("empty"),
         [_, x, _] => print(x),
@@ -13,14 +12,14 @@ shape([9]); // expect: some-array
 shape({ a: 1 }); // expect: not-array
 shape(7); // expect: not-array
 
-fn nested(v?) {
+fn nested(v: opt) {
     if v ~ [[a], [b]] { print(a); print(b); } else { print("no"); }
 }
 nested([[1], [2]]); // expect: 1
 // expect: 2
 nested([1, 2]); // expect: no
 
-fn ends(v?) {
+fn ends(v: opt) {
     if v ~ [..init, last] { print(last); print(init.length()); }
 }
 ends([1, 2, 3]); // expect: 3

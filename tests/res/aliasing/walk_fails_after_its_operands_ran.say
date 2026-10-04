@@ -1,0 +1,4 @@
+fn loud() { print("ran"); return 1; }
+say var e = [{"c": 0}];
+e[5]["c"] = loud() + 0; // error: Array index out of bounds: 5
+// expect: ran

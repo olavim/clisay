@@ -1,0 +1,41 @@
+say p = 1;
+fn a() {
+    if false { b(); }
+    return p;
+}
+say q = 2;
+fn b() { return q; }
+print(a()); // expect: 1
+print(b()); // expect: 2
+
+// @split
+say p = 1;
+fn a() {
+    if false { b(); }
+    return p;
+}
+print(a()); // error: 'a' cannot be used yet, because it uses 'b', which is declared below
+say q = 2;
+fn b() { return q; }
+
+// @split
+fn run(early) {
+    say p = 1;
+    fn a() { if (early) { return b(); } return p; }
+    say q = 2;
+    fn b() { return q; }
+    if (early) { return a; }
+    return a;
+}
+print(run(false)()); // expect: 1
+
+// @split
+fn run(early) {
+    say p = 1;
+    fn a() { if (early) { return b(); } return p; }
+    if (early) { return a; } // error: 'a' cannot be used yet, because it uses 'b', which is declared below
+    say q = 2;
+    fn b() { return q; }
+    return a;
+}
+run(false);

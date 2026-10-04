@@ -1,0 +1,9 @@
+// The same accumulation rebuilt through a returning call, which a persistent array would make cheap.
+fn withElement(var a, elem) { &a.push(elem); return a; }
+
+say var a = [];
+say var i = 0;
+while i < 5000 {
+    a = withElement(a, i);
+    i = i + 1;
+}

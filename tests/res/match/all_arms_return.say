@@ -1,5 +1,4 @@
-// A `!` function whose match arms all return satisfies return-completeness with no trailing statement.
-fn pick(n)! {
+fn pick(n) {
     match n {
         0 => { return "zero"; },
         _ => { return "other"; },

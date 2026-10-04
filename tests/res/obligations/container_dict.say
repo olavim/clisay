@@ -1,4 +1,0 @@
-// The single `[obl]` clause covers dicts as well as arrays.
-type Taint { } obligation taint { witness Taint; discharge to use; }
-say d: [taint] = {};
-print(d.size()); // expect: 0

@@ -1,0 +1,4 @@
+fn f(): fails { return Err("e"); }
+say x: fails = f(); // error: 'x' owes 'fails' and is never used
+say h = (p) => { say b = p && p; return b; };
+print("end");

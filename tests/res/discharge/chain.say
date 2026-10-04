@@ -1,15 +1,13 @@
-// The `?` access-guard chains a member access: a null operand short-circuits to null.
 type User { pub name; }
 
-say missing? = null;
-say n? = missing?.name;
+say missing: opt = null;
+say n: opt = missing?.name;
 print(n); // expect: null
 
-say present? = User { name: "ann" };
-say m? = present?.name;
+say present: opt = User { name: "ann" };
+say m: opt = present?.name;
 print(m); // expect: ann
 
-// A chain may break after the `?`, since `?` binds left and the accessor follows.
-say broken? = present?
+say broken: opt = present?
     .name;
 print(broken); // expect: ann

@@ -1,7 +1,0 @@
-// An external write to an immutable field is rejected.
-type T {
-    pub value;
-    init(this) { this.value = 1; }
-}
-say t = mut T();
-t.value = 2; // error: Cannot reassign field `T.value`

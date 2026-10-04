@@ -1,0 +1,18 @@
+say var a = {};
+a["k"] = 1;
+say f = () => { print(a["k"]); }; // expect: 1
+f();
+a["k"] = 2;
+print(a["k"]); // expect: 2
+// @split
+say var a = {};
+a["k"] = 1;
+say f = () => { a["k"] = 9; }; // error: Cannot write through `a`; a closure captures its value, not its binding
+f();
+print(a["k"]);
+// @split
+say a = Ref({});
+say f = () => { @a["k"] = 9; };
+@a["k"] = 2;
+f();
+print(@a["k"]); // expect: 9

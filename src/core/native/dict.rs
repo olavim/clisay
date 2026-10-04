@@ -1,11 +1,10 @@
 use crate::core::gc::Gc;
 use crate::core::host::Host;
-use anyhow::bail;
 
-use crate::core::objects::{NativeFn, ObjNativeFn, ObjString, IMMUTABLE_MUTATION};
+use crate::core::objects::{self, NativeFn, ObjNativeFn, ObjString};
 use crate::core::value::{DictKey, Value};
 
-use super::NativeType;
+use super::{NativeType, NativeTypeBuilder};
 
 pub struct NativeDict;
 
@@ -23,19 +22,20 @@ impl NativeDict {
     }
 
     fn remove(host: &mut dyn Host, target: Value, key: Value) -> Result<(), anyhow::Error> {
-        if target.as_object().is_immutable() {
-            bail!("{IMMUTABLE_MUTATION}");
-        }
         let dict = unsafe { &mut *target.as_object().as_dict_ptr() };
-        let removed = dict.entries.remove(&DictKey(key)).unwrap_or(Value::NULL);
+        let mut removed = dict.entries.remove(&DictKey(key)).unwrap_or(Value::NULL);
+        objects::detach_replaced(&dict.header, || removed);
+        if objects::is_on_anchor_path(removed) {
+            removed = host.share(removed);
+        }
         host.push(removed);
         Ok(())
     }
 }
 
-impl NativeType for NativeDict {
-    fn get_name(&self) -> &'static str {
-        "dict"
+impl NativeTypeBuilder for NativeDict {
+    fn kind(&self) -> NativeType {
+        NativeType::Dict
     }
 
     fn methods(&self, gc: &mut Gc) -> Vec<(*mut ObjString, ObjNativeFn)> {
@@ -45,7 +45,7 @@ impl NativeType for NativeDict {
         vec![
             (size, ObjNativeFn::new(size, 0, (|host, target, _args| Self::size(host, target)) as NativeFn)),
             (contains_key, ObjNativeFn::new(contains_key, 1, (|host, target, args| Self::contains_key(host, target, args[0])) as NativeFn)),
-            (remove, ObjNativeFn::mutating(remove, 1, (|host, target, args| Self::remove(host, target, args[0])) as NativeFn)),
+            (remove, ObjNativeFn::new(remove, 1, (|host, target, args| Self::remove(host, target, args[0])) as NativeFn)),
         ]
     }
 }

@@ -37,10 +37,11 @@ pub fn children_of(hir: &Hir, node: Child) -> Vec<Child> {
 pub fn children_of_expr(hir: &Hir, node: &HirId<HirExpr>) -> Vec<Child> {
     let mut out = Vec::new();
     match hir.get(node) {
-        HirExpr::Unary(_, x) | HirExpr::Assert(x)
-        | HirExpr::Match(x, _) | HirExpr::Mut(x) | HirExpr::Propagate(x) => out.push(Child::Expr(*x)),
-        HirExpr::Binary(_, l, r) | HirExpr::Assign(l, r) | HirExpr::Coalesce(l, r)
-        | HirExpr::Handle(l, _, r) | HirExpr::SafeAccess(l, r, _) | HirExpr::Index(l, r, _) => {
+        HirExpr::Unary(_, x) | HirExpr::Assert(x) | HirExpr::Anchor(x)
+        | HirExpr::Match(x, _) | HirExpr::Propagate(x) | HirExpr::RefValue { holder: x, .. } => out.push(Child::Expr(*x)),
+        HirExpr::Binary(_, l, r)
+        | HirExpr::Assign(l, r) | HirExpr::CompoundAssign(l, _, r) | HirExpr::Coalesce(l, r)
+        | HirExpr::Handle(l, _, r) | HirExpr::Index { base: l, member: r, .. } => {
             out.push(Child::Expr(*l));
             out.push(Child::Expr(*r));
         },
@@ -67,7 +68,10 @@ pub fn children_of_expr(hir: &Hir, node: &HirId<HirExpr>) -> Vec<Child> {
 pub fn children_of_stmt(hir: &Hir, node: &HirId<HirStmt>) -> Vec<Child> {
     let mut out = Vec::new();
     match hir.get(node) {
-        HirStmt::Expression(e) | HirStmt::Throw(e) | HirStmt::Block(e) => out.push(Child::Expr(*e)),
+        HirStmt::Expression(e)
+        | HirStmt::Throw(e)
+        | HirStmt::Block(e)
+        | HirStmt::Defer(e) => out.push(Child::Expr(*e)),
         HirStmt::Return(opt) => if let Some(e) = opt { out.push(Child::Expr(*e)); },
         HirStmt::While(cond, body) => {
             out.push(Child::Expr(*cond));
@@ -84,6 +88,7 @@ pub fn children_of_stmt(hir: &Hir, node: &HirId<HirStmt>) -> Vec<Child> {
             if let Some(f) = finally { out.push(Child::Expr(*f)); }
         },
         HirStmt::Say(field) => if let Some(v) = field.value { out.push(Child::Expr(v)); },
+        HirStmt::Discard(value) => out.push(Child::Expr(*value)),
         HirStmt::Match(scrutinee, arms) => {
             out.push(Child::Expr(*scrutinee));
             for arm in arms {

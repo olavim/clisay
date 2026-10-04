@@ -1,3 +1,2 @@
-// A shape matcher cannot repeat a key.
 say d = { a: 1 };
 if d ~ { a: _, a: _ } { print("no"); } // error: Duplicate key in a shape matcher

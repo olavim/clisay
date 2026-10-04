@@ -1,0 +1,14 @@
+fn wrap(&var x) { x = [x, 5]; }
+fn grow(&var xs) { &xs.push(3); }
+
+say var d = { "a": 1, "b": [1] };
+wrap(&d["a"]);
+grow(&d["b"]);
+print(d["a"][1]); // expect: 5
+print(d["b"].length()); // expect: 2
+
+// @split
+fn bump(&var x) { x = x + 1; }
+
+say var d = { "a": 1 };
+bump(&d["b"]); // error: Dict key not found: "b"

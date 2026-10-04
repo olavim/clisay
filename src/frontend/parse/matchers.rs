@@ -150,7 +150,10 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Is => Err(self.error_help("redundant `is`", &pos,
                 "a bare type name is already the test here")),
             TokenType::Has => self.parse_has_matcher(),
-            TokenType::LeftBrace => self.parse_shape_matcher(),
+            TokenType::LeftBrace => {
+                let shape = self.parse_shape_matcher()?;
+                Ok(self.node_matcher(Matcher::Dict(shape), pos))
+            },
             TokenType::LeftBracket => self.parse_array_matcher(),
             TokenType::LeftParen => {
                 self.tokens.next();
@@ -238,14 +241,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
     }
 
-    /// An optional `{ ... }` destructuring shape after a `has T`/`is T` operator. A `{` opens a
-    /// shape only when it reads as `{ key: ... }`.
+    /// An optional `{ ... }` destructuring shape after a type name.
     pub(super) fn parse_type_shape(&mut self) -> Result<Option<AstId<Matcher>>, anyhow::Error> {
         let opens_shape = self.tokens.peek(0).kind == TokenType::LeftBrace
             && matches!(self.tokens.peek(1).kind,
                 TokenType::Identifier | TokenType::NumericLiteral | TokenType::StringLiteral
                 | TokenType::True | TokenType::False | TokenType::Null)
-            && self.tokens.peek(2).kind == TokenType::Colon;
+            && matches!(self.tokens.peek(2).kind,
+                TokenType::Colon | TokenType::Comma | TokenType::RightBrace);
         match opens_shape {
             true => Ok(Some(self.parse_shape_matcher()?)),
             false => Ok(None),
@@ -255,10 +258,23 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// shape := "{" ( field ("," field)* ","? )? "}"
     pub(super) fn parse_shape_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::LeftBrace)?.pos.clone();
-        let mut fields: Vec<MatchField> = Vec::new();
+        let mut fields: Vec<MatchShapeField> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
 
+        let mut rest: Option<MatchRest> = None;
+
         while !self.tokens.matches(TokenType::RightBrace) {
+            if self.tokens.peek(0).kind == TokenType::DotDot {
+                let rest_pos = self.tokens.next().pos.clone();
+                if rest.is_some() {
+                    parse_error!(self, &rest_pos, "A shape matcher allows at most one rest `..`");
+                }
+                rest = Some(self.parse_shape_rest()?);
+                if self.tokens.next_if(TokenType::Comma).is_none() {
+                    break;
+                }
+                continue;
+            }
             let field = self.with_ctx(ExprCtx::matcher(), |p| p.parse_shape_field())?;
             if !seen.insert(scalar_dedup(&field.key)) {
                 parse_error!(self, &pos, "Duplicate key in a shape matcher");
@@ -270,11 +286,29 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         }
         
         self.tokens.expect(TokenType::RightBrace)?;
-        Ok(self.node_matcher(Matcher::Shape(fields), pos))
+        Ok(self.node_matcher(Matcher::Shape { fields, rest }, pos))
+    }
+
+    /// rest := ".." IDENT? ("@" matcher)?
+    fn parse_shape_rest(&mut self) -> Result<MatchRest, anyhow::Error> {
+        // A `..name` rest binds, so its name is a lowercase value.
+        let binder = match self.tokens.next_if(TokenType::Identifier) {
+            Some(token) => {
+                self.check_name_case(&token.lexeme, NameKind::Binding, &token.pos)?;
+                let name = self.ast.intern(&token.lexeme);
+                Some(self.ast.add_matcher(Matcher::Binder(name), token.pos.clone()))
+            },
+            None => None,
+        };
+        let every = match self.tokens.next_if(TokenType::At) {
+            Some(_) => Some(self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?),
+            None => None,
+        };
+        Ok(MatchRest { binder, matcher: every })
     }
 
     /// field := IDENT ":" matcher | scalar ":" matcher | IDENT (shorthand `{ x }` binds x)
-    pub(super) fn parse_shape_field(&mut self) -> Result<MatchField, anyhow::Error> {
+    pub(super) fn parse_shape_field(&mut self) -> Result<MatchShapeField, anyhow::Error> {
         let token = self.tokens.peek(0).clone();
         let pos = token.pos.clone();
         match token.kind {
@@ -284,7 +318,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
                 if self.tokens.next_if(TokenType::Colon).is_some() {
                     let value = self.parse_matcher()?;
-                    return Ok(MatchField { key, value });
+                    return Ok(MatchShapeField { key, value });
                 }
 
                 // `{ x }` binds x. A shorthand binds, so its name is a lowercase value.
@@ -295,14 +329,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
                 let sym = self.ast.intern(&token.lexeme);
                 let value = self.ast.add_matcher(Matcher::Binder(sym), pos);
-                Ok(MatchField { key, value })
+                Ok(MatchShapeField { key, value })
             },
             TokenType::Minus | TokenType::StringLiteral | TokenType::NumericLiteral
             | TokenType::True | TokenType::False | TokenType::Null => {
                 let key = self.parse_match_scalar()?;
                 self.tokens.expect(TokenType::Colon)?;
                 let value = self.parse_matcher()?;
-                Ok(MatchField { key, value })
+                Ok(MatchShapeField { key, value })
             },
             _ => parse_error!(self, &pos, "Expected a shape field"),
         }
@@ -312,7 +346,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     /// elem := matcher | ".." IDENT?
     pub(super) fn parse_array_matcher(&mut self) -> Result<AstId<Matcher>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::LeftBracket)?.pos.clone();
-        let mut elements: Vec<MatchElem> = Vec::new();
+        let mut elements: Vec<MatchArrayElem> = Vec::new();
         let mut seen_rest = false;
 
         while !self.tokens.matches(TokenType::RightBracket) {
@@ -323,18 +357,23 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 }
                 seen_rest = true;
                 // A `..name` rest binds, so its name is a lowercase value.
-                let name = match self.tokens.next_if(TokenType::Identifier) {
+                let binder = match self.tokens.next_if(TokenType::Identifier) {
                     Some(token) => {
-                        self.check_name_case(&token.lexeme, NameKind::Binder, &token.pos)?;
+                        self.check_name_case(&token.lexeme, NameKind::Binding, &token.pos)?;
                         let name = self.ast.intern(&token.lexeme);
                         Some(self.ast.add_matcher(Matcher::Binder(name), token.pos.clone()))
                     },
                     None => None
                 };
-                elements.push(MatchElem::Rest(name));
+                // `..x @ p` applies `p` to every element.
+                let matcher = match self.tokens.next_if(TokenType::At) {
+                    Some(_) => Some(self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?),
+                    None => None,
+                };
+                elements.push(MatchArrayElem::Rest(MatchRest { binder, matcher }));
             } else {
                 let matcher = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
-                elements.push(MatchElem::Elem(matcher));
+                elements.push(MatchArrayElem::Elem(matcher));
             }
             if self.tokens.next_if(TokenType::Comma).is_none() {
                 break;
@@ -361,7 +400,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn always_matches(&self, matcher: &Matcher) -> bool {
         match matcher {
             Matcher::Wildcard | Matcher::Binder(_) => true,
-            Matcher::Literal(_) | Matcher::Type { .. } | Matcher::Shape(_) | Matcher::Array(_) => false,
+            Matcher::Literal(_) | Matcher::Type { .. } | Matcher::Shape { .. } | Matcher::Dict(_) | Matcher::Array(_) => false,
             Matcher::As(_, inner) => self.always_matches(self.ast.get(inner)),
             Matcher::And(parts) => parts.iter().all(|p| self.always_matches(self.ast.get(p))),
             Matcher::Or(alternatives) => alternatives.iter().any(|a| self.always_matches(self.ast.get(a))),
@@ -374,10 +413,11 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             Matcher::Wildcard | Matcher::Literal(_) => false,
             Matcher::Binder(_) | Matcher::As(..) => true,
             Matcher::Type { shape, .. } => shape.as_ref().is_some_and(|s| self.binds_any(self.ast.get(s))),
-            Matcher::Shape(fields) => fields.iter().any(|f| self.binds_any(self.ast.get(&f.value))),
+            Matcher::Shape { fields, .. } => fields.iter().any(|f| self.binds_any(self.ast.get(&f.value))),
+            Matcher::Dict(shape) => self.binds_any(self.ast.get(shape)),
             Matcher::Array(elements) => elements.iter().any(|e| match e {
-                MatchElem::Elem(m) => self.binds_any(self.ast.get(m)),
-                MatchElem::Rest(name) => name.is_some(),
+                MatchArrayElem::Elem(m) => self.binds_any(self.ast.get(m)),
+                MatchArrayElem::Rest(rest) => rest.binder.is_some(),
             }),
             Matcher::And(parts) => parts.iter().any(|p| self.binds_any(self.ast.get(p))),
             Matcher::Or(alternatives) => alternatives.iter().any(|a| self.binds_any(self.ast.get(a))),

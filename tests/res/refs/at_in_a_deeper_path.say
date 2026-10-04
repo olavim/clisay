@@ -1,0 +1,12 @@
+type W { pub field; init(this, field) { this.field = field; } }
+type Holder { pub var value; init(this, value) { this.value = value; } }
+type N { pub nested; init(this, nested) { this.nested = nested; } }
+
+say w = W(Ref(Holder(1)));
+w.@field.value += 1;
+print(w.@field.value); // expect: 2
+
+say v = W(Ref(N(Ref(7))));
+print(v.@field.@nested); // expect: 7
+v.@field.@nested += 1;
+print(v.@field.@nested); // expect: 8

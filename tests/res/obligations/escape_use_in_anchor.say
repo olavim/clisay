@@ -1,0 +1,5 @@
+obligation borrowed { no persist; no return; }
+fn show(x: borrowed) {
+    print(x + 1); // expect: 2
+}
+show(1);

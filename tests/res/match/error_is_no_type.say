@@ -1,7 +1,6 @@
-// Matcher `is` is retired; a bare uppercase type name is the test.
 say x = 1;
 if x ~ is Point { print("no"); } // error: redundant `is`
+
 // @split
-// The value-level `is` operator still needs a type name.
 say x = 1;
 if x is { a: 1 } { print("no"); } // error: `is` needs a type name

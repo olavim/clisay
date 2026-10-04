@@ -3,7 +3,7 @@
 use clisay::internals::{build_tree, Access, Clause, DecisionTree, HirId, HirMatcher, Ir, Label, Path, Scalar, ValueTest};
 
 fn clause(tests: Vec<(Path, ValueTest)>, body: Label) -> Clause<'static> {
-    Clause { tests, nested: Vec::new(), binds: Vec::new(), guard: None, body, binders: &[] }
+    Clause { tests, nested: Vec::new(), every: Vec::new(), binds: Vec::new(), guard: None, body, binders: &[] }
 }
 
 fn present(key: &str) -> ValueTest {
@@ -105,7 +105,7 @@ fn nested_matcher_owner_takes_matched_rest_takes_both() {
     let (b1, b2) = (ir.new_label(), ir.new_label());
     // The tree builder only routes on the nested matcher's path, so any handle stands in for one.
     let wildcard: HirId<HirMatcher> = HirId::from_index(0);
-    let owner = Clause { tests: Vec::new(), nested: vec![(vec![], wildcard)], binds: Vec::new(), guard: None, body: b1, binders: &[] };
+    let owner = Clause { tests: Vec::new(), nested: vec![(vec![], wildcard)], every: Vec::new(), binds: Vec::new(), guard: None, body: b1, binders: &[] };
     let clauses = vec![owner, clause(Vec::new(), b2)];
     let DecisionTree::Nested { matched, unmatched, .. } = build_tree(&clauses) else { panic!("expected a nested node") };
     assert!(matches!(*matched, DecisionTree::Leaf { body, .. } if body == b1));

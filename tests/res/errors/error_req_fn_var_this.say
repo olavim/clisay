@@ -1,0 +1,8 @@
+trait Tr { req fn m(var this); }
+// error(full):
+// error: A `req fn` cannot require a `var` parameter
+//  --> error_req_fn_var_this.say:1:21
+//   |
+// 1 | trait Tr { req fn m(var this); }
+//   |                     ^^^^^^^^
+//   = help: `req fn` cannot require its params to be `var`; composing types can still mark params as `var`, but it cannot be part of the contract

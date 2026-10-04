@@ -1,4 +1,5 @@
 use std::hash::{Hash, Hasher};
+use super::equality;
 use std::{fmt, mem};
 
 use super::gc::{Gc, GcTraceable};
@@ -8,7 +9,9 @@ pub enum ValueKind {
     Null,
     Number,
     Boolean,
-    Object(ObjectKind)
+    Object(ObjectKind),
+    Anchor,
+    MemberKey,
 }
 
 impl fmt::Display for ValueKind {
@@ -17,7 +20,9 @@ impl fmt::Display for ValueKind {
             ValueKind::Null => format!("null"),
             ValueKind::Number => format!("number"),
             ValueKind::Boolean => format!("boolean"),
-            ValueKind::Object(kind) => format!("{}", kind)
+            ValueKind::Object(kind) => format!("{}", kind),
+            ValueKind::Anchor => format!("anchor"),
+            ValueKind::MemberKey => format!("member"),
         })
     }
 }
@@ -25,6 +30,12 @@ impl fmt::Display for ValueKind {
 /// NaN boxed value
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub struct Value(u64);
+
+/// Which frame owned a slot when an anchor named it.
+#[cfg(debug_assertions)]
+pub type FrameGeneration = u16;
+#[cfg(not(debug_assertions))]
+pub type FrameGeneration = ();
 
 impl Value {
      /// 0x7FF8000000000000 is the QNaN representation of a 64-bit float.
@@ -47,9 +58,35 @@ impl Value {
     
     const CALLABLE_MASK: u64 = Self::OBJECT_MASK | (1 << 48); // 0x4000000000000000
 
+    const SLOT_ANCHOR_TAG: u64 = 0b100;
+    const PATH_ANCHOR_TAG: u64 = 0b101;
+    const ANCHOR_WITNESS_SET_SHIFT: u64 = 32;
+
+    #[cfg(debug_assertions)]
+    const ANCHOR_GENERATION_SHIFT: u64 = 3;
+    #[cfg(debug_assertions)]
+    const ANCHOR_GENERATION_MASK: u64 = (1 << 5) - 1;
+
+    #[cfg(debug_assertions)]
+    pub fn wrap_frame_generation(counter: u16) -> FrameGeneration {
+        counter & Self::ANCHOR_GENERATION_MASK as u16
+    }
+
+    const MEMBER_KEY_TAG: u64 = 0b110;
+    const ANCHOR_DOT_BIT: u64 = 1 << 32;
+    const ANCHOR_FIELD_SHIFT: u64 = 40;
+
     pub const NULL: Self = Self(Self::NAN_MASK | 0b01);
+    /// Poisons a slot whose binding is not assigned yet in debug builds. It's null's
+    /// tag with a payload, which costs no tag, since null is matched by its exact bits.
+    const UNASSIGNED: Self = Self(Self::NULL.0 | (1 << 8));
     pub const TRUE: Self = Self(Self::NAN_MASK | 0b10);
     pub const FALSE: Self = Self(Self::NAN_MASK | 0b11);
+
+    #[cfg(debug_assertions)]
+    pub const fn unassigned() -> Self { Self::UNASSIGNED }
+    #[cfg(not(debug_assertions))]
+    pub const fn unassigned() -> Self { Self::NULL }
 
     pub fn kind(self) -> ValueKind {
         if self.is_null() {
@@ -60,42 +97,34 @@ impl Value {
             ValueKind::Number
         } else if self.is_object() {
             ValueKind::Object(unsafe { (*self.as_object().as_header_ptr()).kind })
+        } else if self.is_member_key() {
+            ValueKind::MemberKey
         } else {
-            unreachable!("Invalid value type")
+            ValueKind::Anchor
         }
+    }
+
+    pub fn is_unassigned(self) -> bool {
+        self == Self::UNASSIGNED
     }
 
     pub fn is_number(self) -> bool {
         (self.0 & Self::NAN_MASK) != Self::NAN_MASK
     }
 
-    /// Language-level equality (the `==` / `!=` operators). Distinct from the
-    /// derived `PartialEq`, which compares raw NaN-boxed bits. Numbers are
-    /// compared as `f64` so IEEE 754 holds (`NaN != NaN`, `-0.0 == 0.0`); every
-    /// other kind falls back to bit equality (object identity, bool/null value).
-    pub fn value_eq(self, other: Self) -> bool {
-        if self.is_number() && other.is_number() {
-            return self.as_number() == other.as_number();
-        }
-        self == other || self.names_the_same_type(other)
+    /// Language-level equality, what `==` answers.
+    #[inline]
+    pub fn value_eq(self, other: Self, depth_limit: usize) -> bool {
+        equality::shallow_eq(self, other).unwrap_or_else(|| equality::deep_eq(self, other, depth_limit))
     }
 
-    /// Whether both values are types built from one declaration.
-    fn names_the_same_type(self, other: Self) -> bool {
-        match (self.type_identity(), other.type_identity()) {
-            (Some(a), Some(b)) => a == b,
-            _ => false,
-        }
+    #[inline]
+    pub fn from_bits(bits: u64) -> Value {
+        Value(bits)
     }
 
-    /// The declaration a type value came from. A declaration can have more than one type object,
-    /// so two values naming one type share this and nothing else.
-    fn type_identity(self) -> Option<objects::TypeId> {
-        if !matches!(self.kind(), ValueKind::Object(ObjectKind::Type)) {
-            return None;
-        }
-        let id = unsafe { (*self.as_object().as_type_ptr()).id };
-        (id != objects::TypeId::MAX).then_some(id)
+    pub fn to_bits(self) -> u64 {
+        self.0
     }
 
     pub fn is_bool(self) -> bool {
@@ -114,16 +143,97 @@ impl Value {
         (self.0 & Self::CALLABLE_MASK) == Self::CALLABLE_MASK
     }
 
+    #[inline]
+    pub fn slot_anchor(index: usize, witness_set_pool_id: u16, generation: FrameGeneration) -> Value {
+        Value(Self::NAN_MASK
+            | ((witness_set_pool_id as u64) << Self::ANCHOR_WITNESS_SET_SHIFT)
+            | Self::anchor_index_bits(index, generation)
+            | Self::SLOT_ANCHOR_TAG)
+    }
+
+    #[inline]
+    fn anchor_index_bits(index: usize, generation: FrameGeneration) -> u64 {
+        ((index as u64) << 8) | Self::anchor_generation_bits(generation)
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline]
+    fn anchor_generation_bits(generation: FrameGeneration) -> u64 {
+        ((generation as u64) & Self::ANCHOR_GENERATION_MASK) << Self::ANCHOR_GENERATION_SHIFT
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[inline]
+    fn anchor_generation_bits(_generation: FrameGeneration) -> u64 { 0 }
+
+    #[cfg(debug_assertions)]
+    pub fn anchor_generation(self) -> FrameGeneration {
+        ((self.0 >> Self::ANCHOR_GENERATION_SHIFT) & Self::ANCHOR_GENERATION_MASK) as u16
+    }
+
+    pub fn anchor_witness_set_pool_id(self) -> u16 {
+        (self.0 >> Self::ANCHOR_WITNESS_SET_SHIFT) as u16
+    }
+
+    pub const ANCHOR_KEY_OFFSET: usize = 1;
+
+    /// The frame slot holding a path anchor's key for `step`, given the anchor's first slot.
+    pub const fn anchor_key_slot(first: usize, steps: usize, step: usize) -> usize {
+        first + Self::ANCHOR_KEY_OFFSET + steps - 1 - step
+    }
+
+    #[inline]
+    pub fn anchor_path(index: usize, is_dot: bool, generation: FrameGeneration) -> Value {
+        Value(Self::NAN_MASK
+            | ((is_dot as u64) << 32)
+            | Self::anchor_index_bits(index, generation)
+            | Self::PATH_ANCHOR_TAG)
+    }
+
+    /// A path anchor that also carries the id of the field it names.
+    pub fn with_anchor_field(self, id: u8) -> Value {
+        debug_assert!(id < u8::MAX, "a field id should fit");
+        Value(self.0 | ((id as u64 + 1) << Self::ANCHOR_FIELD_SHIFT))
+    }
+
+    pub fn anchor_field(self) -> Option<u8> {
+        match (self.0 >> Self::ANCHOR_FIELD_SHIFT) as u8 {
+            0 => None,
+            id => Some(id - 1),
+        }
+    }
+
+    pub fn anchor_is_dot(self) -> bool {
+        self.0 & Self::ANCHOR_DOT_BIT != 0
+    }
+
+    pub fn is_anchor(self) -> bool {
+        (self.0 & (Self::OBJECT_MASK | 0b110)) == (Self::NAN_MASK | Self::SLOT_ANCHOR_TAG)
+    }
+
+    pub fn is_anchor_path(self) -> bool {
+        (self.0 & (Self::OBJECT_MASK | 0b111)) == (Self::NAN_MASK | Self::PATH_ANCHOR_TAG)
+    }
+
+    #[inline]
+    pub fn anchor_index(self) -> usize {
+        ((self.0 >> 8) & 0xFFFFFF) as usize
+    }
+
+    pub fn member_key(id: u8) -> Value {
+        Value(Self::NAN_MASK | ((id as u64) << 8) | Self::MEMBER_KEY_TAG)
+    }
+
+    pub fn is_member_key(self) -> bool {
+        (self.0 & (Self::OBJECT_MASK | 0b111)) == (Self::NAN_MASK | Self::MEMBER_KEY_TAG)
+    }
+
+    pub fn member_key_id(self) -> u8 {
+        (self.0 >> 8) as u8
+    }
+
     pub fn is_object(self) -> bool {
         (self.0 & Self::OBJECT_MASK) == Self::OBJECT_MASK
-    }
-
-    pub fn is_borrowed(self) -> bool {
-        self.is_object() && self.as_object().is_borrowed()
-    }
-
-    pub fn is_marked(self) -> bool {
-        self.is_object() && self.as_object().is_marked()
     }
 
     pub fn as_number(self) -> f64 {
@@ -167,7 +277,9 @@ impl GcTraceable for Value {
             ValueKind::Null => format!("null"),
             ValueKind::Number => format!("{}", self.as_number()),
             ValueKind::Boolean => format!("{}", self.as_bool()),
-            ValueKind::Object(_) => self.as_object().fmt()
+            ValueKind::Object(_) => self.as_object().fmt(),
+            ValueKind::Anchor => String::from("anchor"),
+            ValueKind::MemberKey => format!("member {}", self.member_key_id()),
         }
     }
 
@@ -188,8 +300,7 @@ impl fmt::Display for Value {
     }
 }
 
-/// A dict key. Equality and hashing follow `Value::value_eq`, so a lookup answers the way `==`
-/// does. Keying on the raw bits instead misses wherever two of them are one value.
+/// A dict key. Equality and hashing follow `Value::value_eq`, so a lookup answers the way `==` does.
 #[derive(Clone, Copy)]
 pub struct DictKey(pub Value);
 
@@ -197,7 +308,7 @@ impl PartialEq for DictKey {
     /// The bit test comes first so a key always equals itself. `value_eq` says `NaN != NaN`, which
     /// would leave a stored key unreachable by the very value that stored it.
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0 || self.0.value_eq(other.0)
+        self.0 == other.0 || self.0.value_eq(other.0, usize::MAX)
     }
 }
 
@@ -205,11 +316,6 @@ impl Eq for DictKey {}
 
 impl Hash for DictKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        match self.0.type_identity() {
-            Some(id) => id.hash(state),
-            // `-0.0 == 0.0`, so the two have to hash alike.
-            None if self.0.is_number() && self.0.as_number() == 0.0 => 0f64.to_bits().hash(state),
-            None => self.0.hash(state),
-        }
+        equality::deep_hash(self.0).hash(state);
     }
 }

@@ -16,6 +16,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             TokenType::Try => self.parse_trycatch(),
             TokenType::If => self.parse_if_stmt(),
             TokenType::Match => self.parse_match(),
+            TokenType::Defer => self.parse_defer(),
             TokenType::LeftBrace => self.parse_block_stmt(),
             _ => self.parse_expr_stmt()
         }
@@ -35,6 +36,12 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok(self.node_stmt(Stmt::If(condition, then, otherwise), pos))
     }
 
+    fn parse_defer(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
+        let pos = self.tokens.expect(TokenType::Defer)?.pos.clone();
+        let body = self.parse_block_or_stmt()?;
+        Ok(self.node_stmt(Stmt::Defer(body), pos))
+    }
+
     pub(super) fn parse_block_stmt(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         let body = self.parse_block_or_stmt()?;
@@ -43,16 +50,25 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     pub(super) fn parse_say(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
         let pos = self.tokens.expect(TokenType::Say)?.pos.clone();
-        if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Mut) {
-            let at = self.tokens.peek(0).pos.clone();
-            parse_error!(self, &at, "A reassignable binding is declared with `var`, not `mut`");
-        }
         let reassignable = self.take_modifier(ContextualKeyword::Var);
         let name_pos = self.tokens.peek(0).pos.clone();
-        let name = self.parse_identifier()?;
-        self.check_name_case(&name, NameKind::Variable, &name_pos)?;
-        let name = self.ast.intern(&name);
-        let nullable = self.parse_nullable();
+
+        let target = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
+        let discard = matches!(self.ast.get(&target), Matcher::Wildcard);
+        let (name, pattern) = match self.ast.get(&target) {
+            Matcher::Binder(name) => (*name, None),
+            Matcher::Wildcard => (self.ast.intern("_"), None),
+            Matcher::As(name, _) => (*name, Some(target)),
+            Matcher::Type { nominal: true, name, shape: None } => {
+                let text = self.ast.text(*name).to_string();
+                self.check_name_case(&text, NameKind::Variable, &name_pos)?;
+                (*name, None)
+            },
+            Matcher::Type { .. } | Matcher::Shape { .. } | Matcher::Dict(_)
+            | Matcher::Array(_) | Matcher::Literal(_)
+            | Matcher::Or(_) | Matcher::And(_) => (self.ast.intern(SYNTHETIC_BINDING), Some(target)),
+        };
+
         let clause = self.parse_slot_clause(SlotKind::Local)?;
 
         let expr = if let Some(_) = self.tokens.next_if(TokenType::Equal) {
@@ -61,9 +77,35 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             None
         };
 
+        let otherwise = match self.tokens.next_if(TokenType::Else) {
+            Some(_) => Some(self.parse_block()?),
+            None => None,
+        };
+
+        // A pattern reads names out of a value, so with no value it declares nothing.
+        if pattern.is_some() && expr.is_none() {
+            let at = pos.to(&self.tokens.previous().pos);
+            parse_error!(self, &at, "This pattern has no value to read from");
+        }
+
+        if pattern.is_none() && otherwise.is_some() {
+            let at = pos.to(&self.tokens.previous().pos);
+            parse_error!(self, &at, "cannot have `else` branch in a patternless `say` statement");
+        }
+
+        if discard {
+            let at = pos.to(&self.tokens.previous().pos);
+            if reassignable || !clause.is_empty() || clause.void {
+                parse_error!(self, &at, "`say _` binds nothing, so it takes no marker or clause");
+            }
+            let Some(expr) = expr else { parse_error!(self, &at, "`say _` needs a value to discard") };
+            self.tokens.expect(TokenType::Semicolon)?;
+            return Ok(self.node_stmt(Stmt::Discard(expr), pos));
+        }
+
         self.tokens.expect(TokenType::Semicolon)?;
-        let field_init = FieldInit { name, value: expr, nullable, reassignable, clause };
-        Ok(self.node_stmt(Stmt::Say(field_init), pos))
+        let decl = SayDecl { name, pattern, otherwise, value: expr, reassignable, clause };
+        Ok(self.node_stmt(Stmt::Say(decl), pos))
     }
 
     /// obligation := "obligation" Name obligation_body
@@ -107,7 +149,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
         Ok((witness, rules))
     }
 
-    /// entry := ("witness" Name | "discharge" ("to" "use" | "before" "drop") | "no" ("persist" | "return" | "drop")) ";"
+    /// entry := ("witness" Name | "discharge" "to" "use" | "must" "use" | "no" ("persist" | "return" | "drop")) ";"
     fn parse_obligation_entry(&mut self, witness: &mut Option<Symbol>, rules: &mut ObligationRules) -> Result<(), anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         match self.parse_identifier()?.as_str() {
@@ -116,16 +158,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 let name = self.parse_identifier()?;
                 *witness = Some(self.ast.intern(&name));
             },
-            "discharge" => match self.parse_identifier()?.as_str() {
-                "to" => {
-                    self.expect_word("use", &pos)?;
-                    self.set_rule(&mut rules.to_use, "discharge to use", &pos)?;
-                },
-                "before" => {
-                    self.expect_word("drop", &pos)?;
-                    self.set_rule(&mut rules.before_drop, "discharge before drop", &pos)?;
-                },
-                _ => return Err(self.obligation_rule_error(&pos)),
+            "discharge" => {
+                self.expect_word("to", &pos)?;
+                self.expect_word("use", &pos)?;
+                self.set_rule(&mut rules.to_use, "discharge to use", &pos)?;
+            },
+            "must" => {
+                self.expect_word("use", &pos)?;
+                self.set_rule(&mut rules.must_use, "must use", &pos)?;
             },
             // `return` is a keyword, so it does not arrive as an identifier like the other rules.
             "no" if self.tokens.next_if(TokenType::Return).is_some() => {
@@ -161,7 +201,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn obligation_rule_error(&self, pos: &SourcePosition) -> anyhow::Error {
         self.error_help("Invalid obligation rule", pos,
-            "a rule is `witness T`, `discharge to use`, `discharge before drop`, `no persist`, `no return`, or `no drop`")
+            "a rule is `witness T`, `discharge to use`, `must use`, `no persist`, `no return`, or `no drop`")
     }
 
     pub(super) fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {
@@ -208,18 +248,13 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                 },
                 TokenType::LeftParen => {
                     let open = self.tokens.expect(TokenType::LeftParen)?.pos.clone();
-                    // A caught value is bound for the handler and nothing reassigns it, so neither
-                    // `var` nor the `mut` capability has anything to say here.
-                    if let Some(word @ (ContextualKeyword::Var | ContextualKeyword::Mut)) = self.tokens.peek(0).contextual() {
+                    if self.tokens.peek(0).contextual() == Some(ContextualKeyword::Var) {
                         let at = self.tokens.peek(0).pos.clone();
-                        parse_error!(self, &at, "A catch parameter cannot be `{word}`");
+                        parse_error!(self, &at, "A catch parameter cannot be `var`");
                     }
                     let (lex, at) = (self.tokens.peek(0).lexeme.clone(), self.tokens.peek(0).pos.clone());
                     let param = self.parse_identifier_expr()?;
                     self.check_name_case(&lex, NameKind::Parameter, &at)?;
-                    // A caught value is always nullable, so a marker or clause carries no meaning,
-                    // but accept the parameter surface so a catch binding parses like any other.
-                    self.parse_nullable();
                     self.parse_slot_clause(SlotKind::Param)?;
                     self.tokens.expect_close(TokenType::RightParen, &open)?;
                     Some(param)

@@ -1,8 +1,10 @@
-say pending: [fails] = [];
+fn mk(): fails { return Err("x"); }
+say pending = [mk()];
 // error(full):
-// error: A container cannot hold values owing 'fails'
-//  --> help_before_drop_container_slot.say:1:14
+// error: cannot store value owing 'fails' in a container
+//  --> help_before_drop_container_slot.say:2:16
 //   |
-// 1 | say pending: [fails] = [];
-//   |              ^^^^^^^
+// 1 | fn mk(): fails { return Err("x"); }
+// 2 | say pending = [mk()];
+//   |                ^^^^
 //   = help: store what the `Err` carries, not the `Err` itself

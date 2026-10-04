@@ -1,5 +1,4 @@
-// A `?` function may fall off the end, yielding null.
-fn maybe()? {
+fn maybe(): opt {
     if (true) {
         return 1;
     }

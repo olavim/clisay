@@ -5,3 +5,7 @@ type A {
 }
 
 A();
+
+// @split
+type T { pub x; init(this): opt { this.x = 1; } } // error: Unexpected token: Expected '{' but found ':'
+print(T().x);

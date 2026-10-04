@@ -1,13 +1,11 @@
-// An immutable field narrows after a guard, and copying a `mut` field to an immutable
-// local lets it narrow too.
 type Node {
-    pub next?;
-    pub var prev?;
-    pub fn check(this)! {
+    pub next: opt;
+    pub var prev: opt;
+    pub fn check(this) {
         if (this.next != null) {
             this.next.x;
         }
-        say p? = this.prev;
+        say p: opt = this.prev;
         if (p != null) {
             p.x;
         }

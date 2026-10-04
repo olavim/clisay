@@ -1,0 +1,23 @@
+fn nothing() {}
+fn some(): opt { return null; }
+print(some() ?? "d"); // expect: d
+nothing();
+print("ran"); // expect: ran
+
+// @split
+fn nothing() {}
+print(nothing() ?? "d"); // error: Unexpected void operand
+
+// @split
+fn nothing() {}
+nothing() ?? e => print("caught"); // error: Unexpected void operand
+
+// @split
+fn nothing() {}
+fn caller() { return nothing()?!; } // error: Unexpected void operand
+caller();
+
+// @split
+fn readIt(k): fails { if (k) { return Err("x"); } return 1; }
+fn caller(m): fails { readIt(false)?!; return m; }
+print(caller("a")); // expect: a

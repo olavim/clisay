@@ -1,0 +1,19 @@
+type C { pub var v; init(this) { this.v = 0; } pub fn take(var this) { this.v = 1; } }
+say var a = C();
+a.take();
+a.v = 2;
+print(a.v); // expect: 2
+
+// @split
+type C { pub var v; init(this) { this.v = 0; } pub fn take(var this) { this.v = 1; } }
+say var a = C();
+say g = a.take;
+g();
+print(a.v); // expect: 0
+
+// @split
+type C { pub var v; init(this) { this.v = 0; } pub fn take(var this) { this.v = 1; } }
+say var a = C();
+say fns = [a.take];
+fns[0]();
+print(a.v); // expect: 0

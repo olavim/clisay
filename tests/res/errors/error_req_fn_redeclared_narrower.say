@@ -1,0 +1,14 @@
+type P { pub v; init(this, v) { this.v = v; } }
+type Q { pub v; init(this, v) { this.v = v; } }
+trait Mover { req fn onMove(this, x @ P); }
+trait Sub with Mover { req fn onMove(this, x @ Q); }
+// error(full):
+// error: parameter accepts less than the trait declares
+//  --> error_req_fn_redeclared_narrower.say:4:44
+//   |
+// 3 | trait Mover { req fn onMove(this, x @ P); }
+//   |                                   ----- `Mover.onMove` passes `P`
+// 4 | trait Sub with Mover { req fn onMove(this, x @ Q); }
+//   |                                            ^^^^^ `Sub.onMove` accepts `Q` for argument 1
+//   |
+//   = help: accept at least what the trait passes, or drop the pattern on argument 1

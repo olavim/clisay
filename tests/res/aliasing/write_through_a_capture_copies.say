@@ -1,0 +1,13 @@
+say var a = [1, 1, 1];
+say var b = [9, 9, 9];
+a = b;
+a[0] = 42;
+print(b[0]); // expect: 9
+
+// @split
+say a = Ref([1, 1, 1]);
+say var b = [9, 9, 9];
+fn f() { @a = b; }
+f();
+@a[0] = 42;
+print(b[0]); // expect: 9
