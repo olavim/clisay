@@ -1,4 +1,3 @@
-obligation borrowed { no persist; no return; }
 type R { } obligation held { witness R; no persist; }
 fn mk(): held { return R(); }
 say a = [mk()]; // error: cannot store value owing 'held' in a container

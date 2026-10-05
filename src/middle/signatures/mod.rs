@@ -96,6 +96,15 @@ pub enum Witness {
     Trait(TypeId),
 }
 
+impl Witness {
+    pub(crate) fn type_or_trait(&self) -> Option<TypeId> {
+        match self {
+            Witness::Type(id) | Witness::Trait(id) => Some(*id),
+            Witness::Null => None,
+        }
+    }
+}
+
 pub struct Signatures {
     pub(crate) opt: Symbol,
     pub(crate) fails: Symbol,
@@ -173,13 +182,6 @@ impl Signatures {
         self.builtin_decls[builtin.index()]
     }
 
-    pub(crate) fn type_decl(&self, name: Symbol) -> Option<HirId<HirStmt>> {
-        match self.types_by_name.get(&name) {
-            Some(decls) if decls.len() == 1 => decls.first().copied(),
-            _ => None,
-        }
-    }
-
     pub(crate) fn trait_decl(&self, name: Symbol) -> Option<HirId<HirStmt>> {
         match self.traits_by_name.get(&name) {
             Some(decls) if decls.len() == 1 => decls.first().copied(),
@@ -192,10 +194,7 @@ impl Signatures {
     }
 
     pub(crate) fn obligation_for_witness_id(&self, id: TypeId) -> Option<Symbol> {
-        self.witnesses.iter().find_map(|(obligation, witness)| match witness {
-            Witness::Type(w) | Witness::Trait(w) => (*w == id).then_some(*obligation),
-            Witness::Null => None,
-        })
+        self.witnesses.iter().find_map(|(obligation, witness)| (witness.type_or_trait() == Some(id)).then_some(*obligation))
     }
 
     pub(crate) fn obligations_witnessed_by_decl(&self, decl: &HirTypeDecl) -> Obligations {
@@ -206,20 +205,13 @@ impl Signatures {
         out
     }
 
-    pub(crate) fn first_unwitnessed(&self, owed: &Obligations) -> Option<Symbol> {
-        owed.iter().copied().find(|o| self.witness_of(*o).is_none())
-    }
-
-    pub(crate) fn witness_of(&self, obligation: Symbol) -> Option<&Witness> {
-        self.witnesses.get(&obligation)
+    pub(crate) fn witness_of(&self, obligation: Symbol) -> &Witness {
+        self.witnesses.get(&obligation).expect("every obligation has a witness")
     }
 
     /// Every obligation witnessed by an object, in a stable order.
     pub(crate) fn object_witnesses(&self) -> impl Iterator<Item = (Symbol, TypeId)> + '_ {
-        let mut out: Vec<(Symbol, TypeId)> = self.witnesses.iter().filter_map(|(ob, w)| match w {
-            Witness::Type(id) | Witness::Trait(id) => Some((*ob, *id)),
-            Witness::Null => None,
-        }).collect();
+        let mut out: Vec<(Symbol, TypeId)> = self.witnesses.iter().filter_map(|(ob, w)| Some((*ob, w.type_or_trait()?))).collect();
         out.sort_unstable();
         out.into_iter()
     }
@@ -295,7 +287,7 @@ pub fn collect(hir: &Hir, bindings: &Bindings) -> Signatures {
     let mut collector = Collector { hir, bindings, opt, fails, err, sigs, bodies: HashMap::new(), callable_groups: Vec::new(), current: None };
     collector.stmt(&hir.get_root());
 
-    if let Some(id) = err.and_then(|err| collector.sigs.type_decl(err)).map(|decl| match hir.get(&decl) {
+    if let Some(id) = collector.sigs.builtin_decl(BuiltinType::Err).map(|decl| match hir.get(&decl) {
         HirStmt::Type(decl) => decl.id,
         _ => unreachable!("Err names a type declaration"),
     }) {

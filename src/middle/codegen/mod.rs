@@ -263,9 +263,9 @@ impl<'a> Compiler<'a> {
         ids.into_boxed_slice()
     }
 
-    pub(super) fn witnesses_no_persist(&self, provided: &[TypeId]) -> bool {
-        self.sigs.object_witnesses()
-            .any(|(ob, id)| provided.contains(&id) && ObligationRule::NoPersist.holds(&self.sigs.obligation_rules_of(ob)))
+    pub(super) fn witnesses_rule(&self, rule: ObligationRule, provided: &[TypeId]) -> bool {
+        self.sigs.witnesses.iter()
+            .any(|(ob, w)| w.type_or_trait().is_some_and(|id| provided.contains(&id)) && rule.holds(&self.sigs.obligation_rules_of(*ob)))
     }
 
     pub(super) fn witness_id_set(&self, decls: &[TypeId]) -> Box<[u16]> {

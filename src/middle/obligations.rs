@@ -96,13 +96,12 @@ impl<'a> IntoIterator for &'a Obligations {
 }
 
 #[derive(Clone, Copy)]
-pub enum ObligationRule { NoPersist, NoReturn, MustUse }
+pub enum ObligationRule { NoPersist, MustUse }
 
 impl ObligationRule {
     pub fn holds(self, rules: &ObligationRules) -> bool {
         match self {
             ObligationRule::NoPersist => rules.no_persist,
-            ObligationRule::NoReturn => rules.no_return,
             ObligationRule::MustUse => rules.must_use,
         }
     }
@@ -110,7 +109,6 @@ impl ObligationRule {
     pub fn spelling(self) -> &'static str {
         match self {
             ObligationRule::NoPersist => "no persist",
-            ObligationRule::NoReturn => "no return",
             ObligationRule::MustUse => "must use",
         }
     }
@@ -122,8 +120,7 @@ pub enum Site {
     Container,
     Slot,
     Capture,
-    Return,
-    Drop,
+    Discard,
     ScopeEnd,
 }
 
@@ -134,8 +131,7 @@ impl Site {
             Site::Container => format!("cannot store value owing {owed} in a container"),
             Site::Slot => format!("cannot store value owing {owed}"),
             Site::Capture => format!("cannot capture value owing {owed}"),
-            Site::Return => format!("cannot return value owing {owed}"),
-            Site::Drop => format!("this result owes {owed} and is never used"),
+            Site::Discard => format!("this result owes {owed} and is never used"),
             Site::ScopeEnd => format!("value owing {owed} is never used"),
         }
     }
@@ -146,8 +142,7 @@ impl Site {
             Site::Container => "storing it in a container",
             Site::Slot => "storing it",
             Site::Capture => "capturing it in a closure",
-            Site::Return => "returning it",
-            Site::Drop | Site::ScopeEnd => "leaving it undischarged",
+            Site::Discard | Site::ScopeEnd => "leaving it undischarged",
         }
     }
 
@@ -155,13 +150,11 @@ impl Site {
         match (obligation, self) {
             ("opt", Site::Field | Site::Container | Site::Slot) => "narrow it first, and store what that leaves behind",
             ("opt", Site::Capture) => "narrow it in this frame, and capture what that leaves behind",
-            ("opt", Site::Return) => "narrow it here, or declare `opt` on the return",
-            ("opt", Site::Drop) => "narrow it here, or bind it and narrow it later",
+            ("opt", Site::Discard) => "narrow it here, or bind it and narrow it later",
             ("opt", Site::ScopeEnd) => "narrow it with `??`, `!` or a test, or hand it to a slot that declares `opt`",
             ("fails", Site::Field | Site::Container | Site::Slot) => "store what the `Err` carries, not the `Err` itself",
             ("fails", Site::Capture) => "handle the `Err` in this frame, and capture what it leaves behind",
-            ("fails", Site::Return) => "handle the `Err` here, or declare `fails` on the return",
-            ("fails", Site::Drop) => "handle the `Err` here, or bind it and handle it later",
+            ("fails", Site::Discard) => "handle the `Err` here, or bind it and handle it later",
             ("fails", Site::ScopeEnd) => "handle the `Err` with `??`, `!` or a test, or hand it to a slot that declares `fails`",
             (_, _) => unreachable!("user obligations get generic guidance in Checker::prohibition_help"),
         }

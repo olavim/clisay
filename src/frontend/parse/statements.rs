@@ -120,7 +120,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     }
 
     /// obligation_body := "{" entry* "}"
-    fn parse_obligation_body(&mut self, name: &str) -> Result<(Option<Symbol>, ObligationRules), anyhow::Error> {
+    fn parse_obligation_body(&mut self, name: &str) -> Result<(Symbol, ObligationRules), anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         if self.tokens.matches(TokenType::Semicolon) {
             return Err(self.error_help(format!("Obligation '{name}' declares no rules"), &pos,
@@ -146,10 +146,14 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             return Err(self.error_help(format!("Obligation '{name}' declares no rules"), &open, help));
         }
 
+        let Some(witness) = witness else {
+            return Err(self.error_help(format!("Obligation '{name}' has no witness"), &open,
+                format!("name the type of the values it is about, as in `obligation {name} {{ witness <Type>; ... }}`")));
+        };
         Ok((witness, rules))
     }
 
-    /// entry := ("witness" Name | "discharge" "to" "use" | "must" "use" | "no" ("persist" | "return" | "drop")) ";"
+    /// entry := ("witness" Name | "discharge" "to" "use" | "must" "use" | "no" ("persist" | "drop")) ";"
     fn parse_obligation_entry(&mut self, witness: &mut Option<Symbol>, rules: &mut ObligationRules) -> Result<(), anyhow::Error> {
         let pos = self.tokens.peek(0).pos.clone();
         match self.parse_identifier()?.as_str() {
@@ -166,10 +170,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
             "must" => {
                 self.expect_word("use", &pos)?;
                 self.set_rule(&mut rules.must_use, "must use", &pos)?;
-            },
-            // `return` is a keyword, so it does not arrive as an identifier like the other rules.
-            "no" if self.tokens.next_if(TokenType::Return).is_some() => {
-                self.set_rule(&mut rules.no_return, "no return", &pos)?;
             },
             "no" => match self.parse_identifier()?.as_str() {
                 "persist" => self.set_rule(&mut rules.no_persist, "no persist", &pos)?,
@@ -201,7 +201,7 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
 
     fn obligation_rule_error(&self, pos: &SourcePosition) -> anyhow::Error {
         self.error_help("Invalid obligation rule", pos,
-            "a rule is `witness T`, `discharge to use`, `must use`, `no persist`, `no return`, or `no drop`")
+            "a rule is `witness T`, `discharge to use`, `must use`, `no persist`, or `no drop`")
     }
 
     pub(super) fn parse_while(&mut self) -> Result<AstId<Stmt>, anyhow::Error> {

@@ -107,6 +107,8 @@ pub enum Inst {
     BarrierGuard(u16),
     PopScope(u8, u8),
     Pop,
+    /// Discards an expression statement's value, checking that it wasn't must-use.
+    DiscardChecked,
     Dup,
     Dup2,
     PushConstant(u8),
@@ -557,7 +559,7 @@ impl Ir {
             Inst::AssertNonNull
                 | Inst::BarrierGuard(_) => StackEffect::next(0, 0),
             Inst::PopScope(count, _) => StackEffect::next(count as usize, 0),
-            Inst::Pop => StackEffect::next(1, 0),
+            Inst::Pop | Inst::DiscardChecked => StackEffect::next(1, 0),
             Inst::Dup => StackEffect::next(1, 2),
             Inst::Dup2 => StackEffect::next(2, 4),
             Inst::PushConstant(_)

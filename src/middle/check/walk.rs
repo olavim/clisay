@@ -18,14 +18,13 @@ use super::write_order;
 use super::paths::possible_step;
 
 #[derive(Clone, Copy, PartialEq)]
-enum Dropped {
+enum Discarded {
     /// `say _ = e;`
     OnPurpose,
     Silently
 }
 
 use super::{BadCallee, Callee, CallableState, PatternBinderSource, Checker, Ctx, Debt, FlowPath, FnContext, Guard, Local, OperandKind, ProvenFacts, PathMap, PathStep, PossibleFacts, Route, UnroutedValueState, ValueState, WriteRoot, ELEMENTS};
-use super::conform::ANCHOR_OWES_ONLY_WITNESSED;
 use super::barriers::CheckedSlot;
 
 #[derive(Clone, Copy)]
@@ -138,8 +137,8 @@ impl<'a> Checker<'a> {
             HirStmt::Type(decl) => self.type_decl(stmt, Some(*stmt), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
             HirStmt::Say(field) => self.say(stmt.index(), field)?,
-            HirStmt::Expression(e) => self.statement_result(e, Dropped::Silently)?,
-            HirStmt::Discard(e) => self.statement_result(e, Dropped::OnPurpose)?,
+            HirStmt::Expression(e) => self.expression_statement(e, Discarded::Silently)?,
+            HirStmt::Discard(e) => self.expression_statement(e, Discarded::OnPurpose)?,
             HirStmt::Block(e) => { self.expr(e)?.route(self, e, Route::Body)?; },
             HirStmt::Defer(e) => {
                 let outer = std::mem::replace(&mut self.fn_ctx.in_defer, true);
@@ -324,7 +323,6 @@ impl<'a> Checker<'a> {
             // `a?.b` and `a?[i]` short-circuit on a bad operand.
             HirExpr::Index { base, member, is_dot, safe: true } => {
                 let target = self.expr(base)?.route(self, base, Route::MemberBase)?;
-                self.ctx.require_witnessed_operand(&target.debt, base)?;
                 let yielded = self.member_access_of(&target, base, member, *is_dot)?;
                 self.chained_result(&target.debt, &yielded.debt).possibly(yielded.possible)
             },
@@ -353,7 +351,6 @@ impl<'a> Checker<'a> {
             HirExpr::Coalesce(l, r) => {
                 let left = self.expr(l)?.route(self, l, Route::CoalesceOperand)?;
                 self.refuse_void_operand(&left.debt, "??", l)?;
-                self.ctx.require_witnessed_operand(&left.debt, l)?;
                 let right = self.expr(r)?.route(self, r, Route::CoalesceOperand)?;
                 ValueState::coalesced(left, right)
             },
@@ -371,15 +368,13 @@ impl<'a> Checker<'a> {
             HirExpr::Propagate(operand) => {
                 let state = self.expr(operand)?.route(self, operand, Route::Propagated)?;
                 self.refuse_void_operand(&state.debt, "?!", operand)?;
-                self.ctx.require_witnessed_operand(&state.debt, operand)?;
-                ValueState::of(self.ctx.discharged_debt(&state.debt), state.tag).possibly(state.possible)
+                ValueState::of(Debt::Clean, state.tag).possibly(state.possible)
             },
             // `a ?? p => h` binds the caught bad value to `p`, which still owes what `a` owed. A
             // single type witness narrows `p`'s tag, so a caught `Err` is usable as one.
             HirExpr::Handle(left_id, binder, handler) => {
                 let left = self.expr(left_id)?.route(self, left_id, Route::CoalesceOperand)?;
                 self.refuse_void_operand(&left.debt, "??", left_id)?;
-                self.ctx.require_witnessed_operand(&left.debt, left_id)?;
                 let caught = self.ctx.obligations_of(&left.debt);
                 let tag = self.ctx.handle_caught_tag(&caught);
                 let held = match left.debt {
@@ -402,7 +397,6 @@ impl<'a> Checker<'a> {
             // the operand is already proven clean.
             HirExpr::Assert(x) => {
                 let state = self.expr(x)?.route(self, x, Route::Asserted)?;
-                self.ctx.require_witnessed_operand(&state.debt, x)?;
                 if self.ctx.owes_object_witness(&state.debt) || matches!(state.debt, Debt::Unknown) {
                     self.record_witness_assert(expr);
                 } else if !matches!(state.debt, Debt::Clean) {
@@ -410,17 +404,21 @@ impl<'a> Checker<'a> {
                 } else {
                     self.record_elision(expr, Guard::NonNull);
                 }
-                ValueState::of(self.ctx.discharged_debt(&state.debt), state.tag).possibly(state.possible)
+                ValueState::of(Debt::Clean, state.tag).possibly(state.possible)
             },
         }))
     }
 
-    fn statement_result(&mut self, e: &HirId<HirExpr>, dropped: Dropped) -> Result<(), anyhow::Error> {
+    fn expression_statement(&mut self, e: &HirId<HirExpr>, discarded: Discarded) -> Result<(), anyhow::Error> {
         let state = self.expr(e)?.route(self, e, Route::StatementResult)?;
-        if dropped == Dropped::OnPurpose || state.stored {
+        if discarded == Discarded::OnPurpose || state.stored {
             return Ok(());
         }
-        self.ctx.check_unused_must_use(&state.debt, e)
+        self.ctx.check_unused_must_use(&state.debt, e)?;
+        if !matches!(state.debt, Debt::Unknown) {
+            self.out.discardable_values.insert(*e);
+        }
+        Ok(())
     }
 
     fn callable_named_by(&self, value: &HirId<HirExpr>) -> Option<CallableId> {
@@ -897,9 +895,6 @@ impl<'a> Checker<'a> {
             }
         }
 
-        self.ctx.reject_receiver_witnessed_obligations(decl)?;
-        self.ctx.reject_anchor_unwitnessed_obligations(decl)?;
-
         let receiver = self.receiver_facts(decl);
         if decl.receiver.is_some() {
             self.out.checked_slot_clauses.insert(CheckedSlot::Receiver(decl.body), receiver.clone());
@@ -969,15 +964,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// What `this` owes in `decl`: its spelled clause, and what its type witnesses.
+    /// What `this` owes in `decl`, which is what its type witnesses.
     pub(super) fn receiver_facts(&self, decl: &HirFnDecl) -> Obligations {
         match &decl.receiver {
             Some(_) if self.checking_factory => Obligations::default(),
-            Some(receiver) => {
-                let mut owed = receiver.clause.owed();
-                owed.extend(self.current_type_witnesses.iter().copied());
-                owed
-            },
+            Some(_) => self.current_type_witnesses.clone(),
             None => self.fn_ctx.receiver.clone(),
         }
     }
@@ -1014,15 +1005,6 @@ impl<'a> Checker<'a> {
             _ => Err(self.error_help("An anchor names a binding or a path into one".to_string(), node,
                 "`&` takes a name, a field of one, or an element of one")),
         }
-    }
-
-    /// Refuses an anchor to a slot that owes an obligation without a witness. An anchor can owe
-    /// only obligations with a witness.
-    fn refuse_anchor_owing_unwitnessed(&self, path: &HirId<HirExpr>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let Some((name, owed)) = self.anchored_clause(path) else { return Ok(()) };
-        let Some(obligation) = self.ctx.sigs.first_unwitnessed(owed) else { return Ok(()) };
-        Err(self.error_help(format!("Cannot anchor `{name}`; it owes '{}', which has no witness", self.ctx.hir.text(obligation)), node,
-            ANCHOR_OWES_ONLY_WITNESSED))
     }
 
     /// The name and clause of the slot `&path` names, when `path` is a binding or `this`.
@@ -1104,7 +1086,6 @@ impl<'a> Checker<'a> {
 
     fn check_anchor_path(&mut self, path: &HirId<HirExpr>, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         self.check_anchor_root(path, node)?;
-        self.refuse_anchor_owing_unwitnessed(path, node)?;
         self.check_writable(WriteTarget::Anchor(*path), node)
     }
 
@@ -1331,7 +1312,6 @@ impl<'a> Checker<'a> {
                 Ok(ValueState::unknown())
             },
             BadCallee::ShortCircuit => {
-                self.ctx.require_witnessed_operand(&callee_typed.debt, callee)?;
                 Ok(self.chained_result(&callee_typed.debt, &Debt::Unknown))
             },
         }
@@ -1585,7 +1565,7 @@ impl<'a> Checker<'a> {
         }
 
         let site = if is_dot { Site::Field } else { Site::Slot };
-        self.ctx.obligation_rule_reject_at(value, ObligationRule::NoPersist, site, rhs)
+        self.ctx.reject_no_persist_at(value, site, rhs)
     }
 
     fn assign_field_this(&mut self, field: Symbol, debt: &Debt, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {

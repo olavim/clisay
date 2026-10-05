@@ -35,12 +35,3 @@ say v: warned = src();
 if (v is Tr) {
     say y = v; // error: cannot assign a value owing 'warned' to 'y'
 }
-
-// @split
-type A { }
-obligation taint { no persist; }
-fn src(): taint { return A { }; }
-say v: taint = src();
-if (v is A) {
-    say a = [v]; // error: cannot store value owing 'taint' in a container
-}

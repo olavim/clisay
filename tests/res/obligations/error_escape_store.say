@@ -1,4 +1,4 @@
-obligation kept { no persist; }
+type Kept { } obligation kept { witness Kept; no persist; }
 type K { pub var v; init(this, v) { this.v = v; } }
 type Box { pub var inner; init(this, inner) { this.inner = inner; } }
 fn make(): kept { return K(1); }
@@ -7,21 +7,21 @@ b.inner = 5;
 print(b.inner); // expect: 5
 
 // @split
-obligation kept { no persist; }
+type Kept { } obligation kept { witness Kept; no persist; }
 type K { pub var v; init(this, v) { this.v = v; } }
 fn make(): kept { return K(1); }
 say var d = { inner: 0 };
 d["inner"] = make(); // error: cannot store value owing 'kept'
 
 // @split
-obligation kept { no persist; }
+type Kept { } obligation kept { witness Kept; no persist; }
 type K { pub var v; init(this, v) { this.v = v; } }
 fn make(): kept { return K(1); }
 say var a = [0];
 a[0] = make(); // error: cannot store value owing 'kept'
 
 // @split
-obligation kept { no persist; }
+type Kept { } obligation kept { witness Kept; no persist; }
 type K { pub var v; init(this, v) { this.v = v; } }
 type Box { pub var inner; init(this, inner) { this.inner = inner; } }
 fn make(): kept { return K(1); }

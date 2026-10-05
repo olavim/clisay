@@ -1,5 +1,0 @@
-obligation borrowed { no persist; no return; }
-fn f(x: borrowed) {
-    say g = () => x; // error: cannot capture value owing 'borrowed'
-    g();
-}

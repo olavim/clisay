@@ -308,12 +308,25 @@ pub fn debug_assert_store_is_acyclic(container: Value, value: Value, depth_limit
 }
 
 #[inline]
-pub fn may_not_persist(value: Value) -> bool {
+fn instance_type(value: Value) -> Option<*const ObjType> {
     if !value.is_object() {
-        return false;
+        return None;
     }
     let object = value.as_object();
-    unsafe { (*object.as_header_ptr()).kind == ObjectKind::Instance && (*(*object.as_instance_ptr()).ty).no_persist }
+    match object.kind() {
+        ObjectKind::Instance => Some(unsafe { (*object.as_instance_ptr()).ty }),
+        _ => None,
+    }
+}
+
+#[inline]
+pub fn may_not_persist(value: Value) -> bool {
+    instance_type(value).is_some_and(|ty| unsafe { (*ty).no_persist })
+}
+
+#[inline]
+pub fn must_be_used(value: Value) -> bool {
+    instance_type(value).is_some_and(|ty| unsafe { (*ty).must_use })
 }
 
 #[inline]
@@ -727,9 +740,9 @@ pub struct BuiltinLayout {
     pub member_count: MemberId,
     pub methods: Vec<(MemberId, u8)>,
     pub var_fields: VarFields,
-    pub anchorable_fields: VarFields,
     pub field_witness_set_pool_ids: Box<[u16]>,
     pub no_persist: bool,
+    pub must_use: bool,
 }
 
 /// A bit per field id, set where the field was declared `var`. A type declares at most 255 fields.
@@ -766,10 +779,11 @@ pub struct ObjType {
     pub witness_ids: Box<[u16]>,
     /// Whether its instances witness a `no persist` obligation.
     pub no_persist: bool,
+    /// Whether its instances witness a `must use` obligation.
+    pub must_use: bool,
     /// Each field's witness set, by field id.
     pub field_witness_set_pool_ids: Box<[u16]>,
     pub var_fields: VarFields,
-    pub anchorable_fields: VarFields,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
@@ -792,9 +806,9 @@ impl ObjType {
             provided: IntSet::default(),
             witness_ids: Box::new([]),
             no_persist: false,
+            must_use: false,
             field_witness_set_pool_ids: Box::new([]),
             var_fields: VarFields::none(),
-            anchorable_fields: VarFields::none(),
             member_count: 0,
             getter_id: None,
             setter_id: None,
@@ -815,9 +829,9 @@ impl ObjType {
             provided: self.provided.clone(),
             witness_ids: self.witness_ids.clone(),
             no_persist: self.no_persist,
+            must_use: self.must_use,
             field_witness_set_pool_ids: self.field_witness_set_pool_ids.clone(),
             var_fields: self.var_fields,
-            anchorable_fields: self.anchorable_fields,
             member_count: self.member_count,
             getter_id: self.getter_id,
             setter_id: self.setter_id,

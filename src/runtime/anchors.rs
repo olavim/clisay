@@ -399,7 +399,7 @@ impl Vm {
                     self.anchor_into_ref(target)?;
                 }
                 match self.field_at(target, key) {
-                    Some((instance, id)) if unsafe { &*(*instance).ty }.anchorable_fields.has(id) => return Ok(Some(id)),
+                    Some((instance, id)) if unsafe { &*(*instance).ty }.var_fields.has(id) => return Ok(Some(id)),
                     Some((instance, id)) => return Err(self.unanchorable_field_error(instance, id)),
                     None => false,
                 }

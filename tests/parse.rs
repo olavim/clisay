@@ -211,40 +211,33 @@ fn slot_clause_rejections() {
 
 #[test]
 fn obligation_declaration() {
-    let ast = parse("obligation tainted { discharge to use; } obligation parsed { witness Unparsed; discharge to use; } obligation borrowed { no persist; } obligation held { no drop; }");
+    let ast = parse("obligation parsed { witness Unparsed; discharge to use; } obligation kept { witness Kept; no persist; } obligation held { witness Held; no drop; }");
     let stmts = top_stmts(&ast);
 
     let Stmt::Obligation { name, witness, rules } = ast.get(&stmts[0]) else { panic!("not an obligation") };
-    assert_eq!(ast.text(*name), "tainted");
-    assert!(witness.is_none());
+    assert_eq!(ast.text(*name), "parsed");
+    assert_eq!(ast.text(*witness), "Unparsed");
     assert!(rules.to_use && !rules.no_persist && !rules.must_use);
 
     let Stmt::Obligation { witness, rules, .. } = ast.get(&stmts[1]) else { panic!("not an obligation") };
-    let Some(w) = *witness else { panic!("witness form has no witness") };
-    assert_eq!(ast.text(w), "Unparsed");
-    assert!(rules.to_use && !rules.no_persist);
-
-    let Stmt::Obligation { witness, rules, .. } = ast.get(&stmts[2]) else { panic!("not an obligation") };
-    assert!(witness.is_none());
+    assert_eq!(ast.text(*witness), "Kept");
     assert!(rules.no_persist && !rules.to_use);
 
-    let Stmt::Obligation { rules, .. } = ast.get(&stmts[3]) else { panic!("not an obligation") };
+    let Stmt::Obligation { rules, .. } = ast.get(&stmts[2]) else { panic!("not an obligation") };
     assert!(rules.no_drop);
 }
 
 #[test]
 fn obligation_rules_compose() {
-    let ast = parse("obligation fails { witness Err; discharge to use; no persist; no return; must use; }");
+    let ast = parse("obligation fails { witness Err; discharge to use; no persist; must use; }");
     let stmts = top_stmts(&ast);
     let Stmt::Obligation { witness, rules, .. } = ast.get(&stmts[0]) else { panic!("not an obligation") };
-    let Some(w) = *witness else { panic!("no witness") };
-    assert_eq!(ast.text(w), "Err");
-    assert!(rules.to_use && rules.no_persist && rules.no_return && rules.must_use && !rules.no_drop);
+    assert_eq!(ast.text(*witness), "Err");
+    assert!(rules.to_use && rules.no_persist && rules.must_use && !rules.no_drop);
 }
 
 #[test]
 fn obligation_declaration_rejections() {
-    // Both shorthands are retired: an obligation always spells its rules in a block.
     assert!(try_parse("obligation bad: no persist;").is_err());
     assert!(try_parse("obligation bad;").is_err());
     assert!(try_parse("obligation bad { }").is_err());
@@ -258,7 +251,8 @@ fn obligation_declaration_rejections() {
     assert!(try_parse("obligation bad { discharge before use; }").is_err());
     assert!(try_parse("obligation bad { no persist; no persist; }").is_err());
     assert!(try_parse("obligation bad { witness A; witness B; }").is_err());
-    // A rule needs its terminator, like any other declaration.
+    assert!(try_parse("obligation bad { no persist; }").is_err());
+    assert!(try_parse("obligation bad { witness A; no return; }").is_err());
     assert!(try_parse("obligation bad { no persist }").is_err());
 }
 

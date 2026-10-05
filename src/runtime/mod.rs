@@ -194,9 +194,9 @@ fn build_builtin_type(gc: &mut Gc, name: &str, layout: &BuiltinLayout, constants
         ty.methods.insert(*member, constants[*constant as usize].as_object());
     }
     ty.var_fields = layout.var_fields;
-    ty.anchorable_fields = layout.anchorable_fields;
     ty.field_witness_set_pool_ids = layout.field_witness_set_pool_ids.clone();
     ty.no_persist = layout.no_persist;
+    ty.must_use = layout.must_use;
     ty.provided.insert(layout.id);
     ty
 }
@@ -387,9 +387,14 @@ impl Vm {
             self.forced_checks_reached.len(), self.chunk.forced_check_ends.len());
     }
 
+    #[inline]
+    pub(super) fn counts_forced_checks(&self) -> bool {
+        cfg!(debug_assertions) && !self.chunk.forced_check_ends.is_empty()
+    }
+
     /// Whether the running instruction is a check that's been proven unnecessary.
     pub(super) fn at_forced_check(&mut self) -> bool {
-        if !cfg!(debug_assertions) || self.chunk.forced_check_ends.is_empty() {
+        if !self.counts_forced_checks() {
             return false;
         }
 

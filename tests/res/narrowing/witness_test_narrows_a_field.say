@@ -42,9 +42,10 @@ if (!(b.d ~ W)) { say y = b.d; print("clean"); } // expect: clean
 
 // @split
 type A { }
-obligation held { no return; }
-type Box { pub d: held; init(this, d: held) { this.d = d; } }
+type W { }
+obligation warned { witness W; discharge to use; }
+type Box { pub d: warned; init(this, d: warned) { this.d = d; } }
 say b = Box(1);
 if (!(b.d ~ A)) {
-    say y = b.d; // error: cannot assign a value owing 'held' to 'y'
+    say y = b.d; // error: cannot assign a value owing 'warned' to 'y'
 }

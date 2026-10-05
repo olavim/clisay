@@ -21,8 +21,8 @@ impl<'a> Ctx<'a> {
         }
 
         let owed = quoted_obligation_list(self.hir, &pending);
-        let help = self.obligation_rule_prevents_help(&pending, ObligationRule::MustUse, Site::Drop);
-        Err(self.error_help(Site::Drop.refusal(&owed), node, help))
+        let help = self.obligation_rule_prevents_help(&pending, ObligationRule::MustUse, Site::Discard);
+        Err(self.error_help(Site::Discard.refusal(&owed), node, help))
     }
 
     pub(super) fn callable_subject(&self, callable: CallableId, decl: &HirFnDecl) -> String {
@@ -111,7 +111,6 @@ impl<'a> Checker<'a> {
             None => self.ctx.obligations_of(debt),
         };
         self.check_return_obligations(debt, &admits, node)?;
-        self.ctx.obligation_rule_reject_at(debt, super::ObligationRule::NoReturn, super::Site::Return, node)?;
 
         // A `: void` return with no obligations takes no value at all.
         if self.fn_ctx.declares_void && !self.fn_ctx.return_owes && !debt.is_void() {

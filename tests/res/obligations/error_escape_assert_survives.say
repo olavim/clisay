@@ -1,4 +1,0 @@
-obligation borrowed { no persist; no return; }
-fn forward(x: borrowed) {
-    return x!; // error: cannot discharge a value owing 'borrowed'
-}

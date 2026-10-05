@@ -1,0 +1,22 @@
+fn boom(): fails { return Err("x"); }
+fn call(cb) { cb(); print("dropped"); } // error: a discarded `Err` has to be used
+call(boom);
+
+// @split
+fn boom(): fails { return Err("x"); }
+fn call(cb) { say _ = cb(); print("dropped"); } // expect: dropped
+call(boom);
+
+// @split
+fn fine() { return 1; }
+fn call(cb) { cb(); print("dropped"); } // expect: dropped
+call(fine);
+
+// @split
+fn boom(): fails { return Err("x"); }
+fn call(cb) { cb(); print("dropped"); } // error: a discarded `Err` has to be used
+try {
+    call(boom);
+} catch (e) {
+    print("caught");
+}

@@ -1,38 +1,38 @@
-obligation scoped { no persist; no return; }
+type Scoped { } obligation scoped { witness Scoped; no persist; }
 fn f(x: scoped) { say g = (x) => x[0]; print(g([7])); } // expect: 7
 f([1]);
 
 // @split
-obligation scoped { no persist; no return; }
+type Scoped { } obligation scoped { witness Scoped; no persist; }
 fn f(x: scoped) { fn h(x) { return x[0]; } print(h([7])); } // expect: 7
 f([1]);
 
 // @split
-obligation scoped { no persist; no return; }
+type Scoped { } obligation scoped { witness Scoped; no persist; }
 fn f(x: scoped) { fn h(y) { return x[y]; } print(h(0)); } // error: cannot capture value owing 'scoped'
 f([1]);
 
 // @split
-obligation scoped { no persist; no return; }
+type Scoped { } obligation scoped { witness Scoped; no persist; }
 fn f(q: scoped) { say g = () => { say q = [9]; return () => q[0]; }; print(g()()); } // expect: 9
 f([1]);
 
 // @split
-obligation scoped { no persist; no return; }
+type Scoped { } obligation scoped { witness Scoped; no persist; }
 fn f(x: scoped) { say g = () => () => 7; print(g()() + x[0]); } // expect: 8
 f([1]);
 
 // @split
-obligation scoped { no persist; no return; }
+type Scoped { } obligation scoped { witness Scoped; no persist; }
 fn f(x: scoped) { say g = () => () => x[0]; print(g()()); } // error: cannot capture value owing 'scoped'
 f([1]);
 
 // @split
-obligation scoped { no persist; no return; }
+type Scoped { } obligation scoped { witness Scoped; no persist; }
 say k = (a: scoped, b) => { say q = () => b[0]; return a[0] + q(); };
 print(k([3], [4])); // expect: 7
 
 // @split
-obligation scoped { no persist; no return; }
+type Scoped { } obligation scoped { witness Scoped; no persist; }
 say k = (a: scoped, b) => { say p = () => a[0]; return p() + b[0]; }; // error: cannot capture value owing 'scoped'
 print(k([3], [4]));

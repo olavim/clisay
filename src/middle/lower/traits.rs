@@ -7,7 +7,7 @@ use anyhow::anyhow;
 
 use crate::ast::{AstId, Expr, FnDecl, Literal, ReqFn, ReqMember, Stmt, Symbol, TraitClause, TypeDecl};
 use crate::frontend::lex::{Diagnostic, SourcePosition};
-use crate::middle::hir::{Receiver, SlotClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqMember, HirReqParam, HirStmt, HirTypeDecl, TypeId};
+use crate::middle::hir::{Receiver, HirExpr, HirFnDecl, HirId, HirLiteral, HirParam, HirReqFn, HirReqMember, HirReqParam, HirStmt, HirTypeDecl, TypeId};
 
 use super::Lowerer;
 
@@ -342,7 +342,7 @@ impl<'a> Lowerer<'a> {
         let call = self.hir.add(HirExpr::Call(method_access, args), pos.clone());
         let ret_stmt = self.hir.add(HirStmt::Return(Some(call)), pos.clone());
         let body = self.hir.add(HirExpr::Block(vec![ret_stmt]), pos.clone());
-        let receiver = Some(Receiver { pos: pos.clone(), clause: SlotClause::default(), reassignable: false, anchor: false });
+        let receiver = Some(Receiver { pos: pos.clone(), reassignable: false, anchor: false });
         self.hir.add(HirStmt::Fn(HirFnDecl { name: method, sig_pos: pos.clone(), receiver, params, body, clause }), pos.clone())
     }
 
@@ -481,7 +481,7 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
         let sig_pos = decl.sig_pos.clone();
-        let receiver = decl.receiver.as_ref().map(|r| self.receiver(r));
+        let receiver = decl.receiver.clone();
         let params = self.params(&decl.params)?;
         let clause = decl.clause.clone();
         let body = self.expr(&decl.body)?;

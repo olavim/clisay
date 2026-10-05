@@ -177,9 +177,9 @@ impl Param {
 }
 
 /// The `this` parameter of an instance method.
+#[derive(Clone)]
 pub struct Receiver {
     pub pos: SourcePosition,
-    pub clause: SlotClause,
     pub reassignable: bool,
     pub anchor: bool,
 }
@@ -287,12 +287,18 @@ pub struct ObligationRules {
     /// The value may not be stored where it would outlive its binding: a field, a container, or a
     /// closure. It may still be handed along a call chain.
     pub no_persist: bool,
-    /// The value may not leave its frame by `return`, so its lifetime is the call.
-    pub no_return: bool,
     /// The binding must be discharged before its scope ends.
     pub must_use: bool,
     /// Reserved for typestate.
     pub no_drop: bool,
+}
+
+pub fn builtin_obligation_witness(name: &str) -> Option<&'static str> {
+    match name {
+        "opt" => Some("null"),
+        "fails" => Some("Err"),
+        _ => None,
+    }
 }
 
 pub fn builtin_obligation_rules(name: &str) -> Option<ObligationRules> {
@@ -320,7 +326,7 @@ pub enum Stmt {
     Discard(AstId<Expr>),
     Fn(FnDecl),
     Type(Box<TypeDecl>),
-    Obligation { name: Symbol, witness: Option<Symbol>, rules: ObligationRules },
+    Obligation { name: Symbol, witness: Symbol, rules: ObligationRules },
     /// A match statement dispatching the scrutinee over arms.
     Match(AstId<Expr>, Vec<MatchArm>)
 }

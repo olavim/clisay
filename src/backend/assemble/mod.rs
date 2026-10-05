@@ -135,7 +135,7 @@ fn encode(inst: &Inst, offsets: &[usize], ir: &Ir, chunk: &mut BytecodeChunk, po
         | Halt
         | Throw
         | AssertNonNull
-        | Pop | Dup | Dup2
+        | Pop | DiscardChecked | Dup | Dup2
         | PushNull | PushTrue | PushFalse | PushUnassigned
         | GetIndex
         | GetProperty
