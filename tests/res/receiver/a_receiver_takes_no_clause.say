@@ -1,0 +1,16 @@
+type T {
+    pub n = 0;
+    pub fn value(this) { return this.n; }
+}
+print(T().value()); // expect: 0
+
+// @split
+type T {
+    pub n = 0;
+    pub fn value(this: opt) { return this.n; } // error: A receiver takes no clause
+}
+
+// @split
+type T {
+    pub fn m(this: void) { } // error: A receiver takes no clause
+}

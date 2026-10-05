@@ -6,7 +6,7 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::Diagnostic;
 use crate::middle::diagnose::Diagnose;
-use crate::middle::hir::{BinOp, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatchRest, HirMatcher, HirStmt, Symbol, builtin_obligation_rules};
+use crate::middle::hir::{BinOp, HirExpr, HirId, HirLiteral, HirMatchElem, HirMatchRest, HirMatcher, HirStmt, Symbol, builtin_obligation_rules};
 use crate::middle::obligations::{quoted_obligation_list, sorted_obligation_names, Obligations};
 use crate::middle::native::{self, NativeSig};
 use crate::middle::signatures::{CallableId, RetSig, TypeTag, Witness};
@@ -340,17 +340,6 @@ impl<'a> Ctx<'a> {
         let owed = quoted_obligation_list(self.hir, &blocked);
         let help = self.obligation_rule_prevents_help(&blocked, rule, site);
         Err(self.error_help(site.refusal(&owed), node, help))
-    }
-
-    pub(super) fn reject_receiver_witnessed_obligations(&self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
-        let Some(receiver) = &decl.receiver else { return Ok(()) };
-        let clause = &receiver.clause;
-        let Some(name) = clause.names.first().copied() else { return Ok(()) };
-        let text = self.hir.text(name);
-        let pos = clause.pos.clone().unwrap_or_else(|| decl.sig_pos.clone());
-        Err(anyhow!("{}", Diagnostic::new(format!("The receiver cannot owe '{text}'"), pos)
-            .with_label(format!("'{text}' admits a value `this` cannot be"))
-            .with_help("`this` is always an instance of the type; put the obligation on a parameter instead")))
     }
 
     pub(super) fn require_discharged_or_narrowed(&self, debt: &Debt, tag: &TypeTag, node: &HirId<HirExpr>, kind: OperandKind) -> Result<(), anyhow::Error> {

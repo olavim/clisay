@@ -15,7 +15,7 @@ macro_rules! parse_error {
 enum Visibility { Pub, Inner, Private }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SlotKind { Local, Param, Receiver, Field, Member, Return }
+enum SlotKind { Local, Param, Field, Member, Return }
 
 impl SlotKind {
     fn allows_void_clause(self) -> bool {
@@ -26,7 +26,6 @@ impl SlotKind {
         match self {
             SlotKind::Local => "local",
             SlotKind::Param => "parameter",
-            SlotKind::Receiver => "receiver",
             SlotKind::Field => "field",
             SlotKind::Member => "required member",
             SlotKind::Return => "return",

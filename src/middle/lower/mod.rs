@@ -471,8 +471,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn receiver(&self, receiver: &Receiver) -> Receiver {
-        let clause = receiver.clause.clone();
-        Receiver { pos: receiver.pos.clone(), clause, reassignable: receiver.reassignable, anchor: receiver.anchor }
+        Receiver { pos: receiver.pos.clone(), reassignable: receiver.reassignable, anchor: receiver.anchor }
     }
 
     /// Lowers a parameter list, desugaring each param's `?` marker and `:` clause into one clause.

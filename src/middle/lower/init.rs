@@ -125,7 +125,7 @@ impl<'a> Lowerer<'a> {
 
     fn make_factory_fn(&mut self, name: Symbol, params: Vec<HirParam>, body: Vec<HirId<HirStmt>>, pos: &SourcePosition) -> HirId<HirStmt> {
         let body = self.hir.add(HirExpr::Block(body), pos.clone());
-        let receiver = Some(Receiver { pos: pos.clone(), clause: SlotClause::default(), reassignable: true, anchor: false });
+        let receiver = Some(Receiver { pos: pos.clone(), reassignable: true, anchor: false });
         let fn_decl = HirFnDecl { name, sig_pos: pos.clone(), receiver, params, body, clause: SlotClause::default() };
         self.hir.add(HirStmt::Fn(fn_decl), pos.clone())
     }

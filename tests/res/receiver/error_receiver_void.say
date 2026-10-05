@@ -1,3 +1,0 @@
-type T {
-    pub fn m(this: void) { } // error: A receiver cannot be void
-}

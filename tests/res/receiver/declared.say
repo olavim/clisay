@@ -8,10 +8,3 @@ say var c = Counter(1);
 print(c.value()); // expect: 1
 &c.bump();
 print(c.value()); // expect: 2
-
-// @split
-type T {
-    pub v;
-    init(this, v) { this.v = v; }
-    pub fn m(this: nosuch) { return this.v; } // error: Obligation 'nosuch' is not declared
-}

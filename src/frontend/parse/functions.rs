@@ -79,13 +79,16 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
                         let msg = if receiver.is_some() { "Repeated 'this' parameter" } else { "'this' must be the first parameter" };
                         return Err(self.error_help(msg, &start, "a method declares its receiver once, ahead of the other parameters"));
                     }
-                    let clause = self.parse_slot_clause(SlotKind::Receiver)?;
+                    if let Some(colon) = self.tokens.next_if(TokenType::Colon) {
+                        return Err(self.error_help("A receiver takes no clause", &colon.pos,
+                            "`this` is always an instance of its type, so the type decides what it owes"));
+                    }
                     let pos = start.to(&self.tokens.previous().pos);
                     if anchor && !reassignable {
                         return Err(self.error_help("Invalid read-only anchor parameter", &pos,
                             "A parameter cannot be declared as a read-only anchor. Declare it `&var this` to mutate the original value, or `this` to take a read-only copy."));
                     }
-                    receiver = Some(Receiver { pos, clause, reassignable, anchor });
+                    receiver = Some(Receiver { pos, reassignable, anchor });
                 },
                 None => params.push(self.finish_param(start, anchor, reassignable)?),
             }

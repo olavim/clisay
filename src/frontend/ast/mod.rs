@@ -179,7 +179,6 @@ impl Param {
 /// The `this` parameter of an instance method.
 pub struct Receiver {
     pub pos: SourcePosition,
-    pub clause: SlotClause,
     pub reassignable: bool,
     pub anchor: bool,
 }

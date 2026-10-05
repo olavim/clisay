@@ -891,8 +891,6 @@ impl<'a> Checker<'a> {
             }
         }
 
-        self.ctx.reject_receiver_witnessed_obligations(decl)?;
-
         let receiver = self.receiver_facts(decl);
         if decl.receiver.is_some() {
             self.out.checked_slot_clauses.insert(CheckedSlot::Receiver(decl.body), receiver.clone());
@@ -962,15 +960,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// What `this` owes in `decl`: its spelled clause, and what its type witnesses.
+    /// What `this` owes in `decl`, which is what its type witnesses.
     pub(super) fn receiver_facts(&self, decl: &HirFnDecl) -> Obligations {
         match &decl.receiver {
             Some(_) if self.checking_factory => Obligations::default(),
-            Some(receiver) => {
-                let mut owed = receiver.clause.owed();
-                owed.extend(self.current_type_witnesses.iter().copied());
-                owed
-            },
+            Some(_) => self.current_type_witnesses.clone(),
             None => self.fn_ctx.receiver.clone(),
         }
     }
