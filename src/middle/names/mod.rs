@@ -362,15 +362,11 @@ impl<'a> Resolver<'a> {
                     return Err(self.error_help("'no drop' is not available yet", stmt,
                         "the 'no drop' rule is not implemented yet"));
                 }
-                match witness {
-                    Some(witness) => self.declare_witness(*name, *witness, stmt)?,
-                    None if rules.to_use || rules.must_use => {
-                        return Err(self.error_help(
-                            format!("Obligation '{}' declares a `discharge` rule with no witness", self.ast.text(*name)), stmt,
-                            format!("name the bad state it is about, as in `obligation {} {{ witness <Type>; ... }}`", self.ast.text(*name))));
-                    },
-                    None => {},
-                }
+                let Some(witness) = witness else {
+                    return Err(self.error_help(format!("Obligation '{text}' has no witness"), stmt,
+                        format!("name the type of the values it is about, as in `obligation {text} {{ witness <Type>; ... }}`")));
+                };
+                self.declare_witness(*name, *witness, stmt)?;
             },
             Stmt::Fn(decl) => self.visit_fn(decl)?,
             Stmt::Type(decl) => self.visit_type(stmt, decl)?,

@@ -42,7 +42,7 @@ if (!(b.d ~ W)) { say y = b.d; print("clean"); } // expect: clean
 
 // @split
 type A { }
-obligation held { no return; }
+type Held { } obligation held { witness Held; no return; }
 type Box { pub d: held; init(this, d: held) { this.d = d; } }
 say b = Box(1);
 if (!(b.d ~ A)) {

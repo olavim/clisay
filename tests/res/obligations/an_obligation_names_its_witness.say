@@ -1,0 +1,9 @@
+obligation kept { no persist; } // error: Obligation 'kept' has no witness
+
+// @split
+obligation gated { discharge to use; } // error: Obligation 'gated' has no witness
+
+// @split
+type Kept { } obligation kept { witness Kept; no persist; }
+fn show(x: kept) { print(x); }
+show(1); // expect: 1

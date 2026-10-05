@@ -1,1 +1,0 @@
-obligation gated { discharge to use; } // error: Obligation 'gated' declares a `discharge` rule with no witness

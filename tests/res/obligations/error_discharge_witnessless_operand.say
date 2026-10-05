@@ -1,4 +1,0 @@
-obligation borrowed { no persist; no return; }
-fn f(x: borrowed) {
-    say y = x ?? 0; // error: cannot discharge a value owing 'borrowed'
-}

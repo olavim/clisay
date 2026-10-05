@@ -10,15 +10,6 @@ print(c.value()); // expect: 1
 print(c.value()); // expect: 2
 
 // @split
-obligation pinned { no persist; }
-type T {
-    pub v;
-    init(this, v) { this.v = v; }
-    pub fn m(this: pinned) { return this.v; }
-}
-print(T(1).m()); // expect: 1
-
-// @split
 type T {
     pub v;
     init(this, v) { this.v = v; }

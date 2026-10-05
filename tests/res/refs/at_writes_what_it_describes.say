@@ -5,7 +5,7 @@ print(@c.pos += 3); // expect: 10
 print(@c.pos); // expect: 10
 
 // @split
-obligation kept { no persist; }
+type Kept { } obligation kept { witness Kept; no persist; }
 type K { pub var v; init(this, v) { this.v = v; } }
 type Box { pub var inner; init(this, inner) { this.inner = inner; } }
 fn make(): kept { return K(1); }
@@ -14,7 +14,7 @@ say w: kept = make();
 @c.inner = w; // error: cannot store value owing 'kept' in a field
 
 // @split
-obligation kept { no persist; }
+type Kept { } obligation kept { witness Kept; no persist; }
 type K { pub var v; init(this, v) { this.v = v; } }
 type Box { pub var inner; init(this, inner) { this.inner = inner; } }
 fn make(): kept { return K(1); }

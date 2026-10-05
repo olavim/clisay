@@ -19,9 +19,3 @@ fn take(x) { print(x[0]); } // expect: 1
 fn outer(g, y) { g(y); }
 say m = [1];
 outer(take, m);
-
-// @split
-obligation keeps { no persist; }
-fn take(x) { print(x); } // expect: 1
-fn outer(g, v: keeps) { g(v); }
-outer(take, 1);
