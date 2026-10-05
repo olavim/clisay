@@ -481,7 +481,7 @@ impl<'a> Lowerer<'a> {
         let pos = self.ast.pos(fn_stmt).clone();
         let decl = self.ast_fn(fn_stmt);
         let sig_pos = decl.sig_pos.clone();
-        let receiver = decl.receiver.as_ref().map(|r| self.receiver(r));
+        let receiver = decl.receiver.clone();
         let params = self.params(&decl.params)?;
         let clause = decl.clause.clone();
         let body = self.expr(&decl.body)?;

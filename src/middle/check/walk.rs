@@ -18,7 +18,7 @@ use super::write_order;
 use super::paths::possible_step;
 
 #[derive(Clone, Copy, PartialEq)]
-enum Dropped {
+enum Discarded {
     /// `say _ = e;`
     OnPurpose,
     Silently
@@ -137,8 +137,8 @@ impl<'a> Checker<'a> {
             HirStmt::Type(decl) => self.type_decl(stmt, Some(*stmt), decl)?,
             HirStmt::Trait(decl) => self.type_decl(stmt, None, decl)?,
             HirStmt::Say(field) => self.say(stmt.index(), field)?,
-            HirStmt::Expression(e) => self.statement_result(e, Dropped::Silently)?,
-            HirStmt::Discard(e) => self.statement_result(e, Dropped::OnPurpose)?,
+            HirStmt::Expression(e) => self.expression_statement(e, Discarded::Silently)?,
+            HirStmt::Discard(e) => self.expression_statement(e, Discarded::OnPurpose)?,
             HirStmt::Block(e) => { self.expr(e)?.route(self, e, Route::Body)?; },
             HirStmt::Defer(e) => {
                 let outer = std::mem::replace(&mut self.fn_ctx.in_defer, true);
@@ -409,12 +409,16 @@ impl<'a> Checker<'a> {
         }))
     }
 
-    fn statement_result(&mut self, e: &HirId<HirExpr>, dropped: Dropped) -> Result<(), anyhow::Error> {
+    fn expression_statement(&mut self, e: &HirId<HirExpr>, discarded: Discarded) -> Result<(), anyhow::Error> {
         let state = self.expr(e)?.route(self, e, Route::StatementResult)?;
-        if dropped == Dropped::OnPurpose || state.stored {
+        if discarded == Discarded::OnPurpose || state.stored {
             return Ok(());
         }
-        self.ctx.check_unused_must_use(&state.debt, e)
+        self.ctx.check_unused_must_use(&state.debt, e)?;
+        if !matches!(state.debt, Debt::Unknown) {
+            self.out.discardable_values.insert(*e);
+        }
+        Ok(())
     }
 
     fn callable_named_by(&self, value: &HirId<HirExpr>) -> Option<CallableId> {
@@ -1561,7 +1565,7 @@ impl<'a> Checker<'a> {
         }
 
         let site = if is_dot { Site::Field } else { Site::Slot };
-        self.ctx.obligation_rule_reject_at(value, ObligationRule::NoPersist, site, rhs)
+        self.ctx.reject_no_persist_at(value, site, rhs)
     }
 
     fn assign_field_this(&mut self, field: Symbol, debt: &Debt, lhs: &HirId<HirExpr>, rhs: &HirId<HirExpr>) -> Result<(), anyhow::Error> {

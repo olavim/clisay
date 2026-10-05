@@ -119,6 +119,7 @@ handlers! {
         PUSH_TRUE,
         PUSH_FALSE,
         POP,
+        DISCARD_CHECKED,
         DUP,
         NOT,
 
@@ -298,6 +299,14 @@ fn op_PUSH_FALSE(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *
 }
 
 fn op_POP(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    let top = unsafe { top.sub(1) };
+    next!(vm, ip, top, stack_start)
+}
+
+fn op_DISCARD_CHECKED(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    if objects::must_be_used(peek!(top, 0)) || vm.counts_forced_checks() {
+        become discard_checked_slow(vm, ip, top, stack_start);
+    }
     let top = unsafe { top.sub(1) };
     next!(vm, ip, top, stack_start)
 }
@@ -609,6 +618,25 @@ fn op_HALT(vm: &mut Vm, _ip: *const OpCode, _top: *mut Value, _stack_start: *mut
     #[cfg(debug_assertions)]
     vm.report_forks();
     Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn discard_checked_slow(vm: &mut Vm, ip: *const OpCode, top: *mut Value, stack_start: *mut Value) -> R {
+    vm.stack.set_top(top);
+    vm.ip = ip;
+    let forced = vm.at_forced_check();
+    let value = peek!(top, 0);
+    if objects::must_be_used(value) {
+        if forced {
+            return vm.refuted_elision_error("a result proven safe to discard has to be used");
+        }
+        let ty = unsafe { &*(*value.as_object().as_instance_ptr()).ty };
+        return vm.error_help(format!("a discarded `{}` has to be used", unsafe { &(*ty.name).value }),
+            "use it, or discard it on purpose with `say _ = ...`");
+    }
+    let top = unsafe { top.sub(1) };
+    next!(vm, ip, top, stack_start)
 }
 
 #[cold]

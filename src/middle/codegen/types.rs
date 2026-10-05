@@ -2,6 +2,7 @@ use crate::core::objects::{BuiltinLayout, VarFields, TypeMember, ObjType, ObjFn,
 use crate::core::value::Value;
 use crate::middle::hir::{HirTypeDecl, HirId, HirStmt, TypeId};
 use crate::middle::bind::{FnKind, TypeLayout};
+use crate::middle::obligations::ObligationRule;
 
 use super::Compiler;
 
@@ -45,7 +46,8 @@ impl<'a> Compiler<'a> {
                 methods,
                 var_fields: Self::var_fields(layout),
                 field_witness_set_pool_ids,
-                no_persist: self.witnesses_no_persist(&provided),
+                no_persist: self.witnesses_rule(ObligationRule::NoPersist, &provided),
+                must_use: self.witnesses_rule(ObligationRule::MustUse, &provided),
             });
             return Ok((0, false));
         }
@@ -75,7 +77,8 @@ impl<'a> Compiler<'a> {
             ty.provided.insert(*id);
         }
         ty.witness_ids = self.witness_id_set(&provided);
-        ty.no_persist = self.witnesses_no_persist(&provided);
+        ty.no_persist = self.witnesses_rule(ObligationRule::NoPersist, &provided);
+        ty.must_use = self.witnesses_rule(ObligationRule::MustUse, &provided);
         ty.field_witness_set_pool_ids = self.field_witness_set_pool_ids(layout)?;
         ty.var_fields = Self::var_fields(layout);
 

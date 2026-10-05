@@ -177,6 +177,7 @@ impl Param {
 }
 
 /// The `this` parameter of an instance method.
+#[derive(Clone)]
 pub struct Receiver {
     pub pos: SourcePosition,
     pub reassignable: bool,
@@ -290,6 +291,14 @@ pub struct ObligationRules {
     pub must_use: bool,
     /// Reserved for typestate.
     pub no_drop: bool,
+}
+
+pub fn builtin_obligation_witness(name: &str) -> Option<&'static str> {
+    match name {
+        "opt" => Some("null"),
+        "fails" => Some("Err"),
+        _ => None,
+    }
 }
 
 pub fn builtin_obligation_rules(name: &str) -> Option<ObligationRules> {

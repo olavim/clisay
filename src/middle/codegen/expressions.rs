@@ -249,6 +249,15 @@ impl<'a> Compiler<'a> {
     }
 
     pub (super) fn expression_stmt(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        self.statement_value(expr, false)
+    }
+
+    /// `say _ = e;` discards its value on purpose, so nothing is checked.
+    pub (super) fn discard_stmt(&mut self, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+        self.statement_value(expr, true)
+    }
+
+    fn statement_value(&mut self, expr: &HirId<HirExpr>, discarded_on_purpose: bool) -> Result<(), anyhow::Error> {
         match self.hir.get(expr) {
             HirExpr::Block(stmts) => self.scoped_body(stmts, expr),
             HirExpr::Assign(left, right) => self.compile_assign(left, right, true),
@@ -256,9 +265,23 @@ impl<'a> Compiler<'a> {
             _ => {
                 self.discard_result_of(expr);
                 self.expression(expr)?;
-                self.emit(Inst::Pop, expr);
+                self.discard_statement_value(expr, discarded_on_purpose);
                 Ok(())
             }
+        }
+    }
+
+    fn discard_statement_value(&mut self, expr: &HirId<HirExpr>, discarded_on_purpose: bool) {
+        let discardable = self.barriers.value_is_discardable(expr);
+        if discarded_on_purpose || discardable && !self.force_checks {
+            self.emit(Inst::Pop, expr);
+            return;
+        }
+        let at = self.ir.next_index();
+        self.emit(Inst::DiscardChecked, expr);
+        // Check-forcing puts back the check on a value the pass proved.
+        if discardable {
+            self.ir.mark_forced_from(at);
         }
     }
 

@@ -8,7 +8,7 @@ use anyhow::anyhow;
 use crate::core::builtins::is_builtin;
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
-use crate::ast::{builtin_obligation_rules, Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchArrayElem, Matcher, ObligationRules, Operator, SlotClause, Stmt, Symbol, TypeDecl};
+use crate::ast::{builtin_obligation_rules, builtin_obligation_witness, Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchArrayElem, Matcher, ObligationRules, Operator, SlotClause, Stmt, Symbol, TypeDecl};
 
 pub enum Binding {
     Trait(AstId<Stmt>),
@@ -68,6 +68,7 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
         scopes: Vec::new(),
         trait_flatten_cache: HashMap::new(),
         obligation_rules: HashMap::new(),
+        obligation_witnesses: HashMap::new(),
         witness_owners: HashMap::new(),
         in_condition: false,
         out: NameBindings {
@@ -84,7 +85,7 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
     Ok(resolver.out)
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy)]
 enum ClauseSite { Field, Member, Other }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -107,6 +108,7 @@ struct Resolver<'a> {
     trait_flatten_cache: HashMap<AstId<Stmt>, Vec<(Symbol, AstId<Stmt>)>>,
     /// Each obligation's declared rules, hoisted so a use may precede its declaration.
     obligation_rules: HashMap<Symbol, ObligationRules>,
+    obligation_witnesses: HashMap<Symbol, Symbol>,
     /// Which obligation each witness identifies.
     witness_owners: HashMap<Symbol, String>,
     in_condition: bool,
@@ -211,8 +213,9 @@ impl<'a> Resolver<'a> {
 
     fn hoist_types(&mut self, stmts: &[AstId<Stmt>]) {
         for stmt in stmts {
-            if let Stmt::Obligation { name, rules, .. } = self.ast.get(stmt) {
+            if let Stmt::Obligation { name, witness, rules } = self.ast.get(stmt) {
                 self.obligation_rules.insert(*name, *rules);
+                self.obligation_witnesses.insert(*name, *witness);
             }
             if let Stmt::Type(decl) = self.ast.get(stmt) {
                 let (name, is_trait) = (decl.name, decl.is_trait);
@@ -260,11 +263,29 @@ impl<'a> Resolver<'a> {
         };
         for name in clause.names.iter().copied() {
             let rules = self.rules_of(name, pos)?;
-            if let Some((prevents, header)) = outlives.filter(|_| rules.no_persist) {
+            if let (true, Some((prevents, header))) = (rules.no_persist, outlives) {
                 return Err(self.placement_error(name, prevents, header, pos));
             }
         }
         Ok(())
+    }
+
+    fn check_pattern_or_clause(&self, pattern: &AstId<Matcher>, clause: &SlotClause) -> Result<(), anyhow::Error> {
+        let Some(pos) = &clause.pos else { return Ok(()) };
+        if matches!(self.ast.get(pattern), Matcher::Binder(_) | Matcher::Wildcard) {
+            return Ok(());
+        }
+        let witnesses: Vec<&str> = clause.names.iter().map(|name| self.witness_spelling_of(*name)).collect();
+        Err(self.error_help_at("A parameter takes a pattern or a clause, not both", pos,
+            format!("write the witness into the pattern, as `{} | {}`", self.ast.pos(pattern).snippet(), witnesses.join(" | "))))
+    }
+
+    fn witness_spelling_of(&self, obligation: Symbol) -> &str {
+        let text = self.ast.text(obligation);
+        match self.obligation_witnesses.get(&obligation) {
+            Some(witness) => self.ast.text(*witness),
+            None => builtin_obligation_witness(text).unwrap_or(text),
+        }
     }
 
     fn placement_error(&self, name: Symbol, prevents: &str, header: &str, pos: &SourcePosition) -> anyhow::Error {
@@ -379,6 +400,7 @@ impl<'a> Resolver<'a> {
         self.push_scope();
         for param in &decl.params {
             self.check_clause_placement(&param.clause, ClauseSite::Other, &param.pattern)?;
+            self.check_pattern_or_clause(&param.pattern, &param.clause)?;
             // Every name a pattern binds is a parameter name, so they share one scope and the same
             // duplicate rule. A `_` or a bare test binds nothing and declares nothing.
             for name in self.collect_matcher_binders(&param.pattern)? {
@@ -419,7 +441,10 @@ impl<'a> Resolver<'a> {
         // A required member holds a value the way a field does, so the same placement rules apply.
         for req in &decl.req_members { self.check_clause_placement(&req.clause, ClauseSite::Member, stmt)?; }
         for req_fn in &decl.req_fns {
-            for param in &req_fn.params { self.collect_matcher_binders(&param.pattern)?; }
+            for param in &req_fn.params {
+                self.check_pattern_or_clause(&param.pattern, &param.clause)?;
+                self.collect_matcher_binders(&param.pattern)?;
+            }
         }
         for method in &decl.methods { self.visit_stmt(method)?; }
         if let Some(init) = &decl.init { self.visit_stmt(init)?; }

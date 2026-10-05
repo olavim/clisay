@@ -61,6 +61,8 @@ pub struct Barriers {
     pub(super) valued_returns: HashSet<CallableId>,
     /// Each returned value this pass proved the function's return allows.
     pub(super) proven_returns: HashSet<HirId<HirExpr>>,
+    /// Each expression statement whose value this pass proved can be discarded without a check.
+    pub(super) discardable_values: HashSet<HirId<HirExpr>>,
     pub(super) checked_slot_clauses: HashMap<CheckedSlot, Obligations>,
     /// Each returned expression that hands back nothing, the way falling off the end does.
     pub(super) void_return_sites: HashSet<HirId<HirExpr>>,
@@ -82,6 +84,10 @@ impl Barriers {
 
     pub fn return_is_proven(&self, value: &HirId<HirExpr>) -> bool {
         self.proven_returns.contains(value)
+    }
+
+    pub fn value_is_discardable(&self, value: &HirId<HirExpr>) -> bool {
+        self.discardable_values.contains(value)
     }
 
     pub fn return_hands_back_nothing(&self, value: &HirId<HirExpr>) -> bool {

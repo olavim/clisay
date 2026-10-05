@@ -190,7 +190,6 @@ fn an_obligation_witness_takes_its_declarations_id() {
         }).expect("no trait declaration");
         let warned = hir.symbol_of("warned").expect("warned not interned");
         let (_, obligation) = hir.obligations().find(|(name, _)| *name == warned).expect("no obligation");
-        let witness = &obligation.witness;
-        assert_eq!(witness.id, tr.id, "{src}");
+        assert_eq!(obligation.witness, tr.id, "{src}");
     }
 }

@@ -666,13 +666,8 @@ impl<T> std::hash::Hash for HirId<T> {
     }
 }
 
-pub struct ObligationWitness {
-    pub name: Symbol,
-    pub id: TypeId,
-}
-
 pub struct ObligationDecl {
-    pub witness: ObligationWitness,
+    pub witness: TypeId,
     pub rules: ObligationRules,
 }
 
@@ -701,7 +696,7 @@ impl Hir {
         self.type_info(id).is_some_and(|info| info.is_trait)
     }
 
-    pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: ObligationWitness, rules: ObligationRules) {
+    pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: TypeId, rules: ObligationRules) {
         self.obligations.insert(name, ObligationDecl { witness, rules });
     }
 

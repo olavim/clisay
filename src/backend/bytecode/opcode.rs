@@ -105,6 +105,7 @@ opcodes! {
     BarrierGuard => BARRIER_GUARD(Pool),
     PopScope => POP_SCOPE(Byte, Byte),
     Pop => POP,
+    DiscardChecked => DISCARD_CHECKED,
     Dup => DUP,
     Dup2 => DUP2,
     PushConstant => PUSH_CONSTANT(Const),

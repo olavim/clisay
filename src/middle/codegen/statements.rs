@@ -109,9 +109,8 @@ impl<'a> Compiler<'a> {
                     self.compile_say_pattern(pattern, value, stmt_id, &field.otherwise)?;
                 }
             },
-            HirStmt::Expression(expr) | HirStmt::Discard(expr) => {
-                self.expression_stmt(expr)?;
-            },
+            HirStmt::Expression(expr) => self.expression_stmt(expr)?,
+            HirStmt::Discard(expr) => self.discard_stmt(expr)?,
             HirStmt::While(cond, body) => {
                 let binders = self.hir.condition_pattern_binders(cond);
                 if !binders.is_empty() {

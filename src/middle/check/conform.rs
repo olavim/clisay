@@ -312,7 +312,7 @@ impl<'a> Ctx<'a> {
 
     pub(super) fn owes_object_witness(&self, debt: &Debt) -> bool {
         matches!(debt, Debt::Owed { obligations, .. }
-            if obligations.iter().any(|o| matches!(self.sigs.witness_of(*o), Witness::Type(_) | Witness::Trait(_))))
+            if obligations.iter().any(|o| self.sigs.witness_of(*o).type_or_trait().is_some()))
     }
 
     pub(super) fn obligations_having_rule(&self, obligations: &Obligations, rule: ObligationRule) -> Obligations {
@@ -331,14 +331,14 @@ impl<'a> Ctx<'a> {
         self.hir.symbol_of(key).is_some_and(|member| self.test_proves_declared_member(test, member))
     }
 
-    pub(super) fn obligation_rule_reject_at(&self, debt: &Debt, rule: ObligationRule, site: Site, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
+    pub(super) fn reject_no_persist_at(&self, debt: &Debt, site: Site, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         let Debt::Owed { obligations, .. } = debt else { return Ok(()) };
-        let blocked = self.obligations_having_rule(obligations, rule);
+        let blocked = self.obligations_having_rule(obligations, ObligationRule::NoPersist);
         if blocked.is_empty() {
             return Ok(());
         }
         let owed = quoted_obligation_list(self.hir, &blocked);
-        let help = self.obligation_rule_prevents_help(&blocked, rule, site);
+        let help = self.obligation_rule_prevents_help(&blocked, ObligationRule::NoPersist, site);
         Err(self.error_help(site.refusal(&owed), node, help))
     }
 
@@ -437,7 +437,7 @@ impl<'a> Ctx<'a> {
 
 impl<'a> Checker<'a> {
     pub(super) fn store_into_container(&mut self, debt: &Debt, expr: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        self.ctx.obligation_rule_reject_at(debt, ObligationRule::NoPersist, Site::Container, expr)
+        self.ctx.reject_no_persist_at(debt, Site::Container, expr)
     }
 
     pub(super) fn refuse_anchor_capture(&self, name: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
@@ -454,8 +454,7 @@ impl<'a> Checker<'a> {
         let Some(i) = self.capture_index(name) else { return Ok(()) };
         // A capture outlives the current value, so what the slot admits is what may be persisted.
         let owed = self.locals[i].clause_owed().clone();
-        self.ctx.obligation_rule_reject_at(&Debt::Owed { obligations: owed, definite: false },
-            ObligationRule::NoPersist, Site::Capture, node)
+        self.ctx.reject_no_persist_at(&Debt::Owed { obligations: owed, definite: false }, Site::Capture, node)
     }
 
     pub(super) fn transfer_obligations_into_receiver(&mut self, receiver: &HirId<HirExpr>, values: &[ValueState]) {
@@ -559,7 +558,7 @@ impl<'a> Checker<'a> {
     pub(super) fn check_into_field(&mut self, debt: &Debt, admits: &Obligations, field: Symbol, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
         // Storing into a field persists the value, which a `no persist` value forbids. A local is
         // not a persist site, so the shared slot check does not ask this.
-        self.ctx.obligation_rule_reject_at(debt, ObligationRule::NoPersist, Site::Field, node)?;
+        self.ctx.reject_no_persist_at(debt, Site::Field, node)?;
         self.check_into_named_slot(debt, admits, field, "field", node)
     }
 

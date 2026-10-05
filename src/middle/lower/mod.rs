@@ -11,9 +11,9 @@ use anyhow::anyhow;
 
 use crate::frontend::lex::{Diagnostic, SourcePosition};
 
-use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchArm, MatchArrayElem, MatchRest, MatchScalar, Matcher, Operator, Param, Receiver, SayDecl, SlotClause, Stmt, Symbol, TypeDecl};
+use crate::ast::{Ast, AstId, CatchClause, Expr, FnDecl, Literal, MatchArm, MatchArrayElem, MatchRest, MatchScalar, Matcher, Operator, Param, SayDecl, SlotClause, Stmt, Symbol, TypeDecl};
 use crate::core::objects::UNDECLARED;
-use crate::middle::hir::{BinOp, Hir, HirCatchClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatchElem, HirMatchField, HirMatchRest, HirMatcher, HirParam, HirSayDecl, HirStmt, ObligationWitness, TypeId, UnOp};
+use crate::middle::hir::{BinOp, Hir, HirCatchClause, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchArm, HirMatchElem, HirMatchField, HirMatchRest, HirMatcher, HirParam, HirSayDecl, HirStmt, TypeId, UnOp};
 use crate::middle::names::NameBindings;
 
 pub fn lower(mut ast: Ast, names: &NameBindings) -> Result<Hir, anyhow::Error> {
@@ -155,10 +155,10 @@ impl<'a> Lowerer<'a> {
                 HirStmt::Match(scrutinee, arms)
             },
             Stmt::Say(field) => HirStmt::Say(self.say_decl(field)?),
-            Stmt::Obligation { name, witness, rules } => {
-                let (name, witness, rules) = (*name, *witness, *rules);
+            Stmt::Obligation { name, rules, .. } => {
+                let (name, rules) = (*name, *rules);
                 let decl = self.names.witness_decl(name).expect("a witness names a declared type or trait");
-                let witness = ObligationWitness { name: witness, id: self.type_id(decl)? };
+                let witness = self.type_id(decl)?;
                 self.hir.declare_obligation(name, witness, rules);
                 HirStmt::Nop
             },
@@ -470,10 +470,6 @@ impl<'a> Lowerer<'a> {
             .collect()
     }
 
-    fn receiver(&self, receiver: &Receiver) -> Receiver {
-        Receiver { pos: receiver.pos.clone(), reassignable: receiver.reassignable, anchor: receiver.anchor }
-    }
-
     /// Lowers a parameter list, desugaring each param's `?` marker and `:` clause into one clause.
     pub(super) fn params(&mut self, params: &[Param]) -> Result<Vec<HirParam>, anyhow::Error> {
         params.iter().enumerate().map(|(i, p)| {
@@ -527,7 +523,7 @@ impl<'a> Lowerer<'a> {
 
     fn fn_decl(&mut self, decl: &FnDecl) -> Result<HirFnDecl, anyhow::Error> {
         let clause = decl.clause.clone();
-        let receiver = decl.receiver.as_ref().map(|r| self.receiver(r));
+        let receiver = decl.receiver.clone();
         let params = self.params(&decl.params)?;
         self.nested_bodies += 1;
         let body = self.expr(&decl.body).map(|body| self.wrap_expression_body(body, &decl.body));

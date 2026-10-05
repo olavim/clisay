@@ -415,7 +415,7 @@ impl<'a> Checker<'a> {
     /// The object-witnessed obligation names an anchor owes.
     fn object_witnessed(&self, target: &NarrowTarget) -> impl Iterator<Item = Symbol> + '_ {
         self.owed_at(target).into_iter()
-            .filter(|o| matches!(self.ctx.sigs.witness_of(*o), Witness::Type(_) | Witness::Trait(_)))
+            .filter(|o| self.ctx.sigs.witness_of(*o).type_or_trait().is_some())
     }
 
     /// Whether being equal to this operand proves a value is in no witness's bad state.

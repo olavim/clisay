@@ -112,15 +112,6 @@ impl<'parser, 'vm> Parser<'parser, 'vm> {
     fn finish_param(&mut self, start: SourcePosition, anchor: bool, reassignable: bool) -> Result<Param, anyhow::Error> {
         let pattern = self.with_ctx(ExprCtx::matcher(), |p| p.parse_matcher())?;
         let clause = self.parse_slot_clause(SlotKind::Param)?;
-        if let Some(clause_pos) = clause.pos.as_ref().filter(|_| !matches!(self.ast.get(&pattern), Matcher::Binder(_))) {
-            let alternatives: Vec<String> = clause.names.iter().map(|name| match self.ast.text(*name) {
-                "opt" => "null".to_string(),
-                "fails" => "Err".to_string(),
-                other => format!("<{other}'s witness>"),
-            }).collect();
-            return Err(self.error_help("A parameter takes a pattern or a clause, not both", clause_pos,
-                format!("write the witness into the pattern, as `{} | {}`", self.ast.pos(&pattern).snippet(), alternatives.join(" | "))));
-        }
         let pos = start.to(&self.tokens.previous().pos);
         if anchor && !matches!(self.ast.get(&pattern), Matcher::Binder(_)) {
             return Err(self.error("An anchor parameter names one binding, so it takes no pattern", &pos));

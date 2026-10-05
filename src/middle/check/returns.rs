@@ -21,8 +21,8 @@ impl<'a> Ctx<'a> {
         }
 
         let owed = quoted_obligation_list(self.hir, &pending);
-        let help = self.obligation_rule_prevents_help(&pending, ObligationRule::MustUse, Site::Drop);
-        Err(self.error_help(Site::Drop.refusal(&owed), node, help))
+        let help = self.obligation_rule_prevents_help(&pending, ObligationRule::MustUse, Site::Discard);
+        Err(self.error_help(Site::Discard.refusal(&owed), node, help))
     }
 
     pub(super) fn callable_subject(&self, callable: CallableId, decl: &HirFnDecl) -> String {
