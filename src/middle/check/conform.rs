@@ -24,8 +24,6 @@ pub(super) struct BinderFacts {
     pub tag: TypeTag,
 }
 
-pub(super) const ANCHOR_OWES_ONLY_WITNESSED: &str = "an anchor can owe only obligations with a witness";
-
 impl BinderFacts {
     /// What the name takes, at its root and inside it.
     pub(super) fn state(&self) -> ValueState {
@@ -206,11 +204,13 @@ impl<'a> Ctx<'a> {
     fn obligation_witness_name_of(&self, debt: &Debt, tag: &TypeTag) -> Option<&'a str> {
         let TypeTag::Concrete(tag) = tag else { return None };
         let Debt::Owed { obligations, .. } = debt else { return None };
+
         // Every bad state the value might be in has to be an object. `opt` admits null, which the
-        // tag does not describe. A witnessless obligation names no bad state, so it admits nothing.
-        if obligations.iter().any(|o| matches!(self.sigs.witness_of(*o), Some(Witness::Null))) {
+        // tag does not describe.
+        if obligations.iter().any(|o| matches!(self.sigs.witness_of(*o), Witness::Null)) {
             return None;
         }
+
         // A trait witness counts too: proving the type proves every trait it provides.
         let HirStmt::Type(decl) = self.hir.get(tag) else { return None };
         let witnessed = self.sigs.obligations_witnessed_by_decl(decl);
@@ -246,17 +246,6 @@ impl<'a> Ctx<'a> {
         match obligations.is_empty() {
             true => Debt::Clean,
             false => Debt::Owed { obligations, definite: true },
-        }
-    }
-
-    /// What a value owes after a discharge operator.
-    pub(super) fn discharged_debt(&self, debt: &Debt) -> Debt {
-        let Debt::Owed { obligations, .. } = debt else { return Debt::Clean };
-        let kept = self.unprovable_only(obligations);
-        if kept.is_empty() {
-            Debt::Clean
-        } else {
-            Debt::Owed { obligations: kept, definite: false }
         }
     }
 
@@ -323,7 +312,7 @@ impl<'a> Ctx<'a> {
 
     pub(super) fn owes_object_witness(&self, debt: &Debt) -> bool {
         matches!(debt, Debt::Owed { obligations, .. }
-            if obligations.iter().any(|o| matches!(self.sigs.witness_of(*o), Some(Witness::Type(_) | Witness::Trait(_)))))
+            if obligations.iter().any(|o| matches!(self.sigs.witness_of(*o), Witness::Type(_) | Witness::Trait(_))))
     }
 
     pub(super) fn obligations_having_rule(&self, obligations: &Obligations, rule: ObligationRule) -> Obligations {
@@ -353,26 +342,10 @@ impl<'a> Ctx<'a> {
         Err(self.error_help(site.refusal(&owed), node, help))
     }
 
-    /// Refuses an obligation without a witness on an anchor parameter or an anchor receiver. Their
-    /// clause has to match the anchor's, and that is settled only for obligations a value can show.
-    pub(super) fn reject_anchor_unwitnessed_obligations(&self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
-        let receiver = decl.receiver.as_ref().filter(|r| r.anchor).map(|r| (&r.clause, &r.pos, "An anchor receiver"));
-        let params = decl.params.iter().filter(|p| p.anchor).map(|p| (&p.clause, &p.pos, "An anchor parameter"));
-        for (clause, pos, subject) in receiver.into_iter().chain(params) {
-            let Some(name) = self.sigs.first_unwitnessed(&clause.owed()) else { continue };
-            let text = self.hir.text(name);
-            let pos = clause.pos.clone().unwrap_or_else(|| pos.clone());
-            return Err(anyhow!("{}", Diagnostic::new(format!("{subject} cannot owe '{text}'"), pos)
-                .with_label(format!("'{text}' has no witness"))
-                .with_help(ANCHOR_OWES_ONLY_WITNESSED)));
-        }
-        Ok(())
-    }
-
     pub(super) fn reject_receiver_witnessed_obligations(&self, decl: &HirFnDecl) -> Result<(), anyhow::Error> {
         let Some(receiver) = &decl.receiver else { return Ok(()) };
         let clause = &receiver.clause;
-        let Some(name) = clause.names.iter().copied().find(|n| self.sigs.witness_of(*n).is_some()) else { return Ok(()) };
+        let Some(name) = clause.names.first().copied() else { return Ok(()) };
         let text = self.hir.text(name);
         let pos = clause.pos.clone().unwrap_or_else(|| decl.sig_pos.clone());
         Err(anyhow!("{}", Diagnostic::new(format!("The receiver cannot owe '{text}'"), pos)
@@ -410,43 +383,17 @@ impl<'a> Ctx<'a> {
 
         let owed = quoted_obligation_list(self.hir, &blocking);
 
-        // The header stays generic so it is easy to search for. The caret and help carry the name.
-        let mut diagnostic = Diagnostic::new(format!("unchecked value owes {owed}"), self.hir.pos(operand).clone());
-
         // Name the witness so the reader knows what to rule out, and how.
-        let mut witnesses: Vec<&str> = blocking.iter().filter_map(|o| self.witness_name(*o)).collect();
+        let mut witnesses: Vec<&str> = blocking.iter().map(|o| self.witness_name(*o)).collect();
         witnesses.sort();
         witnesses.dedup();
+        let witness = witnesses.join(" or ");
+        let subject = name.map_or("the value".to_string(), |name| format!("`{name}`"));
 
-        if witnesses.is_empty() {
-            diagnostic = diagnostic.with_help("discharge it before use");
-        } else {
-            let witness = witnesses.join(" or ");
-            diagnostic = diagnostic.with_label(format!("might be {witness}"));
-            diagnostic = match name {
-                Some(name) => diagnostic.with_help(format!("make sure `{name}` is not {witness} before using it")),
-                None => diagnostic.with_help(format!("make sure the value is not {witness} before using it")),
-            };
-        }
-
-        Err(anyhow!("{}", diagnostic))
-    }
-
-    /// A discharge proves a value is not in some bad state. An operand owing only witnessless
-    /// obligations names no such state, so the form has nothing to prove and is rejected.
-    pub(super) fn require_witnessed_operand(&self, debt: &Debt, node: &HirId<HirExpr>) -> Result<(), anyhow::Error> {
-        let Debt::Owed { obligations, .. } = debt else { return Ok(()) };
-        if obligations.iter().any(|o| self.sigs.witness_of(*o).is_some()) {
-            return Ok(());
-        }
-        let owed = quoted_obligation_list(self.hir, obligations);
-        let have = match obligations.len() {
-            1 => "has",
-            _ => "have",
-        };
-        Err(self.error_help(
-            format!("cannot discharge a value owing {owed}"), node,
-            format!("{owed} {have} no witness, so there is no bad state to rule out")))
+        // The header stays generic so it is easy to search for. The caret and help carry the name.
+        Err(anyhow!("{}", Diagnostic::new(format!("unchecked value owes {owed}"), self.hir.pos(operand).clone())
+            .with_label(format!("might be {witness}"))
+            .with_help(format!("make sure {subject} is not {witness} before using it"))))
     }
 
     pub(super) fn ret_debt(&self, ret: &RetSig) -> Debt {
@@ -473,7 +420,7 @@ impl<'a> Ctx<'a> {
 
     /// The tag a value caught by `v ?? e => ...` narrows to.
     pub(super) fn handle_caught_tag(&self, caught: &Obligations) -> TypeTag {
-        let mut witnessed = caught.iter().filter_map(|o| self.sigs.witness_of(*o));
+        let mut witnessed = caught.iter().map(|o| self.sigs.witness_of(*o));
         match (witnessed.next(), witnessed.next()) {
             (Some(Witness::Type(id)), None) => self.sigs.type_decl_of_id(*id).map_or(TypeTag::Unknown, TypeTag::Concrete),
             _ => TypeTag::Unknown,
@@ -490,14 +437,10 @@ impl<'a> Ctx<'a> {
         unadmitted.len() == 1 && unadmitted.contains(&self.sigs.opt)
     }
 
-    pub(super) fn unprovable_only(&self, obligations: &Obligations) -> Obligations {
-        obligations.iter().copied().filter(|o| self.sigs.witness_of(*o).is_none()).collect()
-    }
-
-    pub(super) fn witness_name(&self, obligation: Symbol) -> Option<&'a str> {
-        match self.sigs.witness_of(obligation)? {
-            Witness::Type(id) | Witness::Trait(id) => self.hir.type_info(*id).map(|info| self.hir.text(info.name)),
-            Witness::Null => Some("null"),
+    pub(super) fn witness_name(&self, obligation: Symbol) -> &'a str {
+        match self.sigs.witness_of(obligation) {
+            Witness::Type(id) | Witness::Trait(id) => self.hir.text(self.hir.type_info(*id).expect("a witness names a declared type").name),
+            Witness::Null => "null",
         }
     }
 

@@ -58,7 +58,7 @@ impl<'a> Ctx<'a> {
     }
 
     fn witness_decl_of_obligation(&self, obligation: Symbol) -> Option<HirId<HirStmt>> {
-        let Some(Witness::Type(id)) = self.sigs.witness_of(obligation) else { return None };
+        let Witness::Type(id) = self.sigs.witness_of(obligation) else { return None };
         self.sigs.type_decl_of_id(*id)
     }
 
@@ -95,7 +95,7 @@ impl<'a> Ctx<'a> {
     }
 
     pub(super) fn matcher_total_over_obligation(&self, matcher: &HirId<HirMatcher>, obligation: Symbol) -> bool {
-        self.sigs.witness_of(obligation).is_some_and(|w| self.matcher_total_over_witness(matcher, w))
+        self.matcher_total_over_witness(matcher, self.sigs.witness_of(obligation))
     }
 
     pub(super) fn matcher_total_over_witness(&self, matcher: &HirId<HirMatcher>, witness: &Witness) -> bool {
@@ -415,7 +415,7 @@ impl<'a> Checker<'a> {
     /// The object-witnessed obligation names an anchor owes.
     fn object_witnessed(&self, target: &NarrowTarget) -> impl Iterator<Item = Symbol> + '_ {
         self.owed_at(target).into_iter()
-            .filter(|o| matches!(self.ctx.sigs.witness_of(*o), Some(Witness::Type(_) | Witness::Trait(_))))
+            .filter(|o| matches!(self.ctx.sigs.witness_of(*o), Witness::Type(_) | Witness::Trait(_)))
     }
 
     /// Whether being equal to this operand proves a value is in no witness's bad state.

@@ -111,7 +111,6 @@ impl<'a> Checker<'a> {
             None => self.ctx.obligations_of(debt),
         };
         self.check_return_obligations(debt, &admits, node)?;
-        self.ctx.obligation_rule_reject_at(debt, super::ObligationRule::NoReturn, super::Site::Return, node)?;
 
         // A `: void` return with no obligations takes no value at all.
         if self.fn_ctx.declares_void && !self.fn_ctx.return_owes && !debt.is_void() {

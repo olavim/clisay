@@ -194,7 +194,6 @@ fn build_builtin_type(gc: &mut Gc, name: &str, layout: &BuiltinLayout, constants
         ty.methods.insert(*member, constants[*constant as usize].as_object());
     }
     ty.var_fields = layout.var_fields;
-    ty.anchorable_fields = layout.anchorable_fields;
     ty.field_witness_set_pool_ids = layout.field_witness_set_pool_ids.clone();
     ty.no_persist = layout.no_persist;
     ty.provided.insert(layout.id);

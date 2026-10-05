@@ -16,7 +16,7 @@ call(f, &x);
 print(x);
 
 // @split
-type Tag { } obligation tagged { witness Tag; no return; }
+type Tag { } obligation tagged { witness Tag; discharge to use; }
 fn tag(&var x: tagged) { x = Tag(); }
 fn pick() { return tag; }
 
@@ -25,7 +25,7 @@ pick()(&y);
 print(y ~ Tag); // expect: true
 
 // @split
-type Tag { } obligation tagged { witness Tag; no return; }
+type Tag { } obligation tagged { witness Tag; discharge to use; }
 fn tag(&var x: tagged) { x = Tag(); } // error: an anchor and the parameter it fills do not admit the same values
 fn pick() { return tag; }
 
@@ -33,7 +33,7 @@ say var y = 0;
 pick()(&y);
 
 // @split
-type Tag { } obligation tagged { witness Tag; no return; }
+type Tag { } obligation tagged { witness Tag; discharge to use; }
 type Box { pub var v = 0; }
 fn tag(&var x: tagged) { x = Tag(); } // error: an anchor and the parameter it fills do not admit the same values
 fn pick() { return tag; }

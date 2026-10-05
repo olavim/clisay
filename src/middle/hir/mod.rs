@@ -672,7 +672,7 @@ pub struct ObligationWitness {
 }
 
 pub struct ObligationDecl {
-    pub witness: Option<ObligationWitness>,
+    pub witness: ObligationWitness,
     pub rules: ObligationRules,
 }
 
@@ -701,7 +701,7 @@ impl Hir {
         self.type_info(id).is_some_and(|info| info.is_trait)
     }
 
-    pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: Option<ObligationWitness>, rules: ObligationRules) {
+    pub(crate) fn declare_obligation(&mut self, name: Symbol, witness: ObligationWitness, rules: ObligationRules) {
         self.obligations.insert(name, ObligationDecl { witness, rules });
     }
 

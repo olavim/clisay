@@ -727,7 +727,6 @@ pub struct BuiltinLayout {
     pub member_count: MemberId,
     pub methods: Vec<(MemberId, u8)>,
     pub var_fields: VarFields,
-    pub anchorable_fields: VarFields,
     pub field_witness_set_pool_ids: Box<[u16]>,
     pub no_persist: bool,
 }
@@ -769,7 +768,6 @@ pub struct ObjType {
     /// Each field's witness set, by field id.
     pub field_witness_set_pool_ids: Box<[u16]>,
     pub var_fields: VarFields,
-    pub anchorable_fields: VarFields,
     pub member_count: u8,
     pub getter_id: Option<MemberId>,
     pub setter_id: Option<MemberId>,
@@ -794,7 +792,6 @@ impl ObjType {
             no_persist: false,
             field_witness_set_pool_ids: Box::new([]),
             var_fields: VarFields::none(),
-            anchorable_fields: VarFields::none(),
             member_count: 0,
             getter_id: None,
             setter_id: None,
@@ -817,7 +814,6 @@ impl ObjType {
             no_persist: self.no_persist,
             field_witness_set_pool_ids: self.field_witness_set_pool_ids.clone(),
             var_fields: self.var_fields,
-            anchorable_fields: self.anchorable_fields,
             member_count: self.member_count,
             getter_id: self.getter_id,
             setter_id: self.setter_id,

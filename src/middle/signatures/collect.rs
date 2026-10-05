@@ -66,13 +66,11 @@ impl<'a> Collector<'a> {
     pub(super) fn register_obligations(&mut self) {
         for (name, decl) in self.hir.obligations() {
             self.sigs.obligation_rules.insert(name, decl.rules);
-            if let Some(witness) = &decl.witness {
-                let w = match self.hir.is_trait(witness.id) {
-                    true => Witness::Trait(witness.id),
-                    false => Witness::Type(witness.id),
-                };
-                self.sigs.witnesses.insert(name, w);
-            }
+            let w = match self.hir.is_trait(decl.witness.id) {
+                true => Witness::Trait(decl.witness.id),
+                false => Witness::Type(decl.witness.id),
+            };
+            self.sigs.witnesses.insert(name, w);
         }
     }
 

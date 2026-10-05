@@ -157,13 +157,8 @@ impl<'a> Lowerer<'a> {
             Stmt::Say(field) => HirStmt::Say(self.say_decl(field)?),
             Stmt::Obligation { name, witness, rules } => {
                 let (name, witness, rules) = (*name, *witness, *rules);
-                let witness = match witness {
-                    Some(witness) => {
-                        let decl = self.names.witness_decl(name).expect("a witness names a declared type or trait");
-                        Some(ObligationWitness { name: witness, id: self.type_id(decl)? })
-                    },
-                    None => None,
-                };
+                let decl = self.names.witness_decl(name).expect("a witness names a declared type or trait");
+                let witness = ObligationWitness { name: witness, id: self.type_id(decl)? };
                 self.hir.declare_obligation(name, witness, rules);
                 HirStmt::Nop
             },

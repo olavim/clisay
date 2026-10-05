@@ -44,7 +44,6 @@ impl<'a> Compiler<'a> {
                 member_count: layout.member_count,
                 methods,
                 var_fields: Self::var_fields(layout),
-                anchorable_fields: self.anchorable_fields(layout),
                 field_witness_set_pool_ids,
                 no_persist: self.witnesses_no_persist(&provided),
             });
@@ -79,7 +78,6 @@ impl<'a> Compiler<'a> {
         ty.no_persist = self.witnesses_no_persist(&provided);
         ty.field_witness_set_pool_ids = self.field_witness_set_pool_ids(layout)?;
         ty.var_fields = Self::var_fields(layout);
-        ty.anchorable_fields = self.anchorable_fields(layout);
 
         // Compile the factory into its slot. A factory-less type has none, so its `factory_id`
         // stays None and `K()` on it finds no factory to call.
@@ -117,17 +115,6 @@ impl<'a> Compiler<'a> {
         let mut out = VarFields::none();
         for id in layout.fields.iter().filter(|id| layout.reassignable.contains(id)) {
             out.set(*id);
-        }
-        out
-    }
-
-    fn anchorable_fields(&self, layout: &TypeLayout) -> VarFields {
-        let mut out = VarFields::none();
-        for id in layout.fields.iter().filter(|id| layout.reassignable.contains(id)) {
-            let owed = layout.clauses.get(id);
-            if !owed.is_some_and(|owed| self.sigs.first_unwitnessed(owed).is_some()) {
-                out.set(*id);
-            }
         }
         out
     }

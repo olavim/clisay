@@ -440,10 +440,7 @@ impl Vm {
     #[cold]
     pub(super) fn unanchorable_field_error(&self, instance_ref: *mut ObjInstance, field: u8) -> anyhow::Error {
         let label = field_label(instance_ref, field);
-        if !unsafe { &*(*instance_ref).ty }.var_fields.has(field) {
-            return self.error(format!("Cannot anchor non-var field `{label}`")).unwrap_err();
-        }
-        self.error(format!("Cannot anchor field `{label}`; it owes an obligation without a witness")).unwrap_err()
+        self.error(format!("Cannot anchor non-var field `{label}`")).unwrap_err()
     }
 
     #[cold]

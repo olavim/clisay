@@ -206,12 +206,8 @@ impl Signatures {
         out
     }
 
-    pub(crate) fn first_unwitnessed(&self, owed: &Obligations) -> Option<Symbol> {
-        owed.iter().copied().find(|o| self.witness_of(*o).is_none())
-    }
-
-    pub(crate) fn witness_of(&self, obligation: Symbol) -> Option<&Witness> {
-        self.witnesses.get(&obligation)
+    pub(crate) fn witness_of(&self, obligation: Symbol) -> &Witness {
+        self.witnesses.get(&obligation).expect("every obligation has a witness")
     }
 
     /// Every obligation witnessed by an object, in a stable order.

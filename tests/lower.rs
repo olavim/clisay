@@ -1,7 +1,5 @@
 use clisay::internals::{lower, Hir, HirExpr, HirFnDecl, HirId, HirLiteral, HirMatchElem, HirMatcher, HirStmt};
 
-/// The top-level statements of a lowered program (unwraps the root block).
-/// The statements the program wrote. The compiler declares its own built-ins in the same block.
 fn top_stmts(hir: &Hir) -> Vec<HirId<HirStmt>> {
     let root = hir.get_root();
     let HirStmt::Expression(block) = hir.get(&root) else { panic!("root is not an expression statement") };
@@ -96,7 +94,7 @@ fn shorthand_field_lowers_to_binder() {
     let hir = lower("match v { { x } => 0 }");
     // A bare `{ .. }` is a dict test wrapping the shape.
     let HirMatcher::Dict(shape) = first_arm_matcher(&hir) else { panic!("not a dict matcher") };
-    let HirMatcher::Shape { fields: fields, .. } = hir.get(shape) else { panic!("not a shape matcher") };
+    let HirMatcher::Shape { fields, .. } = hir.get(shape) else { panic!("not a shape matcher") };
     assert_eq!(fields.len(), 1);
     assert!(matches!(fields[0].key, HirLiteral::String(ref s) if s == "x"));
     let x = hir.symbol_of("x").expect("x not interned");
@@ -133,7 +131,6 @@ fn match_statement_lowers_to_arms() {
     assert!(matches!(hir.get(&arms[1].matcher), HirMatcher::Wildcard));
 }
 
-/// Every matcher is its own arena node, so each carries the span of the text it was written as.
 #[test]
 fn each_matcher_carries_its_own_span() {
     let hir = lower("match v { A | B => 0 }\ntype A { }\ntype B { }");
@@ -145,7 +142,6 @@ fn each_matcher_carries_its_own_span() {
     assert_eq!(hir.pos(&alternatives[1]).snippet(), "B");
 }
 
-/// A type names what it mixes by declaration id, minted at whichever site mentions it first.
 #[test]
 fn a_mixed_trait_keeps_one_id_in_either_declaration_order() {
     for src in ["type T with K { }\ntrait K { }", "trait K { }\ntype T with K { }"] {
@@ -164,8 +160,6 @@ fn a_mixed_trait_keeps_one_id_in_either_declaration_order() {
     }
 }
 
-/// Two declarations sharing a name are two ids, which is what lets a type test tell them apart.
-/// Sibling scopes are where a name can reach two declarations, since neither shadows the other.
 #[test]
 fn same_named_declarations_get_distinct_ids() {
     let hir = lower("fn mk() { type T { pub x; } return T { x: 1 }; }\nfn probe() { type T { pub y; } }");
@@ -183,7 +177,6 @@ fn same_named_declarations_get_distinct_ids() {
     assert_ne!(first_id, second_id);
 }
 
-/// An obligation's witness names a declaration, so it carries that declaration's id.
 #[test]
 fn an_obligation_witness_takes_its_declarations_id() {
     for src in [
@@ -197,7 +190,7 @@ fn an_obligation_witness_takes_its_declarations_id() {
         }).expect("no trait declaration");
         let warned = hir.symbol_of("warned").expect("warned not interned");
         let (_, obligation) = hir.obligations().find(|(name, _)| *name == warned).expect("no obligation");
-        let witness = obligation.witness.as_ref().expect("obligation has no witness");
+        let witness = &obligation.witness;
         assert_eq!(witness.id, tr.id, "{src}");
     }
 }

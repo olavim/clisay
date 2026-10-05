@@ -85,7 +85,7 @@ pub fn resolve(ast: &Ast) -> Result<NameBindings, anyhow::Error> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum ClauseSite { Field, Member, Return, Other }
+enum ClauseSite { Field, Member, Other }
 
 #[derive(Clone, Copy, PartialEq)]
 enum DeclKind {
@@ -253,28 +253,24 @@ impl<'a> Resolver<'a> {
 
     fn check_clause_placement<T>(&self, clause: &SlotClause, site: ClauseSite, at: &AstId<T>) -> Result<(), anyhow::Error> {
         let pos = clause.pos.as_ref().unwrap_or_else(|| self.ast.pos(at));
-        let (outlives, prevents, header) = match site {
-            ClauseSite::Field => (true, "storing it in a field", "A field cannot owe"),
-            ClauseSite::Member => (true, "holding it in a member", "A required member cannot owe"),
-            ClauseSite::Return | ClauseSite::Other => (false, "returning it", "A return cannot owe"),
+        let outlives = match site {
+            ClauseSite::Field => Some(("storing it in a field", "A field cannot owe")),
+            ClauseSite::Member => Some(("holding it in a member", "A required member cannot owe")),
+            ClauseSite::Other => None,
         };
-        let ret = site == ClauseSite::Return;
         for name in clause.names.iter().copied() {
             let rules = self.rules_of(name, pos)?;
-            let rule = match (outlives, ret) {
-                (true, _) if rules.no_persist => "no persist",
-                (_, true) if rules.no_return => "no return",
-                _ => continue,
-            };
-            return Err(self.placement_error(name, rule, prevents, header, pos));
+            if let Some((prevents, header)) = outlives.filter(|_| rules.no_persist) {
+                return Err(self.placement_error(name, prevents, header, pos));
+            }
         }
         Ok(())
     }
 
-    fn placement_error(&self, name: Symbol, rule: &str, prevents: &str, header: &str, pos: &SourcePosition) -> anyhow::Error {
+    fn placement_error(&self, name: Symbol, prevents: &str, header: &str, pos: &SourcePosition) -> anyhow::Error {
         let text = self.ast.text(name);
         let help = match builtin_obligation_rules(text).is_none() {
-            true => format!("`{text}` declares `{rule}`, which prevents {prevents}"),
+            true => format!("`{text}` declares `no persist`, which prevents {prevents}"),
             false => builtin_clause_guidance(text).to_string(),
         };
         self.error_help_at(format!("{header} '{text}'"), pos, help)
@@ -362,10 +358,6 @@ impl<'a> Resolver<'a> {
                     return Err(self.error_help("'no drop' is not available yet", stmt,
                         "the 'no drop' rule is not implemented yet"));
                 }
-                let Some(witness) = witness else {
-                    return Err(self.error_help(format!("Obligation '{text}' has no witness"), stmt,
-                        format!("name the type of the values it is about, as in `obligation {text} {{ witness <Type>; ... }}`")));
-                };
                 self.declare_witness(*name, *witness, stmt)?;
             },
             Stmt::Fn(decl) => self.visit_fn(decl)?,
@@ -383,7 +375,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn visit_fn(&mut self, decl: &FnDecl) -> Result<(), anyhow::Error> {
-        self.check_clause_placement(&decl.clause, ClauseSite::Return, &decl.body)?;
+        self.check_clause_placement(&decl.clause, ClauseSite::Other, &decl.body)?;
         if let Some(receiver) = &decl.receiver {
             self.check_clause_placement(&receiver.clause, ClauseSite::Other, &decl.body)?;
         }

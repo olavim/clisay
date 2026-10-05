@@ -1,7 +1,0 @@
-type Scoped { } obligation scoped { witness Scoped; no return; }
-fn leak(x: scoped): scoped { return x; } // error: A return cannot owe 'scoped'
-
-// @split
-type Kept { } obligation kept { witness Kept; no persist; }
-fn keep(x: kept): kept { return x; }
-print(keep(1)); // expect: 1
