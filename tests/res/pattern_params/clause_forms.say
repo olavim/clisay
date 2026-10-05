@@ -1,22 +1,28 @@
 type Old { } obligation stale { witness Old; discharge to use; }
 fn pattern_less(x: opt) { return x ?? "none"; }
-fn witnessless(x: stale) { return x ?? "none"; }
+fn user_obligation(x: stale) { return x ?? "none"; }
 print(pattern_less(null)); // expect: none
-print(witnessless(Old{})); // expect: none
+print(user_obligation(Old{})); // expect: none
 
 // @split
 type Node { pub n; init(this, n) { this.n = n; } }
-fn both(x @ Node : opt) {
+fn both(x @ Node : opt) { } // error: A parameter takes a pattern or a clause, not both
+
+// @split
+type Node { pub n; init(this, n) { this.n = n; } }
+fn either(x @ Node | null) {
     say y = x; // error: Cannot assign a nullable value to non-null binding 'y'
 }
 
 // @split
 type Node { pub n; init(this, n) { this.n = n; } }
-fn both(x @ Node : opt) { return x ?? "none"; }
+fn either(x @ Node | null) { return x?.n ?? "none"; }
+print(either(null)); // expect: none
+print(either(Node(1))); // expect: 1
 try {
-    both(null);
+    either(5);
 } catch (e) {
-    print(e); // expect: argument does not match `x @ Node : opt`
+    print(e); // expect: argument does not match `x @ Node | null`
 }
 
 // @split
