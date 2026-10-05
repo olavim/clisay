@@ -1,0 +1,32 @@
+type Scoped { } obligation scoped { witness Scoped; no persist; }
+say sink = Ref([]);
+fn keep(v) { sink.mutate((&var list) => { &list.push(v); }); }
+fn each(xs: scoped, cb) { cb(xs); } // error: Uncaught exception: <instance <type Scoped>>
+each(Scoped { }, keep);
+
+// @split
+type Scoped { } obligation scoped { witness Scoped; no persist; }
+say sink = Ref([]);
+fn each(xs: scoped, cb) { cb(xs); } // error: Uncaught exception: <instance <type Scoped>>
+each(Scoped { }, (v) => { sink.mutate((&var list) => { &list.push(v); }); });
+
+// @split
+type Scoped { } obligation scoped { witness Scoped; no persist; }
+say sink = Ref([]);
+fn keep(v) { sink.mutate((&var list) => { &list.push(v); }); }
+fn each(xs: scoped, cb) { cb(xs); }
+each([1, 2], keep);
+print(@sink.length()); // expect: 1
+
+// @split
+type Scoped { } obligation scoped { witness Scoped; no persist; }
+say sink = Ref([]);
+fn keep(v: scoped) { sink.mutate((&var list) => { &list.push(v); }); } // error: cannot capture value owing 'scoped'
+fn each(xs: scoped, cb) { cb(xs); }
+each(Scoped { }, keep);
+
+// @split
+type Scoped { } obligation scoped { witness Scoped; no persist; }
+fn look(v: scoped) { print(v ~ Scoped); } // expect: true
+fn each(xs: scoped, cb) { cb(xs); }
+each(Scoped { }, look);
